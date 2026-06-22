@@ -2729,3 +2729,474 @@ new dependency-image `string` return fixture passes on `SystemLinker` and
 `Interpreter`; the §32 string-argument fixture still passes; existing
 dependency-image scalar/member/exception fixtures still pass; and the
 `rt/cstdlib.d` suite still passes.
+
+## 34. The complete remaining Interpreter FFI ladder
+
+### 34.1 Terminal goal and why this section exists
+
+The terminal goal of all Interpreter FFI work is one sentence: **the
+Interpreter should call out to arbitrary compiled dependency code, so a real
+dub project "just" runs under it** — project source interpreted, every
+dependency leaf called natively. Quickbite reaches that goal when every
+body-less callable a real dub package can put in front of the Interpreter
+(`fbody is null` — see §21) is marshalled and called correctly, and every
+native `Throwable` it can raise is mapped back.
+
+§21–§33 climbed that ladder one rung per PR, and each rung was *planned* in its
+own PR before being *implemented* in the next (the most recent example: §33,
+string slice returns, is markdown only — no code yet). That per-increment
+planning cadence is what this section ends. Below is the **entire** remaining
+ladder, in dependency order, each rung specified to the same depth the
+implementer needs: the one new semantic contract, the smallest oracle fixture,
+in/out scope, the code to change, and the done criteria.
+
+How to use this section:
+
+```text
+- Implement the next rung whose Status is not "landed", top to bottom.
+- Do NOT write a new planning PR to choose or re-spec a rung. The spec is here.
+- Each rung still needs its approved oracle fixture before code (AGENTS.md);
+  propose the fixture sketched here, get approval, then go red -> green.
+- A rung may carry more than one fixture (e.g. one per element type or
+  direction) but only one new semantic contract. Land them as small steps.
+- When a rung lands, set its Status to "landed (PR #...)" and move on. Do not
+  append a new §N planning section.
+```
+
+Ordering principle: rungs are sorted by how often real dub code forces them,
+so the Interpreter can run the largest fraction of real packages the soonest.
+ABI-correctness gaps that silently miscompile common calls (stack spill, sret)
+rank above rare type surface (extern(C++)).
+
+### 34.2 Shared invariants for every rung below
+
+```text
+- Interpreter only. Bytecode and IR stay out (§23, §26); their native-layout
+  bridge is governed by ai/plans/bytecode.md, not this ladder.
+- SystemLinker is the oracle (ai/plans/single-oracle.md). Every fixture asserts
+  the same source on SystemLinker (passes) and Interpreter (red before, green
+  after). Ctfe stays a characterization backend, never the truth.
+- All native execution goes through quickbite.backends.ffi. Never add a
+  backend-local call path in interpreter/impl.d.
+- One semantic contract per fixture; the throw/struct/slice stays a real native
+  leaf from a prepared dependency image. Do not inline or special-case bodies.
+- extern(D) explicit args are reversed (§27, abiSourceIndex); hidden args
+  (this, sret) keep their leading position. extern(C) keeps source order.
+- argumentWritebacks stay keyed to the user's explicit source-argument
+  expressions, never to libffi ABI slots (§27.4).
+- Register-before-stack discipline: a rung claims register-resident shapes
+  first; stack spill is its own rung (§34.5) unless the rung is itself about
+  spill.
+```
+
+### 34.3 The ladder at a glance
+
+```text
+Increment  Contract                                            Status   Ref
+10  D string slice RETURN value                                planned  §33
+11  typed (non-char) immutable slice args and returns          todo     §34.4
+12  stack-spilled extern(D) arguments (>6 int / >8 SSE)        todo     §34.5
+13  large struct returns via hidden sret + extern(D) ordering  todo     §34.6
+14  scalar out-parameters (int*) with writeback                todo     §34.7
+15  mutating struct member methods + receiver writeback        todo     §34.8
+16  mutable slice arguments with writeback                     todo     §34.9
+17  slices/arrays nested inside by-value structs               todo     §34.10
+18  class references, virtual dispatch, interfaces (vtables)   todo     §34.11
+19  constructors, destructors, postblits                       todo     §34.12
+20  native Error recovery and exception chaining (next)        todo     §34.13
+21  variadics (printf-shaped; ffi_prep_cif_var)                todo     §34.14
+22  delegates / callbacks / closures: the reverse bridge       todo     §34.15
+23  extern(C++) function and member ABI                        todo     §34.16
+```
+
+Anchors shared by most rungs (re-grep; line numbers drift):
+
+```text
+descriptor mappers   source/quickbite/backends/ffi.d
+                       ffiTypeFor (return), ffiArgumentTypeFor (arg),
+                       ffiStructType, ffiStringSliceType, isSupportedStringSlice
+marshalling          source/quickbite/backends/ffi.d
+                       marshalArgument, marshalStringSliceArgument,
+                       unmarshalValue, unmarshalStruct
+call + ABI order     source/quickbite/backends/ffi.d
+                       callViaLibffi, abiSourceIndex,
+                       externDArgumentsFitRegisterScope, isOutPointer
+entry points         source/quickbite/backends/ffi.d
+                       tryCallNative, tryCallNativeMember, tryCallNativeImpl,
+                       NativeThis, NativeCallException
+libffi binding       source/quickbite/backends/libffi.d
+call site + gates    source/quickbite/backends/interpreter/impl.d
+                       Walker.runCallExpression (free-function and DotVarExp
+                       member branches), throwNativeException,
+                       applyNativeWritebacks, nativeOutParameterVariable,
+                       resolveMemberFunction
+no-source diagnostic source/quickbite/frontend/dmd/functions.d
+                       hasNoAvailableSource, noAvailableSourceMessage
+fixture style        tests/ut/backends/runner/rt/dependency_image.d
+extern(C) regression tests/ut/backends/runner/rt/cstdlib.d (must stay green)
+```
+
+### 34.4 Increment 10 — D string slice return (Status: planned, §33)
+
+Fully specified in §33; implement it as written. **Contract:** unmarshal a D
+`string` (`immutable(char)[]`) return into a backend-owned string `Value`.
+**Code:** teach `ffiTypeFor` (the *return* mapper used by `callViaLibffi`) to
+return `ffiStringSliceType()` for a `Tarray`-of-`Tchar`, and add a `Tarray`
+case to `unmarshalValue` that copies `length` bytes from `ptr` into a
+`Value(string)`. **Done:** `dep_image_string_return_fixture` green on
+`SystemLinker` and `Interpreter`; §32 arg fixture and `rt/cstdlib.d` still
+green. This is the first rung because every other slice rung reuses its
+descriptor plumbing.
+
+### 34.5 Increment 11 — typed (non-char) slice args and returns
+
+**Contract.** Generalize the slice ABI bridge from `char` elements to any
+scalar element type, in both directions: `int[]`, `double[]`, `wstring`,
+`dstring`. The descriptor is unchanged (`{size_t length, void* ptr}`); only
+element marshalling widens.
+
+**Oracle fixture.** Dependency image (body, then declaration-only):
+
+```d
+long dependencySum(const(long)[] xs);     // returns the element sum
+const(int)[] dependencyTriple(int n);      // returns [n, n*2, n*3]
+```
+
+Source under test passes a local `long[]` and checks the returned `int[]`.
+
+**In scope.** Immutable / `const` scalar-element dynamic arrays, read-only for
+the call duration, copied out on return. `wstring`/`dstring` count as
+`Twchar`/`Tdchar` element arrays.
+
+**Out of scope.** Mutability/writeback (§34.9), arrays of structs or arrays of
+arrays, arrays nested in structs (§34.10).
+
+**Implementation.** Replace the `isSupportedStringSlice` (char-only) gate in
+`ffiArgumentTypeFor`/`ffiTypeFor` with a "supported scalar slice element"
+predicate. In `marshalStringSliceArgument`, size the keep-alive element buffer
+by the element's basetype width instead of assuming `char`. Add the return-side
+copy for each element width in `unmarshalValue`. Reuse the existing keep-alive
+discipline so native code may not retain the pointer past the call.
+
+**Done.** New typed-slice fixtures green on both backends; the §32/§33 char
+fixtures and `rt/cstdlib.d` still green.
+
+### 34.6 Increment 12 — stack-spilled extern(D) arguments
+
+**Contract.** Allow `extern(D)` calls whose explicit arguments do not all fit
+in registers (>6 integer/pointer or >8 SSE), and prove that D's "reverse the
+explicit list, then classify" matches the oracle once some arguments land on
+the stack. This is pure ABI correctness over the existing scalar surface — no
+new type — and is the rung §27.3 explicitly deferred. It is high on the ladder
+because real dub functions routinely exceed six parameters, and the call is
+silently wrong today (it returns `false` and hits the no-source diagnostic).
+
+**Oracle fixture.** An order-sensitive `extern(D)` free function with eight
+`int` parameters whose body encodes argument position (e.g. base-10 positional
+weighting), called with eight distinct constants. The oracle fixes the truth;
+the Interpreter must match it after the spill is allowed.
+
+**In scope.** `extern(D)` non-member functions, scalar/pointer explicit args
+that spill the integer or SSE register file. `extern(C)` is unaffected (source
+order, libffi already spills correctly).
+
+**Out of scope.** Large by-value structs that themselves split across
+registers and stack (their classification is its own verification — defer with
+§34.6 sret work if a fixture needs it); member-call spill (compose with §28/§29
+once this lands).
+
+**Implementation.** `externDArgumentsFitRegisterScope` currently returns
+`false` past 6 integer / 8 SSE registers — stop using that as a hard reject and
+instead let `callViaLibffi` build the full reversed `(ffi_type*, bytes)` arrays
+and hand them to libffi, which performs SysV stack classification itself.
+Verify against the oracle that reversing the *explicit* list before libffi
+classifies reproduces D's stack assignment; if it diverges, the divergence and
+its fix belong in this rung with a comment. Keep the register-scope helper only
+where it still gates an unsupported shape.
+
+**Done.** Eight-arg `extern(D)` fixture green on both backends; every existing
+register-only fixture (§27 two-arg, members, `rt/cstdlib.d`) still green.
+
+### 34.7 Increment 13 — large struct returns via sret
+
+**Contract.** Return structs large enough to use the hidden `sret` pointer
+(beyond the in-register small structs that already work — `div`/`ldiv` are
+green), including from `extern(D)` functions with explicit args, where the
+`sret` pointer is a leading hidden argument that must sit *before* the reversed
+explicit args.
+
+**Oracle fixture.** `extern(D)` free function returning a >16-byte struct
+(e.g. four `long` fields) computed from two explicit `int` args, so both the
+sret placement and the §27 reversal are exercised together.
+
+**In scope.** By-value struct returns through `sret`, free functions,
+`extern(D)` and `extern(C)`. **Out of scope.** Member functions returning
+structs via `sret` (compose later), structs containing slices/classes (§34.10).
+
+**Implementation.** libffi already issues the memory-return ABI when given the
+struct `ffi_type` (this is why small struct returns pass). The new work is
+ordering: confirm libffi's own `sret` handling versus D's, and make the
+hidden-argument ordering in `callViaLibffi`/`abiSourceIndex` place `sret`
+ahead of the reversed explicit args, exactly as `this` is placed in §28. Verify
+the layout assert (`ffiStructType` size vs DMD `structsize`) still holds after
+`ffi_prep_cif`.
+
+**Done.** Large-struct-return fixture green on both backends; `div`/`ldiv`
+small-struct returns and the §27 reversal fixtures still green.
+
+### 34.8 Increment 14 — scalar out-parameters with writeback
+
+**Contract.** Support a single-level scalar out-pointer (`int*`, `double*`)
+that the native function writes through, mapping the post-call value back into
+the caller's variable. §24.6 deferred this because `int*` is ambiguous with an
+ordinary in-pointer; this rung defines the disambiguation.
+
+**Oracle fixture.** `extern(C)` or `extern(D)` `void f(int* out, int in)` that
+sets `*out = in * 2`; source under test passes `&local` and asserts `local`.
+
+**In scope.** One level of pointer-to-scalar treated as an out slot when the
+call site passes `&local` (the `AddrExp`/`SymOffExp` shape
+`nativeOutParameterVariable` already recognizes). **Out of scope.** Multi-level
+indirection beyond the existing `char**` rule, struct-by-ref out, arrays.
+
+**Implementation.** Today `isOutPointer` only treats pointer-to-pointer
+(`char**`) as an out slot; a pointer-to-scalar is marshalled as an in-pointer.
+Disambiguate by the *call-site argument expression*, not the type alone: when
+the argument is `&local` (per `nativeOutParameterVariable`) and the parameter
+is a single-level pointer-to-scalar, allocate a host cell, pass `&cell`, and
+set `argumentWritebacks[sourceIndex]` to the post-call cell value — reusing the
+existing `applyNativeWritebacks` path. A bare pointer value (not `&local`) stays
+an in-pointer.
+
+**Done.** Scalar out-param fixture green on both backends; `strtol`'s `char**`
+endptr writeback and all `rt/cstdlib.d` still green.
+
+### 34.9 Increment 15 — mutating struct member methods + receiver writeback
+
+**Contract.** A struct member method that mutates `this` writes the receiver
+back into the caller's variable. §28/§29 marshalled the receiver read-only;
+this adds the write-back half.
+
+**Oracle fixture.** `dep_image_member_fixture`-style struct with
+`void bump(int by)` that does `value += by`; source under test calls
+`counter.bump(5)` then asserts `counter.value`.
+
+**In scope.** Non-virtual struct methods, receiver passed as hidden leading
+`this` pointer, receiver copied back after the call. **Out of scope.** Class
+receivers (§34.11), virtual methods, partial-field aliasing.
+
+**Implementation.** In the member branch of `Walker.runCallExpression` /
+`tryCallNativeMember`, after `ffi_call`, read the (possibly mutated) receiver
+bytes from the native `this` buffer back through `unmarshalStruct` and assign
+them to the receiver `VarDeclaration` — analogous to `applyNativeWritebacks`
+but for the hidden receiver, which is *not* in `argumentWritebacks`. Gate to
+receivers that are addressable locals.
+
+**Done.** Mutating-member fixture green on both backends; §28/§29 read-only
+member fixtures still green.
+
+### 34.10 Increment 16 — mutable slice arguments with writeback
+
+**Contract.** Pass a mutable D slice (`int[]`, `char[]`) that native code
+writes through, and reflect the writes in the caller's array. This is the
+first rung that needs the §11.2/§13 borrow + pin + writeback contract rather
+than a copy.
+
+**Oracle fixture.** `extern(D) void fill(int[] xs, int v)` that sets every
+element to `v`; source under test passes a local `int[]` and asserts contents.
+
+**In scope.** Single mutable scalar-element slice argument, written in place,
+pinned across the call. **Out of scope.** Native code retaining the pointer
+past the call, growing the slice, multiple aliasing mutable slices.
+
+**Implementation.** Extend the slice marshaller (§34.5) so a *mutable* element
+type marshals to a buffer that is copied back into the backend array `Value`
+after `ffi_call`, with the buffer rooted (GC-visible) for the call duration per
+§13. Reuse the writeback machinery; key the writeback to the source argument.
+Reject any signature that lets the slice escape (no return aliasing, no
+storage).
+
+**Done.** Mutable-slice fixture green on both backends; immutable §34.5
+fixtures still green.
+
+### 34.11 Increment 17 — slices/arrays nested inside by-value structs
+
+**Contract.** Marshal a by-value struct one of whose fields is a slice
+(`struct S { string name; int id; }`), in both directions, combining §34.5's
+slice descriptor with the existing recursive struct walk.
+
+**Oracle fixture.** `extern(D) int score(S s)` reading `s.name.length` and
+`s.id`; and a struct-returning variant.
+
+**In scope.** Structs whose fields are scalars, pointers, and supported slices,
+read-only. **Out of scope.** Nested structs of structs of slices beyond one
+level if a fixture does not need it; mutable nested slices.
+
+**Implementation.** In `ffiStructType`/`marshalArgument`/`unmarshalStruct`,
+emit the `{length, ptr}` sub-descriptor for a slice field instead of rejecting
+it, keeping each element buffer alive for the call. Reuse §34.5's element
+marshalling per field.
+
+**Done.** Nested-slice struct fixtures green on both backends; existing
+by-value-struct fixtures (`div`, members) still green.
+
+### 34.12 Increment 18 — class references, virtual dispatch, interfaces
+
+**Contract.** Call a method on a native class reference through its vtable,
+and on an interface through its interface table. This is the largest type-side
+rung: it introduces a native class-object representation in the Interpreter and
+real virtual dispatch across the boundary.
+
+**Oracle fixture.** A dependency-image `class Widget { int draw(); }` with a
+virtual method and a subclass override; source under test holds a base
+reference to a derived instance and asserts the override runs.
+
+**In scope.** `extern(D)` class instances supplied by the dependency image,
+single-inheritance virtual dispatch, interface method calls. **Out of scope.**
+Constructing native classes in the Interpreter (that is §34.12), `synchronized`,
+`__monitor`, GC finalization ordering (governed by §13 / bytecode.md).
+
+**Implementation.** Represent a native class reference as an opaque native
+handle (§11.3) carrying the object pointer. A method call reads the vtable slot
+from the object's `__vptr` at the DMD-computed index, resolves the function
+pointer, and calls it through libffi with the handle as hidden `this`. This is
+where `resolveMemberFunction`'s dynamic-dispatch result must be honored against
+the *runtime* type, not the static one. Keep the handle GC-visible per §13.
+
+**Done.** Virtual-dispatch and interface fixtures green on both backends;
+struct-member fixtures (§28/§29) unaffected.
+
+### 34.13 Increment 19 — constructors, destructors, postblits
+
+**Contract.** Construct a native class/struct via its dependency-image
+constructor, and run its destructor/postblit at the right points, so the
+Interpreter can create and own native objects rather than only receive them.
+
+**Oracle fixture.** A dependency-image type with a constructor that sets state
+and a destructor with an observable side effect (e.g. increments a native
+counter); source under test constructs, uses, and lets it go out of scope,
+asserting both ran.
+
+**In scope.** Explicit `new`/value construction of a dependency type, scoped
+destruction, postblit on copy. **Out of scope.** GC-finalizer timing semantics
+(those are native-layout/bytecode.md territory), `scope`/RAII corner cases
+beyond the fixture.
+
+**Implementation.** Route construction through the same chokepoint: resolve the
+constructor `FuncDeclaration` (`__ctor`) and call it with the allocated
+object's `this`. Hook destructor/postblit calls into the Interpreter's existing
+scope-exit and copy paths, dispatching to the native `__dtor`/`__postblit`
+leaves. Reuse §34.11 receiver handling.
+
+**Done.** Construct/destruct/postblit fixtures green on both backends; member
+and exception fixtures still green.
+
+### 34.14 Increment 20 — native Error recovery and exception chaining
+
+**Contract.** Two deferred exception items from §30/§31: carry a native
+`Throwable.next` chain across the boundary, and define whether a native `Error`
+can be observed at all (today it is fatal). Real libraries chain exceptions and
+some throw `Error` subclasses the project may need to characterize.
+
+**Oracle fixture.** A dependency function that throws an `Exception` whose
+`.next` is another `Exception`; source under test asserts both messages down the
+chain. (`Error` recovery, if pursued, is a separate approved fixture; default
+remains "Error is fatal".)
+
+**In scope.** Preserving `Throwable.next` and its message chain through
+`NativeCallException`/`throwNativeException`. **Out of scope.** Turning `Error`
+into an ordinary backend exception unless a fixture justifies it; exceptions
+thrown after out-parameter writebacks.
+
+**Implementation.** Extend `NativeCallException` to carry the chained
+messages/types; rebuild the chain in `throwNativeException` as linked
+interpreted exception values. Keep the §30 first-direction rule
+(`Exception` → pending, `Error` → fatal) intact.
+
+**Done.** Chained-exception fixture green on both backends; §30/§31 fixtures
+still green; `Error` remains fatal unless separately approved.
+
+### 34.15 Increment 21 — variadics
+
+**Contract.** Call a C variadic function (`printf`-shaped) — the one signature
+class §24.6 deferred because it needs libffi's variadic CIF path.
+
+**Oracle fixture.** A dependency `extern(C) int format(const char* fmt, ...)`
+exercised with a fixed, known set of trailing arguments whose result is
+order-sensitive.
+
+**In scope.** `extern(C)` variadics with a per-call argument list. **Out of
+scope.** `extern(D)` variadics (`_argptr`/`TypeInfo` machinery — a separate
+rung if ever needed), variadic templates (those are interpreted, not native).
+
+**Implementation.** Bind `ffi_prep_cif_var` in `libffi.d` (the one piece of
+surface §24.1 deliberately left unbound) and build a per-call CIF that splits
+fixed from variadic args. Variadic calls cannot share a cached CIF.
+
+**Done.** Variadic fixture green on both backends; all non-variadic fixtures
+still green and still using the cached non-variadic CIF path.
+
+### 34.16 Increment 22 — delegates / callbacks / closures (reverse bridge)
+
+**Contract.** The §14 reverse bridge: pass an interpreted closure to a native
+dependency API that calls it back (`sort!`, `setTimer`, etc.). This is the
+capstone — the only rung where control re-enters the Interpreter *from* native
+code — and the last thing standing between "call any dub leaf" and "run any dub
+package that takes a callback".
+
+**Oracle fixture.** A dependency `extern(D) int apply(int x, int delegate(int))`
+that invokes the delegate; source under test passes an interpreted lambda
+capturing a local and asserts the result.
+
+**In scope.** A backend closure invoked through a generated native trampoline,
+delegate context lifetime bounded by the call, closure state kept GC-visible
+(§14). **Out of scope.** Callbacks that outlive the call/test without a durable
+owner; template-heavy APIs where the callback is part of instantiated
+dependency code (those are interpreted, per §10/§23).
+
+**Implementation.** Use libffi closures: bind `ffi_closure_alloc` /
+`ffi_prep_closure_loc` in `libffi.d`, register interpreted closures in a
+GC-visible table keyed by callback id, and generate a trampoline whose user
+data is that id; the trampoline re-enters `Walker` to run the closure and
+marshals across as the forward path does in reverse. Define and enforce the
+delegate-context lifetime: reject a callback that can escape the call boundary.
+
+**Done.** Callback fixture green on both backends; no forward-path fixture
+regresses; escaping callbacks are rejected with a clear diagnostic.
+
+### 34.17 Increment 23 — extern(C++) ABI
+
+**Contract.** Call `extern(C++)` free and member functions (name mangling and
+the C++ `this`/ABI conventions). Lowest on the ladder: only dub packages that
+bind C++ need it, and it is independent of the D-ladder rungs above.
+
+**Oracle fixture.** A dependency `extern(C++)` function and a C++-linkage member
+method, resolved by C++ mangling.
+
+**In scope.** `extern(C++)` over the existing scalar/pointer/struct surface.
+**Out of scope.** C++ exceptions, templates, multiple inheritance, RTTI.
+
+**Implementation.** Add `LINK.cpp` to `isSupportedNativeLinkage`, resolve by the
+C++ mangled name, and apply the C++ argument order (no extern(D) reversal). The
+C++ `this` ABI may differ from D's hidden-argument placement; verify against the
+oracle.
+
+**Done.** `extern(C++)` fixture green on both backends; D and C linkage paths
+unchanged.
+
+### 34.18 After the ladder
+
+When §34.4–§34.16 are landed, the Interpreter can call essentially any
+non-template body-less leaf a dub package exposes, in both directions, with
+native exceptions mapped back — i.e. the terminal goal of §34.1: interpret the
+project, call the dependencies, run the whole dub project. What remains beyond
+this ladder is not Interpreter FFI but the deferred, separately-owned work:
+
+```text
+- the §3-§20 cold-path dependency-image build, prepare command, wrapper
+  manifest, and caching story (boxed-value infrastructure);
+- the §23 native-layout bridge for Bytecode/IR (governed by bytecode.md);
+- strict isolation, daemonized host, profiling-based promotion (§6, §19).
+```
+
+Those get their own plans when scheduled; they are out of this section's scope.
