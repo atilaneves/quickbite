@@ -2412,3 +2412,152 @@ new dependency-defined exception fixture passes on `SystemLinker` and
 dependency-image member fixtures and `rt/cstdlib.d` still pass; subclass fields
 remain unsupported; and native `Error` is not converted into an interpreted
 `Exception`.
+
+## 32. Increment 9: D string slice arguments (Interpreter)
+
+**Status: implemented.** This arbitrary-native-call rung after §31 lets the
+Interpreter pass a D `string` argument to a dependency-image `extern(D)`
+function. Bytecode and IR stay out (§23, §26), and no callback, delegate,
+virtual dispatch, variadic, exception, generated-wrapper, mutable-slice, or
+array-return work is implied.
+
+### 32.1 Why this next
+
+§25 says the Interpreter can call arbitrary dependency-image functions over the
+existing scalar/pointer/string/by-value-struct signature set. In practice the
+"string" part only covers C-style `char*` calls such as `atoi("123".ptr)`.
+Ordinary D functions commonly take D slices:
+
+```d
+int dependencyScore(string value) {
+    return cast(int) value.length * 10 + value[0];
+}
+```
+
+Before this increment the FFI descriptor builder rejects `string`, because DMD
+represents it as `immutable(char)[]` (`TY.Tarray`) and `ffiTypeFor` has no
+dynamic-array descriptor. That means a body-less dependency-image declaration
+with a `string` parameter falls through to the existing no-available-source
+diagnostic even though the function is native and loaded.
+
+This increment adds the first D-slice ABI bridge:
+
+```text
+interpreted string Value -> native D slice descriptor -> dependency function
+```
+
+### 32.2 First fixture
+
+The oracle-backed dependency-image fixture lives in
+`tests/ut/backends/runner/rt/dependency_image.d`. The dependency image is
+compiled with a `string`-taking function body, then rewritten to a declaration
+only:
+
+```d
+module dep_image_string_fixture;
+
+int dependencyStringScore(string value) {
+    return cast(int) value.length * 10 + value[0];
+}
+```
+
+Visible source after image build:
+
+```d
+module dep_image_string_fixture;
+
+int dependencyStringScore(string value);
+```
+
+Source under test:
+
+```d
+import dep_image_string_fixture;
+
+unittest {
+    string value = "abc";
+    assert(dependencyStringScore(value) == 127);
+}
+```
+
+Expectations:
+
+```text
+SystemLinker (oracle): passes - compiled D links the image and passes the D
+  string slice normally.
+Interpreter: failed before the fix because `TY.Tarray` was unsupported by the
+  libffi descriptor path; passes after the FFI boundary marshals a string slice
+  descriptor containing length and data pointer.
+```
+
+The fixture uses a local `string` variable rather than passing the literal
+directly so the backend sees the normal interpreted string value.
+
+### 32.3 Scope
+
+In scope:
+
+```text
+Interpreter only
+non-member dependency-image functions called through `tryCallNative`
+extern(D)
+one immutable `char` dynamic-array argument (`string`)
+read-only native use during the call
+scalar return values already supported by §24
+```
+
+Out of scope, each requiring a separate approved oracle fixture:
+
+```text
+mutable dynamic arrays and writeback
+wstring, dstring, and non-character element arrays
+dynamic-array return values
+dynamic arrays inside structs
+multiple D-slice arguments with aliasing-sensitive behaviour
+extern(C) structs that merely resemble D slices
+variadics, callbacks, delegates, virtual dispatch, Bytecode, and IR
+generated wrapper source
+```
+
+### 32.4 Implementation shape
+
+All native execution still goes through `quickbite.backends.ffi`; do not add a
+backend-local direct call path in `interpreter/impl.d`.
+
+```text
+1. Add the approved fixture first and confirm it fails on the Interpreter with
+   the existing no-available-source diagnostic.
+2. Add a libffi descriptor for supported D dynamic arrays: a struct containing
+   `size_t length` and `void* ptr`, matching D's slice ABI for `T[]`.
+3. Gate this first slice to `TY.Tarray` whose element basetype is `TY.Tchar`;
+   leave other dynamic arrays unsupported.
+4. Marshal the interpreted string into a native element buffer and write the
+   slice descriptor into the argument buffer.
+5. Keep the element buffer alive until after `ffi_call`; native code must not
+   retain the pointer in this slice.
+6. Preserve existing `extern(C)` pointer-string behaviour in `rt/cstdlib.d`.
+```
+
+The implementation should reuse the existing `Value.asCharArrayString`
+conversion for this first string-only bridge. It should not introduce ownership
+or writeback rules for general arrays until a fixture demands them.
+
+### 32.5 Anchors
+
+Re-grep and re-read before editing; line numbers drift.
+
+```text
+descriptor + marshal     source/quickbite/backends/ffi.d
+                          (`ffiTypeFor`, `marshalArgument`, `callViaLibffi`)
+string value helpers     source/quickbite/lang/package.d
+                          (`Value.asCharArrayString`, array/string values)
+call site                source/quickbite/backends/interpreter/impl.d
+                          (`Walker.runCallExpression`, unchanged)
+fixture style to mirror  tests/ut/backends/runner/rt/dependency_image.d
+extern(C) regression     tests/ut/backends/runner/rt/cstdlib.d
+```
+
+Done when: `bin/ut --random` is green; the new dependency-image `string`
+fixture passes on `SystemLinker` and `Interpreter`; the existing
+dependency-image scalar/member/exception fixtures still pass; and the
+`rt/cstdlib.d` suite still passes.

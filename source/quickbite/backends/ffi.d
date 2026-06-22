@@ -164,7 +164,7 @@ private bool callViaLibffi(
     auto argumentFfiTypes = new ffi_type*[](nargs);
     foreach (index; 0 .. nargs) {
         parameterTypes[index] = parameterType(type, index);
-        argumentFfiTypes[index] = ffiTypeFor(parameterTypes[index]);
+        argumentFfiTypes[index] = ffiArgumentTypeFor(parameterTypes[index]);
         if (argumentFfiTypes[index] is null)
             return false;
     }
@@ -213,9 +213,10 @@ private bool callViaLibffi(
             assert(argumentFfiTypes[index].size ==
                 cast(size_t) size(parameterTypes[index]));
 
-    // C-string buffers marshalled for pointer arguments, pinned across the
-    // call below so the GC cannot reclaim them mid-call.
+    // Native buffers marshalled for pointer/slice arguments, kept alive across
+    // the call below so the GC cannot reclaim them mid-call.
     const(char)*[] keepAlive;
+    ubyte[][] keepAliveBuffers;
     ubyte[] receiverBuffer;
     ubyte[] receiverPointerBuffer;
     if (receiver.enabled) {
@@ -226,6 +227,7 @@ private bool callViaLibffi(
             receiver.value,
             hasOutPointer,
             keepAlive,
+            keepAliveBuffers,
         );
 
         receiverPointerBuffer = new ubyte[](ffi_type_pointer.size);
@@ -252,6 +254,7 @@ private bool callViaLibffi(
                 arguments[index],
                 hasOutPointer,
                 keepAlive,
+                keepAliveBuffers,
             );
         }
 
@@ -329,6 +332,10 @@ private bool externDArgumentsFitRegisterScope(
                 ++integerRegisters;
                 break;
 
+            case TY.Tarray:
+                integerRegisters += 2;
+                break;
+
             case TY.Tfloat32, TY.Tfloat64:
                 ++sseRegisters;
                 break;
@@ -339,6 +346,17 @@ private bool externDArgumentsFitRegisterScope(
     }
 
     return integerRegisters <= 6 && sseRegisters <= 8;
+}
+
+private imported!"quickbite.backends.libffi".ffi_type* ffiArgumentTypeFor(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+
+    if (type.ty == TY.Tarray)
+        return isSupportedStringSlice(type) ? ffiStringSliceType : null;
+
+    return ffiTypeFor(type);
 }
 
 // Map a DMD basetype to the matching libffi ffi_type, or null if unmodelled.
@@ -391,6 +409,30 @@ private imported!"quickbite.backends.libffi".ffi_type* ffiStructType(
     return result;
 }
 
+private imported!"quickbite.backends.libffi".ffi_type* ffiStringSliceType() {
+    import quickbite.backends.libffi:
+        ffi_type, ffi_type_pointer, ffi_type_uint32, ffi_type_uint64,
+        FFI_TYPE_STRUCT;
+
+    auto elements = new ffi_type*[](3);
+    elements[0] = size_t.sizeof == ulong.sizeof
+        ? &ffi_type_uint64
+        : &ffi_type_uint32;
+    elements[1] = &ffi_type_pointer;
+    elements[2] = null;
+
+    auto result = new ffi_type;
+    result.type = FFI_TYPE_STRUCT;
+    result.elements = elements.ptr;
+    return result;
+}
+
+private bool isSupportedStringSlice(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tarray && type.nextOf.toBasetype.ty == TY.Tchar;
+}
+
 // A pointer-to-pointer parameter (e.g. strtol's `char** endptr`) is an out
 // slot rather than an in value.
 private bool isOutPointer(imported!"dmd.mtype".Type type) {
@@ -406,6 +448,7 @@ private void marshalArgument(
     in imported!"quickbite.lang".Value value,
     in bool stableString,
     ref const(char)*[] keepAlive,
+    ref ubyte[][] keepAliveBuffers,
 ) {
     import dmd.astenums: TY;
     import dmd.mtype: TypeStruct;
@@ -437,6 +480,10 @@ private void marshalArgument(
                 marshalPointerArgument(type, value, stableString, keepAlive);
             return;
 
+        case TY.Tarray:
+            marshalStringSliceArgument(buffer, value, keepAliveBuffers);
+            return;
+
         case TY.Tstruct:
             auto sym = (cast(TypeStruct) type).sym;
             foreach (index; 0 .. sym.fields.length) {
@@ -449,6 +496,7 @@ private void marshalArgument(
                     value.structFieldAt(index),
                     stableString,
                     keepAlive,
+                    keepAliveBuffers,
                 );
             }
             return;
@@ -477,6 +525,21 @@ private void* marshalPointerArgument(
     }
 
     return value.asNativePointer;
+}
+
+private void marshalStringSliceArgument(
+    ubyte[] buffer,
+    in imported!"quickbite.lang".Value value,
+    ref ubyte[][] keepAliveBuffers,
+) {
+    const text = value.asCharArrayString;
+    auto bytes = new ubyte[](text.length);
+    foreach (index, codeUnit; text)
+        bytes[index] = cast(ubyte) codeUnit;
+
+    keepAliveBuffers ~= bytes;
+    *cast(size_t*) buffer.ptr = bytes.length;
+    *cast(void**) (buffer.ptr + size_t.sizeof) = bytes.ptr;
 }
 
 // Marshal a raw ABI return buffer back into a backend value.
