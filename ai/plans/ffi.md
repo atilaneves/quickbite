@@ -2571,11 +2571,13 @@ dependency-image scalar/member/exception fixtures still pass; and the
 
 ## 33. Increment 10: D string slice return values (Interpreter)
 
-This arbitrary-native-call rung after §32 lets the Interpreter receive a D
-`string` return value from a dependency-image `extern(D)` function. Bytecode and
-IR stay out (§23, §26), and no mutable-slice, array-argument generalisation,
-callback, delegate, virtual-dispatch, variadic, exception, or generated-wrapper
-work is implied.
+**Status: implemented.** This arbitrary-native-call rung after §32 lets the
+Interpreter receive a D `string` return value from a dependency-image
+`extern(D)` function.
+
+Bytecode and IR stay out (§23, §26), and no mutable-slice, array-argument
+generalisation, callback, delegate, virtual-dispatch, variadic, exception, or
+generated-wrapper work is implied.
 
 ### 33.1 Why this next
 
@@ -2793,7 +2795,7 @@ rank above rare type surface (extern(C++)).
 
 ```text
 Increment  Contract                                            Status   Ref
-10  D string slice RETURN value                                planned  §33
+10  D string slice RETURN value                                done     §33
 11  typed (non-char) immutable slice args and returns          todo     §34.4
 12  stack-spilled extern(D) arguments (>6 int / >8 SSE)        todo     §34.5
 13  large struct returns via hidden sret + extern(D) ordering  todo     §34.6
@@ -2836,7 +2838,7 @@ fixture style        tests/ut/backends/runner/rt/dependency_image.d
 extern(C) regression tests/ut/backends/runner/rt/cstdlib.d (must stay green)
 ```
 
-### 34.4 Increment 10 — D string slice return (Status: planned, §33)
+### 34.4 Increment 10 — D string slice return (Status: done, §33)
 
 Fully specified in §33; implement it as written. **Contract:** unmarshal a D
 `string` (`immutable(char)[]`) return into a backend-owned string `Value`.
