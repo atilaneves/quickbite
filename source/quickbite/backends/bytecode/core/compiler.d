@@ -485,7 +485,7 @@ private struct Compiler {
         }
     }
 
-    private static bool containsLoop(Statement statement) @safe pure nothrow {
+    private static bool containsLoop(Statement statement) pure nothrow {
         if (statement is null)
             return false;
         if (statement.isForStatement !is null)
