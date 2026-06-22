@@ -2561,3 +2561,164 @@ Done when: `bin/ut --random` is green; the new dependency-image `string`
 fixture passes on `SystemLinker` and `Interpreter`; the existing
 dependency-image scalar/member/exception fixtures still pass; and the
 `rt/cstdlib.d` suite still passes.
+
+## 33. Increment 10: D string slice return values (Interpreter)
+
+This arbitrary-native-call rung after §32 lets the Interpreter receive a D
+`string` return value from a dependency-image `extern(D)` function. Bytecode and
+IR stay out (§23, §26), and no mutable-slice, array-argument generalisation,
+callback, delegate, virtual-dispatch, variadic, exception, or generated-wrapper
+work is implied.
+
+### 33.1 Why this next
+
+§32 added the first D-slice ABI bridge in the argument direction:
+
+```text
+interpreted string Value -> native D slice descriptor -> dependency function
+```
+
+Real D dependencies also commonly return freshly allocated or static strings:
+
+```d
+string dependencyGreeting() {
+    return "quickbite";
+}
+```
+
+Before this increment the libffi descriptor path still rejects a `string`
+return, because DMD represents it as `immutable(char)[]` (`TY.Tarray`) and
+`ffiTypeFor` has no return descriptor for dynamic arrays. That means a
+body-less dependency-image declaration with a `string` return falls through to
+the existing no-available-source diagnostic even though the function is native
+and loaded.
+
+This increment adds the return half of the first D-slice bridge:
+
+```text
+dependency function -> native D slice descriptor -> interpreted string Value
+```
+
+### 33.2 First fixture (approval required)
+
+Add one oracle-backed dependency-image fixture in
+`tests/ut/backends/runner/rt/dependency_image.d`, mirroring §32. The dependency
+image is compiled with a `string`-returning function body, then rewritten to a
+declaration only:
+
+```d
+module dep_image_string_return_fixture;
+
+string dependencyGreeting() {
+    return "quickbite";
+}
+```
+
+Visible source after image build:
+
+```d
+module dep_image_string_return_fixture;
+
+string dependencyGreeting();
+```
+
+Source under test:
+
+```d
+import dep_image_string_return_fixture;
+
+unittest {
+    string value = dependencyGreeting();
+    assert(value == "quickbite");
+    assert(value.length == 9);
+}
+```
+
+Expectations:
+
+```text
+SystemLinker (oracle): passes - compiled D links the image and receives the D
+  string slice normally.
+Interpreter: fails before the fix because `TY.Tarray` is unsupported as a
+  libffi return type; passes after the FFI boundary unmarshals a string slice
+  descriptor into a backend-owned string value.
+```
+
+The fixture stores the returned string in a local before asserting so the
+backend exercises normal interpreted string value operations after the native
+call.
+
+### 33.3 Scope
+
+In scope:
+
+```text
+Interpreter only
+non-member dependency-image functions called through `tryCallNative`
+extern(D)
+one immutable `char` dynamic-array return value (`string`)
+copying the returned slice into a backend-owned string value
+zero explicit arguments for the first fixture
+```
+
+Out of scope, each requiring a separate approved oracle fixture:
+
+```text
+mutable dynamic arrays and writeback
+wstring, dstring, and non-character element arrays
+dynamic-array parameters beyond the §32 single string argument
+dynamic arrays inside structs
+multiple D-slice arguments or returns with aliasing-sensitive behaviour
+returned slices whose lifetime is shorter than the call boundary
+extern(C) structs that merely resemble D slices
+variadics, callbacks, delegates, virtual dispatch, Bytecode, and IR
+generated wrapper source
+```
+
+### 33.4 Implementation shape
+
+All native execution still goes through `quickbite.backends.ffi`; do not add a
+backend-local direct call path in `interpreter/impl.d`.
+
+```text
+1. Add the approved fixture first and confirm it fails on the Interpreter with
+   the existing no-available-source diagnostic.
+2. Allow the existing string-slice libffi descriptor to be used for supported
+   return types as well as argument types.
+3. Gate this first return bridge to `TY.Tarray` whose element basetype is
+   `TY.Tchar`; leave other dynamic arrays unsupported.
+4. Unmarshal the returned D slice descriptor (`size_t length`, `void* ptr`) by
+   copying the pointed-to bytes into a backend-owned string value.
+5. Treat a non-empty slice with a null pointer as unsupported or fatal rather
+   than fabricating contents; an empty null slice may become an empty string if
+   the oracle fixture later requires it.
+6. Preserve existing `extern(C)` pointer-string behaviour in `rt/cstdlib.d`
+   and the §32 string-argument fixture.
+```
+
+This slice intentionally copies the native bytes. It does not introduce a
+borrowed native string handle or any ownership protocol for native memory that
+could be invalidated after the call.
+
+### 33.5 Anchors
+
+Re-grep and re-read before editing; line numbers drift.
+
+```text
+descriptor + unmarshal   source/quickbite/backends/ffi.d
+                          (`ffiTypeFor`, `ffiArgumentTypeFor`,
+                           `unmarshalValue`, `callViaLibffi`)
+string value helpers     source/quickbite/lang/package.d
+                          (`Value(string)`, `Value.asCharArrayString`,
+                           array/string values)
+call site                source/quickbite/backends/interpreter/impl.d
+                          (`Walker.runCallExpression`, unchanged)
+fixture style to mirror  tests/ut/backends/runner/rt/dependency_image.d
+extern(C) regression     tests/ut/backends/runner/rt/cstdlib.d
+```
+
+Done when: after an approved fixture is added, `bin/ut --random` is green; the
+new dependency-image `string` return fixture passes on `SystemLinker` and
+`Interpreter`; the §32 string-argument fixture still passes; existing
+dependency-image scalar/member/exception fixtures still pass; and the
+`rt/cstdlib.d` suite still passes.
