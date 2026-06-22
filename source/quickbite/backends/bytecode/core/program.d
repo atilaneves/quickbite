@@ -188,6 +188,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // corrupted by appending to a neighbour. The element size is fixed by the
     // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
     appendElement1,
+    appendElement2, // 2-byte element (wchar): backs `wchar[] ~= w`
     appendElement4,
     // Concatenate the two slice descriptors at frame offsets b and c into a
     // fresh heap block holding all of b's elements followed by all of c's, then
@@ -203,6 +204,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // `heap`. Mutating either array leaves the other intact (`arr.dup` /
     // `arr.idup`). The element size is fixed by the opcode (1 or 4 bytes).
     dupArray1,
+    dupArray2, // 2-byte element (wchar): backs `wstring s = wcharArray.idup`
     dupArray4,
     // Element-wise `dest[] = left[] + right[]` over three slice descriptors at
     // frame offsets a (dest), b (left), c (right): add each pair of 4-byte
@@ -257,6 +259,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     frameAddress,
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
+    zeroExtend2to4, // a: destination frame offset, b: source (wchar -> dchar)
     signExtend4to8, // a: destination frame offset, b: source frame offset
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     // a: destination (double) frame offset, b: source frame offset, c: source
@@ -374,7 +377,23 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     aaKeys,
     aaValues,
     throwString, // a: frame offset of a string-slice descriptor
+    // UTF transcode backing `foreach`/`foreach_reverse` over a string whose
+    // element width differs from the loop variable (druntime's `_aApply*`
+    // family). a: 16-byte slice-descriptor result holding the decoded elements
+    // in a fresh heap block; b: the transcode mode (see `TranscodeMode`);
+    // c: 16-byte source slice descriptor of the string's code units. Mirrors the
+    // interpreter's decode/encode helpers byte-for-byte.
+    transcodeUtf,
     ret, // a: frame offset of the return value
+}
+
+// `transcodeUtf` modes (operand `b`): the source/target code-unit transcode a
+// mismatched-width string `foreach` performs, named after druntime's helpers.
+package(quickbite.backends.bytecode) enum TranscodeMode: ushort {
+    utf8ToDchar, // `_aApplycd1`: char source decoded to dchar elements
+    utf16ToDchar, // `_aApplywd1`: wchar source decoded to dchar (surrogate pairs)
+    dcharToUtf8, // `_aApplydc1`: dchar source encoded to char (UTF-8) elements
+    utf16ToDcharReverse, // `_aApplyRwd1`: wchar source decoded to dchar, reversed
 }
 
 // OR'd into a `convertIntToDouble` instruction's `c` (the source byte width) to

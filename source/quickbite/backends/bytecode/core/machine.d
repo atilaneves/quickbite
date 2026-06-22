@@ -261,7 +261,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case appendElement1, appendElement4:
+            case appendElement1, appendElement2, appendElement4:
                 heap ~= appendElement(
                     stack,
                     base + instruction.a,
@@ -282,7 +282,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case dupArray1, dupArray4:
+            case dupArray1, dupArray2, dupArray4:
                 heap ~= dupArray(
                     stack,
                     base + instruction.a,
@@ -402,6 +402,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = zeroWidened;
+                ++ip;
+                break;
+
+            case zeroExtend2to4:
+                const ubyte[int.sizeof] wideWidened = scalarBytes(
+                    cast(int) scalarValue!ushort(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = wideWidened;
                 ++ip;
                 break;
 
@@ -1206,6 +1215,18 @@ package(quickbite.backends.bytecode) ubyte[] run(
                     program.data,
                 ));
 
+            case transcodeUtf: {
+                auto block = transcodeUtfString(
+                    stack, base + instruction.c, instruction.b,
+                );
+                heap ~= block.elements;
+                writeSliceDescriptor(
+                    stack, base + instruction.a, block.elements, block.length,
+                );
+                ++ip;
+                break;
+            }
+
             case ret:
                 const resultSize =
                     size(program.functions[functionIndex].returnType);
@@ -1241,6 +1262,76 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
         }
     }
+}
+
+// Decode/transcode the string slice descriptor at `sourceOffset` per `mode`
+// into a fresh heap block of target code units, mirroring druntime's `_aApply*`
+// foreach helpers. Returns the block (for rooting in `heap`) and the element
+// count. The source descriptor is a native {ptr, length}; `length` is the
+// source code-unit count, scaled by the mode's source element size.
+private auto transcodeUtfString(
+    in ubyte[] stack,
+    in size_t sourceOffset,
+    in ushort mode,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: TranscodeMode;
+    import std.utf: decode, encode;
+
+    struct Block { ubyte[] elements; size_t length; }
+
+    const pointer = scalarValue!size_t(stack, sourceOffset);
+    const length = scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+
+    // dchar elements (the decode targets) are 4 bytes; char elements (the
+    // encode target) are 1 byte.
+    ubyte[] result;
+    size_t count;
+
+    void appendDchar(in dchar value) {
+        auto encoded = new ubyte[](dchar.sizeof);
+        writeScalar!uint(encoded, 0, cast(uint) value);
+        result ~= encoded;
+        ++count;
+    }
+
+    with (TranscodeMode) final switch (cast(TranscodeMode) mode) {
+        case utf8ToDchar:
+            auto source =
+                cast(const(char)[]) (cast(const(ubyte)*) pointer)[0 .. length];
+            for (size_t index; index < source.length;)
+                appendDchar(decode(source, index));
+            break;
+
+        case utf16ToDchar, utf16ToDcharReverse:
+            auto units =
+                (cast(const(wchar)*) pointer)[0 .. length];
+            auto source = units.idup;
+            dchar[] decoded;
+            for (size_t index; index < source.length;)
+                decoded ~= decode(source, index);
+            if (cast(TranscodeMode) mode == utf16ToDcharReverse) {
+                import std.algorithm: reverse;
+                decoded.reverse;
+            }
+            foreach (value; decoded)
+                appendDchar(value);
+            break;
+
+        case dcharToUtf8:
+            auto source =
+                (cast(const(dchar)*) pointer)[0 .. length];
+            foreach (value; source) {
+                char[4] encoded;
+                const used = encode(encoded, value);
+                foreach (unit; encoded[0 .. used]) {
+                    result ~= cast(ubyte) unit;
+                    ++count;
+                }
+            }
+            break;
+    }
+
+    return Block(result, count);
 }
 
 private string stringFromSlice(
@@ -1349,7 +1440,9 @@ private uint appendElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.appendElement1 ? 1 : 4;
+    if (op == Op.appendElement1)
+        return 1;
+    return op == Op.appendElement2 ? 2 : 4;
 }
 
 private uint concatElementSize(
@@ -1363,7 +1456,9 @@ private uint dupArrayElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.dupArray1 ? 1 : 4;
+    if (op == Op.dupArray1)
+        return 1;
+    return op == Op.dupArray2 ? 2 : 4;
 }
 
 // Duplicate the slice descriptor at `sourceOffset` into a fresh heap block

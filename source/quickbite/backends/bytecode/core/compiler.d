@@ -41,6 +41,7 @@ private struct Compiler {
         AssignExp, BinExp, BlitExp, CallExp, CastExp, CatElemAssignExp, CatExp,
         CmpExp, CondExp, ConstructExp, DivExp, DotVarExp, Expression, IndexExp,
         LogicalExp, MulExp,
+        FuncExp,
         NegExp, NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp,
         StringExp, StructLiteralExp, SymOffExp;
     import dmd.arraytypes: Expressions;
@@ -53,6 +54,10 @@ private struct Compiler {
     private size_t[FuncDeclaration] _functionIndices;
     private Instruction[] _code;
     private uint _frameOffset;
+    // The high-water mark of `_frameOffset` across the current function body.
+    // `frameSize` is computed from this peak so transient scopes that reuse
+    // frame space (and any `_frameOffset` rewind) never under-size the frame.
+    private uint _peakFrameOffset;
     private ushort[VarDeclaration] _locals;
     private bool[VarDeclaration] _stringLocals; // locals holding a string slice
     // Locals whose slot is a static array `T[N]` stored inline in the frame;
@@ -103,6 +108,10 @@ private struct Compiler {
     // `break`/`continue`. `break`/`continue` append a jump to the matching
     // loop's list; the loop patches both lists once its targets are known.
     private LoopContext[] _loopStack;
+    // While inlining a `_aApply*` foreach body (a delegate returning int, where
+    // a nonzero return signals `break`), the indices of `jumpIfTrue` jumps that
+    // exit the transcode loop on such a return; null when not in an apply body.
+    private size_t[]* _applyBodyExits;
     // The switches currently being compiled, innermost last; each maps its cases
     // and default to body indices for the dispatch chain (see SwitchContext).
     private SwitchContext[] _switchStack;
@@ -151,12 +160,14 @@ private struct Compiler {
         _loopStack = null;
         _switchStack = null;
         _pendingLoopLabel = null;
+        _applyBodyExits = null;
 
         import dmd.astenums: TY;
 
         _currentReturnType = _program.functions[index].returnType;
         const layout = parameterLayout(function_);
         _frameOffset = layout.blockSize;
+        _peakFrameOffset = layout.blockSize;
 
         // A struct method receives a hidden `this` block by reference at the
         // start of the argument area; record its base so `this.field` resolves.
@@ -210,7 +221,7 @@ private struct Compiler {
         _code ~= Instruction(Op.ret);
 
         _program.functions[index].code = _code;
-        _program.functions[index].frameSize = (_frameOffset + 15) & ~15u;
+        _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
     }
 
     private ushort registerFunction(FuncDeclaration function_) {
@@ -265,6 +276,16 @@ private struct Compiler {
         }
 
         if (auto return_ = statement.isReturnStatement) {
+            // Inside an inlined `_aApply*` foreach body the delegate returns
+            // `int`: 0 to continue, nonzero to `break`. Translate the return
+            // into a conditional exit of the transcode loop instead of a `ret`.
+            if (_applyBodyExits !is null) {
+                const value = compileExpression(return_.exp);
+                *_applyBodyExits ~= _code.length;
+                _code ~= Instruction(Op.jumpIfTrue, value.offset);
+                return;
+            }
+
             if (_currentReturnType.isArray) {
                 const descriptor = arrayDescriptorOffset(
                     _currentReturnType.elementType, return_.exp,
@@ -1446,6 +1467,30 @@ private struct Compiler {
         // length), not a scalar; allocate the descriptor width and copy the
         // initializer's slice into it.
         const isString = isStringType(variable.type);
+
+        // A `string`/`wstring`/`dstring` initialised from a heap-producing
+        // `.idup`/`.dup` is not a read-only data-segment slice but a 16-byte
+        // {ptr, length} heap descriptor like an ordinary dynamic array. Store it
+        // as a dynamic-array local (char/wchar/dchar element) so its code units
+        // read back through the slice machinery; `_aApply*` UTF iteration over
+        // such a string then reads the source as a normal slice descriptor.
+        if (isString && variable._init !is null)
+            if (auto expInit = variable._init.isExpInitializer)
+                if (tryArrayDuplication(
+                        initializerExpression(expInit.exp)) !is null) {
+                    const heapElement =
+                        dynamicArrayElementType(variable.type);
+                    const heapOffset =
+                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                    _dynamicArrayLocals[variable] =
+                        DynamicArrayLocal(heapOffset, heapElement);
+                    compileDynamicArrayInto(
+                        heapOffset, heapElement,
+                        initializerExpression(expInit.exp),
+                    );
+                    return;
+                }
+
         const type = isString ? ScalarType.void_ : scalarType(variable.type);
         const slotSize = isString ? stringSliceSize : size(type);
         const offset = allocateBytes(slotSize, isString ? 4 : size(type));
@@ -4355,6 +4400,18 @@ private struct Compiler {
 
         auto function_ = callFunction(call);
 
+        // `_aApply*(string, delegate)` is DMD's lowering of `foreach`/
+        // `foreach_reverse` over a UTF string whose loop variable has a different
+        // code-unit width: it decodes/transcodes code points and invokes the
+        // body delegate per element. Intercept and emit a VM-native transcode
+        // loop rather than the unavailable druntime body.
+        if (function_ !is null && function_.ident !is null) {
+            import quickbite.backends.bytecode.core.program: TranscodeMode;
+            TranscodeMode applyMode;
+            if (stringForeachApplyMode(function_, applyMode))
+                return compileStringForeachApply(call, applyMode);
+        }
+
         // `__ArrayDtor(arr[lo .. hi])` runs the element destructor on each
         // element of a static array going out of scope; intercept and emit the
         // per-element `~this()` calls.
@@ -4441,6 +4498,94 @@ private struct Compiler {
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    // `_aApply*(s, dg)`: emit a transcode of the source string `s` into a fresh
+    // dchar/char element array, then loop over it, running the inlined body
+    // delegate once per element with the element bound to the loop variable.
+    // A nonzero body return (`break`) exits the loop early. Returns a zero
+    // result operand (the apply's int result is unused by the foreach lowering).
+    private Operand compileStringForeachApply(
+        CallExp call,
+        in imported!"quickbite.backends.bytecode.core.program".TranscodeMode mode,
+    ) {
+        import quickbite.backends.bytecode.core.program: TranscodeMode;
+        import std.conv: text;
+
+        if (call.arguments is null || call.arguments.length != 2)
+            throw new Exception(text(
+                "Unsupported string foreach apply in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        auto literal = (*call.arguments)[1].isFuncExp;
+        if (literal is null || literal.fd is null ||
+            literal.fd.fbody is null ||
+            literal.fd.parameters is null ||
+            literal.fd.parameters.length != 1)
+            throw new Exception(text(
+                "Unsupported string foreach apply body in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        // Decode/transcode the source string's code units into a fresh heap
+        // block of dchar (or char, for `dcharToUtf8`) elements.
+        const elementType = mode == TranscodeMode.dcharToUtf8
+            ? ScalarType.char_
+            : ScalarType.dchar_;
+        const elementSize = size(elementType);
+        const source = arrayDescriptorOffset(
+            dynamicArrayElementType((*call.arguments)[0].type),
+            (*call.arguments)[0],
+        );
+        const elements = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.transcodeUtf, elements, cast(ushort) mode, source,
+        );
+
+        // The loop variable is the delegate's single (`ref`) parameter; bind it
+        // to a fresh frame slot the body reads through the ordinary local path.
+        auto parameter = (*literal.fd.parameters)[0];
+        const variableSlot = allocateBytes(elementSize, elementSize);
+        _locals[parameter] = variableSlot;
+
+        // `for (i = 0; i < elements.length; ++i) { var = elements[i]; body }`.
+        const index = compileSizeConstant(0);
+        const length = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.sliceLength, length, elements);
+
+        const conditionIndex = _code.length;
+        const condition = allocate(ScalarType.bool_);
+        _code ~= Instruction(
+            Op.lessThanUnsigned8, condition, index, length,
+        );
+        const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
+
+        _code ~= Instruction(
+            indexLoadOp(elementSize), variableSlot, elements, index,
+        );
+
+        size_t[] bodyExits;
+        auto previousExits = _applyBodyExits;
+        _applyBodyExits = &bodyExits;
+        compileStatement(literal.fd.fbody);
+        _applyBodyExits = previousExits;
+
+        const one = compileSizeConstant(1);
+        _code ~= Instruction(Op.addInt8, index, index, one);
+        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
+
+        patchJump(exitJump);
+        foreach (patch; bodyExits)
+            patchJump(patch);
+
+        // The foreach lowering discards the apply's int result; yield zero.
+        const result = allocate(ScalarType.int_);
+        _code ~= Instruction(
+            Op.loadConstant, result, constantIndex(0),
+            cast(ushort) size(ScalarType.int_),
+        );
+        return Operand(result, ScalarType.int_);
     }
 
     // The delegate local invoked by `d()`, or null if `call` is not a call
@@ -5566,15 +5711,22 @@ private struct Compiler {
         return allocateBytes(size(type), size(type));
     }
 
-    private ushort allocateBytes(in uint bytes, in uint alignment)
+    private ushort allocateBytes(in uint bytes, in uint alignmentArgument)
         @safe pure
     {
+        // A zero alignment (a `void`-typed allocation, e.g. the result slot of a
+        // `cast(void)expr` discarding a call result) would mask `_frameOffset`
+        // to 0 via `& ~(alignment - 1)`; clamp it to 1 so the frame never
+        // rewinds over live locals.
+        const alignment = alignmentArgument == 0 ? 1 : alignmentArgument;
         _frameOffset = (_frameOffset + alignment - 1) & ~(alignment - 1);
         const offset = _frameOffset;
         if (offset > ushort.max)
             throw new Exception("Bytecode frame exceeds 16-bit offsets");
 
         _frameOffset += bytes;
+        if (_frameOffset > _peakFrameOffset)
+            _peakFrameOffset = _frameOffset;
         return cast(ushort) offset;
     }
 
@@ -5952,7 +6104,9 @@ private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.appendElement1 : Op.appendElement4;
+    if (elementSize == 1)
+        return Op.appendElement1;
+    return elementSize == 2 ? Op.appendElement2 : Op.appendElement4;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op concatArraysOp(
@@ -5966,7 +6120,9 @@ private imported!"quickbite.backends.bytecode.core.program".Op dupArrayOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.dupArray1 : Op.dupArray4;
+    if (elementSize == 1)
+        return Op.dupArray1;
+    return elementSize == 2 ? Op.dupArray2 : Op.dupArray4;
 }
 
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
@@ -5997,6 +6153,11 @@ private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
 
     if (sourceSize == 1 && targetSize == 4)
         return signed ? Op.signExtend1to4 : Op.zeroExtend1to4;
+
+    // `wchar` (and `ushort`) widen to `dchar`/`int` zero-extended; the only
+    // signed 2-byte source (`short`) is not exercised here.
+    if (sourceSize == 2 && targetSize == 4 && !signed)
+        return Op.zeroExtend2to4;
 
     if (sourceSize == 4 && targetSize == 8 && signed)
         return Op.signExtend4to8;
@@ -6488,6 +6649,27 @@ private imported!"dmd.expression".CmpExp comparisonExpression(
             return cast(CmpExp) expression;
         default:
             return null;
+    }
+}
+
+// True iff `function_` is a `_aApply*` UTF-string foreach helper, setting
+// `mode` to its transcode. DMD names them by the source/target code-unit widths
+// (`c`=char, `w`=wchar, `d`=dchar; an `R` prefix marks `foreach_reverse`).
+private bool stringForeachApplyMode(
+    imported!"dmd.func".FuncDeclaration function_,
+    out imported!"quickbite.backends.bytecode.core.program".TranscodeMode mode,
+) {
+    import quickbite.backends.bytecode.core.program: TranscodeMode;
+
+    if (function_.ident is null)
+        return false;
+
+    with (TranscodeMode) switch (function_.ident.toString) {
+        case "_aApplycd1": mode = utf8ToDchar; return true;
+        case "_aApplywd1": mode = utf16ToDchar; return true;
+        case "_aApplydc1": mode = dcharToUtf8; return true;
+        case "_aApplyRwd1": mode = utf16ToDcharReverse; return true;
+        default: return false;
     }
 }
 

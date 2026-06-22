@@ -3288,6 +3288,35 @@ one-shot call, not a stored delegate local).
 a simplified inline-delegate-call path may be sufficient without full closure
 support.
 
+- DONE: the delegate is a real nested `__foreachbody_*` FuncDeclaration with a
+  `__capture` `vthis` capturing the body's enclosing local (`chars`), not a bare
+  no-capture lambda — so the delegate was *inlined* at the apply site rather than
+  called: its single `ref` param is bound to a fresh frame slot the body reads as
+  an ordinary local, and the captured local resolves to the enclosing local
+  directly (same VarDeclaration). Top-level `return` in the inlined body becomes a
+  conditional loop exit (nonzero = `break`), tracked via `_applyBodyExits`.
+  `compileStringForeachApply` emits a new `transcodeUtf` opcode (mode in operand
+  b: `utf8ToDchar`/`utf16ToDchar`/`dcharToUtf8`/`utf16ToDcharReverse`) that decodes
+  the source slice into a fresh heap dchar/char block mirroring the interpreter's
+  helpers byte-for-byte, then a `for (i; i < len; ++i)` loop loading each element
+  and running the inlined body. Three representation gaps surfaced and were fixed:
+  (1) runtime heap strings — a `string`/`wstring`/`dstring` initialised from
+  `.idup`/`.dup` is a 16-byte `{ptr,length}` heap descriptor, not an 8-byte
+  data-segment slice, so such locals are now stored as dynamic-array locals (char/
+  wchar/dchar element); (2) `wchar` (2-byte) array elements were mapped to the
+  4-byte append/dup opcodes, so `appendElement2`/`dupArray2` were added to pack
+  them correctly; (3) `zeroExtend2to4` was added for `wchar`->`dchar` widening (a
+  `'é'`-style wchar literal compared against a `dchar`). A latent bug was
+  also fixed: `allocateBytes` with alignment 0 (a `cast(void)expr` result slot,
+  which the foreach lowering emits to discard the apply's int result) masked
+  `_frameOffset` to 0 via `& ~(alignment-1)`, rewinding the frame over live
+  locals; alignment 0 is now clamped to 1 and `frameSize` derives from a peak
+  high-water mark. New opcodes: `transcodeUtf`, `appendElement2`, `dupArray2`,
+  `zeroExtend2to4` (each justified by a concrete fixture need above). All 4 tests
+  green; control_flow 10->6 failures (only the Mode 4 try-catch tests remain); no
+  regressions across the full suite (2572 run, 6 failed = the expected Mode 4
+  set) under random ordering.
+
 ### Summary and dependency order
 
 The 36 failures map to 9 failure modes (one mode per concern). Implementation
