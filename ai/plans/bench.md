@@ -372,9 +372,10 @@ never tripped this because it keeps bounds checks on.
 Even fully optimised under LDC, the absolute frontend stays ~1.6× a distro `dmd`
 (LDC `-O` min ~1052 ms vs distro parse+semantic ~650 ms on `--dub cerealed`).
 Building the host with LDC already cut it from ~2.5× (when the embedded frontend
-was DMD-compiled) to ~1.6×; the residual gap is **PGO**: the distro `dmd` release
-is built profile-guided, and a branch-heavy AST walker is exactly the workload
-PGO's hot/cold splitting and branch layout speed up. Read absolute frontend ms as
+was DMD-compiled) to ~1.6×; the residual gap was *hypothesised* to be **PGO**.
+**That hypothesis is wrong — superseded by the GC finding below
+(2026-06-22):** the gap is GC-allocated AST, not codegen quality. Read absolute
+frontend ms as
 "LDC-built frontend, no PGO"; the trustworthy comparisons are cross-backend
 agreement and the post-parse rows, which share one host. The post-parse row
 (codegen+link+run via the executor, ~442 ms) already *matches* distro `dmd`'s
@@ -386,13 +387,31 @@ gcc/`collect2` + LLVMgold path rejects the gcc lto-wrapper args) on the embedded
 frontend: **no measurable win** (LDC `-O`+ThinLTO min ~1066 ms vs `-O` ~1052 ms,
 within cold-sample noise), at ~10 s extra link. `-O` already does the
 intra-module optimisation and the large self-contained `dmd:frontend` modules
-leave ThinLTO's cross-module inlining little to find. PGO — not LTO — is the
-remaining lever, and a much larger undertaking (representative training workload +
-two-phase instrumented build), so it is deliberately out of this PR's scope.
-Don't re-spike LTO. Note when measuring the frontend: it is a *single cold sample
-per process* (modules persist in DMD's global symbol table, so it cannot
-re-measure), so aggregate across many process launches and use the **minimum** —
-median/max drift badly under thermal throttling on a `powersave`-governed host.
+leave ThinLTO's cross-module inlining little to find. Don't re-spike LTO. Note
+when measuring the frontend: it is a *single cold sample per process* (modules
+persist in DMD's global symbol table, so it cannot re-measure), so aggregate
+across many process launches and use the **minimum** — median/max drift badly
+under thermal throttling on a `powersave`-governed host.
+
+**The frontend gap to distro `dmd` is the GC, not codegen (2026-06-22).** Full
+write-up and reproducers in `ai/spikes/frontend-gc/FINDINGS.md`. Profiling the
+cerealed parse (perf + druntime's `--DRT-gcopt=profile:1`) shows it allocates
+**376 MB of AST through `GC.malloc`** and spends **284 ms across 8 GC
+collections** — plus per-allocation GC-lock overhead on millions of nodes — so
+~90% of the parse is druntime GC, not `dmd` frontend code. The cause:
+`dmd/root/rmem.d` ships `_isGCEnabled = true` (the library default), whereas the
+distro **`dmd` binary** calls `mem.disableGC()` to use a malloc bump arena;
+quickbite never disables it. Switching the AST to the arena (with collections
+suppressed) drops the cerealed frontend **1055 → 761 ms (−27.8%), interleaved**,
+essentially closing the gap to distro `dmd`'s ~650 ms; PGO (−5%) and ThinLTO
+(~0%) only ever touched the ~10% that is real frontend code. The fix is **not**
+in this (Markdown-only) PR: a naive global `disableGC` aborts (module-ctor
+ordering — needs a `crt_constructor`), segfaults without `--DRT-gcopt=disable:1`
+(GC frees `idup`'d strings the arena holds), and segfaults the native codegen
+backend; and it must never apply to the long-lived `bin/ut` process (a
+never-freeing arena would OOM). A trustworthy-bench fix is therefore
+bench-scoped; a per-compile arena for the real REPL/`ut` latency is a larger,
+separate undertaking.
 
 ## Target Shape
 
