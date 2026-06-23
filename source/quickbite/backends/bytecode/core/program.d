@@ -174,6 +174,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
     sliceEqual1,
     sliceEqual4,
+    // Compare the two 8-byte string-slice descriptors {dataOffset, length} at
+    // frame offsets b and c against the read-only data segment, writing one
+    // boolean byte to frame offset a: true iff equal length and identical
+    // bytes. Distinct from sliceEqual* because a string descriptor holds a
+    // data-segment offset, not a native pointer.
+    stringSliceEqual,
     // Append the element at frame offset b to the dynamic-array slice descriptor
     // at frame offset a: allocate a fresh heap block of (length + 1) elements,
     // copy the existing elements, write the new element, root the block, and
@@ -182,6 +188,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // corrupted by appending to a neighbour. The element size is fixed by the
     // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
     appendElement1,
+    appendElement2, // 2-byte element (wchar): backs `wchar[] ~= w`
     appendElement4,
     // Concatenate the two slice descriptors at frame offsets b and c into a
     // fresh heap block holding all of b's elements followed by all of c's, then
@@ -197,6 +204,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // `heap`. Mutating either array leaves the other intact (`arr.dup` /
     // `arr.idup`). The element size is fixed by the opcode (1 or 4 bytes).
     dupArray1,
+    dupArray2, // 2-byte element (wchar): backs `wstring s = wcharArray.idup`
     dupArray4,
     // Element-wise `dest[] = left[] + right[]` over three slice descriptors at
     // frame offsets a (dest), b (left), c (right): add each pair of 4-byte
@@ -251,8 +259,14 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     frameAddress,
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
+    zeroExtend2to4, // a: destination frame offset, b: source (wchar -> dchar)
     signExtend4to8, // a: destination frame offset, b: source frame offset
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
+    // a: destination (double) frame offset, b: source frame offset, c: source
+    // integer size in bytes (1/2/4/8) OR'd with `unsignedConvertFlag` for an
+    // unsigned source. Numerically widens an integer to a double. Backs
+    // `cast(double)intExpr` (e.g. `double d = seed;`).
+    convertIntToDouble,
     addInt4, // a: destination frame offset, b: lhs, c: rhs
     addInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
     subInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
@@ -324,6 +338,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     jumpIfFalse, // a: condition frame offset, b: absolute instruction index
     jumpIfTrue, // a: condition frame offset, b: absolute instruction index
     call, // a: function index, b: argument area frame offset, c: destination
+    // a: frame offset of a size_t slot holding the callee's function index,
+    // b: argument area frame offset, c: destination. Backs an indirect call
+    // through a function pointer (`fp()`), where the callee is not known until
+    // run time; otherwise identical to `call`.
+    callIndirect,
     assertTrue, // a: condition frame offset, b: assert diagnostic index
     // a: condition frame offset, b: assert diagnostic index (verbatim message)
     assertTrueVerbatim,
@@ -358,8 +377,36 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     aaKeys,
     aaValues,
     throwString, // a: frame offset of a string-slice descriptor
+    // UTF transcode backing `foreach`/`foreach_reverse` over a string whose
+    // element width differs from the loop variable (druntime's `_aApply*`
+    // family). a: 16-byte slice-descriptor result holding the decoded elements
+    // in a fresh heap block; b: the transcode mode (see `TranscodeMode`);
+    // c: 16-byte source slice descriptor of the string's code units. Mirrors the
+    // interpreter's decode/encode helpers byte-for-byte.
+    transcodeUtf,
+    // Push a catch-handler record onto the machine's handler stack: a: the
+    // instruction index of the catch body. A later `throwString` redirects to
+    // the innermost handler (popping it) instead of propagating as a host
+    // exception. Backs `try { } catch (Exception) { }`.
+    pushHandler,
+    // Pop the innermost catch handler on normal completion of a try body.
+    popHandler,
     ret, // a: frame offset of the return value
 }
+
+// `transcodeUtf` modes (operand `b`): the source/target code-unit transcode a
+// mismatched-width string `foreach` performs, named after druntime's helpers.
+package(quickbite.backends.bytecode) enum TranscodeMode: ushort {
+    utf8ToDchar, // `_aApplycd1`: char source decoded to dchar elements
+    utf16ToDchar, // `_aApplywd1`: wchar source decoded to dchar (surrogate pairs)
+    dcharToUtf8, // `_aApplydc1`: dchar source encoded to char (UTF-8) elements
+    utf16ToDcharReverse, // `_aApplyRwd1`: wchar source decoded to dchar, reversed
+}
+
+// OR'd into a `convertIntToDouble` instruction's `c` (the source byte width) to
+// mark the source integer as unsigned (zero-extended, not sign-extended). Width
+// is at most 8, so bit 8 is free for the flag.
+package(quickbite.backends.bytecode) enum unsignedConvertFlag = 0x100;
 
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;

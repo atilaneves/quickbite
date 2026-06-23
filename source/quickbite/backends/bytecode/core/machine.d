@@ -35,6 +35,11 @@ package(quickbite.backends.bytecode) ubyte[] run(
     // created empty map); the table roots every map's keys and values.
     AssocArray[] maps;
     Frame[] frames;
+    // Active catch handlers, innermost last. A `pushHandler` records the catch
+    // body's location (instruction index plus the frame it runs in); a
+    // `throwString` with any handler active redirects to the innermost one
+    // (popping it) instead of propagating as a host exception.
+    Handler[] handlers;
     size_t functionIndex = 0;
     size_t base = 0;
     size_t ip;
@@ -251,7 +256,17 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case appendElement1, appendElement4:
+            case stringSliceEqual:
+                stack[base + instruction.a] = stringSlicesEqual(
+                    stack,
+                    base + instruction.b,
+                    base + instruction.c,
+                    program.data,
+                ) ? 1 : 0;
+                ++ip;
+                break;
+
+            case appendElement1, appendElement2, appendElement4:
                 heap ~= appendElement(
                     stack,
                     base + instruction.a,
@@ -272,7 +287,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case dupArray1, dupArray4:
+            case dupArray1, dupArray2, dupArray4:
                 heap ~= dupArray(
                     stack,
                     base + instruction.a,
@@ -395,6 +410,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case zeroExtend2to4:
+                const ubyte[int.sizeof] wideWidened = scalarBytes(
+                    cast(int) scalarValue!ushort(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = wideWidened;
+                ++ip;
+                break;
+
             case signExtend4to8:
                 const ubyte[long.sizeof] extended = scalarBytes(
                     cast(long) scalarValue!int(stack, base + instruction.b),
@@ -410,6 +434,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = converted;
+                ++ip;
+                break;
+
+            case convertIntToDouble:
+                stack[
+                    base + instruction.a .. base + instruction.a + double.sizeof
+                ] = floatBytes(integerToDouble(
+                    stack, base + instruction.b, instruction.c,
+                ));
                 ++ip;
                 break;
 
@@ -995,13 +1028,22 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ip = stack[base + instruction.a] != 0 ? instruction.b : ip + 1;
                 break;
 
-            case call:
-                if (program.functions[instruction.a].code.length == 0)
-                    compileFunction(instruction.a);
+            case call, callIndirect:
+                // A direct `call` carries the callee's function index in
+                // `instruction.a`; an indirect `callIndirect` reads it from the
+                // size_t slot at that frame offset (the function-pointer value).
+                const calleeIndex = instruction.op == call
+                    ? instruction.a
+                    : cast(ushort) scalarValue!size_t(
+                        stack, base + instruction.a,
+                    );
+
+                if (program.functions[calleeIndex].code.length == 0)
+                    compileFunction(calleeIndex);
 
                 const calleeBase =
                     base + program.functions[functionIndex].frameSize;
-                const callee = program.functions[instruction.a];
+                const callee = program.functions[calleeIndex];
                 if (stack.length < calleeBase + callee.frameSize)
                     stack.length = calleeBase + callee.frameSize;
 
@@ -1033,7 +1075,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 frames ~= Frame(
                     functionIndex, ip + 1, base, instruction.c, refWritebacks,
                 );
-                functionIndex = instruction.a;
+                functionIndex = calleeIndex;
                 base = calleeBase;
                 ip = 0;
                 break;
@@ -1171,12 +1213,49 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
             }
 
+            case pushHandler:
+                handlers ~= Handler(
+                    functionIndex, base, frames.length, instruction.a,
+                );
+                ++ip;
+                break;
+
+            case popHandler:
+                handlers.length -= 1;
+                ++ip;
+                break;
+
             case throwString:
-                throw new Exception(stringFromSlice(
-                    stack,
-                    base + instruction.a,
-                    program.data,
-                ));
+                // With a catch handler active, redirect to it (popping it):
+                // restore the handler's frame and jump to the catch body. With
+                // none, the throw escapes as a host exception (an uncaught
+                // throw or a synthesised diagnostic).
+                if (handlers.length == 0)
+                    throw new Exception(stringFromSlice(
+                        stack,
+                        base + instruction.a,
+                        program.data,
+                    ));
+
+                const handler = handlers[$ - 1];
+                handlers.length -= 1;
+                frames.length = handler.frameDepth;
+                functionIndex = handler.functionIndex;
+                base = handler.base;
+                ip = handler.handlerIp;
+                break;
+
+            case transcodeUtf: {
+                auto block = transcodeUtfString(
+                    stack, base + instruction.c, instruction.b,
+                );
+                heap ~= block.elements;
+                writeSliceDescriptor(
+                    stack, base + instruction.a, block.elements, block.length,
+                );
+                ++ip;
+                break;
+            }
 
             case ret:
                 const resultSize =
@@ -1213,6 +1292,76 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
         }
     }
+}
+
+// Decode/transcode the string slice descriptor at `sourceOffset` per `mode`
+// into a fresh heap block of target code units, mirroring druntime's `_aApply*`
+// foreach helpers. Returns the block (for rooting in `heap`) and the element
+// count. The source descriptor is a native {ptr, length}; `length` is the
+// source code-unit count, scaled by the mode's source element size.
+private auto transcodeUtfString(
+    in ubyte[] stack,
+    in size_t sourceOffset,
+    in ushort mode,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: TranscodeMode;
+    import std.utf: decode, encode;
+
+    struct Block { ubyte[] elements; size_t length; }
+
+    const pointer = scalarValue!size_t(stack, sourceOffset);
+    const length = scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+
+    // dchar elements (the decode targets) are 4 bytes; char elements (the
+    // encode target) are 1 byte.
+    ubyte[] result;
+    size_t count;
+
+    void appendDchar(in dchar value) {
+        auto encoded = new ubyte[](dchar.sizeof);
+        writeScalar!uint(encoded, 0, cast(uint) value);
+        result ~= encoded;
+        ++count;
+    }
+
+    with (TranscodeMode) final switch (cast(TranscodeMode) mode) {
+        case utf8ToDchar:
+            auto source =
+                cast(const(char)[]) (cast(const(ubyte)*) pointer)[0 .. length];
+            for (size_t index; index < source.length;)
+                appendDchar(decode(source, index));
+            break;
+
+        case utf16ToDchar, utf16ToDcharReverse:
+            auto units =
+                (cast(const(wchar)*) pointer)[0 .. length];
+            auto source = units.idup;
+            dchar[] decoded;
+            for (size_t index; index < source.length;)
+                decoded ~= decode(source, index);
+            if (cast(TranscodeMode) mode == utf16ToDcharReverse) {
+                import std.algorithm: reverse;
+                decoded.reverse;
+            }
+            foreach (value; decoded)
+                appendDchar(value);
+            break;
+
+        case dcharToUtf8:
+            auto source =
+                (cast(const(dchar)*) pointer)[0 .. length];
+            foreach (value; source) {
+                char[4] encoded;
+                const used = encode(encoded, value);
+                foreach (unit; encoded[0 .. used]) {
+                    result ~= cast(ubyte) unit;
+                    ++count;
+                }
+            }
+            break;
+    }
+
+    return Block(result, count);
 }
 
 private string stringFromSlice(
@@ -1321,7 +1470,9 @@ private uint appendElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.appendElement1 ? 1 : 4;
+    if (op == Op.appendElement1)
+        return 1;
+    return op == Op.appendElement2 ? 2 : 4;
 }
 
 private uint concatElementSize(
@@ -1335,7 +1486,9 @@ private uint dupArrayElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.dupArray1 ? 1 : 4;
+    if (op == Op.dupArray1)
+        return 1;
+    return op == Op.dupArray2 ? 2 : 4;
 }
 
 // Duplicate the slice descriptor at `sourceOffset` into a fresh heap block
@@ -1462,6 +1615,22 @@ private bool slicesEqual(
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
 }
 
+// True iff the two string-slice descriptors {dataOffset, length} hold the same
+// length and identical bytes within the read-only data segment.
+private bool stringSlicesEqual(
+    in ubyte[] stack,
+    in size_t leftOffset,
+    in size_t rightOffset,
+    in ubyte[] data,
+) @safe pure {
+    const leftDataOffset = scalarValue!uint(stack, leftOffset);
+    const leftLength = scalarValue!uint(stack, leftOffset + uint.sizeof);
+    const rightDataOffset = scalarValue!uint(stack, rightOffset);
+    const rightLength = scalarValue!uint(stack, rightOffset + uint.sizeof);
+    return data[leftDataOffset .. leftDataOffset + leftLength] ==
+        data[rightDataOffset .. rightDataOffset + rightLength];
+}
+
 // Copy the source slice's elements into the destination slice's backing
 // memory, write-through. The lengths must match; overlapping ranges abort with
 // druntime's plain "Range violation" message.
@@ -1560,6 +1729,16 @@ private struct Frame {
     size_t base;
     ushort destination;
     RefWriteback[] refWritebacks; // empty unless the callee has ref parameters
+}
+
+// An active catch handler: where to resume (the catch body's instruction index
+// and the function it lives in) and the call-stack depth its frame sits at, so
+// a throw can restore the frame state before jumping to the catch body.
+private struct Handler {
+    size_t functionIndex;
+    size_t base;
+    size_t frameDepth;
+    size_t handlerIp;
 }
 
 // A pending scalar `ref` writeback: copy `size` bytes from the callee
@@ -1737,6 +1916,32 @@ private T scalarValue(T)(
         raw |= cast(ulong) stack[offset + i] << (8 * i);
 
     return cast(T) raw;
+}
+
+// Read an integer source at `offset` and convert it to `double`, honouring its
+// byte width (1/2/4/8) and signedness (the `unsignedConvertFlag` bit in
+// `widthAndFlag`). Backs `convertIntToDouble`.
+private double integerToDouble(
+    in ubyte[] stack,
+    in size_t offset,
+    in size_t widthAndFlag,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: unsignedConvertFlag;
+
+    const width = widthAndFlag & (unsignedConvertFlag - 1);
+    if (widthAndFlag & unsignedConvertFlag)
+        switch (width) {
+            case 1: return scalarValue!ubyte(stack, offset);
+            case 2: return scalarValue!ushort(stack, offset);
+            case 4: return scalarValue!uint(stack, offset);
+            default: return scalarValue!ulong(stack, offset);
+        }
+    switch (width) {
+        case 1: return scalarValue!byte(stack, offset);
+        case 2: return scalarValue!short(stack, offset);
+        case 4: return scalarValue!int(stack, offset);
+        default: return scalarValue!long(stack, offset);
+    }
 }
 
 // Write the low `T.sizeof` bytes of `value` little-endian into `stack` at
