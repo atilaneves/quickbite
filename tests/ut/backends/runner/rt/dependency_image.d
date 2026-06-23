@@ -800,3 +800,72 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+@("dependencyImage.externCVariadic.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_variadic_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_variadic_fixture;
+
+            import core.stdc.stdarg;
+
+            extern(C) int dependencyCombine(int count, ...) {
+                va_list args;
+                va_start(args, count);
+                int result;
+                foreach (_; 0 .. count)
+                    result = result * 10 + va_arg!int(args);
+                va_end(args);
+                return result;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_variadic_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_variadic_fixture;
+
+            extern(C) int dependencyCombine(int count, ...);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_variadic_fixture;
+
+                unittest {
+                    int count = 3;
+                    int first = 1;
+                    int second = 2;
+                    int third = 3;
+                    assert(
+                        dependencyCombine(count, first, second, third) == 123,
+                    );
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

@@ -1682,6 +1682,7 @@ private struct Walker {
                             receiverStructType(dot.e1),
                             receiver,
                             arguments,
+                            nativeArgumentTypes(argumentExpressions),
                             result,
                             writebacks,
                         )) {
@@ -1716,7 +1717,13 @@ private struct Walker {
                 try {
                     if (
                         !call.f.needThis &&
-                        tryCallNative(call.f, arguments, result, writebacks)
+                        tryCallNative(
+                            call.f,
+                            arguments,
+                            nativeArgumentTypes(argumentExpressions),
+                            result,
+                            writebacks,
+                        )
                     ) {
                         applyNativeWritebacks(writebacks, argumentExpressions);
                         return result;
@@ -4720,6 +4727,22 @@ private imported!"quickbite.lang".Value classDefaultValue(
         fieldNames,
         fields,
     );
+}
+
+
+// The call site's actual argument types, in source order, so the FFI core can
+// type a C variadic call's trailing arguments (the signature carries only the
+// fixed parameters, ffi.md §34.14).
+private imported!"dmd.mtype".Type[] nativeArgumentTypes(
+    imported!"dmd.expression".Expression[] expressions,
+) {
+    import dmd.mtype: Type;
+
+    Type[] types;
+    foreach (expression; expressions)
+        types ~= expression.type;
+
+    return types;
 }
 
 

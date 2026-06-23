@@ -54,6 +54,18 @@ ffi_status ffi_prep_cif(
     ffi_type** atypes,
 ) @nogc nothrow;
 
+// Variadic CIF: `nfixedargs` are the declared fixed parameters, `ntotalargs`
+// includes the per-call variadic arguments. Variadic calls cannot share a
+// cached non-variadic CIF (ffi.md §34.14).
+ffi_status ffi_prep_cif_var(
+    ffi_cif* cif,
+    uint abi,
+    uint nfixedargs,
+    uint ntotalargs,
+    ffi_type* rtype,
+    ffi_type** atypes,
+) @nogc nothrow;
+
 void ffi_call(
     ffi_cif* cif,
     void function() fn,

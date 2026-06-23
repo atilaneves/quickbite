@@ -47,16 +47,19 @@ public interface NativeMarshaller {
     void writeOutParameter(in size_t index, void* writtenPointer);
 }
 
+// `argumentTypes` are the call site's actual argument types (one per argument).
+// Fixed parameters are taken from the signature; the variadic tail (C `...`)
+// relies on these actual types, which the signature does not carry (§34.14).
 public bool callNative(
     imported!"dmd.func".FuncDeclaration function_,
     NativeMarshaller marshaller,
-    in size_t argumentCount,
+    imported!"dmd.mtype".Type[] argumentTypes,
 ) {
     return callNativeImpl(
         function_,
         NativeThis.init,
         marshaller,
-        argumentCount,
+        argumentTypes,
     );
 }
 
@@ -64,7 +67,7 @@ public bool callNativeMember(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
     NativeMarshaller marshaller,
-    in size_t argumentCount,
+    imported!"dmd.mtype".Type[] argumentTypes,
 ) {
     if (receiverType is null)
         return false;
@@ -73,7 +76,7 @@ public bool callNativeMember(
         function_,
         NativeThis(receiverType, true),
         marshaller,
-        argumentCount,
+        argumentTypes,
     );
 }
 
@@ -86,7 +89,7 @@ private bool callNativeImpl(
     imported!"dmd.func".FuncDeclaration function_,
     NativeThis receiver,
     NativeMarshaller marshaller,
-    in size_t argumentCount,
+    imported!"dmd.mtype".Type[] argumentTypes,
 ) {
     import core.sys.posix.dlfcn: dlsym;
     version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
@@ -108,8 +111,13 @@ private bool callNativeImpl(
     if (type is null)
         return false;
 
-    // Variadic libc functions (printf) need ffi_prep_cif_var; deferred.
-    if (type.parameterList.varargs != VarArg.none)
+    // C `...` variadics go through ffi_prep_cif_var (§34.14); typesafe/K&R and
+    // extern(D) variadics (TypeInfo/_argptr machinery) stay unsupported.
+    if (type.parameterList.varargs == VarArg.typesafe ||
+        type.parameterList.varargs == VarArg.KRvariadic)
+        return false;
+    if (type.parameterList.varargs == VarArg.variadic &&
+        function_._linkage != LINK.c)
         return false;
 
     const symbol = dlsym(RTLD_DEFAULT, mangleExact(function_));
@@ -126,7 +134,7 @@ private bool callNativeImpl(
         symbol,
         receiver,
         marshaller,
-        argumentCount,
+        argumentTypes,
     );
 }
 
@@ -164,14 +172,20 @@ private bool callViaLibffi(
     const void* symbol,
     NativeThis receiver,
     NativeMarshaller marshaller,
-    in size_t nargs,
+    imported!"dmd.mtype".Type[] argumentTypes,
 ) {
     import quickbite.ffi.libffi:
         ffi_cif, ffi_type, ffi_type_pointer, ffi_status, ffi_prep_cif,
-        ffi_call, FFI_DEFAULT_ABI;
-    import dmd.astenums: LINK, TY;
+        ffi_prep_cif_var, ffi_call, FFI_DEFAULT_ABI;
+    import dmd.astenums: LINK, TY, VarArg;
     import dmd.mtype: Type;
     import dmd.typesem: size;
+
+    const nargs = argumentTypes.length;
+    const isVariadic = type.parameterList.varargs == VarArg.variadic;
+    const fixedNargs = type.parameterList.parameters is null
+        ? 0
+        : type.parameterList.parameters.length;
 
     // Mutable Type: ffiTypeFor and dmd.typesem.size both need a non-const Type.
     auto returnType = type.next.toBasetype;
@@ -182,7 +196,11 @@ private bool callViaLibffi(
     auto parameterTypes = new Type[](nargs);
     auto argumentFfiTypes = new ffi_type*[](nargs);
     foreach (index; 0 .. nargs) {
-        parameterTypes[index] = parameterType(type, index);
+        // Fixed parameters come from the signature; variadic-tail arguments are
+        // typed by the call site (the signature does not carry them, §34.14).
+        parameterTypes[index] = index < fixedNargs
+            ? parameterType(type, index)
+            : argumentTypes[index].toBasetype;
         argumentFfiTypes[index] = ffiArgumentTypeFor(parameterTypes[index]);
         if (argumentFfiTypes[index] is null)
             return false;
@@ -205,16 +223,26 @@ private bool callViaLibffi(
         if (isOutPointer(parameter))
             hasOutPointer = true;
 
+    // Per-call CIF: a variadic call needs ffi_prep_cif_var with the fixed/total
+    // split and cannot share the non-variadic prep (§34.14).
     ffi_cif cif;
-    if (
-        ffi_prep_cif(
+    const prepStatus = isVariadic
+        ? ffi_prep_cif_var(
+            &cif,
+            FFI_DEFAULT_ABI,
+            cast(uint) (hiddenNargs + fixedNargs),
+            cast(uint) totalNargs,
+            returnFfi,
+            abiArgumentFfiTypes.ptr,
+        )
+        : ffi_prep_cif(
             &cif,
             FFI_DEFAULT_ABI,
             cast(uint) totalNargs,
             returnFfi,
             abiArgumentFfiTypes.ptr,
-        ) != ffi_status.FFI_OK
-    )
+        );
+    if (prepStatus != ffi_status.FFI_OK)
         return false;
 
     // libffi fills in struct ffi_type sizes during prep; cross-check against

@@ -16,13 +16,14 @@ public import quickbite.ffi.core: NativeCallException;
 public bool tryCallNative(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.lang".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
     import quickbite.ffi: callNative;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments);
-    if (!callNative(function_, marshaller, arguments.length))
+    if (!callNative(function_, marshaller, argumentTypes))
         return false;
 
     result = marshaller.result;
@@ -35,6 +36,7 @@ public bool tryCallNativeMember(
     imported!"dmd.mtype".TypeStruct receiverType,
     in imported!"quickbite.lang".Value receiver,
     in imported!"quickbite.lang".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
@@ -44,7 +46,7 @@ public bool tryCallNativeMember(
         return false;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
-    if (!callNativeMember(function_, receiverType, marshaller, arguments.length))
+    if (!callNativeMember(function_, receiverType, marshaller, argumentTypes))
         return false;
 
     result = marshaller.result;
