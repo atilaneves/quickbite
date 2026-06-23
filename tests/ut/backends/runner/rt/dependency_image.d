@@ -944,3 +944,205 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+@("dependencyImage.externDMutatingMember.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_mutating_member_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_mutating_member_fixture;
+
+            struct Counter {
+                int value;
+
+                void bump(int by) {
+                    value += by;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_mutating_member_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_mutating_member_fixture;
+
+            struct Counter {
+                int value;
+                void bump(int by);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_mutating_member_fixture;
+
+                unittest {
+                    Counter counter = Counter(25);
+                    int by = 5;
+                    counter.bump(by);
+                    assert(counter.value == 30);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+@("dependencyImage.externDMutableSliceWriteback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_mutable_slice_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_mutable_slice_fixture;
+
+            void dependencyFill(int[] xs, int value) {
+                foreach (ref x; xs)
+                    x = value;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_mutable_slice_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_mutable_slice_fixture;
+
+            void dependencyFill(int[] xs, int value);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_mutable_slice_fixture;
+
+                unittest {
+                    int[] xs = [1, 2, 3];
+                    int value = 9;
+                    dependencyFill(xs, value);
+                    assert(xs[0] == 9);
+                    assert(xs[1] == 9);
+                    assert(xs[2] == 9);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Characterization (ffi.md §34.11): a by-value struct with a slice field
+// crosses in both directions through the existing recursive struct walk reusing
+// the {length, ptr} slice descriptor; already works, so this pins it. Covers the
+// argument direction (reading `s.name`/`s.id`) and the struct-returning variant.
+@("dependencyImage.externDNestedSliceStruct.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_nested_slice_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_nested_slice_fixture;
+
+            struct Tagged {
+                string name;
+                int id;
+            }
+
+            int dependencyScore(Tagged tagged) {
+                return cast(int) tagged.name.length * 100 + tagged.id;
+            }
+
+            Tagged dependencyTag(int id) {
+                return Tagged("abcd", id);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_nested_slice_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_nested_slice_fixture;
+
+            struct Tagged { string name; int id; }
+            int dependencyScore(Tagged tagged);
+            Tagged dependencyTag(int id);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_nested_slice_fixture;
+
+                unittest {
+                    Tagged tagged = Tagged("abcd", 7);
+                    assert(dependencyScore(tagged) == 407);
+
+                    int id = 9;
+                    Tagged made = dependencyTag(id);
+                    assert(made.name == "abcd");
+                    assert(made.id == 9);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

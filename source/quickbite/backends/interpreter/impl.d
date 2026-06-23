@@ -1676,6 +1676,7 @@ private struct Walker {
 
                     Value result;
                     Value[] writebacks;
+                    Value receiverWriteback;
                     try {
                         if (tryCallNativeMember(
                             function_,
@@ -1685,8 +1686,10 @@ private struct Walker {
                             nativeArgumentTypes(argumentExpressions),
                             result,
                             writebacks,
+                            receiverWriteback,
                         )) {
                             applyNativeWritebacks(writebacks, argumentExpressions);
+                            applyReceiverWriteback(dot.e1, receiverWriteback);
                             return result;
                         }
                     } catch (NativeCallException exception) {
@@ -3980,8 +3983,9 @@ private struct Walker {
         (cast(ubyte*) base)[index] = value;
     }
 
-    // Apply out-parameter writebacks reported by a native call (such as
-    // strtol's `char** endptr`) to the `&local` argument expressions.
+    // Apply writebacks reported by a native call to their source argument
+    // variables: `&local` out-parameters (such as strtol's `char** endptr`) and
+    // mutable slice arguments the callee wrote through (ffi.md §34.10).
     private void applyNativeWritebacks(
         in Value[] writebacks,
         imported!"dmd.expression".Expression[] argumentExpressions,
@@ -3999,6 +4003,28 @@ private struct Walker {
         }
     }
 
+    // Write a mutating native member's receiver back into the caller's variable
+    // (ffi.md §34.9). Gated to addressable locals; non-lvalue receivers are out
+    // of scope and silently keep their pre-call value.
+    private void applyReceiverWriteback(
+        imported!"dmd.expression".Expression receiverExpression,
+        in Value receiverWriteback,
+    ) {
+        if (receiverWriteback == Value.void_)
+            return;
+
+        auto receiver = receiverExpression.isVarExp;
+        if (receiver is null)
+            return;
+
+        auto variable = receiver.var.isVarDeclaration;
+        if (variable is null)
+            return;
+
+        locals[variable] = receiverWriteback;
+        uninitializedLocals.remove(variable);
+    }
+
     private imported!"dmd.declaration".VarDeclaration nativeOutParameterVariable(
         imported!"dmd.expression".Expression argument,
     ) {
@@ -4008,6 +4034,11 @@ private struct Walker {
 
         if (auto symbol = argument.isSymOffExp)
             return symbol.var.isVarDeclaration;
+
+        // A mutable slice argument is passed as the plain variable; its
+        // writeback targets that same local (ffi.md §34.10).
+        if (auto var = argument.isVarExp)
+            return var.var.isVarDeclaration;
 
         return null;
     }
