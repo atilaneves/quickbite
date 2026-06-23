@@ -824,3 +824,196 @@ selected backend has reported at least one passing unittest result. A
 multi-backend run is printed only when the selected backends report the same
 test results. The output states enough counts to tell whether cerealed's
 unittest bodies actually ran.
+
+## Squash Template-Emission Link Failures On `--dub` Builds
+
+Self-contained work item (planned 2026-06-23). An implementing agent should be
+able to execute this section without other context. Read `ai/plans/dmd-backend.md`
+(lessons 1-2, 8-9, 13, 17-20) and `ai/plans/dub-deps.md` for the background it
+references, but the diagnosis and plan below are complete on their own.
+
+### Symptom
+
+```sh
+bin/bench.sh --dub automem -b system-linker
+```
+
+fails at link with, e.g.:
+
+```text
+skipping automem system-linker: link failed: mold: error: undefined symbol:
+  _D4core8internal4hash__T6hashOfTPxS7automem6unique9__mixin116StructZQBsFNaNbNiNeMxPQBxZm
+```
+
+That mangles to `core.internal.hash.hashOf!(const(automem.unique.__mixin11.Struct)*)`
+— a **druntime template instance** referenced by some object in the link but
+defined by none. The link uses `dmd -shared ... -L=-z -L=defs`
+(`system_linker.d`, `linkSharedLibrary`), so `-z defs` turns the missing
+definition into a hard link error instead of a deferred load failure.
+
+### Root cause
+
+automem's own modules are the **root** modules of this build (discovered as
+fixtures; automem's own import path is excluded from the archive import paths by
+`archiveImportPathsUnder` in `system_linker.d`). Under a plain
+`dmd -unittest automem/**/*.d`, the `hashOf!(...)` instance would home on the
+members of the root module that instantiated it (`automem.unique`) and emit in
+that module's object. It does not, because the SystemLinker codegen path carries
+the snippet-oriented "lightning rod" apparatus, which has three pieces — none of
+which `dmd` has:
+
+1. **`global.params.allInst = true`**, set once in
+   `quickbite.frontend.compiler.initializeDmdState` (search for `allInst`) and
+   never cleared. With `allInst` on, DMD's `appendToModuleMember` stops homing an
+   instance on the root that instantiated it and instead retargets to the
+   template's *declaring* module (`core.internal.hash`) and chases that module's
+   `importedFrom`. (`dmd-backend.md` lesson 8.)
+2. **The lightning rod**: `quickbite.frontend.compiler.parseLightningRod`
+   force-parses an empty `quickbite_rod.d` as the first root and sets
+   `Module.rootModule` to it, to be the funnel target for (1). It is shipped
+   empty (no `import std;`), the known `dmd-backend.md` lesson-20 defect, so it
+   does not reliably own druntime/phobos `importedFrom`. `emitObjectFilesForLink`
+   asserts it was parsed first (`backends/native/codegen.d`, the
+   `Module.rootModule is rod` assert).
+3. **Archive-gated emission** in
+   `backends/native/codegen.d:emitObjectFilesForLinkLocked`:
+
+   ```d
+   auto defaultImports = archiveCodegenImports.length != 0
+       ? userImportedModules(rootModules, true)
+           .filter!(import_ => isUnderDefaultImportPaths(import_))
+           .array
+       : null;
+   ```
+
+   `archiveCodegenImports` is the archive-backed dependency modules that already
+   *hold* template-instance members (`hasTemplateInstanceMember`). **automem has
+   no dependencies that carry such members**, so `archiveCodegenImports` is
+   empty, `defaultImports` is `null`, and **no druntime module
+   (`core.internal.hash`) is in the codegen set at all**. Any `hashOf!(...)`
+   instance the funnel parked on a druntime module then has no emitting object.
+   `pruneForeignMembers` / `keepOnlyTemplateCodegenMembers` only deepen this;
+   they are snippet-oriented.
+
+In one line: `allInst` plus the empty rod divert a druntime template instance
+off the root that instantiated it, and the dub path's archive-gated emission
+then gives it no emitting object — whereas a normal whole-root-set compile would
+have emitted it on `automem.unique` automatically.
+
+This apparatus is correct and load-bearing for the **persistent-process,
+many-tiny-snippet unittest** world (`bin/ut`, single-module fixtures): deps
+prebuilt, each snippet its own root, instances funneled to the rod and pruned
+per-snippet. The `--dub` path reuses `emitObjectFilesForLink` and inherits all of
+it, which is the bug.
+
+### Locked decisions (do not relitigate)
+
+- **The `--dub` benchmark process is dedicated to dub fixtures.** With `--dub
+  <pkg>` and no positional fixtures, `cli.d` leaves `fixtures` empty (the
+  `["tests/example.d"]` default needs *both* `fixtures` and `dubFixtures` empty),
+  so the only thing parsed/codegen'd in that LDC `bin/bench` process is the dub
+  root set. (The frontend + fork-codegen + link happen in the LDC `bin/bench`
+  driver; `bench-exec` only `dlopen`s and runs the finished `.so`.)
+- **Thread `dubMode` explicitly through construction**, not via an ambient
+  process-global flag.
+- **Use a separate sibling codegen function**, leaving `emitObjectFilesForLink`
+  and the snippet path untouched. Reuse the existing primitives (`runInFork`,
+  `initialiseBackend`, obj-path naming, `emitObjectFiles`, `linkSharedLibrary`);
+  duplicate only the orchestration.
+- **Keep the lightning-rod machinery** (`allInst`, rod, prune, TypeInfo adoption)
+  intact for the snippet path. This item does not begin removing it; the
+  reference-driven replacement in `dub-deps.md` is explicitly out of scope.
+
+### Plan
+
+#### 1. Split construct-from-initialize on the `Compiler` singleton
+
+`quickbite.frontend.compiler` builds the `__gshared Compiler compiler` eagerly in
+`shared static this()`, whose ctor calls `initializeDmdState` (which sets
+`allInst` and parses the rod) — so it runs *before* `main`/getopt sees `--dub`.
+Instance homing happens during semantic analysis (`parseRootModules`), which is
+*before* codegen, so the mode must be chosen before the first parse, not at
+codegen time.
+
+- Make the module ctor only construct the object (mutex + fields); it must no
+  longer call `initializeDmdState`.
+- Add `public void Compiler.initialize(bool dubMode)`, idempotent via the
+  existing `initialized` field.
+- Make `initializeDmdState(bool dubMode)` set `global.params.allInst = true` and
+  call `parseLightningRod` **only when `!dubMode`**. In dub mode both are
+  skipped and `_rod` stays `null`.
+- Add an `assert(initialized, ...)` (or equivalent) on the parse entry points so
+  a missing `initialize` call fails loudly instead of running DMD uninitialised.
+
+#### 2. Thread `dubMode` from the entry points
+
+Three binaries initialise the frontend; each calls `initialize` once before any
+parse:
+
+- `benchmarks/main.d` → `benchmarks/cli.d`: call `compiler.initialize(dubPkg.length
+  > 0)` right after getopt (where `dubPkg` is known), before `makeRunners`,
+  `prepareFixtureRuns`, and `prepareDubUnit`.
+- `tests/main.d` (`bin/ut`) and `repl/main.d`: `compiler.initialize(false)` — the
+  snippet world keeps the rod and `allInst`.
+- `bench-exec/main.d` only loads/runs the `.so` and does not import the frontend,
+  so it needs no call (and must not trigger the deferred init).
+
+Confirm nothing touches `compiler` (any `parse*` accessor) before the
+`initialize` call in each entry point.
+
+#### 3. Separate dub codegen function
+
+Add a sibling to `emitObjectFilesForLink` in `backends/native/codegen.d` (e.g.
+`emitObjectFilesForDubPackage`) used only for the dub unit, and wire
+`SystemLinker.buildSharedLibrary` to select it for dub builds:
+
+- `modules = rootModules` (already genuine roots from `parseRootModules`); run
+  their `semantic2`/`semantic3`.
+- **No** rod assertion, **no** `archiveCodegenImports`/`defaultImports` gate,
+  **no** `pruneForeignMembers` / `keepOnlyTemplateCodegenMembers` /
+  `adoptTypeInfos`.
+- Dependency modules stay non-root imports — DMD's `inNonRoot` already skips
+  emitting their bodies, so their symbols come from `lib<pkg>_dub_deps.so` on the
+  link line and druntime/phobos from `libphobos2.so`. With `allInst` off, each
+  instantiated template homes on its instantiating package root and emits there,
+  so `hashOf!(...Struct*)` lands in `automem.unique`'s object.
+
+### Why this is sound
+
+A `--dub` build with the whole package as roots is exactly
+`dmd -unittest <files> -I<deps>`, which is what `dub test` runs and links every
+day. The only deviations that remain are the legitimate ones: codegen in a
+`fork()` child (parse/semantic separated from codegen), and dependencies supplied
+as a prebuilt `.so` rather than compiled together (symbols resolve at link).
+Template instances that a project root instantiates with a dependency's template
+(the `dub-deps.md` "project type instantiates a dep template" case) home on the
+project root and emit there too, so a dep-heavy package links as well.
+
+Behaviour change to note (correct, not a regression): a purely speculative
+instance that `allInst` used to force-emit is no longer emitted under the dub
+path. The linker never references such instances, so this is fine.
+
+### Verification
+
+```sh
+ninja bin/ut
+bin/ut --random            # snippet path untouched; guards the process-global
+                           # mutation flakes ai/mistakes.md warns about
+bin/bench.sh --dub automem -b system-linker          # links, prints a timed row
+bin/bench.sh --dub cerealed -b system-linker         # dep-heavy package links
+```
+
+Expected: `automem system-linker` no longer prints `link failed` / the undefined
+`hashOf` symbol, and produces a timed post-parse row; `bin/ut --random` stays
+green across several seeds (re-run with `--seed <n>` from the last `--random`
+line on any failure).
+
+### Approval / TDD
+
+Per `AGENTS.md`, adding or changing any test needs approval before editing it.
+Propose the first failing test before writing it. Candidate shape: a frontend or
+backend test that drives a small two-module package whose root instantiates a
+druntime template parameterised on a package-local type, then links it through
+the dub codegen path and asserts the link succeeds (no undefined symbol) — the
+minimal reproduction of the automem failure without depending on the real automem
+package or per-test process spawning.
