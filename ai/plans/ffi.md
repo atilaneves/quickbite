@@ -1,903 +1,228 @@
-# Design: Native Dependency Integration for Quickbite Backends
+# Design: FFI — calling native code from Quickbite backends
+
+This is the **FFI bridge plan**. Its terminal goal (§34.1): a backend
+interprets/executes project source while every body-less native leaf a real
+dub package puts in front of it (`fbody is null` — libc, druntime, Phobos,
+separately-compiled dub code) is called natively, and every native `Throwable`
+is mapped back. Reaching that lets real dub projects run their unittests under
+a backend, which is the prerequisite for measuring whether any backend's
+representation choice is actually faster.
+
+**Companion plan.** The FFI bridge is split from the backend value
+representation by the seam in §5. This document (the bridge) is the charter for
+the FFI-bridge work track; `ai/plans/value.md` is the charter for the
+interpreter representation track. They are designed to be worked **in
+parallel** (§6) and meet only at the seam interface.
 
 ## 1. Goal
 
-The goal is to minimize the latency of the normal development loop:
+Minimize the latency of `edit project code -> run unittests -> get result`.
+Quickbite backends avoid recompiling/relinking the project through the native
+toolchain. But real D projects depend on dub packages, Phobos, druntime, C
+libraries, and OS services. Reimplementing those inside a backend would be
+expensive and semantically fragile, so a backend executes the project source
+and **calls** the native dependencies it bottoms out in.
 
-```text
-edit project code -> run unittests -> get result
-```
-
-Quickbite backends exist to avoid the cost of repeatedly compiling and
-linking the project under test through the normal native toolchain.
-Some backends interpret an internal representation, some walk analysed
-DMD trees, and later backends may execute generated native code.
-
-However, real D projects usually depend on dub packages, Phobos,
-druntime, C libraries, OS services, and other native facilities.
-Reimplementing or emulating those dependencies inside every backend
-would be both expensive and semantically fragile.
-
-The intended design is therefore a mixed-mode execution model:
-
-```text
-project-under-test code: backend-specific artifact
-dub D dependencies: native code, compiled and cached ahead of time
-runtime/native environment: discovered, validated, and recorded ahead of time
-interop boundary: generated wrapper thunks
-runtime: same process, same druntime, same GC, same OS access
-```
-
-Dependency-side work may be expensive, but it must be moved out of the
-hot edit-test path.
-
-Starting point. The irreducible reason this document exists is **not** the
-dub-dependency native image described in §3–§20, but the body-less native
-leaf that every non-trivial library bottoms out in (libc, druntime, Phobos).
-The implementation therefore starts there. See §21 for the reframing and the
-shared body-less resolver, and §22 for the first test. §3–§20 describe the
-later dub-dependency-image design and are deferred.
+The cost of resolving and calling native code must stay off the hot edit-test
+path: symbol resolution and the libffi call-interface descriptor (§4) are built
+once and cached per callable, not per call.
 
 ## 2. Non-goals
 
-This design does not attempt to:
-
 ```text
-- load arbitrary .o files directly;
-- implement a D linker inside every backend;
+- load arbitrary .o files directly (we call already-loaded symbols);
+- implement a D linker inside any backend;
 - emulate filesystem, sockets, threads, GC, TLS, or druntime behavior;
-- make dependency execution hermetic by default;
-- call arbitrary extern(D) functions directly from backend code;
-- make all dub dependency code native purely because it came from a dub package.
+- make dependency execution hermetic / process-isolated by default;
+- generate or AOT-compile per-function wrapper source (see §3 — rejected).
 ```
 
-The design is optimized for fast feedback, not full process isolation.
+Optimized for fast feedback, not full process isolation.
 
-The direct-call non-goal applies to backends with a boxed value
-representation. It is superseded for native-layout backends — see §23.
+## 3. Rejected alternative: the generated-wrapper-manifest design
 
-## 3. High-level architecture
+An earlier version of this plan (former §3–§20, deleted) prescribed a
+heavyweight cold-path: a `quickbite prepare` command, dub-dependency native
+**images**, generated per-function wrapper **source** (`qb_dep_37`),
+AOT-compiled wrapper thunks, a `QBValue` boxing layer, and a numeric
+wrapper-ID **manifest** with a large cache key. **None of it was built**, and
+it is superseded by §4. It is the cffi "API mode" (compile a wrapper per
+function) where §4 is cffi "ABI mode" (build the call dynamically) — the
+compiled wrapper is only ever a *performance* option over the dynamic path, not
+a correctness requirement, and we have no measurement that justifies it.
 
-The system consists of two paths: a cold dependency preparation path
-and a hot project execution path.
+The cold-path *caching* story it also contained (dependency-image build, a
+daemonized host, profiling-based promotion) is real future work but is **not
+FFI bridge mechanics**; if revived it gets its own plan. See §34.18.
+
+## 4. Mechanism: dlsym + a libffi CIF from the DMD signature
+
+The whole bridge is two operations, because the embedded DMD frontend already
+knows every callable's exact ABI-level signature and mangled name:
 
 ```text
-Cold path, rarely run:
-  dub resolve
-  discover compiler/runtime/native library availability
-  compile D dependencies native
-  generate dependency/native wrappers
-  link/write native dependency image
-  cache manifests, environment records, and metadata
-
-Hot path, per edit:
-  check cached dependency image and native environment freshness
-  start the Quickbite host process
-  load cached native dependency image
-  initialize generated wrapper table
-  parse/sema changed project modules
-  emit or prepare the backend-specific test artifact
-  execute selected unittests through the active backend
-  call cached native dependency image when needed
+resolve:  dlsym(RTLD_DEFAULT, mangleExact(fd))  — or a loaded dependency image
+call:     ffi_prep_cif(from the DMD TypeFunction)  [cached per callable]
+          ffi_call(cif, symbol, void* argBuffers[], void* retBuffer)
 ```
 
-The cold path runs when dependencies change, typically after:
+This is exactly what Python `ctypes`, cffi ABI mode, and GHCi's bytecode
+interpreter do. Because the frontend supplies the signature, **no wrapper
+source, no manifest, no numeric-ID table, and no AOT thunk are needed** — those
+are workarounds for systems lacking runtime type info, which we have. libffi
+performs the SysV x86_64 classification (INTEGER/SSE eightbytes, small-struct
+in registers vs. memory, the hidden `sret` pointer, `real` via x87). `real` in
+a signature is a known libffi x86_64 hazard and gets explicit oracle fixtures.
+
+Implemented today in `source/quickbite/backends/ffi.d` (`tryCallNative`,
+`callViaLibffi`) over the libffi binding in
+`source/quickbite/backends/libffi.d`. §5/§6 describe where this code is going.
+
+## 5. The seam: backend-neutral core + materialize/reify
+
+The FFI core is fundamentally about **ABI bytes**, not any backend's value
+type. The load-bearing decision of this plan is to split the bridge from the
+representation along the seam `ai/plans/bytecode.md` already named ("reify frame
+bytes + the static type, the way a debugger renders memory"):
 
 ```text
-dub upgrade
-dub add
-dub remove
-dependency source changes
-compiler/version flag changes
-ABI-affecting configuration changes
-runtime library changes
-native package-manager library changes
-pkg-config or linker flag changes
-loader search-path changes
+quickbite.ffi (shared infra; imports no backend, never names Value):
+    Type -> ffi_type tree, Type -> size/alignment/offset   (pure)
+    ffi_prep_cif (cached per callable) · ffi_call
+    sret / real / variadics · inbound closures
+    native Throwable -> guard result
+
+seam interface — a delegate/interface the BACKEND passes in (dependency
+injection), so the core never imports a backend and the core's view is
+Value-free:
+    fillArg(index, Type, void* dest)    backend writes argument `index` as ABI
+                                          bytes (its materialize, internally)
+    readResult(Type, const void* src)   backend builds its own value from the
+                                          return bytes (its reify, internally)
 ```
 
-The hot path should not invoke dub, compile dependencies, query
-package managers, run `pkg-config`, generate wrappers, link native
-code, or resolve native symbols by name.
+`materialize`/`reify` name the operation from the backend's side (`value.md`);
+from the core's side they are injected callbacks over `(index, Type, buffer)` —
+the same separation that keeps backends isolated (`AGENTS.md`) while letting one
+shared core serve all of them.
 
-## 4. Native dependency image and environment
+Consequences:
 
-Dub D dependencies are compiled into a cached native image.
+- `Value` **leaves the FFI core's API.** The `Value <-> ABI bytes` conversion
+  (today's `marshalArgument`/`unmarshalValue`) stops being an FFI-core concern
+  and becomes the backend's `materialize`/`reify` implementation.
+- For a **native-layout** backend (bytecode/IR, §23) `materialize` is the
+  identity — its memory *is* the bytes — and `reify` is the debugger-style
+  render at the `Evaluator` boundary. For the **boxed interpreter** today,
+  `materialize`/`reify` is the existing aggregate marshalling, now owned by the
+  interpreter (`ai/plans/value.md`).
+- This finally makes the §21.1 "shared, backend-neutral resolver" claim true,
+  and makes the backend representation **swappable behind a stable interface**
+  so it can be measured rather than guessed.
 
-Possible forms:
+## 6. Package layout and the parallel-agent partition
+
+`quickbite.ffi` becomes a **package** (promoted from the single
+`backends/ffi.d` module). The seam (§5) is the conflict boundary that lets two
+agents work concurrently with disjoint file ownership:
 
 ```text
-libquickbite_deps_<hash>.so
-libquickbite_deps_<hash>.dylib
-quickbite_deps_<hash>.dll
-linked native object bundle
+Track A — the bridge (this plan):     source/quickbite/ffi/**
+  CIF build + cache, ffi_call, sret/real/variadics, inbound closures,
+  native-exception mapping, extern(C++). Codes to the §5 interface; never
+  opens an interpreter file. Owns the column-A ladder rungs (§34.3).
+
+Track B — interpreter repr (ai/plans/value.md):  backends/interpreter/**
+  Implements materialize/reify. Free to keep boxed Value or move aggregates to
+  native layout — a measurable latency experiment, invisible to Track A. Owns
+  what were the column-B "marshalling" rungs.
+
+Shared, read-mostly (either the ffi package or a backends/-level module):
+  Type -> ffi_type / layout numbers; the reify helper. Stabilised first so
+  neither track contends on it.
 ```
 
-The preferred model is a shared library loaded by the Quickbite host
-process.
+Sequencing: carve the seam first (mechanical: move marshalling out of the core
+behind the §5 interface), then the two tracks proceed independently. The seam —
+not native layout — is the prerequisite; native layout is one thing Track B may
+try once the seam exists.
 
-Not every native input is compiled by Quickbite. Phobos, druntime,
-libc, compiler support libraries, and libraries installed by the
-system package manager are part of the native environment. Quickbite
-should discover and record them during preparation, then treat their
-recorded ABI and loader data as part of the cached execution surface.
+(Former §3–§10 and §15–§20 — the dead wrapper-manifest/prepare/caching design —
+deleted; see §3. §11–§14 below are the live cross-boundary contracts the ladder
+still references. Section numbers are preserved because they're cross-referenced
+throughout.)
 
-The environment manifest should include:
+## 11. Value categories across the boundary
+
+A value crossing the seam (§5) falls into three categories; this is what a
+backend's `materialize`/`reify` must handle, and for a native-layout backend
+all three are the identity.
 
 ```text
-druntime and Phobos library identity and load path
-C runtime identity
-compiler support libraries
-external native library names, SONAMEs, and resolved paths
-pkg-config versions and emitted cflags/libs, where used
-linker search paths and rpath/runpath settings
-loader-affecting environment settings
-package-manager package names and versions, where cheaply available
+11.1 plain ABI values   int/long/bool/float/double/char/enum/pointer:
+                          passed directly or by trivial width conversion.
+11.2 bridgeable values  string/T[]/const(char)[]/simple structs: need explicit
+                          conversion + lifetime rules. A backend string becomes
+                          a native string valid for the call (or a GC-owned
+                          copy); a native string becomes a backend-owned copy
+                          unless explicitly borrowed. The MVP treats dynamic
+                          arrays as copy/owned or immutable borrows; mutable
+                          slices, ref returns, and APIs that retain a
+                          backend-owned reference need the borrow/pin/writeback
+                          contract of §13 first.
+11.3 opaque native values  File/Socket/Regex/class/interface/delegate and any
+                          type with dtors/invariants: not inspected by the
+                          backend, represented as a native handle
+                          (`struct NativeHandle { void* ptr; TypeInfo type;
+                          void function(void*) destroy; }`); method calls
+                          dispatch back through the bridge.
 ```
-
-This manifest is not a promise of hermeticity. It is a freshness and
-diagnostic record so the hot path can detect obvious stale native
-state without rediscovering the world.
-
-The cache key should include at least:
-
-```text
-dub.selections.json
-dependency source hashes
-compiler identity and version
-target triple
-compiler flags
-version identifiers
-debug/release mode
-static import path configuration
-druntime and Phobos ABI identity
-C runtime identity
-external native library ABI/load identity
-pkg-config outputs used for compilation or loading
-linker and loader search-path configuration
-callable identity set and lowering manifest
-wrapper ABI version
-Quickbite dependency ABI version
-```
-
-The dependency image cache key should not include ordinary project
-source files under edit. Mixed template instantiations are separate:
-if Quickbite caches a native instantiation that depends on project
-code, that artifact needs its own cache key covering the instantiated
-callable identity, template arguments, project type and symbol
-identities, compile-time values, relevant `version` and `debug`
-context, and the wrapper lowering contract.
-
-The output directory may look like:
-
-```text
-.quickbite/
-  deps/
-    <hash>/
-      libquickbite_deps_<hash>.so
-      wrappers.d
-      wrappers.o
-      wrapper_manifest.qb
-      native_environment.qb
-      abi_manifest.qb
-      dependency_summary.qb
-      build_manifest.qb
-```
-
-## 5. Same-process execution
-
-Dependencies live in the same process as the active backend.
-
-This gives dependency code normal access to:
-
-```text
-druntime
-Phobos
-GC
-TLS
-module constructors
-filesystem
-sockets
-C libraries
-package-manager installed native libraries
-threads
-environment variables
-process APIs
-```
-
-This matches ordinary compiled D execution much more closely than a
-sandboxed or emulated dependency model.
-
-The host must load dependency images through platform- and
-druntime-supported mechanisms that run native library constructors,
-D module constructors, TLS setup, and runtime registration before any
-wrapper thunk is called. Generated wrapper table initialization happens
-after dependency image initialization succeeds.
-
-The MVP should treat dependency image unloading and destructor behavior
-as process-exit cleanup only. Explicit unloading, reloading, and
-destructor sequencing are later extensions.
-
-The host process contains:
-
-```text
-quickbite-host executable
-  ├─ druntime / Phobos
-  ├─ libc / platform libraries
-  ├─ external native libraries
-  ├─ active Quickbite backend
-  ├─ dependency native image
-  ├─ generated wrapper table
-  └─ backend artifact for project-under-test
-```
-
-The main runtime transition is:
-
-```text
-backend execution engine
-  -> generated native wrapper thunk
-      -> real compiled D dependency function
-```
-
-## 6. Process model
-
-The current design assumes an ordinary Quickbite host process for each
-`quickbite test` invocation. A persistent host daemon is a future
-latency aspiration only.
-
-## 7. Wrapper-based native calls
-
-Backends should not call arbitrary dependency functions directly.
-
-Instead, dependency calls go through generated wrapper thunks. The
-wrapper is responsible for converting backend values into D values,
-calling the real dependency function, catching exceptions, and
-converting the result back into the backend representation.
-
-Generic wrapper shape:
-
-```d
-extern(C)
-QBValue qb_dep_37(QBContext* ctx, QBValue* args, size_t nargs)
-{
-    try
-    {
-        auto path = args[0].toDString();
-        auto result = package.foo.readConfig(path);
-        return QBValue.from(ctx, result);
-    }
-    catch (Exception e)
-    {
-        return ctx.throwNative(e);
-    }
-    catch (Error e)
-    {
-        return ctx.failNative(e);
-    }
-}
-```
-
-Each backend maps call sites to numeric wrapper IDs in its own
-representation:
-
-```text
-bytecode:     CALL_DEP 37, argc=1
-IR:           NativeCall id=37, argc=1
-tree walker:  dispatch wrapper id 37 from the analysed call
-codegen:      call generated stub or import entry for wrapper id 37
-```
-
-Runtime call path:
-
-```d
-auto thunk = ctx.nativeThunks[37];
-auto result = thunk(ctx, args.ptr, args.length);
-```
-
-There should be no per-wrapper string lookup, symbol lookup,
-reflection, or signature decoding in the hot path.
-
-The value-conversion half of this wrapper contract is superseded for
-native-layout backends (§23); the exception-guard half (§12) survives
-for every backend.
-
-## 8. Generic versus specialized thunks
-
-Two wrapper tiers are useful.
-
-### 8.1 Generic wrappers
-
-Generic wrappers use boxed `QBValue` arguments and return a boxed
-`QBValue`.
-
-They are appropriate for:
-
-```text
-filesystem calls
-network calls
-database calls
-object construction
-error paths
-large dependency functions
-rarely executed APIs
-opaque native values
-```
-
-The overhead is usually irrelevant compared with OS or library work.
-
-### 8.2 Specialized wrappers
-
-Specialized wrappers avoid boxing and dynamic conversion for hot
-simple calls.
-
-Example:
-
-```d
-extern(C)
-int qb_dep_91_i32_i32_to_i32(QBContext* ctx, int a, int b)
-{
-    return dep.fastAdd(a, b);
-}
-```
-
-Backends may use specialized call forms:
-
-```text
-bytecode: CALL_DEP_I32_I32_TO_I32 91
-IR:       NativeCallI32I32ToI32 id=91
-codegen:  direct call to qb_dep_91_i32_i32_to_i32
-```
-
-Specialized wrappers are useful for:
-
-```text
-small math functions
-hashing steps
-small parser helpers
-string/array primitives
-dependency functions inside loops
-```
-
-The system can start with generic wrappers and promote hot dependency
-call sites after profiling.
-
-## 9. Avoiding hot boundary crossings
-
-The main performance danger is not a single native call. It is
-repeated crossing in tight loops.
-
-Bad shape:
-
-```d
-foreach (x; xs)
-    ys ~= dep.processOne(x);
-```
-
-Better shapes:
-
-```d
-auto ys = dep.processAll(xs);
-```
-
-or:
-
-```text
-execute processOne in the active backend if its source/body is available
-and simple
-```
-
-The compiler should detect dependency calls inside loops and classify
-them carefully.
-
-Possible policies:
-
-```text
-small dependency function + body available:
-  execute through the active backend or inline
-
-small dependency function + body unavailable:
-  specialized native thunk
-
-large or side-effecting dependency function:
-  generic native thunk
-
-OS-facing dependency function:
-  generic native thunk
-```
-
-## 10. Dependency classification
-
-The system should not classify execution purely by package ownership.
-
-Bad rule:
-
-```text
-if module belongs to dub dependency:
-    execute native
-else:
-    execute through the active backend
-```
-
-Better rule:
-
-```text
-if concrete function body should be executed by the active backend:
-    lower, interpret, or compile it through that backend
-
-elif concrete function has cached native implementation:
-    call wrapper thunk
-
-elif function is template-instantiated with project code:
-    handle the instantiation through the active backend or cache it separately
-
-else:
-    unsupported or native fallback
-```
-
-D templates make this distinction necessary.
-
-Example:
-
-```d
-auto ys = xs.map!(x => x + 1);
-```
-
-This is not merely a precompiled dependency call. The instantiated
-body contains project code via the lambda. It should usually be
-handled by the active backend or as a separately cached specialization,
-not as a simple call into precompiled dependency code.
-
-Separately cached specializations are not part of the ordinary
-dependency image. They are project-sensitive artifacts with their own
-freshness rules.
-
-By contrast:
-
-```d
-auto text = readText("foo.txt");
-```
-
-can reasonably be a native dependency call.
-
-## 11. Value representation across the boundary
-
-Values crossing the backend/native boundary fall into three categories.
-
-### 11.1 Plain ABI values
-
-These can be passed directly or cheaply converted:
-
-```text
-int
-long
-bool
-float
-double
-char
-enum
-pointers, where permitted
-```
-
-### 11.2 Bridgeable D values
-
-These require explicit conversion and lifetime rules:
-
-```text
-string
-T[]
-const(char)[]
-simple structs
-```
-
-Example rules:
-
-```text
-backend string -> native string valid for duration of call, or GC-owned copy
-native string -> backend-owned copy, unless explicitly borrowed
-backend array -> native slice with clear ownership/lifetime
-native array -> backend-owned copy or native handle, depending on type
-```
-
-Mutable aliases are separate from ordinary array/string bridging. The
-MVP should treat basic dynamic arrays as copy/owned values or immutable
-borrows only. It may reject mutable slices, pointers, `ref` returns, and
-any native API that can retain or write through a backend-owned
-reference. Later support needs an explicit borrow, writeback, pinning,
-and rooting contract before those calls are accepted.
-
-### 11.3 Opaque native values
-
-Backends should not inspect complex native values such as:
-
-```text
-File
-Socket
-Regex
-class objects
-interfaces
-delegates
-complex structs
-types with destructors/invariants
-allocator-backed containers
-```
-
-These should be represented as native handles:
-
-```d
-struct NativeHandle
-{
-    void* ptr;
-    TypeInfo type;
-    void function(void*) destroy;
-}
-```
-
-Method calls on native handles dispatch back through wrappers.
-
-Example:
-
-```d
-auto f = File("foo.txt", "r");
-auto line = f.readln();
-```
-
-The active backend represents `f` as an opaque handle. `readln`
-becomes another native wrapper call that receives the handle.
 
 ## 12. Exceptions
 
-Native D code may throw. Exceptions should not initially unwind
-through arbitrary backend interpreter frames.
-
-Wrapper boundary rule:
-
-```d
-try
-{
-    auto r = realDependencyFunction(...);
-    return QBValue.from(ctx, r);
-}
-catch (Exception e)
-{
-    return ctx.throwNative(e);
-}
-catch (Error e)
-{
-    return ctx.failNative(e);
-}
-```
-
-The active backend then maps the native exception into its own
-exception state. Native `Error` values are different: they indicate
-assertion failure, runtime failure, or another fatal condition. Wrappers
-may catch them to attach diagnostics, but should not turn them into
-ordinary backend pending exceptions.
-
-Initial support:
+The outbound-call **exception guard** lives in the bridge core (§5) and survives
+for every backend regardless of representation:
 
 ```text
 native Exception -> backend pending exception
-native Error -> fatal native failure
-backend handles or reports normal exceptions
+native Error     -> fatal native failure (caught only to attach diagnostics)
 ```
 
-Later support:
-
-```text
-backend exception -> native D Throwable when native code calls back into backend
-```
-
-The second direction is harder and can be deferred.
+The backend maps the caught native `Exception` into its own exception state.
+The reverse direction (a backend exception becoming a native `Throwable` when
+native code calls back in) is harder and deferred (§14, §34.16). As-built status
+of the forward direction: §30 (`Exception`), §31 (subclasses); chaining and
+`Error` recovery are §34.13.
 
 ## 13. GC and lifetime
 
-Because the Quickbite host and native dependencies share one D
-runtime, native GC allocation works normally.
-
-However, backend storage must not hide GC references from the collector.
-
-If backend values can contain D GC pointers, then one of the following
-must be true:
-
-```text
-backend frames are allocated in GC-scanned memory
-GC references are stored in GC-managed objects
-backend registers/stacks are registered as roots
-backend avoids raw GC pointers in unscanned malloc memory
-```
-
-This applies to:
-
-```text
-string
-dynamic arrays
-class references
-delegates
-closures
-native handles pointing to GC objects
-```
-
-A conservative initial design should copy simple data into backend-owned
-representations and use GC-visible handle tables for native
-references.
+The host and native dependencies share one D runtime, so native GC allocation
+works normally — but a backend must not hide GC references from the collector.
+If backend storage can hold D GC pointers (string, dynamic arrays, class refs,
+delegates, closures, handles to GC objects), then frames/registers must be
+GC-scanned or the references must live in GC-managed objects / registered roots.
+A conservative design copies simple data into backend-owned representations and
+keeps native references in GC-visible handle tables. Native-layout backends get
+this from the host GC scanning VM stack/segment memory (`bytecode.md`).
 
 ## 14. Native callbacks into backend code
 
-Some dependency APIs accept callbacks:
-
-```d
-sort!((a, b) => ...)
-array.map!(x => ...)
-eventLoop.setTimer(..., delegate { ... })
-```
-
-This requires a reverse bridge:
-
-```text
-native dependency
-  -> callback trampoline
-      -> backend invokes project closure
-```
-
-Initial implementation may reject callbacks/delegates crossing into
-native dependency code.
-
-Eventually, callback support requires generated native trampolines and
-a backend closure registry keyed by callback ID. D delegates carry both
-a function pointer and a context pointer, so the bridge must define the
-delegate context lifetime, keep backend closure state GC-visible, and
-reject callbacks that may outlive the current test or backend execution
-context unless a durable owner is provided.
-
-The hard cases are template-heavy D APIs where the callback is part of
-the instantiated dependency code. These may be better handled by
-executing the instantiated template body through the active backend
-instead of using native callbacks.
-
-## 15. Build pipeline
-
-### 15.1 Preparation command
-
-A command such as:
-
-```text
-quickbite prepare
-```
-
-performs the cold dependency work:
-
-```text
-1. run or query dub dependency resolution
-2. discover compiler runtime, Phobos, druntime, libc, and native libraries
-3. compute dependency and native-environment cache key
-4. check for existing dependency image and environment manifest
-5. compile dub D dependencies natively if needed
-6. analyze reachable dependency call boundaries
-7. generate wrapper source
-8. compile wrappers
-9. link dependency image against recorded native inputs
-10. write wrapper, ABI, and native environment manifests
-```
-
-### 15.2 Test command
-
-A command such as:
-
-```text
-quickbite test
-```
-
-performs the hot path:
-
-```text
-1. check dependency image and native environment freshness
-2. start the Quickbite host process
-3. load and initialize the cached dependency image
-4. initialize the generated wrapper table
-5. parse/sema changed project modules
-6. prepare the backend-specific execution artifact
-7. run selected unittests through the active backend
-8. report result
-```
-
-If dependencies are stale, `quickbite test` may either:
-
-```text
-- fail with “run quickbite prepare”;
-- automatically rebuild the dependency image;
-- rebuild only if configured to do so.
-```
-
-For minimum latency, dependency rebuilds should be explicit or at
-least clearly reported.
-
-## 16. Wrapper manifest
-
-The dependency preparation phase emits a wrapper manifest mapping
-concrete callable instances to numeric IDs. Source-level names are
-diagnostic metadata only; they are not stable enough to key wrapper
-selection.
-
-Each wrapper record should include:
-
-```text
-numeric wrapper ID
-frontend symbol identity, or native mangled symbol if the frontend cannot
-  provide a stable identity
-module and fully qualified diagnostic name
-overload signature after semantic analysis
-instantiated template arguments, where applicable
-ABI, calling convention, linkage, and mangling
-dependency image and native environment hash
-parameter and return lowering
-ownership and lifetime policy
-wrapper kind
-wrapper thunk symbol
-```
-
-This matters for overloads, templates, aliases, UFCS, `version` and
-`debug` conditions, module-private symbols, and extern linkage. All of
-that resolution happens during preparation. The hot path consumes the
-numeric ID and already-lowered argument contract.
-
-Wrapper generation must obey normal D visibility rules. A wrapper may
-target a callable visible from the generated wrapper module. Reaching a
-`private` or `package` symbol requires deliberately generating the
-wrapper inside the defining module or package, or using a
-dependency-authored exported registration surface. Source-level names
-are diagnostic metadata; they do not imply access bypass.
-
-Example:
-
-```text
-wrapper 37:
-  diagnosticName: package.foo.readConfig
-  symbolIdentity: frontend-symbol:<opaque-id>
-  overload: readConfig(string)
-  kind: generic
-  abi: extern(D)
-  parameters: [string -> borrowed native string]
-  return: Config -> native handle
-  thunk: qb_dep_37
-  image: libquickbite_deps_<hash>.so
-
-wrapper 91:
-  diagnosticName: dep.fastAdd
-  symbolIdentity: _D3dep7fastAddFiiZi
-  overload: fastAdd(int, int)
-  kind: specialized
-  abi: extern(D)
-  parameters: [int -> i32, int -> i32]
-  return: int -> i32
-  thunk: qb_dep_91_i32_i32_to_i32
-  image: libquickbite_deps_<hash>.so
-```
-
-Backends use this manifest according to their execution model:
-
-```text
-bytecode: CALL_DEP 37
-IR:       NativeCall id=37
-walker:   dispatch wrapper id 37
-codegen:  call generated wrapper stub
-```
-
-The runtime uses the same manifest to initialize the thunk table. A
-fresh host process should not perform one lookup per wrapper. The
-dependency image should expose one generated registration entry point
-or one generated table symbol that returns the complete thunk table in
-wrapper-ID order.
-
-## 17. Hot-path invariant
-
-The hot edit-test path must avoid:
-
-```text
-dub invocation
-package-manager queries
-pkg-config queries
-dependency native compilation
-dependency linking
-wrapper generation
-per-wrapper symbol lookup by name
-```
-
-The hot path should be approximately:
-
-```text
-changed D source
-  -> load cached dependency image and generated thunk table
-  -> dmd frontend parse/sema
-  -> active backend preparation
-  -> active backend execution
-  -> cached native calls by integer ID
-```
-
-This is the shape that can plausibly beat normal `dub test`.
-
-## 18. Initial MVP
-
-The first useful implementation should support:
-
-```text
-same-process native host
-dependency shared library cache
-native environment manifest for druntime, Phobos, libc, and native libraries
-loader/link path validation
-generated generic wrappers
-numeric wrapper IDs
-at least one backend-integrated project execution path
-scalars: int, long, bool, float, double
-strings
-basic dynamic arrays
-opaque native handles
-native Exception -> backend exception state
-fatal native Error diagnostics
-explicit dependency prepare step
-```
-
-The MVP may reject:
-
-```text
-callbacks from native into backend-managed code
-delegates crossing the boundary
-complex structs by value
-ref/out parameters
-ref returns
-mutable slices or pointers crossing the boundary
-native code calling backend-managed functions
-direct extern(D) ABI calls without wrappers
-template instantiations requiring native/project mixed code
-```
-
-## 19. Later extensions
-
-After the MVP:
-
-```text
-specialized unboxed wrappers
-profiling-based wrapper promotion
-backend-local execution of small dependency functions
-loop-aware native call avoidance
-struct field bridging
-ref/out support
-mutable borrow/writeback and alias lifetime policies
-delegate/callback trampolines
-native-to-backend calls
-strict isolation mode
-dependency image unloading/reloading
-incremental wrapper generation
-cached native template specializations
-```
-
-## 20. Summary
-
-The design should treat dub dependencies and the external native
-environment as stable native infrastructure, and project code as
-volatile backend input.
-
-The main principle is:
-
-```text
-pay dependency cost rarely;
-pay project compilation cost cheaply;
-make native calls cheap and pre-indexed;
-avoid native/backend crossings in tight loops;
-do not put dub, package-manager queries, linking, or wrapper generation
-in the edit-test path.
-```
-
-This yields a mixed-mode execution system where dependency code runs
-normally as native D code, while edited project code can be interpreted,
-lowered, or code-generated quickly enough to improve the unit-test
-feedback loop.
+Some dependency APIs take callbacks (`sort!`, `map!`, `setTimer(delegate ...)`).
+This needs a **reverse bridge**: a native trampoline that re-enters the backend
+to run the project closure. The MVP rejects callbacks/delegates crossing into
+native code. Full support needs generated native trampolines (libffi closures
+or a thunk pool), a backend closure registry keyed by callback id, GC-visible
+closure state, and a defined delegate-context lifetime that rejects callbacks
+escaping the call/test. Template-heavy APIs where the callback is part of the
+instantiated body are better executed by the backend than bridged. This is the
+§34.16 capstone rung.
 
 ## 21. Implementation reframing: start at the body-less leaf
 
-Sections §3–§20 describe the long-term design: compiling dub D dependencies
-into a cached native image and calling them through a wrapper manifest. That
-is a real future cost centre, but it is **not** where this work starts and
-**not** the irreducible reason this document exists.
+The deleted long-term design (§3) compiled dub D dependencies into a cached
+native image called through a wrapper manifest. The caching half of that is a
+real future cost centre, but it is **not** where this work starts and **not**
+the irreducible reason this document exists.
 
 The irreducible reason is the **body-less leaf**. Every non-trivial library
 eventually calls a function for which there is no D body to execute — libc,
@@ -916,8 +241,8 @@ leaf is the problem. Two distinct native populations:
 ```text
 already-resident (libc, druntime, Phobos): bind by symbol, no load,
   no module-ctor problem — this is where we start
-newly-compiled (dub-dependency image, §3–§5): needs load + module-ctor +
-  init — deferred
+newly-compiled (dub-dependency image, deferred caching story, §3): needs load +
+  module-ctor + init — deferred
 ```
 
 ### 21.1 Shared, backend-neutral resolver
@@ -1095,21 +420,19 @@ shared chokepoint already supports null pointer arguments. `calloc`,
 `realloc`, `atoi`, `strtol`, `div`, and `ldiv` remain later rungs because
 they each add another independent ABI or frontend surface.
 
-## 23. Amendment: native-layout backends
+## 23. Native-layout backends (the identity end of the seam)
 
 The bytecode VM rewrite (`ai/plans/bytecode.md`) lays out all VM memory —
 frames, heap, module data segments — exactly as compiled code would, using
-DMD's computed sizes, alignments, and offsets. That changes the boundary
-economics this document was written under, and where the two documents
-disagree, `bytecode.md` wins for that backend. Specifically:
+DMD's computed sizes, alignments, and offsets. Such a backend sits at the
+identity end of the §5 seam; where this document and `bytecode.md` disagree on
+that backend, `bytecode.md` wins. Specifically:
 
-- **Value conversion is gone, not cheap.** The `QBValue` boxing layer and
-  per-signature wrapper codegen (§7, §8, §11) exist to convert between a
-  backend value representation and the D ABI. A native-layout backend has
-  no other representation: scalars, pointers, structs, slices, and class
-  references cross the boundary unchanged. The §2 non-goal "call arbitrary
-  extern(D) functions directly" and the §18 rejection of direct ABI calls
-  do not apply to this backend.
+- **Value conversion is gone, not cheap.** This is the native-layout end of
+  the §5 seam: `materialize`/`reify` is the identity, because a native-layout
+  backend has no other representation — scalars, pointers, structs, slices, and
+  class references cross the boundary unchanged. There is no marshalling for
+  this backend to own.
 - **What remains of marshalling is the call ABI itself.** Invoking a
   function whose signature is only known at run time still requires
   implementing the SysV x86_64 calling convention. The bytecode backend
@@ -1120,12 +443,12 @@ disagree, `bytecode.md` wins for that backend. Specifically:
   per §12, converting native `Throwable`s into VM unwinding. It is the
   conversion half of the wrapper contract that is superseded, not the
   guard half.
-- **The §10/§21 classification is confirmed and sharpened.** The boundary
+- **The §21 classification is confirmed and sharpened.** The boundary
   is the body-less leaf: anything with available source — including
   druntime template hooks and Phobos template bodies instantiated with
-  project types — is executed by the VM. The §18 rejection of mixed
-  template instantiations is therefore moot for this backend: they are
-  ordinary VM-executed code, not a boundary case.
+  project types — is executed by the VM. Mixed template instantiations are
+  therefore not a boundary case for this backend: they are ordinary
+  VM-executed code.
 - **Inbound calls arrive earlier than §14 assumed.** Native-layout
   execution hands real objects to the real GC and the real AA runtime, so
   GC finalizers and AA key methods (dtor, postblit, toHash, opEquals on
@@ -1133,9 +456,10 @@ disagree, `bytecode.md` wins for that backend. Specifically:
   callback-taking dependency API does. See "Runtime type metadata" in
   `bytecode.md`.
 
-The §3–§20 dependency-image design is unaffected for boxed-value backends
-and for the cold-path caching story; this amendment narrows only the
-interop boundary mechanics for native-layout backends.
+Under the §5 seam this is no longer an "amendment" to a separate design: the
+native-layout backend is simply the seam endpoint where `materialize`/`reify`
+is the identity. The deferred cold-path caching story (§3) is independent of
+this and unaffected.
 
 Scheduling boundary: this section is design context only. Do not treat it as
 the next implementation work from this plan. Until the Interpreter can call
@@ -2736,21 +2060,24 @@ dependency-image scalar/member/exception fixtures still pass; and the
 
 ### 34.1 Terminal goal and why this section exists
 
-The terminal goal of all Interpreter FFI work is one sentence: **the
-Interpreter should call out to arbitrary compiled dependency code, so a real
-dub project "just" runs under it** — project source interpreted, every
-dependency leaf called natively. Quickbite reaches that goal when every
-body-less callable a real dub package can put in front of the Interpreter
-(`fbody is null` — see §21) is marshalled and called correctly, and every
-native `Throwable` it can raise is mapped back.
+The terminal goal is one sentence: **a backend executes project source while
+every compiled dependency leaf is called natively, so a real dub project "just"
+runs under it** — the prerequisite for measuring any backend's representation
+(§34.1 was originally written Interpreter-only; under the §5 seam the bridge is
+backend-neutral and the rungs split across the two tracks of §6). The goal is
+reached when every body-less callable a real dub package can put in front of a
+backend (`fbody is null` — see §21) is called correctly and every native
+`Throwable` is mapped back.
 
-§21–§33 climbed that ladder one rung per PR, and each rung was *planned* in its
-own PR before being *implemented* in the next (the most recent example: §33,
-string slice returns, is markdown only — no code yet). That per-increment
-planning cadence is what this section ends. Below is the **entire** remaining
-ladder, in dependency order, each rung specified to the same depth the
-implementer needs: the one new semantic contract, the smallest oracle fixture,
-in/out scope, the code to change, and the done criteria.
+§21–§33 climbed this ladder one rung per PR (Interpreter, boxed `Value`),
+each rung *planned* in its own PR before being *implemented*. That
+per-increment-planning cadence is what this section ends; the remaining rungs
+are specified below to implementation depth. **Read the Track column in §34.3
+first:** Track A rungs belong to the FFI bridge (`quickbite.ffi`), Track B rungs
+belong to the representation (`ai/plans/value.md`) and several disappear under
+native layout, and AB rungs need the §5 seam stable before they start. Each
+rung records: the one new semantic contract, the smallest oracle fixture, in/out
+scope, the code to change, and the done criteria.
 
 How to use this section:
 
@@ -2773,13 +2100,16 @@ rank above rare type surface (extern(C++)).
 ### 34.2 Shared invariants for every rung below
 
 ```text
-- Interpreter only. Bytecode and IR stay out (§23, §26); their native-layout
-  bridge is governed by ai/plans/bytecode.md, not this ladder.
+- The Interpreter is the first call site to be wired (it is at CTFE parity
+  today); the bridge core itself is backend-neutral (§5). Bytecode and IR get
+  their native-layout call site via ai/plans/bytecode.md, reusing the same
+  bridge core, not a second copy.
 - SystemLinker is the oracle (ai/plans/single-oracle.md). Every fixture asserts
-  the same source on SystemLinker (passes) and Interpreter (red before, green
-  after). Ctfe stays a characterization backend, never the truth.
-- All native execution goes through quickbite.backends.ffi. Never add a
-  backend-local call path in interpreter/impl.d.
+  the same source on SystemLinker (passes) and the backend under test (red
+  before, green after). Ctfe stays a characterization backend, never the truth.
+- All native execution goes through the quickbite.ffi bridge core. Never add a
+  backend-local call path (e.g. in interpreter/impl.d); a backend only supplies
+  its materialize/reify and recognizes a supported native call.
 - One semantic contract per fixture; the throw/struct/slice stays a real native
   leaf from a prepared dependency image. Do not inline or special-case bodies.
 - extern(D) explicit args are reversed (§27, abiSourceIndex); hidden args
@@ -2793,23 +2123,36 @@ rank above rare type surface (extern(C++)).
 
 ### 34.3 The ladder at a glance
 
+Track column (§6): **A** = FFI bridge (`quickbite.ffi`, backend-neutral ABI
+work); **B** = backend representation (`ai/plans/value.md`, the
+`materialize`/`reify` impl); **AB** = both meet at the seam. Rungs marked
+*(native-layout obviates)* are pure boxed-interpreter marshalling that
+disappears if Track B moves aggregates to native layout — do **not** climb them
+as boxed marshalling without a measurement that says boxing is worth keeping.
+
 ```text
-Increment  Contract                                            Status   Ref
-10  D string slice RETURN value                                done     §33
-11  typed (non-char) immutable slice args and returns          done     §34.4
-12  stack-spilled extern(D) arguments (>6 int / >8 SSE)        done     §34.5
-13  large struct returns via hidden sret + extern(D) ordering  todo     §34.6
-14  scalar out-parameters (int*) with writeback                todo     §34.7
-15  mutating struct member methods + receiver writeback        todo     §34.8
-16  mutable slice arguments with writeback                     todo     §34.9
-17  slices/arrays nested inside by-value structs               todo     §34.10
-18  class references, virtual dispatch, interfaces (vtables)   todo     §34.11
-19  constructors, destructors, postblits                       todo     §34.12
-20  native Error recovery and exception chaining (next)        todo     §34.13
-21  variadics (printf-shaped; ffi_prep_cif_var)                todo     §34.14
-22  delegates / callbacks / closures: the reverse bridge       todo     §34.15
-23  extern(C++) function and member ABI                        todo     §34.16
+Inc  Contract                                          Track  Status   Ref
+10  D string slice RETURN value                         B*    done     §33
+11  typed (non-char) immutable slice args and returns   B*    done     §34.4
+12  stack-spilled extern(D) arguments (>6 int / >8 SSE) A     done     §34.5
+13  large struct returns via hidden sret + extern(D)    A     todo     §34.6
+14  scalar out-parameters (int*) with writeback         AB    todo     §34.7
+15  mutating struct member methods + receiver writeback B*    todo     §34.8
+16  mutable slice arguments with writeback              B*    todo     §34.9
+17  slices/arrays nested inside by-value structs        B*    todo     §34.10
+18  class references, virtual dispatch, interfaces      AB    todo     §34.11
+19  constructors, destructors, postblits                AB    todo     §34.12
+20  native Error recovery and exception chaining        A     todo     §34.13
+21  variadics (printf-shaped; ffi_prep_cif_var)         A     todo     §34.14
+22  delegates / callbacks / closures: reverse bridge    AB    todo     §34.15
+23  extern(C++) function and member ABI                 A     todo     §34.16
 ```
+
+`B*` = boxed-interpreter marshalling, native-layout obviates. The done rungs
+10–12 are as-built history; 10/11 were boxed-slice marshalling (Track B's
+concern going forward), 12 was genuine ABI ordering (Track A). The pure-A rungs
+(13, 20, 21, 23) are independent of the representation and are the spine of the
+bridge track. The AB rungs need the seam interface stable first.
 
 Anchors shared by most rungs (re-grep; line numbers drift):
 
@@ -3155,7 +2498,7 @@ capturing a local and asserts the result.
 delegate context lifetime bounded by the call, closure state kept GC-visible
 (§14). **Out of scope.** Callbacks that outlive the call/test without a durable
 owner; template-heavy APIs where the callback is part of instantiated
-dependency code (those are interpreted, per §10/§23).
+dependency code (those are interpreted, per §21/§23).
 
 **Implementation.** Use libffi closures: bind `ffi_closure_alloc` /
 `ffi_prep_closure_loc` in `libffi.d`, register interpreted closures in a
@@ -3196,10 +2539,11 @@ project, call the dependencies, run the whole dub project. What remains beyond
 this ladder is not Interpreter FFI but the deferred, separately-owned work:
 
 ```text
-- the §3-§20 cold-path dependency-image build, prepare command, wrapper
-  manifest, and caching story (boxed-value infrastructure);
-- the §23 native-layout bridge for Bytecode/IR (governed by bytecode.md);
-- strict isolation, daemonized host, profiling-based promotion (§6, §19).
+- the deferred cold-path caching story (§3): dependency-image build, a prepare
+  command, a daemonized host, profiling-based promotion;
+- the Bytecode/IR native-layout call sites (§23, governed by bytecode.md) —
+  these reuse the §5 bridge core, not a second implementation;
+- strict isolation.
 ```
 
 Those get their own plans when scheduled; they are out of this section's scope.

@@ -61,7 +61,62 @@ reintroduce a boxed value (their cores already exclude it by design;
 the deletion target only — both backends have identical DMD type info,
 so this is not about capability. If the tree-walking interpreter is
 itself later retired in favour of the VM, its private boxed type dies
-with it, but that is a separate decision not taken here.
+with it, but that is a separate decision not taken here. (Superseded in
+part by 2026-06-23: the "boxed tagged union is the natural form" claim is
+downgraded from a settled decision to the *current implementation* of one
+seam endpoint — see below.)
+
+Decision 2026-06-23: this plan is now the **Track B charter** — the
+interpreter's value representation — companion to the FFI bridge plan
+(`ai/plans/ffi.md` §5/§6). The two are worked in parallel and meet only at
+the FFI seam.
+
+- The seam (`ffi.md` §5) is `materialize(value, Type) -> ABI bytes` and
+  `reify(Type, ABI bytes) -> value`. The interpreter **owns its
+  materialize/reify implementation**; the FFI bridge core never sees `Value`.
+  Today that implementation is the boxed-aggregate marshalling currently in
+  `backends/ffi.d` (`marshalArgument`/`unmarshalValue`), which moves to the
+  interpreter side of the seam. The `ffi.md` §34.3 "Track B" / `B*` ladder
+  rungs (typed slices, struct returns, nested slices, mutable-slice and
+  receiver writeback) are this plan's, not the bridge's.
+- The 2026-06-17 reasoning ("re-expressing aggregates as raw bytes duplicates
+  the VM's hardest work") is reconsidered: it argues against *reimplementing*
+  layout, not against *reusing* it. It is **recursive aggregate boxing**
+  (`Struct = Value[] fields`, `Array = Value[] elements`) — not boxing per
+  se — that forces per-call marshalling. Holding FFI-crossing aggregates in
+  native layout *behind the handle* (reusing DMD offsets) would collapse the
+  `B*` rungs; whether to do so is an **open empirical question**, not a
+  settled decision.
+- Why empirical: the point of multiple backends is to try representations and
+  measure which is fastest (the project goal is latency). We do not yet know
+  whether boxed `Value` or native-layout aggregates is faster in the
+  interpreter — and we **cannot measure until FFI works**, because measuring
+  means running real dub projects' unittests, which need the bridge. So the
+  ordering is: carve the seam, keep the boxed `materialize` working so FFI and
+  real tests run, *then* try native-layout aggregates behind the same
+  interface and measure. Do not climb the `B*` rungs as ever-more boxed
+  marshalling on the assumption boxing stays.
+- Native layout in the interpreter is **not** a compile step and does not cost
+  emit latency. Representation (boxed vs native) and execution strategy (walk
+  the AST vs lower to bytecode) are orthogonal: the no-emit advantage is the
+  *tree-walker vs VM* axis and survives either representation. A native-layout
+  interpreter still walks the AST; it only reads/writes native frame memory at
+  DMD offsets instead of boxed `Value`s. So the experiment compares two
+  *no-emit* interpreters, not interpreter-vs-VM.
+- What to measure, then, are the real run-time cost axes (none is compile):
+  boxing's per-aggregate GC allocation + tag dispatch + per-crossing FFI
+  marshalling, *versus* native layout's GC-root bookkeeping
+  (`addRange`/`removeRange`, conservative frame scanning) + runtime
+  type-metadata synthesis for druntime leaves (`bytecode.md`). Plus the
+  correctness ceiling boxing cannot pass at any speed (`&local`, unions,
+  reinterpret casts, slices into locals) — which may decide the question
+  independent of latency.
+- `Value` is a Lox-derived tagged union (Crafting Interpreters). It exists to
+  carry a runtime type tag that a *dynamically typed* interpreter needs;
+  Quickbite's DMD frontend stamps a static `Type` on every node, so the tag
+  is redundant. The box's only remaining benefit is host-language
+  convenience (a uniform D type to return from `eval(Expr)`); that benefit is
+  what is paid back at the seam.
 
 Progress 2026-06-19: the prelude formatter now owns the scalar literal
 suffix cases that were previously only pinned through `Value.toString`:
@@ -318,8 +373,24 @@ are done; what is still pending, in order:
    once no backend depends on it as a cross-backend type, relocate the
    tree-walking interpreter's internal boxed representation to an
    interpreter-package-private type, then delete the shared struct and
-   `tests/ut/backends/evaluator/value.d` together. The interpreter keeps
-   a boxed value internally; only the shared type is deleted.
+   `tests/ut/backends/evaluator/value.d` together. Only the shared type is
+   deleted; the interpreter keeps an internal value type whose *shape* is the
+   2026-06-23 open question.
+
+Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
+
+4. Carve the seam: move the boxed `Value <-> ABI bytes` marshalling out of the
+   FFI core (`backends/ffi.d`) and into the interpreter as its
+   `materialize`/`reify` implementation, behind the `ffi.md` §5 interface.
+   Mechanical and behaviour-preserving — the existing `rt/` FFI suite stays
+   green. This is the prerequisite that unblocks the two parallel tracks.
+5. Own the `ffi.md` §34.3 `B*` rungs (boxed-slice/struct/nested/writeback
+   marshalling) as the interpreter's `materialize`/`reify`, keeping FFI working
+   so real dub tests can run.
+6. Experiment (do not pre-commit): hold FFI-crossing aggregates in native
+   layout behind the handle (reuse DMD offsets), measure latency against the
+   boxed implementation across the benchmark suite, and keep whichever wins.
+   Several `B*` rungs collapse to the identity under native layout.
 
 ## Out of scope
 
