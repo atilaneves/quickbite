@@ -1,11 +1,10 @@
-module quickbite.backends.libffi;
+module quickbite.ffi.libffi;
 
 // Hand-written extern(C) declarations for the subset of libffi (3.x) that the
-// resident native-call chokepoint (quickbite.backends.ffi) needs. No bindbc or
-// libffi dev headers: the installed libffi.so exports these symbols, so we
-// declare the prototypes ourselves, mirroring
-// quickbite.backends.native.llvm_orc. Layout verified against
-// /usr/include/ffi.h on x86-64 SysV (sizeof(ffi_cif) == 32,
+// resident native-call chokepoint (quickbite.ffi) needs. No bindbc or libffi
+// dev headers: the installed libffi.so exports these symbols, so we declare the
+// prototypes ourselves, mirroring quickbite.backends.native.llvm_orc. Layout
+// verified against /usr/include/ffi.h on x86-64 SysV (sizeof(ffi_cif) == 32,
 // sizeof(ffi_type) == 24, no FFI_EXTRA_CIF_FIELDS).
 
 private:

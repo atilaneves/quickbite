@@ -16,7 +16,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     }
 
     public this(const string[] dependencyImages) {
-        import quickbite.backends.ffi: loadDependencyImages;
+        import quickbite.ffi: loadDependencyImages;
 
         loadDependencyImages(dependencyImages);
     }
@@ -1621,7 +1621,7 @@ private struct Walker {
 
                 auto function_ = resolveMemberFunction(call.f, receiver);
                 if (hasNoAvailableSource(function_)) {
-                    import quickbite.backends.ffi:
+                    import quickbite.backends.interpreter.ffi_marshal:
                         NativeCallException, tryCallNativeMember;
 
                     Value result;
@@ -1657,7 +1657,7 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
-            import quickbite.backends.ffi:
+            import quickbite.backends.interpreter.ffi_marshal:
                 NativeCallException, tryCallNative;
 
             if (hasNoAvailableSource(call.f)) {
