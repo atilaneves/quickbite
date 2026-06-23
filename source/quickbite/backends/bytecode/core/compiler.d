@@ -31,9 +31,10 @@ package(quickbite.backends.bytecode) Compilation compile(
 private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
-        AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
-        RefParameter, ResultType, ScalarType, isSigned, size,
-        sliceDescriptorSize, stringSliceSize;
+        AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
+        Instruction, Op, Program,
+        RefParameter, ResultType, ScalarType, isSigned, noCatchObjectField,
+        noExceptionClass, size, sliceDescriptorSize, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
@@ -43,15 +44,17 @@ private struct Compiler {
         LogicalExp, MulExp,
         FuncExp,
         NegExp, NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp,
-        StringExp, StructLiteralExp, SymOffExp;
+        StringExp, StructLiteralExp, SymOffExp, ThrowExp;
     import dmd.arraytypes: Expressions;
+    import dmd.dclass: ClassDeclaration;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
-    import dmd.statement: Statement;
+    import dmd.statement: Catch, Statement;
 
     private Program* _program;
     private FuncDeclaration[] _functions;
     private size_t[FuncDeclaration] _functionIndices;
+    private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
     private Instruction[] _code;
     private uint _frameOffset;
     // The high-water mark of `_frameOffset` across the current function body.
@@ -89,6 +92,12 @@ private struct Compiler {
     // through the pointer at `ptr + field.offset`.
     private imported!"dmd.dstruct".StructDeclaration[VarDeclaration]
         _structPointerLocals;
+    private imported!"dmd.dclass".ClassDeclaration[VarDeclaration]
+        _classPointerLocals;
+    // Named catch variables for the narrow Exception/Throwable object surface:
+    // each synthetic object exposes compact bytecode string descriptors for
+    // `msg` and, when a finally throw chains a body exception, `next.msg`.
+    private ExceptionObjectLocal[VarDeclaration] _exceptionObjectLocals;
     // The receiver of the method currently being compiled, if any: the base
     // offset of the hidden `this` block in the frame plus the struct
     // declaration, so an unqualified `this.field` resolves against it.
@@ -123,6 +132,8 @@ private struct Compiler {
     // The label ident of a `label:` that immediately wraps the next loop, so the
     // loop records it for labeled `break`/`continue`; null otherwise.
     private const(void)* _pendingLoopLabel;
+    private ushort _pendingFinallyExceptionMessageOffset = noCatchObjectField;
+    private ushort _pendingFinallyExceptionClassIndex = noExceptionClass;
     private size_t[ulong] _constantIndices;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
@@ -156,6 +167,8 @@ private struct Compiler {
         _delegateLocals = null;
         _structLocals = null;
         _structPointerLocals = null;
+        _classPointerLocals = null;
+        _exceptionObjectLocals = null;
         _hasThis = false;
         _hasNestedContext = false;
         _thisLocal = StructLocal.init;
@@ -166,6 +179,8 @@ private struct Compiler {
         _switchStack = null;
         _tryFinallyStack = null;
         _pendingLoopLabel = null;
+        _pendingFinallyExceptionMessageOffset = noCatchObjectField;
+        _pendingFinallyExceptionClassIndex = noExceptionClass;
         _applyBodyExits = null;
 
         import dmd.astenums: TY;
@@ -292,34 +307,7 @@ private struct Compiler {
                 return;
             }
 
-            if (_currentReturnType.isArray) {
-                const descriptor = arrayDescriptorOffset(
-                    _currentReturnType.elementType, return_.exp,
-                );
-                _code ~= Instruction(Op.ret, descriptor);
-                return;
-            }
-
-            // `return structValue;`: the result block lives at the struct
-            // operand's inline base; `ret` copies its `structSize` bytes back to
-            // the caller's destination.
-            if (_currentReturnType.isStruct) {
-                const base = structOperandOffset(return_.exp);
-                _code ~= Instruction(Op.ret, base);
-                return;
-            }
-
-            // A constructor's implicit `return this;` has a void result here
-            // (no struct is returned by value yet); emit a bare `ret`.
-            if (return_.exp is null ||
-                (!_currentReturnType.isString &&
-                    _currentReturnType.scalar == ScalarType.void_)) {
-                _code ~= Instruction(Op.ret);
-                return;
-            }
-
-            const operand = compileExpression(return_.exp);
-            _code ~= Instruction(Op.ret, operand.offset);
+            compileReturnStatement(return_);
             return;
         }
 
@@ -566,9 +554,52 @@ private struct Compiler {
                 continue;
             auto saved = _tryFinallyStack;
             _tryFinallyStack = _tryFinallyStack[0 .. index];
+            auto savedException = _pendingFinallyExceptionMessageOffset;
+            auto savedExceptionClass = _pendingFinallyExceptionClassIndex;
             compileStatement(finalbody);
+            _pendingFinallyExceptionMessageOffset = savedException;
+            _pendingFinallyExceptionClassIndex = savedExceptionClass;
             _tryFinallyStack = saved;
         }
+    }
+
+    private void compileReturnStatement(
+        imported!"dmd.statement".ReturnStatement return_,
+    ) {
+        ushort result;
+        bool hasResult;
+
+        if (_currentReturnType.isArray) {
+            result = arrayDescriptorOffset(
+                _currentReturnType.elementType, return_.exp,
+            );
+            hasResult = true;
+        } else if (_currentReturnType.isStruct) {
+            // `return structValue;`: the result block lives at the struct
+            // operand's inline base; `ret` copies its `structSize` bytes back to
+            // the caller's destination.
+            result = structOperandOffset(return_.exp);
+            hasResult = true;
+        } else if (return_.exp !is null &&
+            (_currentReturnType.isString ||
+                _currentReturnType.scalar != ScalarType.void_)) {
+            result = compileExpression(return_.exp).offset;
+            hasResult = true;
+        }
+
+        if (hasResult && _tryFinallyStack.length != 0) {
+            const saved = allocateBytes(size(_currentReturnType), 8);
+            _code ~= Instruction(
+                Op.copy, saved, result, cast(ushort) size(_currentReturnType),
+            );
+            result = saved;
+        }
+
+        // A `return` leaves every active `try` body in the function. Run the
+        // finalizers after the result expression has been captured.
+        runExitedFinally(_tryFinallyStack.length);
+
+        _code ~= hasResult ? Instruction(Op.ret, result) : Instruction(Op.ret);
     }
 
     // The labels defined lexically within a statement subtree, used to decide
@@ -624,44 +655,208 @@ private struct Compiler {
         }
     }
 
-    // `try { body } catch (Exception) { handler }`: register a runtime handler
-    // at the catch body, compile the try body, then on normal completion pop the
-    // handler and skip the catch. A `throwString` inside the body redirects to
-    // the handler (popping it). Scoped to the test surface: a single catch whose
-    // type is `Exception` (or a base of it) and whose variable is unnamed.
+    // `try { body } catch (...) { handler } ...`: register the ordered catches
+    // as one runtime handler group, compile the try body, then on normal
+    // completion pop the group and skip the catch bodies. A throw inside the
+    // body selects the first catch whose type matches the thrown dynamic class,
+    // materialising the caught object's message fields when the catch is named.
     private void compileTryCatchStatement(
         imported!"dmd.statement".TryCatchStatement tryCatch,
     ) {
         import std.conv: text;
 
-        if (tryCatch.catches is null || tryCatch.catches.length != 1)
+        if (tryCatch.catches is null || tryCatch.catches.length == 0)
             throw new Exception(text(
                 "Unsupported try/catch in bytecode core: ",
                 tryCatch.catches is null ? 0 : tryCatch.catches.length,
                 " catch clauses",
             ));
 
-        auto catch_ = (*tryCatch.catches)[0];
+        const catchStart = _program.catchClauses.length;
+        foreach (catch_; *tryCatch.catches)
+            _program.catchClauses ~= CatchClause(
+                catchClass(catch_),
+                noCatchObjectField,
+                noCatchObjectField,
+                noCatchObjectField,
+                0,
+            );
 
-        // Reserve the handler-registration instruction; its operand (the catch
-        // body's instruction index) is patched once the body is emitted.
-        const pushIndex = _code.length;
-        _code ~= Instruction(Op.pushHandler);
+        _code ~= Instruction(
+            Op.pushHandler,
+            cast(ushort) catchStart,
+            cast(ushort) tryCatch.catches.length,
+        );
 
         if (tryCatch._body !is null)
             compileStatement(tryCatch._body);
 
-        // Normal completion of the try body: drop the handler and skip the catch.
+        // Normal completion of the try body: drop the handler group and skip the
+        // catch bodies.
         _code ~= Instruction(Op.popHandler);
         const skipCatch = emitJump;
 
-        // The handler entry: a throw inside the body lands here with the handler
-        // already popped.
-        _code[pushIndex].a = cast(ushort) _code.length;
-        if (catch_.handler !is null)
+        size_t[] exitPatches;
+        foreach (catchIndex; 0 .. tryCatch.catches.length) {
+            auto catch_ = (*tryCatch.catches)[catchIndex];
+            const clauseIndex = catchStart + catchIndex;
+            _program.catchClauses[clauseIndex].handlerIp =
+                cast(ushort) _code.length;
+            if (catch_.var !is null) {
+                auto catchObject = allocateExceptionObject(catch_.var);
+                _program.catchClauses[clauseIndex].objectOffset =
+                    catchObject.objectOffset;
+                _program.catchClauses[clauseIndex].messageOffset =
+                    catchObject.messageOffset;
+                _program.catchClauses[clauseIndex].nextMessageOffset =
+                    catchObject.nextMessageOffset;
+            }
+
             compileStatement(catch_.handler);
+            if (catch_.var !is null)
+                _exceptionObjectLocals.remove(catch_.var);
+
+            exitPatches ~= emitJump;
+        }
 
         patchJump(skipCatch);
+        foreach (patch; exitPatches)
+            patchJump(patch);
+    }
+
+    private ushort catchClass(Catch catch_) {
+        import std.conv: text;
+
+        auto type = catch_.type;
+        if (type is null && catch_.var !is null)
+            type = catch_.var.type;
+        if (type is null)
+            return noExceptionClass;
+
+        auto class_ = type.toBasetype.isClassHandle;
+        if (class_ is null)
+            throw new Exception(text(
+                "Unsupported catch type in bytecode core: ",
+                typeChars(type),
+            ));
+
+        return registerClass(class_);
+    }
+
+    private ushort registerClass(ClassDeclaration class_) {
+        import std.conv: text;
+
+        if (class_ is null)
+            return noExceptionClass;
+        if (auto existing = class_ in _classIndices)
+            return *existing;
+        if (_program.classes.length >= ushort.max)
+            throw new Exception("Too many classes in bytecode core");
+
+        const index = cast(ushort) _program.classes.length;
+        _classIndices[class_] = index;
+        _program.classes ~= ClassInfo.init;
+        const msgOffset = classFieldOffset(class_, "msg");
+        _program.classes[index] = ClassInfo(
+            registerClass(class_.baseClass),
+            msgOffset == noCatchObjectField
+                ? cast(ushort) size_t.sizeof
+                : msgOffset,
+        );
+        return index;
+    }
+
+    private ushort classFieldOffset(ClassDeclaration class_, in string name) {
+        if (auto field = classFieldNamed(class_, name))
+            return cast(ushort) field.offset;
+
+        return noCatchObjectField;
+    }
+
+    private VarDeclaration classFieldNamed(
+        ClassDeclaration class_,
+        in string name,
+    ) {
+        for (auto current = class_; current !is null; current = current.baseClass)
+            foreach (field; current.fields)
+                if (isDeclarationNamed(field, name))
+                    return field;
+
+        return null;
+    }
+
+    private ExceptionObjectLocal allocateExceptionObject(
+        VarDeclaration variable,
+    ) {
+        const objectOffset =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const messageOffset = allocateBytes(stringSliceSize, 4);
+        const nextMessageOffset = allocateBytes(stringSliceSize, 4);
+
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType !is null && classType.sym !is null) {
+            _locals[variable] = objectOffset;
+            _classPointerLocals[variable] = classType.sym;
+        }
+
+        auto object = ExceptionObjectLocal(
+            objectOffset, messageOffset, nextMessageOffset,
+        );
+        _exceptionObjectLocals[variable] = object;
+        return object;
+    }
+
+    private ExceptionStringField* tryExceptionStringField(DotVarExp dot) {
+        auto field = dot.var.isVarDeclaration;
+        if (!isDeclarationNamed(field, "msg"))
+            return null;
+
+        auto object = exceptionObjectOrNull(dot.e1);
+        if (object is null || object.messageOffset == noCatchObjectField)
+            return null;
+
+        auto result = new ExceptionStringField;
+        *result = ExceptionStringField(object.messageOffset);
+        return result;
+    }
+
+    private ExceptionObjectLocal* exceptionObjectOrNull(Expression expression) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return declaration in _exceptionObjectLocals;
+
+        if (auto call = expression.isCallExp)
+            if (call.arguments is null || call.arguments.length == 0)
+                if (auto callee = call.e1.isDotVarExp)
+                    return nextExceptionObjectOrNull(callee);
+
+        if (auto dot = expression.isDotVarExp) {
+            if (auto object = nextExceptionObjectOrNull(dot))
+                return object;
+            return null;
+        }
+
+        return null;
+    }
+
+    private ExceptionObjectLocal* nextExceptionObjectOrNull(DotVarExp dot) {
+        if (dot.var is null ||
+            dot.var.ident is null ||
+            dot.var.ident.toString != "next")
+            return null;
+
+        auto object = exceptionObjectOrNull(dot.e1);
+        if (object is null ||
+            object.nextMessageOffset == noCatchObjectField)
+            return null;
+
+        auto result = new ExceptionObjectLocal;
+        *result = ExceptionObjectLocal(
+            noCatchObjectField,
+            object.nextMessageOffset,
+            noCatchObjectField,
+        );
+        return result;
     }
 
     // A `for (init; condition; increment) body` loop, the lowering of `foreach`
@@ -1029,25 +1224,110 @@ private struct Compiler {
     }
 
     private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
+        compileThrowExpression(thrownExpression(throw_.exp));
+    }
+
+    private Operand compileThrowExpression(ThrowExp throw_) {
+        return compileThrowExpression(thrownExpression(throw_), null);
+    }
+
+    private Operand compileThrowExpression(Expression expression) {
+        return compileThrowExpression(expression, null);
+    }
+
+    private Operand compileThrowExpression(
+        Expression expression,
+        Type resultType,
+    ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
-        auto new_ = throw_.exp is null ? null : throw_.exp.isNewExp;
-        if (!isPlainExceptionNew(new_))
+        auto originalExpression = expression;
+        expression = thrownExpression(expression);
+        if (expression is null)
             throw new Exception(text(
                 "Unsupported throw expression in bytecode core: ",
-                throw_.exp is null ? "<null>" : expressionChars(throw_.exp),
+                "<null>",
             ));
 
-        auto messageExpression =
-            (*new_.arguments)[0]; // DMD Expression APIs require mutable AST.
-        const message = compileExpression(messageExpression);
-        if (!message.isString)
+        auto thrownNew = expression.isNewExp;
+        if (thrownNew is null)
+            thrownNew = nestedNewExpression(originalExpression);
+        if (auto new_ = thrownNew) {
+            if (auto class_ = thrownClass(new_)) {
+                auto messageExpression = thrownMessageExpression(new_);
+                if (messageExpression is null)
+                    messageExpression =
+                        thrownCallMessageExpression(originalExpression);
+                if (messageExpression !is null &&
+                    messageExpression.type !is null &&
+                    isStringType(messageExpression.type))
+                {
+                    const message = compileExpression(messageExpression);
+                    if (!message.isString)
+                        throw new Exception(text(
+                            "Unsupported throw message in bytecode core: ",
+                            expressionChars(messageExpression),
+                        ));
+
+                    emitThrowString(message.offset, registerClass(class_));
+                    const type = throwResultType(resultType);
+                    return Operand(allocate(type), type);
+                }
+            }
+        }
+
+        const object = compileExpression(expression);
+        if (!object.isPointer)
             throw new Exception(text(
-                "Unsupported throw message in bytecode core: ",
-                expressionChars(messageExpression),
+                "Unsupported throw expression in bytecode core: ",
+                expressionChars(expression),
             ));
 
-        _code ~= Instruction(Op.throwString, message.offset);
+        _code ~= Instruction(Op.throwObject, object.offset);
+        const type = throwResultType(resultType);
+        return Operand(allocate(type), type);
+    }
+
+    private void emitThrowString(in ushort messageOffset, in ushort classIndex) {
+        if (_pendingFinallyExceptionMessageOffset != noCatchObjectField) {
+            _code ~= Instruction(
+                Op.throwString,
+                _pendingFinallyExceptionMessageOffset,
+                _pendingFinallyExceptionClassIndex,
+                messageOffset,
+            );
+            return;
+        }
+
+        const nextMessageOffset = _pendingFinallyExceptionMessageOffset;
+        if (_tryFinallyStack.length != 0) {
+            auto savedException = _pendingFinallyExceptionMessageOffset;
+            auto savedExceptionClass = _pendingFinallyExceptionClassIndex;
+            _pendingFinallyExceptionMessageOffset = messageOffset;
+            _pendingFinallyExceptionClassIndex = classIndex;
+            runExitedFinally(_tryFinallyStack.length);
+            _pendingFinallyExceptionMessageOffset = savedException;
+            _pendingFinallyExceptionClassIndex = savedExceptionClass;
+        }
+
+        _code ~= Instruction(
+            Op.throwString,
+            messageOffset,
+            classIndex,
+            nextMessageOffset,
+        );
+    }
+
+    private ScalarType throwResultType(Type resultType) {
+        import dmd.astenums: TY;
+
+        if (resultType is null)
+            return ScalarType.void_;
+        const ty = resultType.toBasetype.ty;
+        return ty == TY.Tvoid || ty == TY.Tnoreturn
+            ? ScalarType.void_
+            : scalarType(resultType);
     }
 
     private Operand compileExpression(Expression expression) {
@@ -1103,6 +1383,14 @@ private struct Compiler {
                 if (auto existing = declaration in _locals) {
                     if (declaration in _stringLocals)
                         return Operand(*existing, ScalarType.void_, true);
+                    if (declaration in _classPointerLocals)
+                        return Operand(
+                            *existing,
+                            ScalarType.ulong_,
+                            false,
+                            true,
+                            ScalarType.void_,
+                        );
                     if (auto element = declaration in _pointerLocals)
                         return Operand(
                             *existing, ScalarType.ulong_, false, true, *element,
@@ -1233,6 +1521,9 @@ private struct Compiler {
         if (auto conditional = expression.isCondExp)
             return compileConditionalExpression(conditional);
 
+        if (auto throw_ = expression.isThrowExp)
+            return compileThrowExpression(throw_);
+
         if (auto call = expression.isCallExp)
             return compileCall(call);
 
@@ -1286,6 +1577,10 @@ private struct Compiler {
         // pointer field (`tracker.postblits`) yields a pointer operand over its
         // raw 8-byte address; a scalar field its scalar value.
         if (auto dot = expression.isDotVarExp)
+            if (auto field = tryExceptionStringField(dot))
+                return Operand(field.offset, ScalarType.void_, true);
+
+        if (auto dot = expression.isDotVarExp)
             if (auto field = tryStructField(dot)) {
                 if (isPointerType(field.type))
                     return Operand(
@@ -1301,12 +1596,20 @@ private struct Compiler {
             if (auto field = tryStructPointerField(dot))
                 return loadStructPointerField(*field);
 
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryClassPointerField(dot))
+                return loadClassPointerField(*field);
+
         if (auto literal = expression.isStructLiteralExp)
             return compileStructLiteralOperand(literal);
 
         // `new S(args)`: heap-allocate a struct block and yield a `S*` pointer.
         if (auto newExp = expression.isNewExp)
             if (auto pointer = tryNewStruct(newExp))
+                return *pointer;
+
+        if (auto newExp = expression.isNewExp)
+            if (auto pointer = tryNewClass(newExp))
                 return *pointer;
 
         throw new Exception(text(
@@ -1383,6 +1686,26 @@ private struct Compiler {
     // `arr.length` reads the descriptor's length word (a `size_t`) into a fresh
     // slot.
     private Operand compileArrayLength(ArrayLengthExp length) {
+        if (isStringType(length.e1.type)) {
+            const string_ = compileExpression(length.e1);
+            if (string_.isString) {
+                const offset = allocate(ScalarType.ulong_);
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    offset,
+                    constantIndex(0),
+                    cast(ushort) size(ScalarType.ulong_),
+                );
+                _code ~= Instruction(
+                    Op.copy,
+                    offset,
+                    cast(ushort) (string_.offset + uint.sizeof),
+                    uint.sizeof,
+                );
+                return Operand(offset, ScalarType.ulong_);
+            }
+        }
+
         const descriptor = dynamicArrayDescriptor(length.e1);
         const offset = allocate(ScalarType.ulong_);
         _code ~= Instruction(Op.sliceLength, offset, descriptor.offset);
@@ -1472,6 +1795,13 @@ private struct Compiler {
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 return declaration in _dynamicArrayLocals;
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryExceptionStringField(dot)) {
+                auto result = new DynamicArrayLocal;
+                *result = DynamicArrayLocal(field.offset, ScalarType.char_);
+                return result;
+            }
 
         // `base.field` where the field is a dynamic array: its slice descriptor
         // lives at `base + field.offset`, so indexing, `.length`, element-assign
@@ -1617,6 +1947,11 @@ private struct Compiler {
             return;
         }
 
+        if (variable.type.toBasetype.ty == TY.Tclass) {
+            compileClassPointerDeclaration(variable);
+            return;
+        }
+
         // A pointer local `T* p` holds a raw `size_t` address into VM-owned
         // heap; allocate an 8-byte slot, compile the pointer-valued initializer,
         // and copy its address word in.
@@ -1690,6 +2025,35 @@ private struct Compiler {
     // slot. The initializer is a pointer-valued expression (`arr.ptr`,
     // `&arr[i]`, `p + n`, ...); copy its address word into the slot and record
     // the pointed-at element scalar for later stride and dereference.
+    private void compileClassPointerDeclaration(VarDeclaration variable) {
+        import std.conv: text;
+
+        const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null)
+            throw new Exception(text(
+                "Unsupported class initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        const pointer =
+            compileExpression(initializerExpression(initializer.exp));
+        if (!pointer.isPointer)
+            throw new Exception(text(
+                "Unsupported class initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        _locals[variable] = offset;
+        _classPointerLocals[variable] =
+            variable.type.toBasetype.isTypeClass.sym;
+        _code ~= Instruction(
+            Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
+        );
+    }
+
     private void compilePointerDeclaration(VarDeclaration variable) {
         import std.conv: text;
 
@@ -2418,6 +2782,52 @@ private struct Compiler {
         );
     }
 
+    private static struct ClassPointerField {
+        ushort pointerSlot;
+        ushort fieldOffset;
+        Type type;
+    }
+
+    private ClassPointerField* tryClassPointerField(DotVarExp dot) {
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            return null;
+
+        const receiver = compileExpression(dot.e1);
+        if (!receiver.isPointer)
+            return null;
+
+        auto result = new ClassPointerField;
+        *result = ClassPointerField(
+            receiver.offset, cast(ushort) field.offset, field.type,
+        );
+        return result;
+    }
+
+    private Operand loadClassPointerField(ClassPointerField field) {
+        const fieldScalar = scalarType(field.type);
+        const elementSize = size(fieldScalar);
+        const fieldPointer = classFieldAddress(field);
+        const destination = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            pointerLoadOp(elementSize),
+            destination,
+            fieldPointer,
+            compileSizeConstant(0),
+        );
+        return Operand(destination, fieldScalar);
+    }
+
+    private ushort classFieldAddress(in ClassPointerField field) {
+        const fieldPointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const fieldOffset = compileSizeConstant(field.fieldOffset);
+        _code ~= Instruction(
+            Op.addInt8, fieldPointer, field.pointerSlot, fieldOffset,
+        );
+        return fieldPointer;
+    }
+
     // `new S(args)`: heap-allocate a single struct block, initialise it (run the
     // constructor, or store each argument into its field for a constructor-less
     // struct), and yield a raw `S*` pointer operand. Null if `newExp` is not a
@@ -2451,6 +2861,88 @@ private struct Compiler {
             pointer, ScalarType.ulong_, false, true, ScalarType.void_,
         );
         return result;
+    }
+
+    private Operand* tryNewClass(NewExp newExp) {
+        import dmd.astenums: TY;
+
+        if (newExp.newtype is null ||
+            newExp.newtype.toBasetype.ty != TY.Tclass)
+            return null;
+
+        auto classType = newExp.newtype.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return null;
+
+        const pointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.allocClass,
+            pointer,
+            registerClass(classType.sym),
+            cast(ushort) classType.sym.structsize,
+        );
+        initialiseClassObject(pointer, classType.sym, newExp.arguments);
+
+        auto result = new Operand;
+        *result = Operand(
+            pointer, ScalarType.ulong_, false, true, ScalarType.void_,
+        );
+        return result;
+    }
+
+    private void initialiseClassObject(
+        in ushort pointer,
+        imported!"dmd.dclass".ClassDeclaration class_,
+        Expressions* arguments,
+    ) {
+        import dmd.astenums: TY;
+
+        if (arguments is null || arguments.length == 0)
+            return;
+
+        if (auto msg = classFieldNamed(class_, "msg"))
+            if ((*arguments)[0].type !is null &&
+                isStringType((*arguments)[0].type))
+                storeClassField(pointer, msg, (*arguments)[0]);
+
+        size_t argumentIndex;
+        foreach (field; class_.fields) {
+            if (argumentIndex >= arguments.length)
+                break;
+            if (field.type.toBasetype.ty == TY.Tclass) {
+                ++argumentIndex;
+                continue;
+            }
+            if (field.type !is null && isStringType(field.type)) {
+                ++argumentIndex;
+                continue;
+            }
+            storeClassField(pointer, field, (*arguments)[argumentIndex]);
+            ++argumentIndex;
+        }
+    }
+
+    private void storeClassField(
+        in ushort pointer,
+        VarDeclaration field,
+        Expression valueExpression,
+    ) {
+        const value = compileExpression(valueExpression);
+        const fieldPointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const offset = compileSizeConstant(field.offset);
+        _code ~= Instruction(Op.addInt8, fieldPointer, pointer, offset);
+
+        const fieldSize = isStringType(field.type)
+            ? stringSliceSize
+            : size(scalarType(field.type));
+        _code ~= Instruction(
+            pointerStoreOp(fieldSize),
+            value.offset,
+            fieldPointer,
+            compileSizeConstant(0),
+        );
     }
 
     // Store each `new S(args)` argument into its field at `base + field.offset`
@@ -3041,6 +3533,9 @@ private struct Compiler {
             return compileArrayPointer(cast_);
 
         const source = compileExpression(cast_.e1);
+        if (cast_.to.toBasetype.isTypeClass !is null)
+            return source;
+
         const target = scalarType(cast_.to);
 
         // Crossing the int/float boundary needs a numeric conversion, not a
@@ -3509,26 +4004,40 @@ private struct Compiler {
 
         const falseJump = emitJumpIfFalse(condition);
         const whenTrue = compileExpression(conditional.e1);
-        const valueSize = operandSize(whenTrue);
-        _code ~= Instruction(
-            Op.copy, result, whenTrue.offset, cast(ushort) valueSize,
-        );
+        const trueHasValue = hasValue(whenTrue);
+        uint valueSize;
+        if (trueHasValue) {
+            valueSize = operandSize(whenTrue);
+            _code ~= Instruction(
+                Op.copy, result, whenTrue.offset, cast(ushort) valueSize,
+            );
+        }
         const endJump = emitJump;
 
         patchJump(falseJump);
         const whenFalse = compileExpression(conditional.e2);
-        _code ~= Instruction(
-            Op.copy, result, whenFalse.offset, cast(ushort) valueSize,
-        );
+        if (!trueHasValue)
+            valueSize = operandSize(whenFalse);
+        if (hasValue(whenFalse))
+            _code ~= Instruction(
+                Op.copy, result, whenFalse.offset, cast(ushort) valueSize,
+            );
         patchJump(endJump);
 
+        const typeSource = trueHasValue ? whenTrue : whenFalse;
         return Operand(
             result,
-            whenTrue.type,
-            whenTrue.isString,
-            whenTrue.isPointer,
-            whenTrue.pointerElement,
+            typeSource.type,
+            typeSource.isString,
+            typeSource.isPointer,
+            typeSource.pointerElement,
         );
+    }
+
+    private bool hasValue(in Operand operand) @safe @nogc nothrow pure {
+        return operand.isPointer ||
+            operand.isString ||
+            operand.type != ScalarType.void_;
     }
 
     // The byte width an operand occupies in the frame: 8 for a pointer or string
@@ -4508,12 +5017,36 @@ private struct Compiler {
             return Operand(offset, ScalarType.bool_);
         }
 
+        if (isStringType(equal.e1.type) && isStringType(equal.e2.type))
+            if (auto compared = tryStringEquality(equal))
+                return *compared;
+
         return compileIntBinaryExpression(
             equal,
-            Op.equal4,
+            equal.op == EXP.notEqual ? Op.notEqual4 : Op.equal4,
             ScalarType.bool_,
             "Unsupported equality in bytecode core: ",
         );
+    }
+
+    private Operand* tryStringEquality(BinExp equal) {
+        import dmd.tokens: EXP;
+
+        const left = compileExpression(equal.e1);
+        const right = compileExpression(equal.e2);
+        if (!left.isString || !right.isString)
+            return null;
+
+        const offset = allocate(ScalarType.bool_);
+        _code ~= Instruction(
+            Op.stringSliceEqual, offset, left.offset, right.offset,
+        );
+        if (equal.op == EXP.notEqual)
+            _code ~= Instruction(Op.notBool, offset, offset);
+
+        auto result = new Operand;
+        *result = Operand(offset, ScalarType.bool_);
+        return result;
     }
 
     private Operand compileIntBinaryExpression(
@@ -4929,7 +5462,9 @@ private struct Compiler {
     // false branch type-checks (the throw aborts before the null is used).
     private Operand compileRangeViolation() {
         const message = compileStringLiteralBytes("Range violation");
-        _code ~= Instruction(Op.throwString, message);
+        _code ~= Instruction(
+            Op.throwString, message, noExceptionClass, noCatchObjectField,
+        );
         const offset =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         return Operand(
@@ -5485,14 +6020,24 @@ private struct Compiler {
         auto integer = assert_.e1.isIntegerExp;
         if (integer !is null && integer.toInteger == 0) {
             const slice = *message;
-            _code ~= Instruction(Op.throwString, slice.offset);
+            _code ~= Instruction(
+                Op.throwString,
+                slice.offset,
+                noExceptionClass,
+                noCatchObjectField,
+            );
             return true;
         }
 
         const condition = compileExpression(assert_.e1);
         const skipJump = emitJumpIfTrue(condition);
         const slice = *message;
-        _code ~= Instruction(Op.throwString, slice.offset);
+        _code ~= Instruction(
+            Op.throwString,
+            slice.offset,
+            noExceptionClass,
+            noCatchObjectField,
+        );
         patchJump(skipJump);
         return true;
     }
@@ -6215,6 +6760,19 @@ private struct StructLocal {
     imported!"dmd.dstruct".StructDeclaration declaration;
 }
 
+// A synthetic caught Exception/Throwable object. The new core does not have
+// general class allocation yet, but a named catch exposes the observable fields
+// used by promoted tests as native D string-slice descriptors.
+private struct ExceptionObjectLocal {
+    ushort objectOffset = ushort.max;
+    ushort messageOffset;
+    ushort nextMessageOffset;
+}
+
+private struct ExceptionStringField {
+    ushort offset;
+}
+
 // An `outer[i]` element of an array-of-arrays local: the outer descriptor's
 // frame offset, the slot holding the index `i`, and the inner descriptor loaded
 // into a fresh slot. Reallocating the inner array (an append) must write the new
@@ -6243,6 +6801,8 @@ private imported!"quickbite.backends.bytecode.core.program".Op pointerStoreOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
+    if (elementSize == 8)
+        return Op.pointerStore8;
     return elementSize == 1 ? Op.pointerStore1 : Op.pointerStore4;
 }
 
@@ -6306,22 +6866,80 @@ private imported!"quickbite.backends.bytecode.core.program".Op dupArrayOp(
     return elementSize == 2 ? Op.dupArray2 : Op.dupArray4;
 }
 
-private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
+private bool isDeclarationNamed(
+    imported!"dmd.declaration".VarDeclaration declaration,
+    in string name,
+) {
+    return declaration !is null &&
+        declaration.ident !is null &&
+        declaration.ident.toString == name;
+}
+
+private imported!"dmd.expression".Expression thrownExpression(
+    imported!"dmd.expression".Expression expression,
+) @safe @nogc nothrow pure {
+    if (auto throw_ = expression is null ? null : expression.isThrowExp)
+        return thrownExpression(throw_.e1);
+    return expression;
+}
+
+// DMD's Array.opIndex is @system; these helpers only read element 0 after
+// checking the argument array exists and is non-empty.
+private imported!"dmd.expression".Expression thrownMessageExpression(
+    imported!"dmd.expression".NewExp new_,
+) @trusted @nogc nothrow pure {
+    if (new_.arguments is null || new_.arguments.length == 0)
+        return null;
+    return (*new_.arguments)[0];
+}
+
+private imported!"dmd.expression".Expression thrownCallMessageExpression(
+    imported!"dmd.expression".Expression expression,
+) @trusted @nogc nothrow pure {
+    if (auto throw_ = expression is null ? null : expression.isThrowExp)
+        return thrownCallMessageExpression(throw_.e1);
+    if (auto cast_ = expression is null ? null : expression.isCastExp)
+        return thrownCallMessageExpression(cast_.e1);
+    if (auto comma = expression is null ? null : expression.isCommaExp)
+        return thrownCallMessageExpression(comma.e2);
+
+    auto call = expression is null ? null : expression.isCallExp;
+    if (call is null || call.arguments is null || call.arguments.length == 0)
+        return null;
+    return nestedNewExpression(call.e1) is null ? null : (*call.arguments)[0];
+}
+
+private imported!"dmd.expression".NewExp nestedNewExpression(
+    imported!"dmd.expression".Expression expression,
+) @safe @nogc nothrow pure {
+    if (auto new_ = expression is null ? null : expression.isNewExp)
+        return new_;
+    if (auto cast_ = expression is null ? null : expression.isCastExp)
+        return nestedNewExpression(cast_.e1);
+    if (auto comma = expression is null ? null : expression.isCommaExp)
+        return nestedNewExpression(comma.e2);
+    if (auto dot = expression is null ? null : expression.isDotVarExp)
+        return nestedNewExpression(dot.e1);
+    if (auto call = expression is null ? null : expression.isCallExp)
+        return nestedNewExpression(call.e1);
+    return null;
+}
+
+private imported!"dmd.dclass".ClassDeclaration thrownClass(
+    imported!"dmd.expression".NewExp new_,
+) {
     if (new_ is null ||
         new_.placement !is null ||
-        new_.thisexp !is null ||
-        new_.arguments is null ||
-        new_.arguments.length == 0)
-        return false;
+        new_.thisexp !is null)
+        return null;
 
-    auto classType = new_.newtype is null
+    auto class_ = new_.newtype is null
         ? null
-        : new_.newtype.toBasetype.isTypeClass;
-    if (classType is null || classType.sym is null)
-        return false;
+        : new_.newtype.toBasetype.isClassHandle;
+    if (class_ is null)
+        return null;
 
-    return classType.sym.ident !is null &&
-        classType.sym.ident.toString == "Exception";
+    return class_;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op extendOp(

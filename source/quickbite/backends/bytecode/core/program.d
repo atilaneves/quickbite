@@ -68,6 +68,11 @@ package(quickbite.backends.bytecode) enum stringSliceSize = 8;
 package(quickbite.backends.bytecode) enum sliceDescriptorSize =
     2 * size_t.sizeof;
 
+// Sentinel for an instruction operand that would otherwise carry an optional
+// catch-object frame offset or exception class id.
+package(quickbite.backends.bytecode) enum noCatchObjectField = ushort.max;
+package(quickbite.backends.bytecode) enum noExceptionClass = ushort.max;
+
 package(quickbite.backends.bytecode) uint size(in ResultType type)
     @safe @nogc nothrow pure
 {
@@ -123,6 +128,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // frame slot at offset a. Backs `new Struct(...)`; field access through the
     // pointer reads and writes the heap block via pointerLoad/pointerStore.
     allocStruct,
+    // Allocate `c` bytes for a `new C` class object, write the class metadata
+    // index `b` into its first native word, root it in `heap`, and write the raw
+    // object pointer into the frame slot at offset `a`.
+    allocClass,
     // Resize the dynamic array whose descriptor is at frame offset a to the
     // size_t length read from frame offset c (`arr.length = n`). Allocate a fresh
     // block, copy the `min(oldLength, newLength)` existing elements, fill any
@@ -226,6 +235,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // D. The element size is fixed by the opcode (1 or 4 bytes).
     pointerStore1,
     pointerStore4,
+    pointerStore8,
     // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
@@ -376,7 +386,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // `int[]`) holding a copy of the map's keys / values.
     aaKeys,
     aaValues,
-    throwString, // a: frame offset of a string-slice descriptor
+    // a: frame offset of a string-slice descriptor, b: thrown exception-class
+    // id (`noExceptionClass` for non-D `Throwable` diagnostics).
+    throwString,
+    // Throw the class-reference pointer held in frame offset `a`. With an active
+    // handler, redirect to it and bind the pointer into the catch slot recorded
+    // by `pushHandler`; with none, raise the object's `msg` field when known.
+    throwObject,
     // UTF transcode backing `foreach`/`foreach_reverse` over a string whose
     // element width differs from the loop variable (druntime's `_aApply*`
     // family). a: 16-byte slice-descriptor result holding the decoded elements
@@ -384,12 +400,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // c: 16-byte source slice descriptor of the string's code units. Mirrors the
     // interpreter's decode/encode helpers byte-for-byte.
     transcodeUtf,
-    // Push a catch-handler record onto the machine's handler stack: a: the
-    // instruction index of the catch body. A later `throwString` redirects to
-    // the innermost handler (popping it) instead of propagating as a host
-    // exception. Backs `try { } catch (Exception) { }`.
+    // Push a catch-handler group onto the machine's handler stack: a: first
+    // `Program.catchClauses` index, b: catch-clause count. A later throw
+    // selects the first matching catch in the innermost matching group (popping
+    // the whole group) instead of propagating as a host exception.
     pushHandler,
-    // Pop the innermost catch handler on normal completion of a try body.
+    // Pop the innermost catch-handler group on normal completion of a try body.
     popHandler,
     ret, // a: frame offset of the return value
 }
@@ -445,10 +461,25 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     bool isArray;
 }
 
+package(quickbite.backends.bytecode) struct ClassInfo {
+    ushort baseClass = noExceptionClass;
+    ushort msgOffset = ushort.max;
+}
+
+package(quickbite.backends.bytecode) struct CatchClause {
+    ushort catchClass = noExceptionClass;
+    ushort objectOffset = noCatchObjectField;
+    ushort messageOffset = noCatchObjectField;
+    ushort nextMessageOffset = noCatchObjectField;
+    ushort handlerIp;
+}
+
 package(quickbite.backends.bytecode) struct Program {
     CompiledFunction[] functions; // index 0 is the entry function
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
     ubyte[real.sizeof][] realConstants; // raw bytes for 16-byte real literals
     ubyte[] data; // read-only segment holding string-literal bytes
     AssertDiagnostic[] assertDiagnostics;
+    ClassInfo[] classes;
+    CatchClause[] catchClauses;
 }

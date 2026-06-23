@@ -18,7 +18,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
     scope CompileFunction compileFunction,
 ) {
     import quickbite.backends.bytecode.core.program:
-        Op, size, sliceDescriptorSize;
+        CatchClause, ClassInfo, Op, noCatchObjectField, noExceptionClass,
+        size, sliceDescriptorSize, stringSliceSize;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -154,6 +155,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ];
                 heap ~= structBlock;
                 writeBlockPointer(stack, base + instruction.a, structBlock);
+                ++ip;
+                break;
+
+            case allocClass:
+                auto classBlock = new ubyte[](instruction.c);
+                classBlock[0 .. size_t.sizeof] =
+                    scalarBytes(cast(size_t) instruction.b)[];
+                heap ~= classBlock;
+                writeBlockPointer(stack, base + instruction.a, classBlock);
                 ++ip;
                 break;
 
@@ -323,7 +333,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case pointerStore1, pointerStore4:
+            case pointerStore1, pointerStore4, pointerStore8:
                 const pointerStoreSize = pointerElementSize(instruction.op);
                 const pointerStoreAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
@@ -1216,6 +1226,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
             case pushHandler:
                 handlers ~= Handler(
                     functionIndex, base, frames.length, instruction.a,
+                    instruction.b,
                 );
                 ++ip;
                 break;
@@ -1226,23 +1237,109 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case throwString:
-                // With a catch handler active, redirect to it (popping it):
-                // restore the handler's frame and jump to the catch body. With
-                // none, the throw escapes as a host exception (an uncaught
-                // throw or a synthesised diagnostic).
-                if (handlers.length == 0)
+                const selected = selectHandler(
+                    handlers,
+                    program.catchClauses,
+                    program.classes,
+                    instruction.b,
+                );
+                if (!selected.matched)
                     throw new Exception(stringFromSlice(
                         stack,
                         base + instruction.a,
                         program.data,
                     ));
 
-                const handler = handlers[$ - 1];
-                handlers.length -= 1;
-                frames.length = handler.frameDepth;
+                const handler = selected.handler;
+                const clause = selected.clause;
+                if (clause.objectOffset != noCatchObjectField) {
+                    auto objectBlock = exceptionObjectFromString(
+                        instruction.b,
+                        stack,
+                        base + instruction.a,
+                        program.classes,
+                    );
+                    heap ~= objectBlock;
+                    stack[
+                        handler.base + clause.objectOffset
+                        .. handler.base + clause.objectOffset
+                            + size_t.sizeof
+                    ] = scalarBytes(cast(size_t) objectBlock.ptr)[];
+                }
+                if (clause.messageOffset != noCatchObjectField)
+                    writeStringSliceFromData(
+                        stack,
+                        handler.base + clause.messageOffset,
+                        stack,
+                        base + instruction.a,
+                    );
+                if (clause.nextMessageOffset != noCatchObjectField) {
+                    if (instruction.c == noCatchObjectField)
+                        stack[
+                            handler.base + clause.nextMessageOffset
+                            .. handler.base + clause.nextMessageOffset
+                                + stringSliceSize
+                        ] = 0;
+                    else
+                        writeStringSliceFromData(
+                            stack,
+                            handler.base + clause.nextMessageOffset,
+                            stack,
+                            base + instruction.c,
+                        );
+                }
+                writeBackUnwoundFrames(
+                    stack, frames, base, handler.frameDepth,
+                );
                 functionIndex = handler.functionIndex;
                 base = handler.base;
-                ip = handler.handlerIp;
+                ip = clause.handlerIp;
+                break;
+
+            case throwObject:
+                const objectPointer =
+                    scalarValue!size_t(stack, base + instruction.a);
+                const classIndex = objectPointer == 0
+                    ? noExceptionClass
+                    : objectClassIndex(objectPointer);
+                const selected = selectHandler(
+                    handlers,
+                    program.catchClauses,
+                    program.classes,
+                    classIndex,
+                );
+                if (!selected.matched)
+                    throw new Exception(exceptionMessage(
+                        objectPointer, program.classes, program.data,
+                    ));
+
+                const handler = selected.handler;
+                const clause = selected.clause;
+                if (clause.objectOffset != noCatchObjectField)
+                    stack[
+                        handler.base + clause.objectOffset
+                        .. handler.base + clause.objectOffset
+                            + size_t.sizeof
+                    ] = scalarBytes(objectPointer)[];
+                if (clause.messageOffset != noCatchObjectField)
+                    writeStringSliceFromObject(
+                        stack,
+                        handler.base + clause.messageOffset,
+                        objectPointer,
+                        program.classes,
+                    );
+                if (clause.nextMessageOffset != noCatchObjectField)
+                    stack[
+                        handler.base + clause.nextMessageOffset
+                        .. handler.base + clause.nextMessageOffset
+                            + stringSliceSize
+                    ] = 0;
+                writeBackUnwoundFrames(
+                    stack, frames, base, handler.frameDepth,
+                );
+                functionIndex = handler.functionIndex;
+                base = handler.base;
+                ip = clause.handlerIp;
                 break;
 
             case transcodeUtf: {
@@ -1269,16 +1366,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 const frame = frames[$ - 1];
                 frames.length -= 1;
 
-                // Write each scalar `ref` parameter's final value back to the
-                // caller-frame slot it referenced.
-                foreach (writeback; frame.refWritebacks)
-                    stack[
-                        writeback.callerOffset
-                        .. writeback.callerOffset + writeback.size
-                    ] = stack[
-                        base + writeback.calleeOffset
-                        .. base + writeback.calleeOffset + writeback.size
-                    ];
+                writeBackRefParameters(stack, frame, base);
 
                 stack[
                     frame.base + frame.destination
@@ -1292,6 +1380,79 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
         }
     }
+}
+
+private void writeBackUnwoundFrames(
+    ubyte[] stack,
+    ref Frame[] frames,
+    size_t base,
+    in size_t frameDepth,
+) {
+    size_t calleeBase = base;
+    while (frames.length > frameDepth) {
+        const frame = frames[$ - 1];
+        writeBackRefParameters(stack, frame, calleeBase);
+        frames.length -= 1;
+        calleeBase = frame.base;
+    }
+}
+
+private void writeBackRefParameters(
+    ubyte[] stack,
+    in Frame frame,
+    in size_t calleeBase,
+) {
+    foreach (writeback; frame.refWritebacks)
+        stack[
+            writeback.callerOffset .. writeback.callerOffset + writeback.size
+        ] = stack[
+            calleeBase + writeback.calleeOffset
+            .. calleeBase + writeback.calleeOffset + writeback.size
+        ];
+}
+
+private SelectedHandler selectHandler(
+    ref Handler[] handlers,
+    in imported!"quickbite.backends.bytecode.core.program".CatchClause[]
+        clauses,
+    in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
+    in ushort thrownClass,
+) @safe {
+    while (handlers.length != 0) {
+        const handler = handlers[$ - 1];
+        handlers.length -= 1;
+        foreach (index; 0 .. handler.catchCount) {
+            const clause = clauses[handler.catchStart + index];
+            if (classMatches(thrownClass, clause.catchClass, classes))
+                return SelectedHandler(true, handler, clause);
+        }
+    }
+
+    return SelectedHandler.init;
+}
+
+private bool classMatches(
+    in ushort thrownClass,
+    in ushort catchClass,
+    in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
+) @safe {
+    import quickbite.backends.bytecode.core.program: noExceptionClass;
+
+    if (thrownClass == noExceptionClass)
+        return catchClass == noExceptionClass;
+    if (catchClass == noExceptionClass)
+        return true;
+
+    ushort current = thrownClass;
+    while (current != noExceptionClass) {
+        if (current == catchClass)
+            return true;
+        if (current >= classes.length)
+            return false;
+        current = classes[current].baseClass;
+    }
+
+    return false;
 }
 
 // Decode/transcode the string slice descriptor at `sourceOffset` per `mode`
@@ -1374,6 +1535,96 @@ private string stringFromSlice(
     return (cast(const(char)[]) data[dataOffset .. dataOffset + length]).idup;
 }
 
+private string exceptionMessage(
+    in size_t objectPointer,
+    in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
+    in ubyte[] data,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: stringSliceSize;
+
+    if (objectPointer == 0)
+        return "null";
+
+    const object = cast(const(ubyte)*) objectPointer;
+    const classIndex = objectScalarValue!size_t(object);
+    if (classIndex >= classes.length ||
+        classes[classIndex].msgOffset == ushort.max)
+        return "Uncaught exception";
+
+    return stringFromObjectSlice(
+        object + classes[classIndex].msgOffset, data,
+    );
+}
+
+private ubyte[] exceptionObjectFromString(
+    in ushort classIndex,
+    in ubyte[] source,
+    in size_t sourceOffset,
+    in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: stringSliceSize;
+
+    const messageOffset = classIndex < classes.length &&
+        classes[classIndex].msgOffset != ushort.max
+        ? classes[classIndex].msgOffset
+        : cast(ushort) size_t.sizeof;
+    auto object = new ubyte[](messageOffset + stringSliceSize);
+    object[0 .. size_t.sizeof] = scalarBytes(cast(size_t) classIndex)[];
+    object[messageOffset .. messageOffset + stringSliceSize] =
+        source[sourceOffset .. sourceOffset + stringSliceSize];
+    return object;
+}
+
+private ushort objectClassIndex(in size_t objectPointer) @trusted {
+    return cast(ushort) objectScalarValue!size_t(cast(const(ubyte)*) objectPointer);
+}
+
+private string stringFromObjectSlice(
+    in ubyte* descriptor,
+    in ubyte[] data,
+) @trusted {
+    const dataOffset = objectScalarValue!uint(descriptor);
+    const length = objectScalarValue!uint(descriptor + uint.sizeof);
+    return (cast(const(char)[]) data[dataOffset .. dataOffset + length]).idup;
+}
+
+private void writeStringSliceFromObject(
+    ref ubyte[] destination,
+    in size_t destinationOffset,
+    in size_t objectPointer,
+    in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: stringSliceSize;
+
+    if (objectPointer == 0)
+        return;
+
+    const object = cast(const(ubyte)*) objectPointer;
+    const classIndex = objectScalarValue!size_t(object);
+    if (classIndex >= classes.length ||
+        classes[classIndex].msgOffset == ushort.max)
+        return;
+
+    const descriptor = object + classes[classIndex].msgOffset;
+    destination[
+        destinationOffset .. destinationOffset + stringSliceSize
+    ] = descriptor[0 .. stringSliceSize];
+}
+
+// Copy a compact read-only program-data string descriptor into a frame slot.
+private void writeStringSliceFromData(
+    ref ubyte[] destination,
+    in size_t destinationOffset,
+    in ubyte[] source,
+    in size_t sourceOffset,
+) @safe {
+    import quickbite.backends.bytecode.core.program: stringSliceSize;
+
+    destination[
+        destinationOffset .. destinationOffset + stringSliceSize
+    ] = source[sourceOffset .. sourceOffset + stringSliceSize];
+}
+
 // Write a slice descriptor {ptr, length} at `offset`: the heap block's native
 // address followed by the element count, each a little-endian size_t.
 private void writeSliceDescriptor(
@@ -1448,6 +1699,8 @@ private uint pointerElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
+    if (op == Op.pointerStore8)
+        return 8;
     return op == Op.pointerLoad1 || op == Op.pointerSlice1 ||
         op == Op.pointerStore1 ? 1 : 4;
 }
@@ -1738,7 +1991,14 @@ private struct Handler {
     size_t functionIndex;
     size_t base;
     size_t frameDepth;
-    size_t handlerIp;
+    ushort catchStart;
+    ushort catchCount;
+}
+
+private struct SelectedHandler {
+    bool matched;
+    Handler handler;
+    imported!"quickbite.backends.bytecode.core.program".CatchClause clause;
 }
 
 // A pending scalar `ref` writeback: copy `size` bytes from the callee
@@ -1891,6 +2151,14 @@ private ubyte[T.sizeof] scalarBytes(T)(in T value)
         bytes[i] = cast(ubyte) ((raw >> (8 * i)) & 0xff);
 
     return bytes;
+}
+
+private T objectScalarValue(T)(in ubyte* source) @trusted
+    if (T.sizeof <= ulong.sizeof)
+{
+    T value;
+    (cast(ubyte*) &value)[0 .. T.sizeof] = source[0 .. T.sizeof];
+    return value;
 }
 
 // True when every byte of the `width`-byte frame slot at `offset` is zero,
