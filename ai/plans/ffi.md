@@ -147,6 +147,10 @@ behind the §5 interface), then the two tracks proceed independently. The seam �
 not native layout — is the prerequisite; native layout is one thing Track B may
 try once the seam exists.
 
+For the cheapest route to "call any dub leaf" — a generic `Type`-driven
+marshaller plus two general mechanisms instead of one rung per ABI shape — see
+§34.3.1.
+
 (Former §3–§10 and §15–§20 — the dead wrapper-manifest/prepare/caching design —
 deleted; see §3. §11–§14 below are the live cross-boundary contracts the ladder
 still references. Section numbers are preserved because they're cross-referenced
@@ -177,6 +181,20 @@ all three are the identity.
                           void function(void*) destroy; }`); method calls
                           dispatch back through the bridge.
 ```
+
+The handle is not a fallback dodge — for a genuinely opaque value it mirrors the
+ABI (a class reference *is* a pointer, `File` *is* a handle) and the
+native-layout backend (§23) represents these the same way. It is a *workaround*
+only when reached for to avoid representing a value the backend must compute over.
+"Handle for everything" is not a free generalization: an **opaque** handle (never
+read through `ptr`) for everything stops the backend from interpreting — it cannot
+branch on, index, render, or compute on a value it will not inspect, it allocates
+per scalar, and it is GC-unsafe for any value holding GC references; a
+**transparent** handle (read/write fields at DMD offsets) for everything is not a
+workaround at all but the native-layout representation itself
+(`ai/plans/value.md`), carrying that representation's real costs. The two are the
+same idea at opposite transparency limits; the boxed interpreter sits between
+them, paying a per-crossing materialize/reify.
 
 ## 12. Exceptions
 
@@ -2153,6 +2171,48 @@ Inc  Contract                                          Track  Status   Ref
 concern going forward), 12 was genuine ABI ordering (Track A). The pure-A rungs
 (13, 20, 21, 23) are independent of the representation and are the spine of the
 bridge track. The AB rungs need the seam interface stable first.
+
+### 34.3.1 Least-work path to arbitrary FFI (2026-06-23)
+
+The ladder above reads as one planning-PR-plus-one-marshalling-rung per ABI
+shape — which is what made FFI feel endless. It is not the cheapest route to
+"call any dub leaf". The remaining work collapses to **one lever plus a bounded
+set**, and the per-rung planning cadence (§34.1) should stop after it:
+
+```text
+0. Generic, Type-driven marshaller. Drive materialize/reify purely off DMD
+   layout (Type.size, field offsets, element width) with cases only for LEAF
+   kinds (integer/float widths, pointer, the {ptr,length} slice descriptor).
+   Every aggregate — nested structs, arrays of structs, slices in structs, any
+   depth — then falls out of the recursion with NO new code. Evidence: §34.11
+   landed as a characterization pin because the recursive walk already handled
+   it. Most remaining B* rungs are latent in the recursion; auditing
+   marshalArgument/unmarshalValue/ffiTypeFor to be fully generic retires them.
+1. Two general mechanisms, each written once:
+   - the opaque native handle (§11.3) — the whole class/interface/File/opaque
+     long tail through ONE representation; method calls reuse the §28/§29
+     hidden-this path (§34.12).
+   - writeback (retain buffer, reify after the call, assign back) — out-params,
+     mutable slices, and mutating receivers as ONE mechanism (largely landed,
+     §34.8/§34.9/§34.10).
+2. The finite, representation-independent ABI set libffi needs help with: sret
+   large-struct returns (§34.7), scalar out-params (§34.8), ctors/dtors
+   (§34.13), variadics (§34.15). Bounded, not a ladder; stack-spill and
+   extern(D) reversal already done.
+3. The exception guard (§30/§31 → §34.14): real code throws.
+
+Deferred deliberately (this is where the savings come from): the reverse bridge
+(§34.16, passing interpreted closures INTO native code) — large, and not needed
+for the common "call FFI" case; and extern(C++) (§34.17) — on demand. State both
+as known gaps, not silent ones.
+```
+
+Known limitation: the boxed seam cannot faithfully cross an aggregate whose bytes
+*are* the semantics (a struct field that is a `union`, or one captured by `&` and
+reinterpret-cast) — a boxed `Value` cannot model overlapping/aliased memory.
+These are rare in FFI-crossing data; the full fix is the native-layout
+representation (`ai/plans/value.md`), the separate correctness endgame, not this
+least-work path.
 
 Anchors shared by most rungs (re-grep; line numbers drift):
 

@@ -118,6 +118,52 @@ the FFI seam.
   convenience (a uniform D type to return from `eval(Expr)`); that benefit is
   what is paid back at the seam.
 
+Decision 2026-06-23 (research validation + reframe): a cross-language survey
+(LuaJIT, CPython, Ruby MRI, the JVM, .NET, Go; plus the static-language
+interpreters OCaml/GHCi/JVM/MLton and the CTFE engines of Clang/D/Zig) settles
+two things bearing on the open question above.
+
+- The boxed-leaves + native-layout-aggregates-behind-a-handle shape is the
+  **universal** answer, not a Quickbite invention. Every boxed-value runtime that
+  does FFI well keeps its box for scalars / host convenience but holds
+  FFI-crossing aggregates in native ABI layout behind a thin handle, never as a
+  recursive tree of boxed values: CPython `ctypes`/`cffi` `cdata`, Ruby
+  `Fiddle::Pointer` / `FFI::AbstractMemory`, LuaJIT `GCcdata`, the JVM's
+  `MemorySegment`+`VarHandle` (Panama) versus boxed-object JNI, and .NET
+  *blittable* types (identical bit layout → pinned, not marshalled). The handle
+  and the native-layout representation are the **same idea at two transparency
+  settings** — opaque (never read through the pointer; the `ffi.md` §11.3 escape
+  hatch) versus transparent (read/write fields at DMD offsets; the native-layout
+  interpreter). The boxed interpreter sits between them, paying a per-crossing
+  materialize/reify.
+- The reframe: moving aggregates to native layout is a **correctness win first,
+  latency second** — which dissolves the "worse interpreter to save FFI work"
+  framing. The static-language survey confirms the Lox type *tag* is redundant
+  for type-safety (the JVM operand stack carries none; MLton is fully unboxed;
+  OCaml's tag exists for the GC and separate-compilation polymorphism, not
+  types). But runtime discriminants are still required for GC pointer-tracing and
+  for sum-type/union/variant dispatch — exactly the correctness ceiling
+  (`&local`, unions, reinterpret casts, slices into locals) that *recursive
+  aggregate boxing* cannot pass at any speed. Native layout passes it by
+  construction. This is the decider already named in the 2026-06-23 measured
+  result below; the survey corroborates it.
+- Latency caveat, to keep expectations honest: native layout removes
+  per-aggregate marshalling + GC alloc + tag dispatch (the measured ~26x), but
+  **not** the libffi `ffi_call` dispatch cost — only a JIT erases that, which a
+  tree-walker does not have. So native layout makes interpreter FFI *correct and
+  marshalling-free*, not *fast in absolute terms*; the interpreter's edge stays
+  no-emit (the orthogonality argument above), not fast calls.
+- `std.variant.Variant` considered and rejected as a replacement for the current
+  `SumType` `Value`. It is a heavier box for the same strategy, not a different
+  strategy: it still recursively boxes aggregates (a *guest* `struct Point` is a
+  DMD AST type, not a host D type, so it cannot be stored in a `Variant` at its
+  native type — it becomes `Variant[]`, exactly as it is `Value[]` today), it
+  reintroduces the runtime `TypeInfo` dispatch the static frontend makes
+  redundant, it heap-allocates past its inline buffer, and it drops `match`
+  exhaustiveness. It moves the representation the wrong way along the axis above
+  (toward a worse box); the fix moves the other way (toward native bytes behind a
+  handle).
+
 Progress 2026-06-19: the prelude formatter now owns the scalar literal
 suffix cases that were previously only pinned through `Value.toString`:
 `uint`, `long`, `ulong`, `float`, and `real` render as D literals with
