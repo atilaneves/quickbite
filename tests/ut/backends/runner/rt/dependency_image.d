@@ -302,6 +302,103 @@ unittest {
     }
 }
 
+@("dependencyImage.externDStackSpillFunction.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_stack_spill_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_stack_spill_fixture;
+
+            int dependencyEncodePositions(
+                int first,
+                int second,
+                int third,
+                int fourth,
+                int fifth,
+                int sixth,
+                int seventh,
+                int eighth,
+            ) {
+                return first * 10000000 +
+                    second * 1000000 +
+                    third * 100000 +
+                    fourth * 10000 +
+                    fifth * 1000 +
+                    sixth * 100 +
+                    seventh * 10 +
+                    eighth;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_stack_spill_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_stack_spill_fixture;
+
+            int dependencyEncodePositions(
+                int first,
+                int second,
+                int third,
+                int fourth,
+                int fifth,
+                int sixth,
+                int seventh,
+                int eighth,
+            );
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_stack_spill_fixture;
+
+                unittest {
+                    int first = 1;
+                    int second = 2;
+                    int third = 3;
+                    int fourth = 4;
+                    int fifth = 5;
+                    int sixth = 6;
+                    int seventh = 7;
+                    int eighth = 8;
+                    assert(dependencyEncodePositions(
+                        first,
+                        second,
+                        third,
+                        fourth,
+                        fifth,
+                        sixth,
+                        seventh,
+                        eighth,
+                    ) == 12345678);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externDMemberFunction.Interpreter")
 @Tags("Interpreter")
 unittest {
