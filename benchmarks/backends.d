@@ -13,6 +13,7 @@ public struct BackendEnv {
     string[] importPaths;
     string[] linkFiles;
     string packageRoot;
+    imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags;
 }
 
 // One registry entry per backend; adding bytecode/ir later is a single line in
@@ -32,6 +33,7 @@ private Runner makeSystemLinker(in BackendEnv env) {
         env.linkFiles,
         env.importPaths,
         env.packageRoot,
+        env.frontendFlags,
     );
 }
 
@@ -43,6 +45,7 @@ private Runner makeLLVMJit(in BackendEnv env) {
         env.linkFiles,
         env.importPaths,
         env.packageRoot,
+        env.frontendFlags,
     );
 }
 

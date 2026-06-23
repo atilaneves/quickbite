@@ -46,12 +46,17 @@ public class LLVMJit:
         const string[] linkFiles,
         const string[] importPaths,
         in string packageRoot,
+        in imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
+            imported!"quickbite.frontend.compiler".FrontendFlags.init,
     ) {
+        import quickbite.frontend.compiler: FrontendFlags;
+
         this(
             LLVMJitInputs(
                 archiveImportPathsUnder(importPaths, packageRoot),
                 sharedLibraries(linkFiles),
                 staticLibraries(linkFiles),
+                FrontendFlags(frontendFlags.compilerArguments.dup),
             ),
         );
         loadDependencyImages(_inputs.dependencyImages);
@@ -206,6 +211,8 @@ public struct LLVMJitInputs {
     // Static libraries are searched by ORC and their members are linked only
     // when the hot objects reference a symbol they define.
     public const string[] staticLibraries;
+    public imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
+        imported!"quickbite.frontend.compiler".FrontendFlags.init;
 }
 
 private string[] sharedLibraries(in string[] linkFiles) @safe pure {
@@ -294,6 +301,7 @@ private imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jitForObje
         LLVMOrcLLJITGetGlobalPrefix,
         LLVMOrcLLJITGetMainJITDylib,
         LLVMOrcLLJITRef;
+    import quickbite.frontend.compiler: FrontendFlags;
     import quickbite.frontend.compiler: withCompilerLock;
     import core.atomic: atomicFetchAdd;
     import core.sys.posix.unistd: getpid;
@@ -317,6 +325,7 @@ private imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jitForObje
             dir,
             CodegenInputs(
                 inputs.archiveImportPaths,
+                FrontendFlags(inputs.frontendFlags.compilerArguments.dup),
             ),
         );
     });

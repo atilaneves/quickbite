@@ -15,6 +15,11 @@ public struct CodegenInputs {
     // are traversed for template-instance codegen is derived from the modules
     // themselves (see archiveCodegenImports), not from a caller flag.
     public const string[] archiveImportPaths;
+    // The compiler arguments dub used for the package under test (e.g.
+    // -version, -preview, -I). Applied around codegen so the import modules'
+    // semantic3 sees the same frontend configuration as the original parse.
+    public imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
+        imported!"quickbite.frontend.compiler".FrontendFlags.init;
 }
 
 // Fork, run DMD's backend, and write one object file per emitted module into
@@ -24,6 +29,20 @@ public struct CodegenInputs {
 // emits to disk and exits; the parent reads the paths back. Callers consume
 // the objects however they like (dmd -shared, ORC, ...).
 public string[] emitObjectFilesForLink(
+    imported!"dmd.dmodule".Module[] rootModules,
+    in string dir,
+    in CodegenInputs inputs,
+) {
+    import quickbite.frontend.compiler: withFrontendFlags;
+
+    string[] objPaths;
+    withFrontendFlags(inputs.frontendFlags, () {
+        objPaths = emitObjectFilesForLinkLocked(rootModules, dir, inputs);
+    });
+    return objPaths;
+}
+
+private string[] emitObjectFilesForLinkLocked(
     imported!"dmd.dmodule".Module[] rootModules,
     in string dir,
     in CodegenInputs inputs,

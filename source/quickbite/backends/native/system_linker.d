@@ -41,11 +41,16 @@ public class SystemLinker:
         const string[] linkFiles,
         const string[] importPaths,
         in string packageRoot,
+        in imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
+            imported!"quickbite.frontend.compiler".FrontendFlags.init,
     ) @safe {
+        import quickbite.frontend.compiler: FrontendFlags;
+
         this(
             SystemLinkerInputs(
                 linkFiles,
                 archiveImportPathsUnder(importPaths, packageRoot),
+                FrontendFlags(frontendFlags.compilerArguments.dup),
             ),
         );
     }
@@ -123,6 +128,8 @@ public struct SystemLinkerInputs {
     // codegen'd again.
     public const string[] linkFiles;
     public const string[] archiveImportPaths;
+    public imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
+        imported!"quickbite.frontend.compiler".FrontendFlags.init;
 }
 
 // import paths under the package belong to the project under test and are
@@ -160,6 +167,7 @@ private BuiltLibrary buildSharedLibrary(
 ) {
     import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForLink;
     import quickbite.frontend.compiler: withCompilerLock;
+    import quickbite.frontend.compiler: FrontendFlags;
     import core.atomic: atomicFetchAdd;
     import std.conv: text;
     import std.file: mkdirRecurse, tempDir;
@@ -183,6 +191,7 @@ private BuiltLibrary buildSharedLibrary(
             dir,
             CodegenInputs(
                 inputs.archiveImportPaths,
+                FrontendFlags(inputs.frontendFlags.compilerArguments.dup),
             ),
         );
     });
