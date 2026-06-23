@@ -869,3 +869,78 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+@("dependencyImage.externCppFunctionAndMember.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_cpp_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_cpp_fixture;
+
+            extern(C++) int dependencyCppSub(int a, int b) {
+                return a - b;
+            }
+
+            extern(C++) struct CppCounter {
+                int value;
+
+                int combine(int x, int y) {
+                    return value * 100 + x * 10 + y;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_cpp_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_cpp_fixture;
+
+            extern(C++) int dependencyCppSub(int a, int b);
+
+            extern(C++) struct CppCounter {
+                int value;
+                int combine(int x, int y);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_cpp_fixture;
+
+                unittest {
+                    int a = 9;
+                    int b = 4;
+                    assert(dependencyCppSub(a, b) == 5);
+
+                    CppCounter counter = CppCounter(7);
+                    int x = 2;
+                    int y = 3;
+                    assert(counter.combine(x, y) == 723);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

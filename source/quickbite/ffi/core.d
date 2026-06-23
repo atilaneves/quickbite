@@ -158,7 +158,7 @@ private bool isSupportedNativeLinkage(
 ) @safe @nogc nothrow pure {
     import dmd.astenums: LINK;
 
-    return linkage == LINK.c || linkage == LINK.d;
+    return linkage == LINK.c || linkage == LINK.d || linkage == LINK.cpp;
 }
 
 // Build a libffi call interface from the function signature, have the injected
