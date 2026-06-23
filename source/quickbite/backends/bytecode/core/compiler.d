@@ -33,18 +33,19 @@ private struct Compiler {
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
         Instruction, Op, Program,
-        RefParameter, ResultType, ScalarType, isSigned, noCatchObjectField,
-        noExceptionClass, size, sliceDescriptorSize, stringSliceSize;
+        RefParameter, ResultType, ScalarType, VirtualFunction, isSigned,
+        noCatchObjectField, noExceptionClass, size, sliceDescriptorSize,
+        stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
         AssocArrayLiteralExp, AssertExp,
         AssignExp, BinExp, BlitExp, CallExp, CastExp, CatElemAssignExp, CatExp,
-        CmpExp, CondExp, ConstructExp, DivExp, DotVarExp, Expression, IndexExp,
-        LogicalExp, MulExp,
-        FuncExp,
+        CmpExp, CondExp, ConstructExp, DelegateFuncptrExp, DelegatePtrExp,
+        DivExp, DotIdExp, DotVarExp, Expression,
+        IdentityExp, IndexExp, LogicalExp, MulExp, FuncExp, DelegateExp,
         NegExp, NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp,
-        StringExp, StructLiteralExp, SymOffExp, ThrowExp;
+        StringExp, StructLiteralExp, SymOffExp, ThrowExp, TypeidExp;
     import dmd.arraytypes: Expressions;
     import dmd.dclass: ClassDeclaration;
     import dmd.func: FuncDeclaration;
@@ -74,6 +75,8 @@ private struct Compiler {
     // records the pointed-at element scalar, giving the stride for arithmetic,
     // indexing, dereference, and slicing.
     private ScalarType[VarDeclaration] _pointerLocals;
+    // Locals whose slot holds a `{double re, double im}` cdouble value.
+    private bool[VarDeclaration] _complexDoubleLocals;
     // Locals whose slot holds an 8-byte associative-array handle (`int[int]`):
     // a 1-based index into the machine's VM-owned map table, 0 until created.
     private bool[VarDeclaration] _assocArrayLocals;
@@ -103,6 +106,9 @@ private struct Compiler {
     // declaration, so an unqualified `this.field` resolves against it.
     private StructLocal _thisLocal;
     private bool _hasThis;
+    private ushort _nestedContextOffset = ushort.max;
+    private ushort _classThisOffset = ushort.max;
+    private bool _hasClassThis;
     // Synthetic `with` pointers (`S* __withSym = &subject`): each maps to the
     // inline frame base of its struct subject, so `(*__withSym).field` in the
     // body resolves to `subjectBase + field.offset`.
@@ -134,6 +140,7 @@ private struct Compiler {
     private const(void)* _pendingLoopLabel;
     private ushort _pendingFinallyExceptionMessageOffset = noCatchObjectField;
     private ushort _pendingFinallyExceptionClassIndex = noExceptionClass;
+    private ushort _activeDollarLength = ushort.max;
     private size_t[ulong] _constantIndices;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
@@ -163,6 +170,7 @@ private struct Compiler {
         _staticArrayLocals = null;
         _dynamicArrayLocals = null;
         _pointerLocals = null;
+        _complexDoubleLocals = null;
         _assocArrayLocals = null;
         _delegateLocals = null;
         _structLocals = null;
@@ -170,6 +178,9 @@ private struct Compiler {
         _classPointerLocals = null;
         _exceptionObjectLocals = null;
         _hasThis = false;
+        _hasClassThis = false;
+        _nestedContextOffset = ushort.max;
+        _classThisOffset = ushort.max;
         _hasNestedContext = false;
         _thisLocal = StructLocal.init;
         _withDerefBases = null;
@@ -181,6 +192,7 @@ private struct Compiler {
         _pendingLoopLabel = null;
         _pendingFinallyExceptionMessageOffset = noCatchObjectField;
         _pendingFinallyExceptionClassIndex = noExceptionClass;
+        _activeDollarLength = ushort.max;
         _applyBodyExits = null;
 
         import dmd.astenums: TY;
@@ -199,6 +211,14 @@ private struct Compiler {
             );
             _hasNestedContext = _thisLocal.declaration !is null &&
                 _thisLocal.declaration.isNested;
+        }
+        if (layout.hasNestedContext) {
+            _hasNestedContext = true;
+            _nestedContextOffset = layout.nestedContextOffset;
+        }
+        if (layout.hasClassThis) {
+            _hasClassThis = true;
+            _classThisOffset = layout.classThisOffset;
         }
         if (function_.parameters !is null)
             foreach (parameterIndex; 0 .. function_.parameters.length) {
@@ -234,6 +254,9 @@ private struct Compiler {
                 }
 
                 _locals[parameter] = offset;
+                if (isPointerType(parameter.type))
+                    _pointerLocals[parameter] =
+                        pointerElementScalar(parameter.type);
             }
 
         compileStatement(function_.fbody);
@@ -575,10 +598,13 @@ private struct Compiler {
             );
             hasResult = true;
         } else if (_currentReturnType.isStruct) {
-            // `return structValue;`: the result block lives at the struct
-            // operand's inline base; `ret` copies its `structSize` bytes back to
-            // the caller's destination.
-            result = structOperandOffset(return_.exp);
+            if (auto staticArray = staticArrayOffsetOf(return_.exp))
+                result = *staticArray;
+            else
+                // `return structValue;`: the result block lives at the struct
+                // operand's inline base; `ret` copies its `structSize` bytes
+                // back to the caller's destination.
+                result = structOperandOffset(return_.exp);
             hasResult = true;
         } else if (return_.exp !is null &&
             (_currentReturnType.isString ||
@@ -756,14 +782,50 @@ private struct Compiler {
         const index = cast(ushort) _program.classes.length;
         _classIndices[class_] = index;
         _program.classes ~= ClassInfo.init;
+        const baseClass = registerClass(class_.baseClass);
         const msgOffset = classFieldOffset(class_, "msg");
         _program.classes[index] = ClassInfo(
-            registerClass(class_.baseClass),
+            baseClass,
             msgOffset == noCatchObjectField
                 ? cast(ushort) size_t.sizeof
                 : msgOffset,
         );
+        if (baseClass != noExceptionClass)
+            _program.classes[index].virtualFunctions =
+                _program.classes[baseClass].virtualFunctions.dup;
+        registerVirtualFunctions(class_, _program.classes[index]);
         return index;
+    }
+
+    private void registerVirtualFunctions(
+        ClassDeclaration class_,
+        ref ClassInfo info,
+    ) {
+        foreach (base; virtualBases(class_))
+            registerVirtualFunction(class_, base, info);
+    }
+
+    private void registerVirtualFunction(
+        ClassDeclaration class_,
+        FuncDeclaration base,
+        ref ClassInfo info,
+    ) {
+        if (base is null || !supportedVirtualSignature(base))
+            return;
+
+        auto target = overridingFunction(class_, base);
+        if (target is null || !supportedVirtualSignature(target))
+            return;
+
+        const baseIndex = registerFunction(base);
+        const targetIndex = registerFunction(target);
+        foreach (ref existing; info.virtualFunctions)
+            if (existing.baseFunction == baseIndex) {
+                existing.function_ = targetIndex;
+                return;
+            }
+
+        info.virtualFunctions ~= VirtualFunction(baseIndex, targetIndex);
     }
 
     private ushort classFieldOffset(ClassDeclaration class_, in string name) {
@@ -1346,6 +1408,9 @@ private struct Compiler {
         }
 
         if (auto real_ = expression.isRealExp) {
+            if (isImaginaryDoubleType(real_.type))
+                return compileImaginaryDoubleLiteral(real_);
+
             const type = scalarType(real_.type);
             const offset = allocate(type);
             if (type == ScalarType.real_) {
@@ -1369,11 +1434,27 @@ private struct Compiler {
         if (auto string_ = expression.isStringExp)
             return compileStringLiteral(string_);
 
+        if (auto typeid_ = expression.isTypeidExp)
+            return compileTypeidExpression(typeid_);
+
+        if (expression.isThisExp !is null || expression.isSuperExp !is null)
+            if (_hasClassThis)
+                return Operand(
+                    _classThisOffset,
+                    ScalarType.ulong_,
+                    false,
+                    true,
+                    ScalarType.void_,
+                );
+
         if (auto negate = expression.isNegExp)
             return compileNegateExpression(negate);
 
         if (auto not = expression.isNotExp)
             return compileNotExpression(not);
+
+        if (auto complement = expression.isComExp)
+            return compileComplementExpression(complement);
 
         if (auto subtract = expression.isMinExp)
             return compileSubtractExpression(subtract);
@@ -1383,6 +1464,15 @@ private struct Compiler {
                 if (auto existing = declaration in _locals) {
                     if (declaration in _stringLocals)
                         return Operand(*existing, ScalarType.void_, true);
+                    if (declaration in _complexDoubleLocals)
+                        return Operand(
+                            *existing,
+                            ScalarType.void_,
+                            false,
+                            false,
+                            ScalarType.void_,
+                            true,
+                        );
                     if (declaration in _classPointerLocals)
                         return Operand(
                             *existing,
@@ -1407,6 +1497,32 @@ private struct Compiler {
                     if (auto captured = declaration in _capturedOffsets)
                         return loadCapturedLocal(declaration, *captured);
 
+            if (expressionChars(expression) == "$" &&
+                _activeDollarLength != ushort.max)
+                return Operand(_activeDollarLength, ScalarType.ulong_);
+
+            if (expressionChars(expression) == "__ctfe") {
+                const offset = allocate(ScalarType.bool_);
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    offset,
+                    constantIndex(0),
+                    cast(ushort) size(ScalarType.bool_),
+                );
+                return Operand(offset, ScalarType.bool_);
+            }
+
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (isDeclarationNamed(declaration, "$") ||
+                    declaration.isImmutable)
+                    if (auto initializer =
+                            declaration._init is null
+                                ? null
+                                : declaration._init.isExpInitializer)
+                        return compileExpression(
+                            initializerExpression(initializer.exp),
+                        );
+
             throw new Exception(text(
                 "Unsupported variable in bytecode core: ",
                 expressionChars(expression),
@@ -1414,6 +1530,8 @@ private struct Compiler {
         }
 
         if (auto declaration = expression.isDeclarationExp) {
+            import std.algorithm: startsWith;
+
             if (auto variable = declaration.declaration.isVarDeclaration) {
                 compileVariableDeclaration(variable);
                 return Operand.init;
@@ -1423,6 +1541,9 @@ private struct Compiler {
             // function body) is a compile-time construct that emits no runtime
             // code; semantic has already resolved it.
             if (declaration.declaration.isAggregateDeclaration !is null)
+                return Operand.init;
+            if (declaration.declaration.isStorageClassDeclaration !is null &&
+                expressionChars(expression).startsWith("static struct "))
                 return Operand.init;
 
             // A static nested function declaration (`static int f() { ... }`
@@ -1473,6 +1594,36 @@ private struct Compiler {
         if (auto divide = expression.isDivExp)
             return compileDivideExpression(divide);
 
+        if (auto modulo = expression.isModExp)
+            return compileModuloExpression(modulo);
+
+        if (auto leftShift = expression.isShlExp)
+            return compileShiftExpression(
+                leftShift,
+                Op.shlInt4,
+                "Unsupported left shift in bytecode core: ",
+            );
+
+        if (auto rightShift = expression.isShrExp)
+            return compileShiftExpression(
+                rightShift,
+                Op.shrInt4,
+                "Unsupported right shift in bytecode core: ",
+            );
+
+        if (auto unsignedRightShift = expression.isUshrExp)
+            return compileShiftExpression(
+                unsignedRightShift,
+                Op.ushrInt4,
+                "Unsupported unsigned right shift in bytecode core: ",
+            );
+
+        if (auto and = expression.isAndExp)
+            return compileAndExpression(and);
+
+        if (auto xor = expression.isXorExp)
+            return compileXorExpression(xor);
+
         if (auto comparison = comparisonExpression(expression))
             return compileComparisonExpression(comparison);
 
@@ -1481,6 +1632,38 @@ private struct Compiler {
 
         if (auto addAssign = expression.isAddAssignExp)
             return compileAddAssignExpression(addAssign);
+
+        if (auto subtractAssign = expression.isMinAssignExp)
+            return compileLocalIntegerCompoundAssign(
+                subtractAssign,
+                Op.subInt4,
+                Op.subInt8,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
+        if (auto multiplyAssign = expression.isMulAssignExp)
+            return compileLocalIntegerCompoundAssign(
+                multiplyAssign,
+                Op.mulInt4,
+                Op.mulInt8,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
+        if (auto rightShiftAssign = expression.isShrAssignExp)
+            return compileLocalIntegerCompoundAssign(
+                rightShiftAssign,
+                Op.shrInt4,
+                Op.shrInt4,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
+        if (auto orAssign = expression.isOrAssignExp)
+            return compileLocalIntegerCompoundAssign(
+                orAssign,
+                Op.bitOrInt4,
+                Op.bitOrInt4,
+                "Unsupported compound assignment in bytecode core: ",
+            );
 
         // `arr.length = n` (and other lowered assignments) arrive as a
         // LoweredAssignExp, whose op is not `EXP.assign`, so isAssignExp misses
@@ -1515,6 +1698,9 @@ private struct Compiler {
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
 
+        if (auto identity = expression.isIdentityExp)
+            return compileIdentityExpression(identity);
+
         // `c ? t : f`: DMD's `m[k]` lowering produces `slot ? slot : (bounds,
         // null)`, a pointer-valued conditional whose false branch raises "Range
         // violation". Compile it as a branch writing one slot on both paths.
@@ -1537,6 +1723,10 @@ private struct Compiler {
 
         if (auto length = expression.isArrayLengthExp)
             return compileArrayLength(length);
+
+        if (auto vectorArray = expression.isVectorArrayExp)
+            if (auto offset = staticArrayOffsetOf(vectorArray.e1))
+                return Operand(*offset, ScalarType.void_);
 
         if (auto address = expression.isAddrExp) {
             if (auto pointer = tryAddressOfElement(address))
@@ -1573,19 +1763,55 @@ private struct Compiler {
             return compileStaticArrayIndex(index);
         }
 
+        if (auto slice = expression.isSliceExp) {
+            const elementType = dynamicArrayElementType(slice.type);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            compileSliceInto(offset, elementType, slice);
+            return Operand(offset, ScalarType.void_);
+        }
+
         // `base.field`: read a struct field from its inline frame offset. A
         // pointer field (`tracker.postblits`) yields a pointer operand over its
         // raw 8-byte address; a scalar field its scalar value.
         if (auto dot = expression.isDotVarExp)
+            if (auto name = tryTypeidName(dot))
+                return *name;
+
+        if (auto dot = expression.isDotVarExp)
             if (auto field = tryExceptionStringField(dot))
                 return Operand(field.offset, ScalarType.void_, true);
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto property = tryDelegateProperty(dot))
+                return *property;
+
+        if (auto dot = expression.isDotIdExp)
+            if (auto property = tryComplexDoubleProperty(dot))
+                return *property;
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto property = tryComplexDoubleProperty(dot))
+                return *property;
+
+        if (auto dot = expression.isDotIdExp)
+            if (auto property = tryDelegateProperty(dot))
+                return *property;
+
+        if (auto pointer = expression.isDelegatePtrExp)
+            if (auto property = tryDelegateProperty(pointer.e1, "ptr"))
+                return *property;
+
+        if (auto functionPointer = expression.isDelegateFuncptrExp)
+            if (auto property =
+                    tryDelegateProperty(functionPointer.e1, "funcptr"))
+                return *property;
 
         if (auto dot = expression.isDotVarExp)
             if (auto field = tryStructField(dot)) {
                 if (isPointerType(field.type))
                     return Operand(
                         field.offset, ScalarType.ulong_, false, true,
-                        scalarType(field.type.toBasetype.nextOf),
+                        pointerElementScalar(field.type),
                     );
                 return Operand(field.offset, scalarType(field.type));
             }
@@ -1602,6 +1828,11 @@ private struct Compiler {
 
         if (auto literal = expression.isStructLiteralExp)
             return compileStructLiteralOperand(literal);
+
+        // `new int(value)`: heap-allocate one scalar value and yield an `int*`.
+        if (auto newExp = expression.isNewExp)
+            if (auto pointer = tryNewScalar(newExp))
+                return *pointer;
 
         // `new S(args)`: heap-allocate a struct block and yield a `S*` pointer.
         if (auto newExp = expression.isNewExp)
@@ -1720,7 +1951,7 @@ private struct Compiler {
         // an array-of-arrays, whose inner descriptor is materialised here.
         if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1))
             return loadDynamicArrayElement(
-                descriptor.offset, descriptor.elementType, index.e2,
+                descriptor.offset, descriptor.elementType, index.e2, index.type,
             );
 
         // `makeArray(...)[i]`: the indexed expression is an array-valued call,
@@ -1729,6 +1960,7 @@ private struct Compiler {
         if (auto descriptorOffset = indexedArrayDescriptor(index.e1))
             return loadDynamicArrayElement(
                 descriptorOffset.offset, descriptorOffset.elementType, index.e2,
+                index.type,
             );
 
         return null;
@@ -1757,6 +1989,7 @@ private struct Compiler {
         in ushort descriptorOffset,
         in ScalarType elementType,
         Expression indexExpr,
+        Type resultType,
     ) {
         const indexSlot = compileExpression(indexExpr);
         const elementSize = size(elementType);
@@ -1769,7 +2002,12 @@ private struct Compiler {
         );
 
         auto result = new Operand;
-        *result = Operand(offset, elementType);
+        *result = isPointerType(resultType)
+            ? Operand(
+                offset, ScalarType.ulong_, false, true,
+                pointerElementScalar(resultType),
+            )
+            : Operand(offset, elementType);
         return result;
     }
 
@@ -1817,11 +2055,44 @@ private struct Compiler {
                     return result;
                 }
 
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructPointerField(dot))
+                if (field.type.toBasetype.ty == TY.Tarray &&
+                    !isStringType(field.type)) {
+                    const pointer = structFieldAddress(*field);
+                    const offset =
+                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                    _code ~= Instruction(
+                        Op.pointerLoad16,
+                        offset,
+                        pointer,
+                        compileSizeConstant(0),
+                    );
+                    auto result = new DynamicArrayLocal;
+                    *result = DynamicArrayLocal(
+                        offset,
+                        dynamicArrayElementType(field.type),
+                        false,
+                        true,
+                        pointer,
+                    );
+                    return result;
+                }
+
         // `outer[i]` where `outer` is an array-of-arrays (`int[][]`): indexing
         // yields an inner array. Materialise the inner descriptor into a fresh
         // slot and treat it as a (scalar-element) dynamic array.
         if (auto index = expression.isIndexExp)
             return innerArrayDescriptor(index);
+
+        if (auto slice = expression.isSliceExp) {
+            const elementType = dynamicArrayElementType(expression.type);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            compileSliceInto(offset, elementType, slice);
+            auto result = new DynamicArrayLocal;
+            *result = DynamicArrayLocal(offset, elementType);
+            return result;
+        }
 
         // An array-returning call (`m.keys` / `m.values`): materialise its
         // 16-byte slice-descriptor result into a fresh slot.
@@ -1889,6 +2160,60 @@ private struct Compiler {
         return Operand(offset, ScalarType.void_, true);
     }
 
+    private Operand compileImaginaryDoubleLiteral(RealExp real_) {
+        const offset = allocateComplexDouble;
+        _code ~= Instruction(
+            Op.loadConstant,
+            offset,
+            constantIndex(0),
+            cast(ushort) double.sizeof,
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            complexImaginaryOffset(offset),
+            constantIndex(floatBits(real_, ScalarType.double_)),
+            cast(ushort) double.sizeof,
+        );
+        return complexDoubleOperand(offset);
+    }
+
+    private Operand* tryComplexDoubleProperty(DotIdExp dot) {
+        if (dot.ident is null)
+            return null;
+
+        return tryComplexDoubleProperty(dot.e1, dot.ident.toString);
+    }
+
+    private Operand* tryComplexDoubleProperty(DotVarExp dot) {
+        if (dot.var is null || dot.var.ident is null)
+            return null;
+
+        return tryComplexDoubleProperty(dot.e1, dot.var.ident.toString);
+    }
+
+    private Operand* tryComplexDoubleProperty(
+        Expression receiver,
+        in const(char)[] property,
+    ) {
+        if (property != "re" && property != "im")
+            return null;
+        if (receiver.type is null || !isComplexDoubleType(receiver.type))
+            return null;
+
+        const value = compileExpression(receiver);
+        if (!value.isComplex)
+            return null;
+
+        auto result = new Operand;
+        *result = Operand(
+            property == "im"
+                ? complexImaginaryOffset(value.offset)
+                : value.offset,
+            ScalarType.double_,
+        );
+        return result;
+    }
+
     // Write a compile-time string into the read-only data segment and emit the
     // slice descriptor, returning the descriptor's frame offset. Used for
     // synthesised diagnostic messages (`throwString`).
@@ -1913,6 +2238,70 @@ private struct Compiler {
         return offset;
     }
 
+    private Operand compileTypeidExpression(TypeidExp typeid_) {
+        import dmd.dtemplate: isExpression;
+        import dmd.mtype: Type;
+        import std.conv: text;
+
+        auto expression = isExpression(typeid_.obj);
+        if (expression !is null) {
+            const object = compileExpression(expression);
+            if (!object.isPointer)
+                throw new Exception(text(
+                    "Unsupported typeid in bytecode core: ",
+                    expressionChars(typeid_),
+                ));
+
+            const offset = allocate(ScalarType.ulong_);
+            _code ~= Instruction(
+                Op.pointerLoad8,
+                offset,
+                object.offset,
+                compileSizeConstant(0),
+            );
+            return Operand(offset, ScalarType.ulong_);
+        }
+
+        auto type = cast(Type) typeid_.obj;
+        auto classType = type is null ? null : type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            throw new Exception(text(
+                "Unsupported typeid in bytecode core: ",
+                expressionChars(typeid_),
+            ));
+
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(
+            Op.loadConstant,
+            offset,
+            constantIndex(registerClass(classType.sym)),
+            cast(ushort) size(ScalarType.ulong_),
+        );
+        return Operand(offset, ScalarType.ulong_);
+    }
+
+    private Operand* tryTypeidName(DotVarExp dot) {
+        if (!isDeclarationNamed(dot.var.isVarDeclaration, "name"))
+            return null;
+
+        if (auto typeid_ = dot.e1.isTypeidExp)
+            return heapOperand(Operand(
+                compileStringLiteralBytes(typeInfoName(typeidObjectType(typeid_))),
+                ScalarType.void_,
+                true,
+            ));
+
+        if (auto symbol = dot.e1.isSymOffExp)
+            if (auto type = symbolOffsetTypeInfoType(symbol))
+                return heapOperand(Operand(
+                    compileStringLiteralBytes(typeInfoName(type)),
+                    ScalarType.void_,
+                    true,
+                ));
+
+        return null;
+    }
+
     private void compileVariableDeclaration(VarDeclaration variable) {
         import dmd.astenums: TY;
         import std.conv: text;
@@ -1921,6 +2310,11 @@ private struct Compiler {
         // its DMD-computed size and alignment; no heap, no slice descriptor.
         if (variable.type.toBasetype.ty == TY.Tsarray) {
             compileStaticArrayDeclaration(variable);
+            return;
+        }
+
+        if (variable.type.toBasetype.ty == TY.Tvector) {
+            compileVectorDeclaration(variable);
             return;
         }
 
@@ -1949,6 +2343,11 @@ private struct Compiler {
 
         if (variable.type.toBasetype.ty == TY.Tclass) {
             compileClassPointerDeclaration(variable);
+            return;
+        }
+
+        if (isComplexDoubleType(variable.type)) {
+            compileComplexDoubleDeclaration(variable);
             return;
         }
 
@@ -2005,11 +2404,15 @@ private struct Compiler {
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
-        if (initializer is null)
-            throw new Exception(text(
-                "Unsupported initializer in bytecode core: ",
-                declarationChars(variable),
-            ));
+        if (initializer is null) {
+            _code ~= Instruction(
+                Op.loadConstant,
+                offset,
+                constantIndex(0),
+                cast(ushort) slotSize,
+            );
+            return;
+        }
 
         const operand =
             compileExpression(initializerExpression(initializer.exp));
@@ -2018,6 +2421,28 @@ private struct Compiler {
             offset,
             operand.offset,
             cast(ushort) slotSize,
+        );
+    }
+
+    private void compileComplexDoubleDeclaration(VarDeclaration variable) {
+        const offset = allocateComplexDouble;
+        _locals[variable] = offset;
+        _complexDoubleLocals[variable] = true;
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null) {
+            zeroFrameBlock(offset, complexDoubleSize);
+            return;
+        }
+
+        const value =
+            compileComplexDoubleOperand(initializerExpression(initializer.exp));
+        _code ~= Instruction(
+            Op.copy,
+            offset,
+            value.offset,
+            cast(ushort) complexDoubleSize,
         );
     }
 
@@ -2092,43 +2517,162 @@ private struct Compiler {
     // block on the indirect call).
     private enum delegateValueSize = cast(uint) (2 * size_t.sizeof);
 
-    // A delegate local `auto d = () => this.field;`: a 16-byte `{functionIndex,
-    // context}` pair built from the lambda literal initializer, plus a tracking
-    // entry recording the lambda so `d()` recovers its layout and result type.
+    // A delegate local holds a 16-byte `{functionIndex, context}` pair built
+    // from a lambda literal, nested function address, or struct member address.
+    // The tracking entry records the callee so `d()` recovers its layout and
+    // result type.
     private void compileDelegateDeclaration(VarDeclaration variable) {
         import std.conv: text;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
-        auto literal = initializer is null
-            ? null
-            : initializerExpression(initializer.exp).isFuncExp;
-        if (literal is null || literal.fd is null)
+        auto delegate_ = initializer is null
+            ? DelegateInitializer.init
+            : delegateInitializer(initializerExpression(initializer.exp));
+        if (delegate_.function_ is null)
             throw new Exception(text(
                 "Unsupported delegate initializer in bytecode core: ",
                 declarationChars(variable),
             ));
 
         const offset = allocateBytes(delegateValueSize, size_t.sizeof);
-        emitDelegateValue(offset, literal.fd);
-        _delegateLocals[variable] = DelegateLocal(offset, literal.fd);
+        emitDelegateValue(offset, delegate_.function_, delegate_.contextOffset);
+        _delegateLocals[variable] = DelegateLocal(offset, delegate_.function_);
     }
 
     // Store a `{functionIndex, context}` delegate pair into the 16-byte slot at
-    // `offset`: the lambda's registered VM index in the first word, the enclosing
-    // method's `this` receiver offset (the captured context) in the second.
-    private void emitDelegateValue(in ushort offset, FuncDeclaration lambda) {
-        const index = registerFunction(lambda);
+    // `offset`: the callee's registered VM index in the first word, the context
+    // word (receiver offset, enclosing frame base, or null) in the second.
+    private void emitDelegateValue(
+        in ushort offset,
+        FuncDeclaration function_,
+        in ushort contextOffset,
+    ) {
+        const index = registerFunction(function_);
         _code ~= Instruction(
             Op.loadConstant, offset, constantIndex(index),
             cast(ushort) size_t.sizeof,
         );
         _code ~= Instruction(
-            Op.loadConstant,
+            Op.copy,
             cast(ushort) (offset + size_t.sizeof),
-            constantIndex(_thisLocal.offset),
+            contextOffset,
             cast(ushort) size_t.sizeof,
         );
+    }
+
+    private DelegateInitializer delegateInitializer(Expression initializer) {
+        if (auto literal = initializer.isFuncExp)
+            if (literal.fd !is null)
+                return DelegateInitializer(
+                    literal.fd, delegateContextOffset(literal.fd, null),
+                );
+
+        if (auto delegate_ = initializer.isDelegateExp)
+            if (delegate_.func !is null)
+                return DelegateInitializer(
+                    delegate_.func,
+                    delegateContextOffset(delegate_.func, delegate_.e1),
+                );
+
+        if (auto address = initializer.isAddrExp) {
+            if (auto variable = address.e1.isVarExp)
+                if (auto function_ = variable.var.isFuncDeclaration)
+                    return DelegateInitializer(
+                        function_, delegateContextOffset(function_, null),
+                    );
+
+            if (auto dot = address.e1.isDotVarExp)
+                if (auto function_ = dot.var.isFuncDeclaration)
+                    return DelegateInitializer(
+                        function_, delegateContextOffset(function_, dot.e1),
+                    );
+        }
+
+        return DelegateInitializer.init;
+    }
+
+    private ushort delegateContextOffset(
+        FuncDeclaration function_,
+        Expression receiver,
+    ) {
+        if (thisStructDeclaration(function_) !is null) {
+            if (auto address = receiver is null ? null : receiver.isAddrExp)
+                receiver = address.e1;
+            const receiverOffset = receiver is null
+                ? _thisLocal.offset
+                : structOperandOffset(receiver);
+            return compileSizeConstant(receiverOffset);
+        }
+
+        if (needsNestedFrameContext(function_)) {
+            const context = allocateBytes(
+                cast(uint) size_t.sizeof, size_t.sizeof,
+            );
+            _code ~= Instruction(Op.frameBaseIndex, context);
+            const one = compileSizeConstant(1);
+            _code ~= Instruction(Op.addInt8, context, context, one);
+            return context;
+        }
+
+        return compileSizeConstant(0);
+    }
+
+    private Operand* tryDelegateProperty(DotVarExp dot) {
+        if (dot.var is null || dot.var.ident is null)
+            return null;
+
+        return tryDelegateProperty(dot.e1, dot.var.ident.toString);
+    }
+
+    private Operand* tryDelegateProperty(DotIdExp dot) {
+        if (dot.ident is null)
+            return null;
+
+        return tryDelegateProperty(dot.e1, dot.ident.toString);
+    }
+
+    private Operand* tryDelegateProperty(
+        Expression receiver,
+        in const(char)[] property,
+    ) {
+        auto variable = receiver.isVarExp;
+        if (variable is null)
+            return null;
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+
+        auto delegateLocal = declaration in _delegateLocals;
+        if (delegateLocal is null)
+            return null;
+
+        if (property == "funcptr") {
+            auto result = new Operand;
+            *result = Operand(
+                delegateLocal.offset,
+                ScalarType.ulong_,
+                false,
+                true,
+                ScalarType.void_,
+            );
+            return result;
+        }
+
+        if (property == "ptr") {
+            auto result = new Operand;
+            *result = Operand(
+                cast(ushort) (delegateLocal.offset + size_t.sizeof),
+                ScalarType.ulong_,
+                false,
+                true,
+                ScalarType.void_,
+            );
+            return result;
+        }
+
+        return null;
     }
 
     // A static array `T[N]` occupies `Type.size()` inline frame bytes at its
@@ -2136,6 +2680,7 @@ private struct Compiler {
     // initialization (`source[] = 0`) emits nothing; a string literal or a
     // copy from another static array copies the bytes into the inline slot.
     private void compileStaticArrayDeclaration(VarDeclaration variable) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         const totalSize = cast(uint) staticArraySize(variable.type);
@@ -2191,6 +2736,17 @@ private struct Compiler {
             return;
         }
 
+        if (source.type.toBasetype.ty == TY.Tsarray) {
+            const value = compileExpression(source);
+            _code ~= Instruction(
+                Op.copy,
+                offset,
+                value.offset,
+                cast(ushort) totalSize,
+            );
+            return;
+        }
+
         // `T[N] dest = src` for an element type with a postblit lowers to a
         // `_d_arrayctor` call: block-copy each element, then run its postblit.
         if (compileArrayConstructor(offset, variable.type, source))
@@ -2200,6 +2756,48 @@ private struct Compiler {
             "Unsupported static array initializer in bytecode core: ",
             declarationChars(variable),
         ));
+    }
+
+    // A vector local is represented as the same inline bytes as its underlying
+    // static-array type. This slice only needs scalar splat construction and
+    // `.array` extraction.
+    private void compileVectorDeclaration(VarDeclaration variable) {
+        import std.conv: text;
+
+        auto vectorType = variable.type.toBasetype.isTypeVector;
+        assert(vectorType !is null);
+
+        auto arrayType = vectorType.basetype; // DMD Type APIs are mutable.
+        const totalSize = cast(uint) staticArraySize(arrayType);
+        const offset = allocateBytes(totalSize, staticArrayAlign(arrayType));
+        _staticArrayLocals[variable] = offset;
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null) {
+            zeroFrameBlock(offset, totalSize);
+            return;
+        }
+
+        auto vector = initializerExpression(initializer.exp).isVectorExp;
+        if (vector is null)
+            throw new Exception(text(
+                "Unsupported vector initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        auto elementType = arrayType.toBasetype.nextOf;
+        const elementScalar = scalarType(elementType);
+        const elementSize = cast(uint) size(elementScalar);
+        const count = totalSize / elementSize;
+        const value = compileExpression(vector.e1);
+        foreach (index; 0 .. count)
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (offset + index * elementSize),
+                value.offset,
+                cast(ushort) elementSize,
+            );
     }
 
     // Intercept DMD's `_d_arrayctor(dest[], src[], null)` lowering of a
@@ -2407,6 +3005,20 @@ private struct Compiler {
                 continue;
             }
 
+            if (isPointerType(fieldType)) {
+                if (element.isNullExp !is null)
+                    continue;
+
+                const value = compileExpression(element);
+                _code ~= Instruction(
+                    Op.copy,
+                    fieldOffset,
+                    value.offset,
+                    cast(ushort) size_t.sizeof,
+                );
+                continue;
+            }
+
             const value = compileExpression(element);
             _code ~= Instruction(
                 Op.copy,
@@ -2516,6 +3128,12 @@ private struct Compiler {
         return null;
     }
 
+    private bool needsNestedFrameContext(FuncDeclaration function_) {
+        return function_.vthis !is null &&
+            function_.isThis() is null &&
+            capturedThisStructDeclaration(function_) is null;
+    }
+
     private FuncDeclaration enclosingMethodOf(FuncDeclaration function_) {
         if (auto parent = function_.toParent2)
             return parent.isFuncDeclaration;
@@ -2565,6 +3183,30 @@ private struct Compiler {
 
         throw new Exception(text(
             "Unsupported method receiver in bytecode core: ",
+            expressionChars(call),
+        ));
+    }
+
+    private Operand classMethodReceiver(CallExp call) {
+        import std.conv: text;
+
+        if (auto dot = call.e1.isDotVarExp) {
+            const receiver = compileExpression(dot.e1);
+            if (receiver.isPointer)
+                return receiver;
+        }
+
+        if (_hasClassThis)
+            return Operand(
+                _classThisOffset,
+                ScalarType.ulong_,
+                false,
+                true,
+                ScalarType.void_,
+            );
+
+        throw new Exception(text(
+            "Unsupported class method receiver in bytecode core: ",
             expressionChars(call),
         ));
     }
@@ -2669,31 +3311,60 @@ private struct Compiler {
     }
 
     // Read a captured enclosing local of type `declaration` at `capturedOffset`
-    // within the enclosing frame: the nested struct's `this` block holds the
-    // enclosing frame's base index in its first field (vthis, offset 0); add the
-    // captured offset and load the scalar through it.
+    // within the enclosing frame. Nested structs carry the enclosing frame's
+    // base index in their hidden `this` block; nested function delegates carry
+    // the same raw index in their hidden context slot.
     private Operand loadCapturedLocal(
         VarDeclaration declaration,
         in ushort capturedOffset,
     ) {
+        const type = scalarType(declaration.type);
+        const destination = allocate(type);
+        _code ~= Instruction(
+            Op.frameLoad,
+            destination,
+            capturedFrameIndex(capturedOffset),
+            cast(ushort) size(type),
+        );
+        return Operand(destination, type);
+    }
+
+    private void storeCapturedLocal(
+        VarDeclaration declaration,
+        in ushort capturedOffset,
+        in Operand value,
+    ) {
+        const type = scalarType(declaration.type);
+        _code ~= Instruction(
+            Op.frameStore,
+            value.offset,
+            capturedFrameIndex(capturedOffset),
+            cast(ushort) size(type),
+        );
+    }
+
+    private ushort capturedFrameIndex(in ushort capturedOffset) {
         const contextBase =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
-            Op.copy, contextBase, _thisLocal.offset, cast(ushort) size_t.sizeof,
+            Op.copy,
+            contextBase,
+            _nestedContextOffset == ushort.max
+                ? _thisLocal.offset
+                : _nestedContextOffset,
+            cast(ushort) size_t.sizeof,
         );
+        if (_nestedContextOffset != ushort.max) {
+            const one = compileSizeConstant(1);
+            _code ~= Instruction(Op.subInt8, contextBase, contextBase, one);
+        }
         const sourceIndex =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         const offsetConstant = compileSizeConstant(capturedOffset);
         _code ~= Instruction(
             Op.addInt8, sourceIndex, contextBase, offsetConstant,
         );
-
-        const type = scalarType(declaration.type);
-        const destination = allocate(type);
-        _code ~= Instruction(
-            Op.frameLoad, destination, sourceIndex, cast(ushort) size(type),
-        );
-        return Operand(destination, type);
+        return sourceIndex;
     }
 
     // A field accessed through a struct pointer (`p.field` where `p` is a heap
@@ -2719,20 +3390,16 @@ private struct Compiler {
         if (auto deref = base.isPtrExp)
             base = deref.e1;
 
-        auto variable = base.isVarExp;
-        if (variable is null)
-            return null;
-        auto declaration = variable.var.isVarDeclaration;
-        if (declaration is null || (declaration in _structPointerLocals) is null)
+        if (structPointerDeclaration(base.type) is null)
             return null;
 
-        auto pointerSlot = declaration in _locals;
-        if (pointerSlot is null)
+        const pointer = compileExpression(base);
+        if (!pointer.isPointer)
             return null;
 
         auto result = new StructPointerField;
         *result = StructPointerField(
-            *pointerSlot, cast(ushort) field.offset, field.type,
+            pointer.offset, cast(ushort) field.offset, field.type,
         );
         return result;
     }
@@ -2832,6 +3499,55 @@ private struct Compiler {
     // constructor, or store each argument into its field for a constructor-less
     // struct), and yield a raw `S*` pointer operand. Null if `newExp` is not a
     // struct `new` (so array/exception `new` fall through).
+    private Operand* tryNewScalar(NewExp newExp) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        if (newExp.newtype is null)
+            return null;
+
+        switch (newExp.newtype.toBasetype.ty) with (TY) {
+            case Tstruct, Tclass, Tarray, Tsarray, Taarray:
+                return null;
+            default:
+                break;
+        }
+
+        const elementType = scalarType(newExp.newtype);
+        const elementSize = size(elementType);
+        const value = allocateBytes(elementSize, elementSize);
+
+        if (newExp.arguments is null || newExp.arguments.length == 0) {
+            _code ~= Instruction(
+                Op.loadConstant,
+                value,
+                constantIndex(0),
+                cast(ushort) elementSize,
+            );
+        } else if (newExp.arguments.length == 1) {
+            const initializer = compileExpression((*newExp.arguments)[0]);
+            _code ~= Instruction(
+                Op.copy,
+                value,
+                initializer.offset,
+                cast(ushort) elementSize,
+            );
+        } else
+            throw new Exception(text(
+                "Unsupported scalar new in bytecode core: ",
+                expressionChars(newExp),
+            ));
+
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.allocStruct, pointer, value, cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(pointer, ScalarType.ulong_, false, true, elementType);
+        return result;
+    }
+
     private Operand* tryNewStruct(NewExp newExp) {
         import dmd.astenums: TY;
 
@@ -2964,6 +3680,16 @@ private struct Compiler {
                 break;
             auto field = structDeclaration.fields[index];
             const fieldOffset = cast(ushort) (base + field.offset);
+            if (field.type.toBasetype.ty == TY.Tarray &&
+                !isStringType(field.type)) {
+                compileDynamicArrayInto(
+                    fieldOffset,
+                    dynamicArrayElementType(field.type),
+                    (*arguments)[index],
+                );
+                continue;
+            }
+
             const value = compileExpression((*arguments)[index]);
             _code ~= Instruction(
                 Op.copy,
@@ -3203,6 +3929,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto string_ = stringLiteralOf(source)) {
+            compileStringBytesArrayInto(destination, elementType, string_);
+            return;
+        }
+
         auto literal = source.isArrayLiteralExp;
         if (literal is null)
             throw new Exception(text(
@@ -3256,6 +3987,78 @@ private struct Compiler {
                 value.offset,
                 destination,
                 index,
+            );
+        }
+    }
+
+    private void compileStringBytesArrayInto(
+        in ushort destination,
+        in ScalarType elementType,
+        StringExp string_,
+    ) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
+
+        const elementSize = size(elementType);
+        if (elementSize == string_.sz) {
+            _code ~= Instruction(
+                Op.allocArray,
+                destination,
+                cast(ushort) elementSize,
+                cast(ushort) string_.numberOfCodeUnits,
+            );
+
+            foreach (elementIndex; 0 .. string_.numberOfCodeUnits) {
+                const slot = allocate(elementType);
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(string_.getIndex(elementIndex)),
+                    cast(ushort) elementSize,
+                );
+                _code ~= Instruction(
+                    indexStoreOp(elementSize),
+                    slot,
+                    destination,
+                    compileSizeConstant(elementIndex),
+                );
+            }
+            return;
+        }
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        if (bytes.length % elementSize != 0)
+            throw new Exception(text(
+                "Unsupported dynamic array initializer in bytecode core: ",
+                expressionChars(string_),
+            ));
+
+        const count = bytes.length / elementSize;
+        _code ~= Instruction(
+            Op.allocArray,
+            destination,
+            cast(ushort) elementSize,
+            cast(ushort) count,
+        );
+
+        foreach (elementIndex; 0 .. count) {
+            ulong value;
+            foreach (byteIndex; 0 .. elementSize)
+                value = (value << 8) |
+                    bytes[elementIndex * elementSize + byteIndex];
+
+            const slot = allocate(elementType);
+            _code ~= Instruction(
+                Op.loadConstant,
+                slot,
+                constantIndex(value),
+                cast(ushort) elementSize,
+            );
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                slot,
+                destination,
+                compileSizeConstant(elementIndex),
             );
         }
     }
@@ -3366,6 +4169,8 @@ private struct Compiler {
         // Materialise lo and hi into adjacent size_t slots; the opcode reads
         // the pair from the single `bounds` offset.
         const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = sliceLengthSlot(descriptor);
         const lo = slice.lwr is null
             ? compileSizeConstant(0)
             : compileExpression(slice.lwr).offset;
@@ -3373,9 +4178,10 @@ private struct Compiler {
             Op.copy, bounds, lo, cast(ushort) size_t.sizeof,
         );
 
-        const hi = slice.upr is null
-            ? sliceLengthSlot(descriptor)
+        const hi = slice.upr is null || isDollarExpression(slice.upr)
+            ? _activeDollarLength
             : compileExpression(slice.upr).offset;
+        _activeDollarLength = savedDollarLength;
         _code ~= Instruction(
             Op.copy,
             cast(ushort) (bounds + size_t.sizeof),
@@ -3527,16 +4333,54 @@ private struct Compiler {
     private Operand compileCastExpression(CastExp cast_) {
         import std.conv: text;
 
-        // `arr.ptr` arrives as a CastExp of the array to `T*`; yield the
-        // descriptor's pointer word as a raw `size_t` address.
-        if (isPointerType(cast_.to))
-            return compileArrayPointer(cast_);
+        if (isComplexDoubleType(cast_.e1.type)) {
+            const source = compileExpression(cast_.e1);
+            if (isDoubleType(cast_.to))
+                return Operand(source.offset, ScalarType.double_);
+            if (isImaginaryDoubleType(cast_.to))
+                return Operand(
+                    complexImaginaryOffset(source.offset),
+                    ScalarType.double_,
+                );
+        }
+
+        if (isComplexDoubleType(cast_.to))
+            return compileCastToComplexDouble(cast_);
+
+        // `cast(T*)arr` / `arr.ptr`: yield the dynamic-array descriptor's
+        // pointer word. `cast(U*)p` repaints an existing pointer value with the
+        // target element type without changing the raw address.
+        if (isPointerType(cast_.to)) {
+            if (isDynamicArrayArgument(cast_.e1))
+                return compileArrayPointer(cast_);
+
+            const pointer = compileExpression(cast_.e1);
+            if (pointer.isPointer)
+                return Operand(
+                    pointer.offset, ScalarType.ulong_, false, true,
+                    pointerElementScalar(cast_.to),
+                );
+
+            throw new Exception(text(
+                "Unsupported pointer cast in bytecode core: ",
+                expressionChars(cast_),
+            ));
+        }
 
         const source = compileExpression(cast_.e1);
         if (cast_.to.toBasetype.isTypeClass !is null)
             return source;
 
         const target = scalarType(cast_.to);
+
+        if (target == ScalarType.bool_ && source.isPointer) {
+            const zero = compileSizeConstant(0);
+            const offset = allocate(ScalarType.bool_);
+            _code ~= Instruction(
+                Op.notEqual8, offset, source.offset, zero,
+            );
+            return Operand(offset, ScalarType.bool_);
+        }
 
         // Crossing the int/float boundary needs a numeric conversion, not a
         // byte copy or integer extension. Only double -> int is needed today.
@@ -3546,20 +4390,8 @@ private struct Compiler {
             return Operand(offset, target);
         }
 
-        // `cast(double)intExpr` (e.g. `double d = seed;`): numerically widen any
-        // integer operand -- including a call result already materialised into a
-        // temp slot by `compileExpression` -- to a double, preserving signedness.
-        if (!isFloating(source.type) && target == ScalarType.double_) {
-            import quickbite.backends.bytecode.core.program: unsignedConvertFlag;
-
-            const offset = allocate(target);
-            const width = cast(ushort) (size(source.type) |
-                (isSigned(source.type) ? 0 : unsignedConvertFlag));
-            _code ~= Instruction(
-                Op.convertIntToDouble, offset, source.offset, width,
-            );
-            return Operand(offset, target);
-        }
+        if (isIntegerScalar(source.type) && isFloating(target))
+            return convertIntegerToFloating(source, target);
 
         if (isFloating(source.type) != isFloating(target))
             throw new Exception(text(
@@ -3579,6 +4411,101 @@ private struct Compiler {
         }
 
         return extend(source, target);
+    }
+
+    private Operand compileCastToComplexDouble(CastExp cast_) {
+        import std.conv: text;
+
+        const source = compileExpression(cast_.e1);
+        if (source.isComplex)
+            return source;
+
+        if (!isCompoundIntegerScalar(source.type) && !isFloating(source.type))
+            throw new Exception(text(
+                "Unsupported numeric cast in bytecode core: ",
+                expressionChars(cast_),
+            ));
+
+        return complexDoubleFromReal(source);
+    }
+
+    private Operand convertIntegerToFloating(
+        in Operand source,
+        in ScalarType target,
+    ) {
+        import quickbite.backends.bytecode.core.program: unsignedConvertFlag;
+
+        const offset = allocate(target);
+        const width = cast(ushort) (size(source.type) |
+            (isSigned(source.type) ? 0 : unsignedConvertFlag));
+        _code ~= Instruction(
+            integerToFloatingOp(target), offset, source.offset, width,
+        );
+        return Operand(offset, target);
+    }
+
+    private Operand convertFloating(
+        in Operand source,
+        in ScalarType target,
+    ) {
+        const offset = allocate(target);
+        _code ~= Instruction(floatingWidenOp(source.type, target), offset,
+            source.offset);
+        return Operand(offset, target);
+    }
+
+    private ScalarType normaliseNumericOperands(
+        ref Operand lhs,
+        ref Operand rhs,
+        Expression expression,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
+        if (lhs.type == ScalarType.bool_ && rhs.type == ScalarType.bool_)
+            return ScalarType.bool_;
+
+        if (isFloating(lhs.type) || isFloating(rhs.type)) {
+            const lhsFloating = isFloating(lhs.type);
+            const rhsFloating = isFloating(rhs.type);
+            if ((!lhsFloating && !isCompoundIntegerScalar(lhs.type)) ||
+                (!rhsFloating && !isCompoundIntegerScalar(rhs.type)))
+                throw new Exception(text(
+                    unsupportedMessage,
+                    expressionChars(expression),
+                ));
+
+            const target = commonFloatingType(lhs.type, rhs.type);
+
+            if (!lhsFloating)
+                lhs = convertIntegerToFloating(lhs, target);
+            else if (lhs.type != target)
+                lhs = convertFloating(lhs, target);
+            if (!rhsFloating)
+                rhs = convertIntegerToFloating(rhs, target);
+            else if (rhs.type != target)
+                rhs = convertFloating(rhs, target);
+            return target;
+        }
+
+        if (!isCompoundIntegerScalar(lhs.type) ||
+            !isCompoundIntegerScalar(rhs.type))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(expression),
+            ));
+
+        if (size(lhs.type) < int.sizeof)
+            lhs = extend(lhs, ScalarType.int_);
+        if (size(rhs.type) < int.sizeof)
+            rhs = extend(rhs, ScalarType.int_);
+
+        if (size(lhs.type) < size(rhs.type))
+            lhs = extend(lhs, rhs.type);
+        else if (size(rhs.type) < size(lhs.type))
+            rhs = extend(rhs, lhs.type);
+
+        return integerComparisonType(lhs.type, rhs.type);
     }
 
     // `arr.ptr`: copy the descriptor's pointer word (the address of element 0)
@@ -3662,8 +4589,11 @@ private struct Compiler {
 
         ushort slot;
         Type pointedType;
+        auto target = address.e1;
+        while (auto cast_ = target.isCastExp)
+            target = cast_.e1;
 
-        if (auto variable = address.e1.isVarExp) {
+        if (auto variable = target.isVarExp) {
             auto declaration = variable.var.isVarDeclaration;
             if (declaration is null)
                 return null;
@@ -3672,7 +4602,7 @@ private struct Compiler {
                 return null;
             slot = *existing;
             pointedType = declaration.type;
-        } else if (auto dot = address.e1.isDotVarExp) {
+        } else if (auto dot = target.isDotVarExp) {
             auto field = tryStructField(dot);
             if (field is null)
                 return null;
@@ -3741,6 +4671,17 @@ private struct Compiler {
     // `p[i]`: read the element at `p + i` through a pointer, yielding a scalar
     // operand of the pointed-at element type. Null if `p` is not a pointer.
     private Operand* tryPointerIndex(IndexExp index) {
+        if (auto deref = index.e1.isPtrExp) {
+            const pointer = compileExpression(deref.e1);
+            if (!pointer.isPointer)
+                return null;
+
+            const indexSlot = compileExpression(index.e2);
+            auto result = new Operand;
+            *result = loadThroughPointer(pointer, indexSlot.offset);
+            return result;
+        }
+
         if (!isPointerType(index.e1.type))
             return null;
 
@@ -3773,6 +4714,13 @@ private struct Compiler {
         // the integer operand scaled by the element size.
         if (isPointerType(add.e1.type) || isPointerType(add.e2.type))
             return compilePointerAdd(add);
+
+        if (isComplexDoubleType(add.type) ||
+            isComplexDoubleType(add.e1.type) ||
+            isComplexDoubleType(add.e2.type) ||
+            isImaginaryDoubleType(add.e1.type) ||
+            isImaginaryDoubleType(add.e2.type))
+            return compileComplexDoubleAdd(add);
 
         const lhs = compileExpression(add.e1);
         const rhs = compileExpression(add.e2);
@@ -3813,6 +4761,52 @@ private struct Compiler {
         );
     }
 
+    private Operand compileComplexDoubleAdd(BinExp add) {
+        const lhs = compileComplexDoubleOperand(add.e1);
+        const rhs = compileComplexDoubleOperand(add.e2);
+        const offset = allocateComplexDouble;
+        _code ~= Instruction(Op.addDouble, offset, lhs.offset, rhs.offset);
+        _code ~= Instruction(
+            Op.addDouble,
+            complexImaginaryOffset(offset),
+            complexImaginaryOffset(lhs.offset),
+            complexImaginaryOffset(rhs.offset),
+        );
+        return complexDoubleOperand(offset);
+    }
+
+    private Operand compileComplexDoubleOperand(Expression expression) {
+        const value = compileExpression(expression);
+        return value.isComplex ? value : complexDoubleFromReal(value);
+    }
+
+    private Operand complexDoubleFromReal(in Operand source) {
+        Operand realPart;
+        if (source.type == ScalarType.double_)
+            realPart = source;
+        else if (isCompoundIntegerScalar(source.type))
+            realPart = convertIntegerToFloating(source, ScalarType.double_);
+        else if (source.type == ScalarType.float_)
+            realPart = convertFloating(source, ScalarType.double_);
+        else
+            throw new Exception("Unsupported cdouble operand in bytecode core");
+
+        const offset = allocateComplexDouble;
+        _code ~= Instruction(
+            Op.copy,
+            offset,
+            realPart.offset,
+            cast(ushort) double.sizeof,
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            complexImaginaryOffset(offset),
+            constantIndex(0),
+            cast(ushort) double.sizeof,
+        );
+        return complexDoubleOperand(offset);
+    }
+
     // D's `|` is integer-typed; only the 4-byte int form is needed today.
     private Operand compileOrExpression(OrExp or) {
         const lhs = compileExpression(or.e1);
@@ -3827,9 +4821,32 @@ private struct Compiler {
         );
     }
 
-    // D's `/` on int is signed integer division. Only the 4-byte int form is
-    // needed today (it appears as the never-executed RHS of a short-circuited
-    // `&&`); a runtime divide-by-zero would fault, matching compiled code.
+    private Operand compileAndExpression(BinExp and) {
+        const lhs = compileExpression(and.e1);
+        const rhs = compileExpression(and.e2);
+        return compileIntBinaryResult(
+            and,
+            lhs,
+            rhs,
+            Op.bitAndInt4,
+            ScalarType.int_,
+            "Unsupported bitwise and in bytecode core: ",
+        );
+    }
+
+    private Operand compileXorExpression(BinExp xor) {
+        const lhs = compileExpression(xor.e1);
+        const rhs = compileExpression(xor.e2);
+        return compileIntBinaryResult(
+            xor,
+            lhs,
+            rhs,
+            Op.bitXorInt4,
+            ScalarType.int_,
+            "Unsupported bitwise xor in bytecode core: ",
+        );
+    }
+
     // Integer multiplication. Pointer arithmetic scales its integer operand
     // through an 8-byte `cast(long)n * elementSize`, so the 8-byte form is the
     // one that matters here; the 4-byte form mirrors `addInt4`.
@@ -3870,6 +4887,36 @@ private struct Compiler {
             Op.divInt4,
             ScalarType.int_,
             "Unsupported division in bytecode core: ",
+        );
+    }
+
+    private Operand compileModuloExpression(BinExp modulo) {
+        const lhs = compileExpression(modulo.e1);
+        const rhs = compileExpression(modulo.e2);
+        return compileIntBinaryResult(
+            modulo,
+            lhs,
+            rhs,
+            Op.modInt4,
+            ScalarType.int_,
+            "Unsupported modulo in bytecode core: ",
+        );
+    }
+
+    private Operand compileShiftExpression(
+        BinExp shift,
+        in Op op,
+        in string unsupportedMessage,
+    ) {
+        const lhs = compileExpression(shift.e1);
+        const rhs = compileExpression(shift.e2);
+        return compileIntBinaryResult(
+            shift,
+            lhs,
+            rhs,
+            op,
+            ScalarType.int_,
+            unsupportedMessage,
         );
     }
 
@@ -3916,51 +4963,28 @@ private struct Compiler {
     // Integer `<` / `>`; both yield a bool. One opcode per operator, not per
     // operand type. Only the forms `&&` operands produce are needed today.
     private Operand compileComparisonExpression(CmpExp comparison) {
-        import dmd.tokens: EXP;
-        import std.conv: text;
-
         // Pointer relations `p < q` etc. compare raw `size_t` pointer values as
         // unsigned, matching compiled pointer code.
         if (isPointerType(comparison.e1.type) ||
             isPointerType(comparison.e2.type))
             return compilePointerComparison(comparison);
 
-        const lhs = compileExpression(comparison.e1);
-        const rhs = compileExpression(comparison.e2);
-
-        // 8-byte unsigned comparison (`size_t`/`ulong`, e.g. a `foreach` index
-        // against `.length`): use the unsigned 8-byte relation opcodes.
-        if (lhs.type == ScalarType.ulong_ && rhs.type == ScalarType.ulong_) {
-            const offset = allocate(ScalarType.bool_);
-            _code ~= Instruction(
-                unsignedComparisonOp8(comparison.op),
-                offset, lhs.offset, rhs.offset,
-            );
-            return Operand(offset, ScalarType.bool_);
-        }
-
-        const op = () {
-            switch (comparison.op) with (EXP) {
-                case lessThan: return Op.lessThan4;
-                case lessOrEqual: return Op.lessOrEqual4;
-                case greaterThan: return Op.greaterThan4;
-                case greaterOrEqual: return Op.greaterOrEqual4;
-                default:
-                    throw new Exception(text(
-                        "Unsupported comparison in bytecode core: ",
-                        expressionChars(comparison),
-                    ));
-            }
-        }();
-
-        return compileIntBinaryResult(
+        Operand left = compileExpression(comparison.e1);
+        Operand right = compileExpression(comparison.e2);
+        const operandType = normaliseNumericOperands(
+            left,
+            right,
             comparison,
-            lhs,
-            rhs,
-            op,
-            ScalarType.bool_,
             "Unsupported comparison in bytecode core: ",
         );
+
+        const op = isFloating(operandType)
+            ? floatingComparisonOp(comparison.op, operandType)
+            : integerComparisonOp(comparison.op, operandType);
+
+        const offset = allocate(ScalarType.bool_);
+        _code ~= Instruction(op, offset, left.offset, right.offset);
+        return Operand(offset, ScalarType.bool_);
     }
 
     // `p < q`, `p <= q`, `p > q`, `p >= q`: compare raw `size_t` pointer values
@@ -4036,6 +5060,7 @@ private struct Compiler {
 
     private bool hasValue(in Operand operand) @safe @nogc nothrow pure {
         return operand.isPointer ||
+            operand.isComplex ||
             operand.isString ||
             operand.type != ScalarType.void_;
     }
@@ -4043,6 +5068,8 @@ private struct Compiler {
     // The byte width an operand occupies in the frame: 8 for a pointer or string
     // descriptor, otherwise its scalar type's size.
     private uint operandSize(in Operand operand) @safe pure {
+        if (operand.isComplex)
+            return complexDoubleSize;
         if (operand.isPointer)
             return cast(uint) size_t.sizeof;
         if (operand.isString)
@@ -4197,6 +5224,21 @@ private struct Compiler {
         return Operand(offset, ScalarType.bool_);
     }
 
+    private Operand compileComplementExpression(Expression complement) {
+        import std.conv: text;
+
+        const source = compileExpression(complement.isComExp.e1);
+        if (source.type != ScalarType.int_)
+            throw new Exception(text(
+                "Unsupported bitwise complement in bytecode core: ",
+                expressionChars(complement),
+            ));
+
+        const offset = allocate(ScalarType.int_);
+        _code ~= Instruction(Op.bitNotInt4, offset, source.offset);
+        return Operand(offset, ScalarType.int_);
+    }
+
     private Operand emitBinary(
         in Op op,
         in Operand lhs,
@@ -4264,34 +5306,156 @@ private struct Compiler {
                 return Operand(field.offset, lvalueType);
             }
 
-        auto variable = addAssign.e1.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        auto slot = declaration is null ? null : declaration in _locals;
-        const lhs = slot is null
-            ? Operand.init
-            : Operand(*slot, scalarType(declaration.type));
-        const rhs = compileExpression(addAssign.e2);
         // `++x`/`x += n` on an integer local: 4-byte and 8-byte integer widths
         // (size_t is ulong on x86-64, so `++len` lands here) share the lvalue's
-        // own slot as the destination. Both sides and the result carry the
-        // lvalue's type.
-        const lvalueType = scalarType(addAssign.type);
-        const addOp = lvalueType == ScalarType.long_ ||
-            lvalueType == ScalarType.ulong_
-                ? Op.addInt8
-                : Op.addInt4;
-        if (slot is null ||
-            lhs.type != rhs.type ||
-            lhs.type != lvalueType ||
-            !isIntegerScalar(lvalueType))
+        // own slot as the destination. Narrow integer locals promote for the
+        // operation and copy only their storage width back, preserving wrapping.
+        return compileLocalIntegerCompoundAssign(
+            addAssign,
+            Op.addInt4,
+            Op.addInt8,
+            "Unsupported compound assignment in bytecode core: ",
+        );
+    }
+
+    private Operand compileLocalIntegerCompoundAssign(
+        BinExp assign,
+        in Op op4,
+        in Op op8,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
+        auto declaration = compoundAssignLocalDeclaration(assign.e1);
+        auto slot = declaration is null ? null : declaration in _locals;
+        if (slot is null && _hasNestedContext && declaration !is null)
+            if (auto captured = declaration in _capturedOffsets)
+                return compileCapturedIntegerCompoundAssign(
+                    declaration,
+                    *captured,
+                    assign,
+                    op4,
+                    op8,
+                    unsupportedMessage,
+                );
+        if (slot is null)
             throw new Exception(text(
-                "Unsupported compound assignment in bytecode core: ",
-                expressionChars(addAssign),
+                unsupportedMessage,
+                expressionChars(assign),
             ));
 
-        _code ~= Instruction(addOp, lhs.offset, lhs.offset, rhs.offset);
-        return lhs;
+        const lvalueType = scalarType(declaration.type);
+        const rhs = compileExpression(assign.e2);
+        if (!isCompoundIntegerScalar(lvalueType) ||
+            !isCompoundIntegerScalar(rhs.type))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        if (isEightByteInteger(lvalueType) != isEightByteInteger(rhs.type) ||
+            (isEightByteInteger(lvalueType) &&
+                (rhs.type != lvalueType || op8 == op4)))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        const operationType = isEightByteInteger(lvalueType)
+            ? lvalueType
+            : ScalarType.int_;
+
+        const lhs = integerOperationOperand(
+            Operand(*slot, lvalueType),
+            operationType,
+        );
+        const rhsValue = integerOperationOperand(rhs, operationType);
+        const destination = size(lvalueType) == size(operationType)
+            ? *slot
+            : allocate(operationType);
+        _code ~= Instruction(
+            isEightByteInteger(operationType) ? op8 : op4,
+            destination,
+            lhs.offset,
+            rhsValue.offset,
+        );
+        if (destination != *slot)
+            _code ~= Instruction(
+                Op.copy,
+                *slot,
+                destination,
+                cast(ushort) size(lvalueType),
+            );
+
+        return Operand(*slot, lvalueType);
+    }
+
+    private Operand compileCapturedIntegerCompoundAssign(
+        VarDeclaration declaration,
+        in ushort capturedOffset,
+        BinExp assign,
+        in Op op4,
+        in Op op8,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
+        const lvalueType = scalarType(declaration.type);
+        const rhs = compileExpression(assign.e2);
+        if (!isCompoundIntegerScalar(lvalueType) ||
+            !isCompoundIntegerScalar(rhs.type))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        if (isEightByteInteger(lvalueType) != isEightByteInteger(rhs.type) ||
+            (isEightByteInteger(lvalueType) &&
+                (rhs.type != lvalueType || op8 == op4)))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        const operationType = isEightByteInteger(lvalueType)
+            ? lvalueType
+            : ScalarType.int_;
+        const current = loadCapturedLocal(declaration, capturedOffset);
+        const lhs = integerOperationOperand(current, operationType);
+        const rhsValue = integerOperationOperand(rhs, operationType);
+        const destination = size(lvalueType) == size(operationType)
+            ? current.offset
+            : allocate(operationType);
+        _code ~= Instruction(
+            isEightByteInteger(operationType) ? op8 : op4,
+            destination,
+            lhs.offset,
+            rhsValue.offset,
+        );
+        const stored = size(lvalueType) == size(operationType)
+            ? Operand(destination, lvalueType)
+            : Operand(destination, operationType);
+        storeCapturedLocal(declaration, capturedOffset, stored);
+        return loadCapturedLocal(declaration, capturedOffset);
+    }
+
+    private VarDeclaration compoundAssignLocalDeclaration(Expression lvalue) {
+        if (auto cast_ = lvalue.isCastExp)
+            return compoundAssignLocalDeclaration(cast_.e1);
+
+        auto variable = lvalue.isVarExp;
+        return variable is null ? null : variable.var.isVarDeclaration;
+    }
+
+    private Operand integerOperationOperand(
+        in Operand operand,
+        in ScalarType operationType,
+    ) {
+        if (operand.type == operationType ||
+            size(operand.type) == size(operationType))
+            return Operand(operand.offset, operationType);
+
+        return extend(operand, operationType);
     }
 
     // `local = expr` for a scalar local lvalue (including a `ref` parameter's
@@ -4357,6 +5521,26 @@ private struct Compiler {
         // `ptr + field.offset`.
         if (auto dot = assign.e1.isDotVarExp)
             if (auto field = tryStructPointerField(dot)) {
+                import dmd.astenums: TY;
+
+                if (field.type.toBasetype.ty == TY.Tarray &&
+                    !isStringType(field.type)) {
+                    const destination =
+                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                    compileDynamicArrayInto(
+                        destination,
+                        dynamicArrayElementType(field.type),
+                        assign.e2,
+                    );
+                    _code ~= Instruction(
+                        Op.pointerStore16,
+                        destination,
+                        structFieldAddress(*field),
+                        compileSizeConstant(0),
+                    );
+                    return Operand(destination, ScalarType.void_);
+                }
+
                 const value = compileExpression(assign.e2);
                 storeStructPointerField(*field, value.offset);
                 return Operand(value.offset, scalarType(field.type));
@@ -4366,6 +5550,9 @@ private struct Compiler {
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
         auto slot = declaration is null ? null : declaration in _locals;
+        if (slot is null && _hasNestedContext && declaration !is null)
+            if (auto captured = declaration in _capturedOffsets)
+                return compileCapturedAssign(declaration, *captured, assign);
         const type = slot is null
             ? ScalarType.void_
             : scalarType(declaration.type);
@@ -4383,6 +5570,25 @@ private struct Compiler {
             cast(ushort) size(type),
         );
         return Operand(*slot, type);
+    }
+
+    private Operand compileCapturedAssign(
+        VarDeclaration declaration,
+        in ushort capturedOffset,
+        AssignExp assign,
+    ) {
+        import std.conv: text;
+
+        const type = scalarType(declaration.type);
+        const rhs = compileExpression(assign.e2);
+        if (rhs.type != type)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(assign),
+            ));
+
+        storeCapturedLocal(declaration, capturedOffset, rhs);
+        return loadCapturedLocal(declaration, capturedOffset);
     }
 
     // `base.field = rhs`: write into a struct field at its inline frame offset.
@@ -4416,7 +5622,7 @@ private struct Compiler {
             auto pointerResult = new Operand;
             *pointerResult = Operand(
                 field.offset, ScalarType.ulong_, false, true,
-                scalarType(field.type.toBasetype.nextOf),
+                pointerElementScalar(field.type),
             );
             return pointerResult;
         }
@@ -4450,6 +5656,7 @@ private struct Compiler {
             packedFill(descriptor.elementType),
             lengthSlot.offset,
         );
+        writeBackDynamicArrayDescriptor(descriptor);
         return Operand(lengthSlot.offset, ScalarType.ulong_);
     }
 
@@ -4485,7 +5692,22 @@ private struct Compiler {
             descriptor.offset,
             value.offset,
         );
+        writeBackDynamicArrayDescriptor(descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
+    }
+
+    private void writeBackDynamicArrayDescriptor(
+        in DynamicArrayLocal descriptor,
+    ) {
+        if (!descriptor.writeBackThroughPointer)
+            return;
+
+        _code ~= Instruction(
+            Op.pointerStore16,
+            descriptor.offset,
+            descriptor.pointerOffset,
+            compileSizeConstant(0),
+        );
     }
 
     // An `outer[i]` access into an array-of-arrays local: the outer descriptor
@@ -4989,6 +6211,9 @@ private struct Compiler {
         if (auto cast_ = expression.isCastExp)
             return staticArrayOffsetOf(cast_.e1);
 
+        if (auto vectorArray = expression.isVectorArrayExp)
+            return staticArrayOffsetOf(vectorArray.e1);
+
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _staticArrayLocals)
@@ -5021,12 +6246,34 @@ private struct Compiler {
             if (auto compared = tryStringEquality(equal))
                 return *compared;
 
-        return compileIntBinaryExpression(
+        auto lhs = compileExpression(equal.e1);
+        auto rhs = compileExpression(equal.e2);
+        const operandType = normaliseNumericOperands(
+            lhs,
+            rhs,
             equal,
-            equal.op == EXP.notEqual ? Op.notEqual4 : Op.equal4,
-            ScalarType.bool_,
             "Unsupported equality in bytecode core: ",
         );
+
+        const op = equal.op == EXP.notEqual
+            ? comparisonNotEqualOp(operandType)
+            : comparisonEqualOp(operandType);
+        const offset = allocate(ScalarType.bool_);
+        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        return Operand(offset, ScalarType.bool_);
+    }
+
+    private Operand compileIdentityExpression(IdentityExp identity) {
+        import dmd.tokens: EXP;
+
+        const lhs = compileExpression(identity.e1);
+        const rhs = compileExpression(identity.e2);
+        const op = identity.op == EXP.notIdentity
+            ? Op.notEqual8
+            : Op.equal8;
+        const offset = allocate(ScalarType.bool_);
+        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        return Operand(offset, ScalarType.bool_);
     }
 
     private Operand* tryStringEquality(BinExp equal) {
@@ -5102,6 +6349,9 @@ private struct Compiler {
 
         auto function_ = callFunction(call);
 
+        if (auto expression = immediateLambdaReturn(call))
+            return compileExpression(expression);
+
         // `_aApply*(string, delegate)` is DMD's lowering of `foreach`/
         // `foreach_reverse` over a UTF string whose loop variable has a different
         // code-unit width: it decodes/transcodes code points and invokes the
@@ -5133,6 +6383,11 @@ private struct Compiler {
                 return compileAssocArrayHook(call, hook);
         }
 
+        if (function_ !is null && function_.ident !is null &&
+            function_.ident.toString == "emplace")
+            if (auto emplaced = compileEmplace(call))
+                return *emplaced;
+
         // `_d_arraybounds*` is the bounds-failure helper in DMD's `m[k]`
         // lowering (`slot ? slot : (_d_arraybounds(...), null)`); reaching it
         // means the key was absent, so raise the plain "Range violation".
@@ -5156,15 +6411,23 @@ private struct Compiler {
         if (function_ is null && isFunctionPointerCall(call))
             return compileIndirectCall(call);
 
-        if (function_ is null || function_.fbody is null)
+        if (function_ is null)
+            throw new Exception(text(
+                "Unsupported call in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const layout = parameterLayout(function_);
+        if (function_.fbody is null && !layout.hasClassThis)
             throw new Exception(text(
                 "Unsupported call in bytecode core: ",
                 expressionChars(call),
             ));
 
         const index = registerFunction(function_);
-        const layout = parameterLayout(function_);
         const argumentArea = allocateBytes(layout.blockSize, 8);
+        Operand classReceiver;
+        bool hasClassReceiver;
 
         // A struct method call `receiver.method(args)` passes the receiver as
         // the hidden `this` block (by reference) at the start of the argument
@@ -5177,6 +6440,17 @@ private struct Compiler {
                 cast(ushort) (argumentArea + layout.thisOffset),
                 constantIndex(receiver),
                 cast(ushort) size(ScalarType.uint_),
+            );
+        }
+
+        if (layout.hasClassThis) {
+            classReceiver = classMethodReceiver(call);
+            hasClassReceiver = true;
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (argumentArea + layout.classThisOffset),
+                classReceiver.offset,
+                cast(ushort) size_t.sizeof,
             );
         }
 
@@ -5198,7 +6472,24 @@ private struct Compiler {
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
-        _code ~= Instruction(Op.call, index, argumentArea, destination);
+        if (hasClassReceiver) {
+            const functionSlot = allocate(ScalarType.ulong_);
+            _code ~= Instruction(
+                Op.classVirtualFunction,
+                functionSlot,
+                classReceiver.offset,
+                index,
+            );
+            _code ~= Instruction(
+                Op.callIndirect, functionSlot, argumentArea, destination,
+            );
+        } else
+            _code ~= Instruction(Op.call, index, argumentArea, destination);
+        if (isPointerType(call.type))
+            return Operand(
+                destination, ScalarType.ulong_, false, true,
+                pointerElementScalar(call.type),
+            );
         return Operand(destination, returnType.scalar, returnType.isString);
     }
 
@@ -5313,19 +6604,11 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
-        // Delegate calls with explicit arguments are not exercised; the captured
-        // `this` is the only hidden argument these lambdas take.
-        if (call.arguments !is null && call.arguments.length > 0)
-            throw new Exception(text(
-                "Unsupported delegate call with arguments in bytecode core: ",
-                expressionChars(call),
-            ));
-
         const layout = parameterLayout(delegateLocal.function_);
         const argumentArea = allocateBytes(layout.blockSize, 8);
 
-        // The captured context word (second pair slot) is the receiver offset
-        // the machine dereferences into the lambda's hidden `this` block.
+        // Struct-member delegates store the receiver offset in the pair's
+        // context word; the machine dereferences it as the hidden `this` block.
         if (layout.hasThis)
             _code ~= Instruction(
                 Op.copy,
@@ -5333,6 +6616,27 @@ private struct Compiler {
                 cast(ushort) (delegateLocal.offset + size_t.sizeof),
                 cast(ushort) size(ScalarType.uint_),
             );
+
+        // Local-function delegates store the caller frame's base index in the
+        // context word; captured locals load/store through that raw index.
+        if (layout.hasNestedContext)
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (argumentArea + layout.nestedContextOffset),
+                cast(ushort) (delegateLocal.offset + size_t.sizeof),
+                cast(ushort) size_t.sizeof,
+            );
+
+        if (call.arguments !is null)
+            foreach (argumentIndex; 0 .. call.arguments.length) {
+                const slot = cast(ushort)
+                    (argumentArea + layout.offsets[argumentIndex]);
+                emitCallArgument(
+                    slot,
+                    layout.isReference[argumentIndex],
+                    (*call.arguments)[argumentIndex],
+                );
+            }
 
         const index = registerFunction(delegateLocal.function_);
         const returnType = _program.functions[index].returnType;
@@ -5389,6 +6693,56 @@ private struct Compiler {
             Op.callIndirect, pointer.offset, argumentArea, destination,
         );
         return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    private Operand* compileEmplace(CallExp call) {
+        if (call.arguments is null || call.arguments.length < 2)
+            return null;
+
+        const destination = compileExpression((*call.arguments)[0]);
+        if (!destination.isPointer)
+            return null;
+
+        const value = compileExpression((*call.arguments)[1]);
+        _code ~= Instruction(
+            pointerStoreOp(size(destination.pointerElement)),
+            value.offset,
+            destination.offset,
+            compileSizeConstant(0),
+        );
+
+        auto result = new Operand;
+        *result = destination;
+        return result;
+    }
+
+    private Expression immediateLambdaReturn(CallExp call) {
+        auto literal = call.e1 is null ? null : call.e1.isFuncExp;
+        if (literal is null ||
+            literal.fd is null ||
+            call.arguments !is null && call.arguments.length != 0)
+            return null;
+
+        return singleReturnExpression(literal.fd.fbody);
+    }
+
+    private Expression singleReturnExpression(Statement statement) {
+        if (statement is null)
+            return null;
+
+        if (auto scope_ = statement.isScopeStatement)
+            return singleReturnExpression(scope_.statement);
+
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements is null || compound.statements.length != 1)
+                return null;
+            return singleReturnExpression((*compound.statements)[0]);
+        }
+
+        if (auto return_ = statement.isReturnStatement)
+            return return_.exp;
+
+        return null;
     }
 
     // Emit a single call argument into `slot` of the argument area: a `ref`
@@ -5672,6 +7026,13 @@ private struct Compiler {
         if (auto dot = argument.isDotVarExp)
             if (auto field = tryStructField(dot))
                 return field.offset;
+
+        if (auto deref = argument.isPtrExp) {
+            const pointer = compileExpression(deref.e1);
+            if (pointer.isPointer)
+                return loadThroughPointer(pointer, compileSizeConstant(0))
+                    .offset;
+        }
 
         throw new Exception(text(
             "Unsupported ref argument in bytecode core: ",
@@ -6147,19 +7508,23 @@ private struct Compiler {
                     op, (*call.arguments)[1], (*call.arguments)[2]))
                 return true;
 
-        // D's integer promotions appear only in the rewritten condition, not
-        // in the _d_assert_fail operands; replicate them so mixed-width
-        // operands compare and render at the comparison width.
+        if (op == "==" || op == "!=")
+            if (tryStringComparisonAssert(
+                    op, (*call.arguments)[1], (*call.arguments)[2]))
+                return true;
+
         auto lhs = compileExpression((*call.arguments)[1]);
         auto rhs = compileExpression((*call.arguments)[2]);
-        if (size(lhs.type) < size(rhs.type))
-            lhs = extend(lhs, rhs.type);
-        else if (size(rhs.type) < size(lhs.type))
-            rhs = extend(rhs, lhs.type);
+        const operandType = normaliseNumericOperands(
+            lhs,
+            rhs,
+            call,
+            "Unsupported comparison assert in bytecode core: ",
+        );
 
         const condition = allocateBytes(1, 1);
         _code ~= Instruction(
-            comparisonAssertOp(op, lhs.type),
+            comparisonAssertOp(op, operandType),
             condition,
             lhs.offset,
             rhs.offset,
@@ -6167,7 +7532,34 @@ private struct Compiler {
 
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
-            AssertDiagnostic(op, lhs.offset, rhs.offset, lhs.type);
+            AssertDiagnostic(op, lhs.offset, rhs.offset, operandType);
+        _code ~= Instruction(
+            Op.assertTrue,
+            condition,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    private bool tryStringComparisonAssert(
+        in string op,
+        Expression lhsExpression,
+        Expression rhsExpression,
+    ) {
+        if (!isStringType(lhsExpression.type) || !isStringType(rhsExpression.type))
+            return false;
+
+        const lhs = compileExpression(lhsExpression);
+        const rhs = compileExpression(rhsExpression);
+        const condition = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.stringSliceEqual, condition, lhs.offset, rhs.offset);
+        if (op == "!=")
+            _code ~= Instruction(Op.notBool, condition, condition);
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~= AssertDiagnostic(
+            op, lhs.offset, rhs.offset, ScalarType.void_, false, true,
+        );
         _code ~= Instruction(
             Op.assertTrue,
             condition,
@@ -6274,13 +7666,25 @@ private struct Compiler {
 
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~= AssertDiagnostic(
-            normalisedPointerOperator(op),
+            op,
             lhsPointer.offset,
             rhsPointer.offset,
             ScalarType.ulong_,
+            false,
+            false,
+            isNullPointerAssertOperand(lhs),
+            isNullPointerAssertOperand(rhs),
         );
         _code ~= Instruction(Op.assertTrue, condition, cast(ushort) diagnostic);
         return true;
+    }
+
+    private bool isNullPointerAssertOperand(Expression expression) {
+        if (expression.isNullExp !is null)
+            return true;
+        if (auto integer = expression.isIntegerExp)
+            return integer.toInteger == 0;
+        return false;
     }
 
     // `assert(a[] == b[])` / `assert(a[] != b[])` over dynamic-array operands:
@@ -6425,6 +7829,10 @@ private struct Compiler {
         return allocateBytes(size(type), size(type));
     }
 
+    private ushort allocateComplexDouble() @safe pure {
+        return allocateBytes(complexDoubleSize, double.sizeof);
+    }
+
     private ushort allocateBytes(in uint bytes, in uint alignmentArgument)
         @safe pure
     {
@@ -6483,6 +7891,24 @@ private struct Compiler {
             layout.refParameters ~=
                 RefParameter(cast(ushort) layout.blockSize, structBytes);
             layout.blockSize += structBytes;
+        }
+
+        if (thisClassDeclaration(function_) !is null) {
+            enum pointerAlign = cast(uint) size_t.sizeof;
+            layout.blockSize =
+                (layout.blockSize + pointerAlign - 1) & ~(pointerAlign - 1);
+            layout.hasClassThis = true;
+            layout.classThisOffset = cast(ushort) layout.blockSize;
+            layout.blockSize += pointerAlign;
+        }
+
+        if (needsNestedFrameContext(function_)) {
+            enum contextAlign = cast(uint) size_t.sizeof;
+            layout.blockSize =
+                (layout.blockSize + contextAlign - 1) & ~(contextAlign - 1);
+            layout.hasNestedContext = true;
+            layout.nestedContextOffset = cast(ushort) layout.blockSize;
+            layout.blockSize += contextAlign;
         }
 
         if (function_.parameters is null)
@@ -6575,6 +8001,12 @@ private struct Compiler {
                 dynamicArrayElementType(type),
             );
 
+        if (type.toBasetype.ty == TY.Tsarray)
+            return ResultType(
+                ScalarType.void_, false, false, ScalarType.void_,
+                true, cast(uint) staticArraySize(type),
+            );
+
         // A by-value struct result is an inline block of `Type.size()` bytes,
         // copied back to the caller's destination on return like any other frame
         // block; field access then resolves against that destination's base.
@@ -6583,6 +8015,9 @@ private struct Compiler {
                 ScalarType.void_, false, false, ScalarType.void_,
                 true, cast(uint) staticArraySize(type),
             );
+
+        if (isPointerType(type))
+            return ResultType(ScalarType.ulong_, false);
 
         return ResultType(scalarType(type), false);
     }
@@ -6606,6 +8041,8 @@ private struct Compiler {
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tarray)
             return scalarType(element.toBasetype.nextOf);
+        if (element.toBasetype.ty == TY.Tpointer)
+            return ScalarType.ulong_;
         return scalarType(element);
     }
 
@@ -6667,12 +8104,29 @@ private struct Compiler {
                 return ScalarType.double_;
             case Tfloat80:
                 return ScalarType.real_;
+            case Tpointer:
+                return ScalarType.ulong_;
             default:
                 throw new Exception(text(
                     "Unsupported type in bytecode core: ",
                     typeChars(type),
                 ));
         }
+    }
+
+    private ScalarType pointerElementScalar(Type pointerType) {
+        import dmd.astenums: TY;
+
+        auto element = pointerType.toBasetype.nextOf;
+        if (element is null)
+            return ScalarType.void_;
+        if (element.toBasetype.ty == TY.Tsarray)
+            element = element.toBasetype.nextOf;
+        if (element.toBasetype.ty == TY.Tstruct)
+            return ScalarType.void_;
+        if (element.toBasetype.ty == TY.Tfunction)
+            return ScalarType.void_;
+        return scalarType(element);
     }
 }
 
@@ -6685,6 +8139,10 @@ private struct ParameterLayout {
     uint blockSize;
     bool hasThis; // a struct method's hidden `this` receiver (passed by ref)
     ushort thisOffset; // frame offset of the hidden `this` block
+    bool hasClassThis; // a class/interface method's hidden object pointer
+    ushort classThisOffset;
+    bool hasNestedContext; // a local function's enclosing frame-base index
+    ushort nestedContextOffset;
 }
 
 private struct Operand {
@@ -6697,6 +8155,7 @@ private struct Operand {
     bool isPointer;
     imported!"quickbite.backends.bytecode.core.program".ScalarType
         pointerElement;
+    bool isComplex;
 }
 
 // A dynamic-array local: its slice-descriptor frame offset and the element
@@ -6708,6 +8167,8 @@ private struct DynamicArrayLocal {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
+    bool writeBackThroughPointer;
+    ushort pointerOffset;
 }
 
 // A delegate local (`auto d = () => this.field;`): a 16-byte slot holding a
@@ -6717,6 +8178,11 @@ private struct DynamicArrayLocal {
 private struct DelegateLocal {
     ushort offset;
     imported!"dmd.func".FuncDeclaration function_;
+}
+
+private struct DelegateInitializer {
+    imported!"dmd.func".FuncDeclaration function_;
+    ushort contextOffset;
 }
 
 // A loop currently being compiled: the `jump` indices awaiting the loop's exit
@@ -6787,44 +8253,79 @@ private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.indexLoad1 : Op.indexLoad4;
+    switch (elementSize) {
+        case 1: return Op.indexLoad1;
+        case 2: return Op.indexLoad2;
+        case 4: return Op.indexLoad4;
+        case 8: return Op.indexLoad8;
+        default: assert(0, "Unsupported index load element size.");
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op pointerLoadOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.pointerLoad1 : Op.pointerLoad4;
+    switch (elementSize) {
+        case 1: return Op.pointerLoad1;
+        case 2: return Op.pointerLoad2;
+        case 4: return Op.pointerLoad4;
+        case 8: return Op.pointerLoad8;
+        case 16: return Op.pointerLoad16;
+        default: assert(0, "Unsupported pointer load element size.");
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op pointerStoreOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    if (elementSize == 8)
-        return Op.pointerStore8;
-    return elementSize == 1 ? Op.pointerStore1 : Op.pointerStore4;
+    switch (elementSize) {
+        case 1: return Op.pointerStore1;
+        case 4: return Op.pointerStore4;
+        case 8: return Op.pointerStore8;
+        case 16: return Op.pointerStore16;
+        default: assert(0, "Unsupported pointer store element size.");
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op pointerSliceOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.pointerSlice1 : Op.pointerSlice4;
+    switch (elementSize) {
+        case 1: return Op.pointerSlice1;
+        case 2: return Op.pointerSlice2;
+        case 4: return Op.pointerSlice4;
+        case 8: return Op.pointerSlice8;
+        default: assert(0, "Unsupported pointer slice element size.");
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op indexStoreOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.indexStore1 : Op.indexStore4;
+    switch (elementSize) {
+        case 1: return Op.indexStore1;
+        case 2: return Op.indexStore2;
+        case 4: return Op.indexStore4;
+        case 8: return Op.indexStore8;
+        default: assert(0, "Unsupported index store element size.");
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op subSliceOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.subSlice1 : Op.subSlice4;
+    switch (elementSize) {
+        case 1: return Op.subSlice1;
+        case 2: return Op.subSlice2;
+        case 4: return Op.subSlice4;
+        case 8: return Op.subSlice8;
+        default: assert(0, "Unsupported sub-slice element size.");
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
@@ -6961,6 +8462,9 @@ private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
     if (sourceSize == 4 && targetSize == 8 && signed)
         return Op.signExtend4to8;
 
+    if (sourceSize == 4 && targetSize == 8 && !signed)
+        return Op.zeroExtend4to8;
+
     throw new Exception(text(
         "Unsupported extension in bytecode core: ",
         signed ? "signed " : "unsigned ",
@@ -6968,6 +8472,71 @@ private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
         " to ",
         targetSize,
     ));
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    integerToFloatingOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case float_: return Op.convertIntToFloat;
+        case double_: return Op.convertIntToDouble;
+        case real_: return Op.convertIntToReal;
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, char_, wchar_, dchar_:
+            assert(0, "Not a floating-point type.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".ScalarType
+    commonFloatingType(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType lhs,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType rhs,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    if (lhs == ScalarType.real_ || rhs == ScalarType.real_)
+        return ScalarType.real_;
+    if (lhs == ScalarType.double_ || rhs == ScalarType.double_)
+        return ScalarType.double_;
+    return ScalarType.float_;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingWidenOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType source,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType target,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType;
+
+    if (source == ScalarType.float_ && target == ScalarType.double_)
+        return Op.convertFloatToDouble;
+    if (source == ScalarType.float_ && target == ScalarType.real_)
+        return Op.convertFloatToReal;
+    if (source == ScalarType.double_ && target == ScalarType.real_)
+        return Op.convertDoubleToReal;
+
+    assert(0, "Unsupported floating-point widening.");
+}
+
+private imported!"quickbite.backends.bytecode.core.program".ScalarType
+    integerComparisonType(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType lhs,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType rhs,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType, isSigned, size;
+
+    assert(size(lhs) == size(rhs));
+    if (size(lhs) == 8)
+        return isSigned(lhs) && isSigned(rhs)
+            ? ScalarType.long_
+            : ScalarType.ulong_;
+
+    return isSigned(lhs) && isSigned(rhs)
+        ? ScalarType.int_
+        : ScalarType.uint_;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op equalOp(
@@ -6982,6 +8551,27 @@ private imported!"quickbite.backends.bytecode.core.program".Op equalOp(
         case 8: return Op.equal8;
         default: assert(0, "No equality opcode for the operand size.");
     }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    comparisonEqualOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: size;
+
+    return isFloating(type) ? floatingEqualOp(type) : equalOp(size(type));
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    comparisonNotEqualOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, size;
+
+    if (isFloating(type))
+        return floatingNotEqualOp(type);
+
+    return size(type) == 8 ? Op.notEqual8 : Op.notEqual4;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op
@@ -7013,6 +8603,55 @@ private imported!"quickbite.backends.bytecode.core.program".Op
         case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
             ulong_, char_, wchar_, dchar_:
             assert(0, "Not a floating-point type.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    integerComparisonOp(
+    in imported!"dmd.tokens".EXP operator,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType
+        operandType,
+) @safe @nogc nothrow pure {
+    import dmd.tokens: EXP;
+    import quickbite.backends.bytecode.core.program: Op, isSigned, size;
+
+    assert(!isFloating(operandType));
+
+    if (!isSigned(operandType))
+        switch (operator) with (EXP) {
+            case lessThan:
+                return size(operandType) == 8
+                    ? unsignedComparisonOp8(operator)
+                    : Op.lessThanUnsigned4;
+            case lessOrEqual:
+                return size(operandType) == 8
+                    ? unsignedComparisonOp8(operator)
+                    : Op.lessOrEqualUnsigned4;
+            case greaterThan:
+                return size(operandType) == 8
+                    ? unsignedComparisonOp8(operator)
+                    : Op.greaterThanUnsigned4;
+            case greaterOrEqual:
+                return size(operandType) == 8
+                    ? unsignedComparisonOp8(operator)
+                    : Op.greaterOrEqualUnsigned4;
+            default: assert(0, "Unsupported integer comparison operator.");
+        }
+
+    switch (operator) with (EXP) {
+        case lessThan: return size(operandType) == 8
+            ? Op.lessThan8
+            : Op.lessThan4;
+        case lessOrEqual: return size(operandType) == 8
+            ? Op.lessOrEqual8
+            : Op.lessOrEqual4;
+        case greaterThan: return size(operandType) == 8
+            ? Op.greaterThan8
+            : Op.greaterThan4;
+        case greaterOrEqual: return size(operandType) == 8
+            ? Op.greaterOrEqual8
+            : Op.greaterOrEqual4;
+        default: assert(0, "Unsupported integer comparison operator.");
     }
 }
 
@@ -7123,22 +8762,18 @@ private imported!"quickbite.backends.bytecode.core.program".Op
     in imported!"quickbite.backends.bytecode.core.program".ScalarType
         operandType,
 ) @safe pure {
-    import quickbite.backends.bytecode.core.program: Op, ScalarType, isSigned,
-        size;
+    import dmd.tokens: EXP;
 
     if (isFloating(operandType))
         return floatingAssertOp(operator, operandType);
 
     switch (operator) {
-        case "==": return equalOp(size(operandType));
-        case "!=": return Op.notEqual4;
-        case "<": return Op.lessThan4;
-        case "<=": return Op.lessOrEqual4;
-        case ">": return Op.greaterThan4;
-        case ">=":
-            return isSigned(operandType)
-                ? Op.greaterOrEqual4
-                : Op.greaterOrEqualUnsigned4;
+        case "==": return comparisonEqualOp(operandType);
+        case "!=": return comparisonNotEqualOp(operandType);
+        case "<": return integerComparisonOp(EXP.lessThan, operandType);
+        case "<=": return integerComparisonOp(EXP.lessOrEqual, operandType);
+        case ">": return integerComparisonOp(EXP.greaterThan, operandType);
+        case ">=": return integerComparisonOp(EXP.greaterOrEqual, operandType);
         default: assert(0, "Unsupported comparison-assert operator.");
     }
 }
@@ -7370,6 +9005,45 @@ private bool isFloating(
         type == ScalarType.real_;
 }
 
+private enum complexDoubleSize = cast(uint) (2 * double.sizeof);
+
+private bool isComplexDoubleType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tcomplex64;
+}
+
+private bool isDoubleType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tfloat64;
+}
+
+private bool isImaginaryDoubleType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Timaginary64;
+}
+
+private ushort complexImaginaryOffset(in ushort offset)
+    @safe @nogc nothrow pure
+{
+    return cast(ushort) (offset + double.sizeof);
+}
+
+private Operand complexDoubleOperand(in ushort offset) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return Operand(
+        offset,
+        ScalarType.void_,
+        false,
+        false,
+        ScalarType.void_,
+        true,
+    );
+}
+
 private bool isEightByteInteger(
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
 ) @safe @nogc nothrow pure {
@@ -7385,6 +9059,21 @@ private bool isIntegerScalar(
     import quickbite.backends.bytecode.core.program: ScalarType;
 
     return type == ScalarType.int_ ||
+        type == ScalarType.uint_ ||
+        type == ScalarType.long_ ||
+        type == ScalarType.ulong_;
+}
+
+private bool isCompoundIntegerScalar(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return type == ScalarType.byte_ ||
+        type == ScalarType.ubyte_ ||
+        type == ScalarType.short_ ||
+        type == ScalarType.ushort_ ||
+        type == ScalarType.int_ ||
         type == ScalarType.uint_ ||
         type == ScalarType.long_ ||
         type == ScalarType.ulong_;
@@ -7482,6 +9171,10 @@ private imported!"dmd.func".FuncDeclaration callFunction(
         if (auto function_ = variable.var.isFuncDeclaration)
             return function_;
 
+    if (auto dot = call.e1.isDotVarExp)
+        if (auto function_ = dot.var.isFuncDeclaration)
+            return function_;
+
     return null;
 }
 
@@ -7574,9 +9267,231 @@ private imported!"dmd.expression".StringExp stringLiteralOf(
     return expression.isStringExp;
 }
 
+private bool isDollarExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (expression is null)
+        return false;
+    if (expression.isDollarExp !is null)
+        return true;
+    if (auto variable = expression.isVarExp)
+        return variable.var !is null &&
+            variable.var.ident !is null &&
+            variable.var.ident.toString == "$";
+    return expressionChars(expression) == "$";
+}
+
 private bool sameType(
     imported!"dmd.mtype".Type lhs,
     imported!"dmd.mtype".Type rhs,
 ) {
     return lhs.toBasetype.equals(rhs.toBasetype);
+}
+
+private imported!"dmd.dclass".ClassDeclaration thisClassDeclaration(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    if (auto aggregate = function_.isThis())
+        return aggregate.isClassDeclaration;
+    return null;
+}
+
+private imported!"dmd.func".FuncDeclaration[] virtualBases(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    imported!"dmd.func".FuncDeclaration[] functions;
+    foreach (current; classHierarchy(class_))
+        appendMemberFunctions(functions, current);
+    foreach (interface_; class_.interfaces)
+        appendInterfaceFunctions(functions, interface_.sym);
+    return functions;
+}
+
+private void appendInterfaceFunctions(
+    ref imported!"dmd.func".FuncDeclaration[] functions,
+    imported!"dmd.dclass".ClassDeclaration interface_,
+) {
+    if (interface_ is null)
+        return;
+
+    appendMemberFunctions(functions, interface_);
+    foreach (base; interface_.interfaces)
+        appendInterfaceFunctions(functions, base.sym);
+}
+
+private void appendMemberFunctions(
+    ref imported!"dmd.func".FuncDeclaration[] functions,
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    if (class_ is null || class_.members is null)
+        return;
+
+    foreach (member; *class_.members)
+        if (auto function_ = member.isFuncDeclaration)
+            if (function_.ident !is null &&
+                function_.isCtorDeclaration is null)
+                functions ~= function_;
+}
+
+private bool supportedVirtualSignature(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import dmd.astenums: TY;
+
+    if (function_.type is null || function_.type.nextOf is null)
+        return false;
+    if (function_.type.nextOf.toBasetype.ty == TY.Tclass)
+        return false;
+
+    if (function_.parameters is null)
+        return true;
+
+    foreach (parameter; *function_.parameters)
+        if (parameter.type is null ||
+            parameter.type.toBasetype.ty == TY.Tclass)
+            return false;
+
+    return true;
+}
+
+private imported!"dmd.func".FuncDeclaration overridingFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    if (auto function_ = vtblFunction(class_, base))
+        return function_;
+
+    foreach (current; classHierarchy(class_))
+        if (current.members !is null)
+            foreach (member; *current.members)
+                if (auto function_ = member.isFuncDeclaration)
+                    if (overridesFunction(function_, base))
+                        return function_;
+
+    return matchingMemberFunction(class_, base);
+}
+
+private bool overridesFunction(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (override_; function_.foverrides) {
+        if (override_ is base)
+            return true;
+        if (overridesFunction(override_, base))
+            return true;
+    }
+
+    return false;
+}
+
+private imported!"dmd.func".FuncDeclaration vtblFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    if (base.vtblIndex < 0)
+        return null;
+
+    const index = cast(size_t) base.vtblIndex;
+    if (index >= class_.vtbl.length)
+        return null;
+
+    auto function_ = class_.vtbl[index].isFuncDeclaration;
+    if (function_ is null || !sameFunctionSignature(function_, base))
+        return null;
+
+    return function_;
+}
+
+private imported!"dmd.func".FuncDeclaration matchingMemberFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (current; classHierarchy(class_))
+        if (current.members !is null)
+            foreach (member; *current.members)
+                if (auto function_ = member.isFuncDeclaration)
+                    if (sameFunctionSignature(function_, base))
+                        return function_;
+
+    return null;
+}
+
+private bool sameFunctionSignature(
+    imported!"dmd.func".FuncDeclaration candidate,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    if (functionName(candidate) != functionName(base))
+        return false;
+
+    if (candidate.type !is null &&
+        base.type !is null &&
+        candidate.type.equals(base.type))
+        return true;
+
+    if (candidate.parameters is null || base.parameters is null)
+        return candidate.parameters is base.parameters;
+
+    if (candidate.parameters.length != base.parameters.length)
+        return false;
+
+    foreach (index, parameter; *candidate.parameters) {
+        auto baseParameter = (*base.parameters)[index];
+        if (parameter.type is null || baseParameter.type is null)
+            return false;
+        if (!parameter.type.equals(baseParameter.type))
+            return false;
+    }
+
+    return true;
+}
+
+private imported!"dmd.dclass".ClassDeclaration[] classHierarchy(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    imported!"dmd.dclass".ClassDeclaration[] classes;
+    for (auto current = class_; current !is null; current = current.baseClass)
+        classes ~= current;
+    return classes;
+}
+
+private string functionName(
+    imported!"dmd.func".FuncDeclaration function_,
+) @safe {
+    return function_.ident is null ? "" : function_.ident.toString.idup;
+}
+
+private string typeInfoName(imported!"dmd.mtype".Type type) {
+    if (type is null)
+        return "";
+
+    auto classType = type.toBasetype.isTypeClass;
+    if (classType !is null && classType.sym !is null)
+        return classInfoName(classType.sym);
+
+    return typeChars(type);
+}
+
+private string classInfoName(imported!"dmd.dclass".ClassDeclaration class_) {
+    import std.conv: text;
+    return text(class_.toPrettyChars);
+}
+
+private imported!"dmd.mtype".Type typeidObjectType(
+    imported!"dmd.expression".TypeidExp typeid_,
+) {
+    if (auto type = cast(imported!"dmd.mtype".Type) typeid_.obj)
+        return type;
+
+    if (auto expression = cast(imported!"dmd.expression".Expression) typeid_.obj)
+        return expression.type;
+
+    return null;
+}
+
+private imported!"dmd.mtype".Type symbolOffsetTypeInfoType(
+    imported!"dmd.expression".SymOffExp symbol,
+) {
+    auto typeInfo = symbol.var.isTypeInfoDeclaration;
+    return typeInfo is null ? null : typeInfo.tinfo;
 }

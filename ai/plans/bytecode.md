@@ -3448,3 +3448,84 @@ bin/ut $(bin/ut -l | \
 ```
 
 Result: 26 tests run, 0 failed.
+
+## expressions.d Promotion Analysis (BytecodeNewCore)
+
+All SystemLinker-backed tests from
+`tests/ut/backends/runner/ct/expressions.d` have been promoted to include
+`BytecodeNewCore` in their `AliasSeq` blocks. CTFE-only characterization
+tests remain CTFE-only.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.backends\\.runner\\.ct\\.expressions\\..*\\.BytecodeNewCore$')
+```
+
+The first focused run covered 55 promoted tests. Twenty tests already pass,
+one test is an expected failure, and 35 fail. The failures group into these
+implementation gaps:
+
+1. Integer expression coverage is incomplete: `%`, `&`, `^`, `~`, `>>`,
+   `>>>`, `|=`, and cast-shaped compound assignment on a narrow integer are
+   not lowered by the new core. The integer power test also fails before the
+   lowered helper body can run.
+2. Mixed numeric conversion and comparison semantics are incomplete: runtime
+   `int` to `float`, high-bit `ulong` to `double` comparison, integer/floating
+   equality, and 64-bit integer literal/sign handling do not yet match
+   compiled D.
+3. Pointer, slice, and hex-string casts need expression-level support:
+   address-of dynamic-array elements, `$` in slice bounds, slice-to-pointer,
+   array pointer round trips through `void*`, pointer-to-bool truth, void
+   pointer storage, and `x"..."` to `ushort[]`.
+4. Heap allocation and dynamic-array fields need pointer-shaped aggregate
+   support: `new int(seed)`, `Holder*` locals, `ubyte[]`/`int[]` fields in
+   heap structs, and dynamic-array field length/ptr-slice operations.
+5. Runtime class and interface behaviour is still incomplete for this module:
+   virtual dispatch currently calls the base method, interface dispatch is
+   unsupported, expression `typeid(value) is typeid(Child)` is unsupported,
+   and `typeid(T).name` reaches a string equality assertion that the scalar
+   compare path cannot lower.
+6. Delegates and function pointers are not expression-complete: nested
+   delegate initialization, struct-member delegate initialization, `dg.ptr`,
+   and `dg.funcptr` all fail before matching compiled-D behaviour.
+7. Complex and vector expressions remain unsupported: `cdouble` values,
+   vector scalar splat reification through `vector.array`, and the integer
+   `^^` lowering need dedicated support.
+
+Worker assignments should keep the promoted tests in place, make the smallest
+honest backend changes, and rerun only
+`ut.backends.runner.ct.expressions.*.BytecodeNewCore` after each fix.
+
+Completed implementation:
+
+- Integer expressions now cover signed remainder, shifts including `>>>`,
+  bitwise `&`/`^`/`~`, local integer compound assignments including narrow
+  store wraparound, and the integer helper lowering behind `^^`.
+- Numeric conversion/comparison now covers runtime `int` to `float`,
+  high-bit `ulong` to `double`, integer/floating equality by numeric value,
+  and 64-bit integer literal/sign handling.
+- Pointer, slice, and heap aggregate support now covers address-of dynamic
+  array elements, `$` slice bounds, slice-to-pointer, `void*` round trips,
+  pointer-to-bool diagnostics, hex-string-to-`ushort[]`, `new int(seed)`, and
+  heap struct dynamic-array fields.
+- Class/interface/typeid support now covers dynamic virtual dispatch,
+  interface dispatch, expression `typeid` dynamic-class identity, and
+  compiled-D `typeid(T).name` behaviour.
+- Delegate support now covers nested function delegates with captured locals,
+  struct member delegates with receiver context, `dg.ptr`, and `dg.funcptr`.
+- Complex/vector support now covers the promoted `cdouble` literal/addition
+  and `.re`/`.im` reads, plus scalar splat to `__vector(int[4])` and
+  `.array` as an inline static-array block.
+
+Final focused verification:
+
+```sh
+ninja bin/ut
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.backends\\.runner\\.ct\\.expressions\\..*\\.BytecodeNewCore$')
+```
+
+Result: 55 tests run, 0 failed, 1/1 failing as expected.
