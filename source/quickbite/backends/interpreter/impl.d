@@ -16,7 +16,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     }
 
     public this(const string[] dependencyImages) {
-        import quickbite.backends.ffi: loadDependencyImages;
+        import quickbite.ffi: loadDependencyImages;
 
         loadDependencyImages(dependencyImages);
     }
@@ -443,23 +443,73 @@ private struct Walker {
         throw new InterpretedException(object);
     }
 
-    private void throwNativeException(in string message, in string className) {
-        if (auto class_ = dynamicClassDeclarationByName(className)) {
-            auto object = classDefaultValue(class_)
-                .withClassFieldNamed("msg", Value(message));
-            throw new InterpretedException(object);
-        }
-
-        throw new InterpretedException(nativeExceptionValue(message, className));
+    private void throwNativeException(
+        imported!"quickbite.ffi".NativeCallException exception,
+    ) {
+        throw new InterpretedException(nativeExceptionObject(exception));
     }
 
+    // Rebuild the captured native exception chain as linked interpreted
+    // exception objects, threading each `.next` through _nextInChainPtr
+    // (ffi.md §34.13).
+    private Value nativeExceptionObject(
+        imported!"quickbite.ffi".NativeCallException exception,
+    ) {
+        auto object = nativeExceptionBaseObject(
+            exception.msg,
+            exception.className,
+        );
+        if (exception.chainedNext !is null)
+            object = object.withClassFieldNamed(
+                "_nextInChainPtr",
+                nativeExceptionObject(exception.chainedNext),
+            );
+
+        return object;
+    }
+
+    private Value nativeExceptionBaseObject(
+        in string message,
+        in string className,
+    ) {
+        if (auto class_ = dynamicClassDeclarationByName(className))
+            return classDefaultValue(class_)
+                .withClassFieldNamed("msg", Value(message));
+
+        return nativeExceptionValue(message, className);
+    }
+
+    // Build a native exception object with the full Throwable field layout so
+    // chain-aware field reads (`.next` resolves to _nextInChainPtr) work, while
+    // keeping the thrown class's type names so a catch on a dependency subclass
+    // still matches. Falls back to the message-only object if the frontend has
+    // not recorded the Exception declaration.
     private Value nativeExceptionValue(in string message, in string className) const {
+        import quickbite.frontend.dmd.values: defaultValue;
+        import dmd.dclass: ClassDeclaration;
+
+        auto class_ = ClassDeclaration.exception;
+        if (class_ is null)
+            return Value.classValue(
+                className,
+                nativeExceptionTypeNames(className),
+                ["msg"],
+                [Value(message)],
+            );
+
+        string[] fieldNames;
+        Value[] fields;
+        foreach (field; classFields(class_)) {
+            fieldNames ~= variableName(field);
+            fields ~= defaultValue(field.type);
+        }
+
         return Value.classValue(
             className,
             nativeExceptionTypeNames(className),
-            ["msg"],
-            [Value(message)],
-        );
+            fieldNames,
+            fields,
+        ).withClassFieldNamed("msg", Value(message));
     }
 
     private Value chainExceptionObject(in Value thrown, in Value next) const {
@@ -1621,7 +1671,7 @@ private struct Walker {
 
                 auto function_ = resolveMemberFunction(call.f, receiver);
                 if (hasNoAvailableSource(function_)) {
-                    import quickbite.backends.ffi:
+                    import quickbite.backends.interpreter.ffi_marshal:
                         NativeCallException, tryCallNativeMember;
 
                     Value result;
@@ -1632,6 +1682,7 @@ private struct Walker {
                             receiverStructType(dot.e1),
                             receiver,
                             arguments,
+                            nativeArgumentTypes(argumentExpressions),
                             result,
                             writebacks,
                         )) {
@@ -1639,7 +1690,7 @@ private struct Walker {
                             return result;
                         }
                     } catch (NativeCallException exception) {
-                        throwNativeException(exception.msg, exception.className);
+                        throwNativeException(exception);
                     }
 
                     throw new Exception(noAvailableSourceMessage(function_));
@@ -1657,7 +1708,7 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
-            import quickbite.backends.ffi:
+            import quickbite.backends.interpreter.ffi_marshal:
                 NativeCallException, tryCallNative;
 
             if (hasNoAvailableSource(call.f)) {
@@ -1666,13 +1717,19 @@ private struct Walker {
                 try {
                     if (
                         !call.f.needThis &&
-                        tryCallNative(call.f, arguments, result, writebacks)
+                        tryCallNative(
+                            call.f,
+                            arguments,
+                            nativeArgumentTypes(argumentExpressions),
+                            result,
+                            writebacks,
+                        )
                     ) {
                         applyNativeWritebacks(writebacks, argumentExpressions);
                         return result;
                     }
                 } catch (NativeCallException exception) {
-                    throwNativeException(exception.msg, exception.className);
+                    throwNativeException(exception);
                 }
 
                 throw new Exception(noAvailableSourceMessage(call.f));
@@ -4670,6 +4727,22 @@ private imported!"quickbite.lang".Value classDefaultValue(
         fieldNames,
         fields,
     );
+}
+
+
+// The call site's actual argument types, in source order, so the FFI core can
+// type a C variadic call's trailing arguments (the signature carries only the
+// fixed parameters, ffi.md §34.14).
+private imported!"dmd.mtype".Type[] nativeArgumentTypes(
+    imported!"dmd.expression".Expression[] expressions,
+) {
+    import dmd.mtype: Type;
+
+    Type[] types;
+    foreach (expression; expressions)
+        types ~= expression.type;
+
+    return types;
 }
 
 

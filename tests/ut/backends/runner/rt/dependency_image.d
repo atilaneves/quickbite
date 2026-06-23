@@ -527,6 +527,80 @@ unittest {
     }
 }
 
+// Characterization (ffi.md §34.7): a >16-byte struct returns through the hidden
+// `sret` pointer, which libffi issues transparently from the struct ffi_type and
+// the bridge reifies via NativeMarshaller.readResult. Already works; this pins
+// that behaviour across the §5 seam. The asymmetric fields also re-exercise the
+// §27 extern(D) argument reversal alongside the sret return.
+@("dependencyImage.externDLargeStructReturn.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_struct_return_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_struct_return_fixture;
+
+            struct Quad {
+                long a;
+                long b;
+                long c;
+                long d;
+            }
+
+            Quad dependencyQuad(int first, int second) {
+                return Quad(first, second, first - second, first * second);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_struct_return_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_struct_return_fixture;
+
+            struct Quad { long a; long b; long c; long d; }
+            Quad dependencyQuad(int first, int second);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_struct_return_fixture;
+
+                unittest {
+                    int first = 9;
+                    int second = 4;
+                    Quad q = dependencyQuad(first, second);
+                    assert(q.a == 9);
+                    assert(q.b == 4);
+                    assert(q.c == 5);
+                    assert(q.d == 36);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.nativeException.Interpreter")
 @Tags("Interpreter")
 unittest {
@@ -641,6 +715,217 @@ unittest {
                     } catch (DependencyException caught) {
                         assert(caught.msg == "dependency failed");
                     }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+@("dependencyImage.nativeChainedException.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_chained_exception_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_chained_exception_fixture;
+
+            void dependencyThrowChained() {
+                auto inner = new Exception("inner failure");
+                auto outer = new Exception("outer failure");
+                outer.next = inner;
+                throw outer;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_chained_exception_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_chained_exception_fixture;
+
+            void dependencyThrowChained();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_chained_exception_fixture;
+
+                unittest {
+                    try {
+                        dependencyThrowChained();
+                        assert(false);
+                    } catch (Exception caught) {
+                        assert(caught.msg == "outer failure");
+                        assert(caught.next.msg == "inner failure");
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+@("dependencyImage.externCVariadic.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_variadic_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_variadic_fixture;
+
+            import core.stdc.stdarg;
+
+            extern(C) int dependencyCombine(int count, ...) {
+                va_list args;
+                va_start(args, count);
+                int result;
+                foreach (_; 0 .. count)
+                    result = result * 10 + va_arg!int(args);
+                va_end(args);
+                return result;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_variadic_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_variadic_fixture;
+
+            extern(C) int dependencyCombine(int count, ...);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_variadic_fixture;
+
+                unittest {
+                    int count = 3;
+                    int first = 1;
+                    int second = 2;
+                    int third = 3;
+                    assert(
+                        dependencyCombine(count, first, second, third) == 123,
+                    );
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+@("dependencyImage.externCppFunctionAndMember.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_cpp_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_cpp_fixture;
+
+            extern(C++) int dependencyCppSub(int a, int b) {
+                return a - b;
+            }
+
+            extern(C++) struct CppCounter {
+                int value;
+
+                int combine(int x, int y) {
+                    return value * 100 + x * 10 + y;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_cpp_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_cpp_fixture;
+
+            extern(C++) int dependencyCppSub(int a, int b);
+
+            extern(C++) struct CppCounter {
+                int value;
+                int combine(int x, int y);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_cpp_fixture;
+
+                unittest {
+                    int a = 9;
+                    int b = 4;
+                    assert(dependencyCppSub(a, b) == 5);
+
+                    CppCounter counter = CppCounter(7);
+                    int x = 2;
+                    int y = 3;
+                    assert(counter.combine(x, y) == 723);
                 }
             },
             [inSandboxPath(importPath)],

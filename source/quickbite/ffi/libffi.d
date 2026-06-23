@@ -1,11 +1,10 @@
-module quickbite.backends.libffi;
+module quickbite.ffi.libffi;
 
 // Hand-written extern(C) declarations for the subset of libffi (3.x) that the
-// resident native-call chokepoint (quickbite.backends.ffi) needs. No bindbc or
-// libffi dev headers: the installed libffi.so exports these symbols, so we
-// declare the prototypes ourselves, mirroring
-// quickbite.backends.native.llvm_orc. Layout verified against
-// /usr/include/ffi.h on x86-64 SysV (sizeof(ffi_cif) == 32,
+// resident native-call chokepoint (quickbite.ffi) needs. No bindbc or libffi
+// dev headers: the installed libffi.so exports these symbols, so we declare the
+// prototypes ourselves, mirroring quickbite.backends.native.llvm_orc. Layout
+// verified against /usr/include/ffi.h on x86-64 SysV (sizeof(ffi_cif) == 32,
 // sizeof(ffi_type) == 24, no FFI_EXTRA_CIF_FIELDS).
 
 private:
@@ -51,6 +50,18 @@ ffi_status ffi_prep_cif(
     ffi_cif* cif,
     uint abi,
     uint nargs,
+    ffi_type* rtype,
+    ffi_type** atypes,
+) @nogc nothrow;
+
+// Variadic CIF: `nfixedargs` are the declared fixed parameters, `ntotalargs`
+// includes the per-call variadic arguments. Variadic calls cannot share a
+// cached non-variadic CIF (ffi.md §34.14).
+ffi_status ffi_prep_cif_var(
+    ffi_cif* cif,
+    uint abi,
+    uint nfixedargs,
+    uint ntotalargs,
     ffi_type* rtype,
     ffi_type** atypes,
 ) @nogc nothrow;
