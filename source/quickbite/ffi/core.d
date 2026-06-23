@@ -10,6 +10,9 @@ public void loadDependencyImages(in string[] dependencyImages) {
 
 public class NativeCallException: Exception {
     public string className;
+    // The native Throwable.next link, captured as another NativeCallException
+    // so the backend can rebuild the chain (ffi.md §34.13). Null at the tail.
+    public NativeCallException chainedNext;
 
     public this(in string message, in string className) {
         super(message);
@@ -298,7 +301,7 @@ private bool callViaLibffi(
             abiArgumentValues.ptr,
         );
     } catch (Exception exception) {
-        throw new NativeCallException(exception.msg, exception.classinfo.name);
+        throw nativeCallExceptionFrom(exception);
     }
 
     foreach (index; 0 .. nargs) {
@@ -309,6 +312,17 @@ private bool callViaLibffi(
 
     marshaller.readResult(returnType, returnBuffer);
     return true;
+}
+
+// Capture the caught native Throwable and its `.next` chain as a linked
+// NativeCallException, preserving each link's message and dynamic class name so
+// the backend can rebuild the interpreted chain (ffi.md §34.13). Only Exception
+// is caught at the call site; Error stays fatal.
+private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
+    auto result = new NativeCallException(throwable.msg, throwable.classinfo.name);
+    if (throwable.next !is null)
+        result.chainedNext = nativeCallExceptionFrom(throwable.next);
+    return result;
 }
 
 private size_t abiSourceIndex(

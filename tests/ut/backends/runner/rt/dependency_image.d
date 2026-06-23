@@ -733,3 +733,70 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+@("dependencyImage.nativeChainedException.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_chained_exception_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_chained_exception_fixture;
+
+            void dependencyThrowChained() {
+                auto inner = new Exception("inner failure");
+                auto outer = new Exception("outer failure");
+                outer.next = inner;
+                throw outer;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_chained_exception_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_chained_exception_fixture;
+
+            void dependencyThrowChained();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_chained_exception_fixture;
+
+                unittest {
+                    try {
+                        dependencyThrowChained();
+                        assert(false);
+                    } catch (Exception caught) {
+                        assert(caught.msg == "outer failure");
+                        assert(caught.next.msg == "inner failure");
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
