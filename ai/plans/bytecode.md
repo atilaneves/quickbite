@@ -925,6 +925,14 @@ switch; `Bytecode` still defaults to the old core):
   nested-struct enclosing-local capture through a stack-base-index context
   pointer, and scope-exit destructor / static-array postblit insertion. All
   43 blocks are SystemLinker-oracle-backed; none were withheld.
+- All `tests/ut/backends/runner/ct/control_flow.d` blocks, completing
+  `control_flow.d` (module order 10) on the new core (67/67 promoted, see
+  the control-flow analysis section). This is slice 3 realised on top of the
+  earlier scalar, array, and struct machinery: free calls, `if`/loops,
+  `break`/`continue`, labels, `switch`/`goto case`, function pointers,
+  nested-lambda `this` capture, UTF string `foreach`, and the narrow
+  try/catch/finally-on-goto surface needed by the module. All blocks are
+  SystemLinker-oracle-backed; none were withheld.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -934,24 +942,23 @@ dual-mode model and the `ExecutionMode` enum have been removed
 
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
-(5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), and `structs.d` (9)
-are now complete on the new core (see Rewrite Coverage State). Continue with
-`control_flow.d` (module order 10), promoting one named behaviour or one tight
-failure-message family at a time. The float/builtin/string-slice machinery
+(5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), `structs.d` (9),
+and `control_flow.d` (10) are now complete on the new core (see Rewrite
+Coverage State). Continue with `exceptions.d` (module order 11), promoting
+one named behaviour or one tight failure-message family at a time. The
+float/builtin/string-slice machinery
 earned for `eval.d` and `math.d`, logical/comparison/short-circuit machinery
 earned for `logic.d`, narrow throw/result plumbing earned for `results.d`, the
 comparison-operator / ref-parameter / explicit-message / unittest-halt
 machinery earned for `diagnostics.d`, the native-layout array/slice/pointer/AA
 machinery earned for `arrays.d`, and the struct native-layout / methods /
-`new` / operator / `with`-`goto` / lifetime machinery earned for `structs.d`
-are now available to the later modules. `control_flow.d` behaviour should
-still be earned directly on the typed-frame core, not through old-core
-promotions; the `with`/`goto`/label and short-circuit control-flow primitives
-already landed for `logic.d` and `structs.d` are the foundation it builds on.
+`new` / operator / `with`-`goto` / lifetime machinery earned for `structs.d`,
+and the loop/switch/goto/function-pointer/UTF-foreach machinery earned for
+`control_flow.d` are now available to the later modules.
 
 Promotion of further test modules onto the old core stops; new surface area
-(`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
-directly on the new core per the slice roadmap.
+(`exceptions.d` and later modules) is earned directly on the new core per the
+slice roadmap.
 
 ## math.d Promotion Analysis (BytecodeNewCore)
 
@@ -3383,6 +3390,10 @@ order respects dependencies:
 - Medium (new call-site interception or pointer machinery): modes 4, 6, 9.
 - Large (new statement family): mode 3; closure sub-items of mode 7.
 
-After all 9 modes are implemented,
-`ut.backends.runner.ct.control_flow.*.BytecodeNewCore` should be complete
-(67/67).
+All 9 modes are implemented. The focused run passes with 67 tests run and 0
+failures:
+
+```sh
+./bin/ut $(./bin/ut -l | \
+    rg '^ut\\.backends\\.runner\\.ct\\.control_flow\\..*\\.BytecodeNewCore$')
+```
