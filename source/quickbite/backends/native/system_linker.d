@@ -43,6 +43,7 @@ public class SystemLinker:
         in string packageRoot,
         in imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
             imported!"quickbite.frontend.compiler".FrontendFlags.init,
+        in DubPackage dubPackage = DubPackage.no,
     ) @safe {
         import quickbite.frontend.compiler: FrontendFlags;
 
@@ -51,6 +52,7 @@ public class SystemLinker:
                 linkFiles,
                 archiveImportPathsUnder(importPaths, packageRoot),
                 FrontendFlags(frontendFlags.compilerArguments.dup),
+                dubPackage,
             ),
         );
     }
@@ -122,6 +124,8 @@ public class SystemLinker:
     }
 }
 
+public alias DubPackage = imported!"std.typecons".Flag!"dubPackage";
+
 public struct SystemLinkerInputs {
     // Link files are prebuilt libraries appended to every link. Modules under
     // archive import paths are defined by those libraries and must not be
@@ -130,6 +134,11 @@ public struct SystemLinkerInputs {
     public const string[] archiveImportPaths;
     public imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
         imported!"quickbite.frontend.compiler".FrontendFlags.init;
+    // Yes.dubPackage codegens the modules as a dub package's own root set
+    // (`dmd -unittest <files>`): no lightning rod, no archive-gated emission,
+    // no member pruning -- that apparatus is for the single-snippet path. See
+    // emitObjectFilesForDubPackage.
+    public DubPackage dubPackage;
 }
 
 // import paths under the package belong to the project under test and are
@@ -165,7 +174,8 @@ private BuiltLibrary buildSharedLibrary(
     imported!"dmd.dmodule".Module[] modules,
     in SystemLinkerInputs inputs,
 ) {
-    import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForLink;
+    import quickbite.backends.native.codegen:
+        CodegenInputs, emitObjectFilesForDubPackage, emitObjectFilesForLink;
     import quickbite.frontend.compiler: withCompilerLock;
     import quickbite.frontend.compiler: FrontendFlags;
     import core.atomic: atomicFetchAdd;
@@ -186,14 +196,13 @@ private BuiltLibrary buildSharedLibrary(
 
     string[] objPaths;
     withCompilerLock(() {
-        objPaths = emitObjectFilesForLink(
-            modules,
-            dir,
-            CodegenInputs(
-                inputs.archiveImportPaths,
-                FrontendFlags(inputs.frontendFlags.compilerArguments.dup),
-            ),
+        auto codegenInputs = CodegenInputs(
+            inputs.archiveImportPaths,
+            FrontendFlags(inputs.frontendFlags.compilerArguments.dup),
         );
+        objPaths = inputs.dubPackage
+            ? emitObjectFilesForDubPackage(modules, dir, codegenInputs)
+            : emitObjectFilesForLink(modules, dir, codegenInputs);
     });
     linkSharedLibrary(objPaths, libPath, inputs.linkFiles);
 

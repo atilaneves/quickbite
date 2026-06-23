@@ -1017,3 +1017,83 @@ druntime template parameterised on a package-local type, then links it through
 the dub codegen path and asserts the link succeeds (no undefined symbol) — the
 minimal reproduction of the automem failure without depending on the real automem
 package or per-test process spawning.
+
+### Outcome (2026-06-23) — shipped
+
+`bin/bench.sh --dub <pkg> -b system-linker` now works: `cerealed` times
+`156/156`, and `automem` compiles, links, and runs all its tests without crash.
+`bin/ut --random` stays green (snippet path untouched). What actually shipped
+diverged from the plan above in instructive ways; corrections, in order:
+
+1. **`allInst` off is necessary but not sufficient — the rod must not be parsed
+   at all in dub mode.** The plan implies turning off `allInst` lets instances
+   home on the package root. They do not, because parsing the (empty) lightning
+   rod at process init runs `fullSemantic`, which auto-imports `object` →
+   `core.internal.hash` and pins `core.internal.hash.importedFrom` onto the rod
+   *permanently* (`dsymbolsem.d`'s `if (!importedFrom)` guard). `appendToModuleMember`
+   (`templatesem.d`) then funnels every `hashOf!(...)` onto the rod regardless of
+   `allInst`, and the dub codegen path never emits the rod. The decisive lever is
+   Plan step 1 done literally: `initialize(DubMode)` skips **both** `allInst` and
+   `parseLightningRod` in dub mode. A per-parse `allInst` toggle was tried first
+   and proven insufficient by exactly this.
+
+2. **The proposed bin/ut unit test is infeasible.** A dub-path link test needs a
+   *rod-free* process, but `bin/ut` is one process initialised in snippet mode
+   (`initialize(DubMode.no)`), and `initialize` is idempotent. The candidate test
+   above fails even after the fix because its parse still funnels onto the rod.
+   Verification is therefore the `bin/bench.sh --dub` smoke tests (cerealed +
+   automem) plus `bin/ut --random` guarding the untouched snippet path — not a
+   new bin/ut unittest. (`DubMode`/`dubPackage` are `std.typecons.Flag`s, threaded
+   through `compiler.initialize`, `SystemLinkerInputs.dubPackage`, and the bench
+   `BackendEnv`, so call sites read `Yes.dubMode`/`DubPackage.yes`, not a bare
+   boolean.)
+
+3. **Two further `--dub` defects, not template-emission, blocked the same command
+   — both from quickbite second-guessing dub rather than doing what dub does:**
+   - *Excluded `package.d` → undefined `automem.__ModuleInfo`.* `discoverFixtures`
+     filtered dub's source-files (dropping `package.d`/`main.d`/`*_main.d` by name,
+     then keeping only files under `pkgDir`); a real `dub test` compiles
+     `package.d`, so its ModuleInfo (referenced by siblings) went undefined. Fix:
+     **delete `discoverFixtures` and forward `dub describe --config=unittest
+     --data=source-files` to the frontend verbatim.** That list is already exactly
+     the root package's compile inputs — root-only, no dependency sources, no
+     generated runner (verified on automem and cerealed) — so quickbite has
+     nothing to discover or filter. Dependencies still come from the prebuilt
+     image (the documented cold/hot build model), which is the only legitimate
+     split, and dub's root-only list is precisely what that split wants compiled.
+   - *One-shot executor unloaded the library → exit-time SIGSEGV.* `bench-exec`
+     copied `GC.collect` + `Runtime.unloadLibrary` from the long-lived in-process
+     `SystemLinker` path. As a one-shot process it must not unload: unmapping the
+     library leaves GC-managed fixture objects with vptrs into freed memory, and
+     druntime's exit-time final collection then dereferences the unmapped vtables.
+     A real `dub test` binary never unloads itself. Fix: run and exit, library
+     stays mapped (in-process `runTestsInProcess` keeps its unload — it runs many
+     libraries per process).
+
+   - *Compiler flags were scraped from a build shim, not asked of dub.* The old
+     `dubBuildWithCompilerShim` ran `dub build` with a wrapper "compiler" that
+     logged dub's intercepted `dmd` invocation, then parsed the response file to
+     recover the root package's flags. dub already reports all the frontend needs
+     directly. Fix: **delete the shim** (and its log/rsp/invocation-matching
+     machinery) and assemble `FrontendFlags` from `dub describe --data=dflags`
+     (`-preview=dip1000/dip1008`), `--data=versions` (`AutomemTesting`, `Have_*`),
+     `--data=debug-versions`, and `--data=string-import-paths`. A plain
+     `dub build --compiler=dmd` still runs, but only to produce the dependency
+     archives for the image — the flags come from `describe`, forwarded verbatim.
+
+   General principle (confirmed by the user): the `--dub` path must *do what dub
+   does* and **do nothing but forward dub's own build information to the frontend**
+   — ask dub for the files, import paths, and compiler flags, and relay them; no
+   discovery, no filtering, no shimming, no invented workarounds. The
+   snippet-world apparatus (rod, `allInst`, member pruning, load/unload cycling)
+   belongs only to `bin/ut`/REPL. See the `systemlinker-is-an-oracle` auto-memory.
+
+4. **Open follow-on (out of scope here): unit-threaded `@ShouldFail`/`@HiddenTest`.**
+   automem links and *runs* all 126 tests, but its 2 `@ShouldFail` + 1 `@HiddenTest`
+   are unit-threaded UDAs its own runner inverts/skips. quickbite calls raw
+   `__unittest` symbols, so a `@ShouldFail` body's assertion is reported as a real
+   failure and the pre-timing check skips automem. This is a *test-running*
+   concern, not a build one, and is left as a separate item: honour the UDAs in
+   unittest enumeration (couples the oracle to unit-threaded), or rely on
+   multi-backend agreement (no second backend runs automem today). A package
+   without such UDAs (cerealed) already produces a clean timed row.

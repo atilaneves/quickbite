@@ -297,30 +297,6 @@ unittest {
     }
 }
 
-@("discoverFixturesKeepsInPackageTestModules")
-unittest {
-    import std.path: buildPath;
-
-    // dub describe --data=source-files returns: the package's own library and
-    // test modules (under pkgDir), a generated runner under the dub cache, a
-    // dependency source outside pkgDir, plus package.d and a *_main.d. Only the
-    // in-package non-runner modules are fixtures, sorted.
-    const pkgDir = "/cache/pkgs/acme/1.0.0/acme";
-    const sourceFiles = [
-        "/cache/build/acme-test/dub_test_root.d",
-        buildPath(pkgDir, "source/acme/widget.d"),
-        buildPath(pkgDir, "source/acme/package.d"),
-        buildPath(pkgDir, "tests/roundtrip.d"),
-        buildPath(pkgDir, "tests/app_main.d"),
-        "/cache/pkgs/dep/2.0.0/dep/source/dep/thing.d",
-    ];
-
-    discoverFixtures(pkgDir, sourceFiles).should == [
-        buildPath(pkgDir, "source/acme/widget.d"),
-        buildPath(pkgDir, "tests/roundtrip.d"),
-    ];
-}
-
 @("dub.parseDescribeList yields the import paths, dropping blanks and whitespace")
 unittest {
     import quickbite.dub: parseDescribeList;
@@ -349,12 +325,21 @@ unittest {
     const archiveB = buildPath(pkgDir, ".dub/build/libdep_b.a");
     const imagePath = buildPath(pkgDir, ".quickbite/libacme_dub_deps.so");
 
+    // dub's source-files for the unittest config, in dub's order. quickbite
+    // forwards them to the frontend verbatim: no discovery, no filtering, no
+    // reordering -- package.d included, exactly as dub reports.
+    const sourceFiles = [
+        buildPath(pkgDir, "source/acme/widget.d"),
+        buildPath(pkgDir, "source/acme/package.d"),
+        buildPath(pkgDir, "tests/roundtrip.d"),
+    ];
+
     auto info = dubInfoFromDescribeData(
         "acme",
         pkgDir,
         [buildPath(pkgDir, "source")],
         [archiveA, archiveB],
-        [buildPath(pkgDir, "source/acme/package_tests.d")],
+        sourceFiles,
         (packageName, dependencyArchives, outDir) {
             packageName.should == "acme";
             dependencyArchives.should == [archiveA, archiveB];
@@ -364,6 +349,7 @@ unittest {
     );
 
     info.linkFiles.should == [imagePath];
+    info.fixtures.should == sourceFiles;  // forwarded verbatim, in dub's order
 }
 
 @("testResultsMismatch")
