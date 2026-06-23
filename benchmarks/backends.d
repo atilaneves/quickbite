@@ -14,6 +14,9 @@ public struct BackendEnv {
     string[] linkFiles;
     string packageRoot;
     imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags;
+    // A dub package is codegen'd as its own root set; a standalone fixture is
+    // not. Only set for `--dub` runs (see cli.d).
+    imported!"quickbite.backends.native".DubPackage dubPackage;
 }
 
 // One registry entry per backend; adding bytecode/ir later is a single line in
@@ -34,6 +37,7 @@ private Runner makeSystemLinker(in BackendEnv env) {
         env.importPaths,
         env.packageRoot,
         env.frontendFlags,
+        env.dubPackage,
     );
 }
 

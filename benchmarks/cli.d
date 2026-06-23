@@ -7,7 +7,7 @@ import quickbite.benchmarks: moduleDisplayName;
 import quickbite.frontend.compiler: FrontendFlags, parseModule, parseSnippetUncached;
 import dmd.dmodule: Module;
 
-public import quickbite.dub: discoverFixtures, findPkgDir;
+public import quickbite.dub: findPkgDir;
 
 private:
 
@@ -53,6 +53,14 @@ public void run(string[] args) {
         return;
     }
 
+    // A --dub run is dedicated to a dub package, compiled like `dub test` (a
+    // whole root set, no lightning rod). A standalone-fixture run is the
+    // single-snippet world. The frontend must know before its first parse.
+    {
+        import quickbite.frontend.compiler: DubMode, initialize;
+        initialize(dubPkg.length > 0 ? DubMode.yes : DubMode.no);
+    }
+
     string[] fixtures    = args[1 .. $].dup;
     string[] dubFixtures;
     DubInfo dubInfo;
@@ -70,6 +78,7 @@ public void run(string[] args) {
             dubInfo.linkFiles,
             dubInfo.packageRoot,
             dubInfo.frontendFlags,
+            imported!"quickbite.backends.native".DubPackage.yes,
         );
     }
 
@@ -489,17 +498,20 @@ public string renderPreparationSection(in PreparationRecord[] records) {
 }
 
 DubInfo resolveDubPkg(in string name) {
-    import quickbite.dub: buildDubDependencyImage, dubBuildWithCompilerShim, dubDescribe;
+    import quickbite.dub:
+        buildDubDependencyImage, dubBuild, dubCompilerArguments, dubDescribe;
 
     const pkgDir = findPkgDir(name);
-    auto importPaths = dubDescribe(pkgDir, "import-paths");
 
-    // The fixtures are the modules dub compiles for the unittest config, not a
-    // hardcoded tests/ glob: that lets packages keep their tests in source/
-    // (no tests/ dir at all) and excludes intentionally-failing example
-    // modules dub leaves out of the unittest build.
+    // Everything below is asked of dub and forwarded to the frontend verbatim:
+    // the import paths, the source files dub compiles for the unittest config,
+    // and the compiler flags (versions, -preview=..., string imports) dub chose.
+    // quickbite invents nothing about the build.
+    auto importPaths = dubDescribe(pkgDir, "import-paths");
     const sourceFiles = dubDescribe(pkgDir, "source-files");
-    const build = dubBuildWithCompilerShim(name, pkgDir, sourceFiles);
+
+    // Build so the dependency archives exist on disk for the dependency image.
+    dubBuild(name, pkgDir);
     auto dependencyArchives = dubDescribe(pkgDir, "linker-files");
 
     return dubInfoFromDescribeData(
@@ -515,7 +527,7 @@ DubInfo resolveDubPkg(in string name) {
                 outDir,
             );
         },
-        FrontendFlags(build.rootCompilerArguments.dup),
+        FrontendFlags(dubCompilerArguments(pkgDir)),
     );
 }
 
@@ -530,9 +542,14 @@ public DubInfo dubInfoFromDescribeData(
 ) {
     import std.path: buildPath;
 
-    auto fixtures = discoverFixtures(pkgDir, sourceFiles);  // auto: DubInfo needs mutable string[]
+    // dub already reports exactly the root package's compile inputs for the
+    // unittest config; quickbite forwards them to the frontend verbatim rather
+    // than discovering or filtering anything itself. Dependencies are supplied
+    // prebuilt as the dependency image (the cold/hot build model, dub-deps.md),
+    // which is why dub's root-only source-files list is precisely what to compile.
+    auto fixtures = sourceFiles.dup;  // dup: DubInfo needs mutable string[]
     if (fixtures.length == 0)
-        throw new Exception("no test fixtures found for " ~ packageName ~ " in " ~ pkgDir);
+        throw new Exception("no source files reported by dub for " ~ packageName ~ " in " ~ pkgDir);
 
     string[] linkFiles;
     if (dependencyArchives.length != 0)

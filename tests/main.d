@@ -1,6 +1,11 @@
 import unit_threaded;
 
 int main(string[] args) {
+    import quickbite.frontend.compiler: DubMode, initialize;
+
+    // bin/ut is the single-snippet world: keep the lightning rod and allInst.
+    initialize(DubMode.no);
+
     return args.runTests!(
         "ut.bin.repl",
         "ut.bin.cli",

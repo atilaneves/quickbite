@@ -2,10 +2,6 @@ module quickbite.dub;
 
 private:
 
-public struct DubBuild {
-    string[] rootCompilerArguments;
-}
-
 // The import paths a dub package contributes to a build: its own source path
 // plus those of its transitive dependencies. Feeding these to a frontend makes
 // `import <pkg>` (and any transitive module) resolve the way `dub test` does.
@@ -13,50 +9,44 @@ public string[] dubImportPaths(in string name) {
     return dubDescribe(findPkgDir(name), "import-paths");
 }
 
-// Build a dub package through a compiler shim that delegates to DMD while
-// preserving the exact root-package compiler invocation dub chose. The
-// benchmark feeds those args to DMD's own option parser before semantic.
-public DubBuild dubBuildWithCompilerShim(
-    in string packageName,
-    in string pkgDir,
-    in string[] sourceFiles,
-) {
-    import std.conv: text;
-    import std.file: mkdirRecurse;
-    import std.path: buildPath;
+// Build the package so its dependency archives exist on disk for the dependency
+// image (`buildDubDependencyImage`). Plain `dub build`, no compiler shim: dub
+// already knows the build, and the frontend-relevant flags are asked for
+// directly via `dubCompilerArguments`. dmd, so the archives' druntime and
+// extern(D) ABI match the DMD-codegen'd project and the DMD-built run executor.
+public void dubBuild(in string packageName, in string pkgDir) {
     import std.process: Config, execute;
 
-    const outDir = buildPath(pkgDir, ".quickbite");
-    const rspDir = buildPath(outDir, "dub-rsp");
-    mkdirRecurse(rspDir);
+    auto result = execute(
+        ["dub", "build", "--config=unittest", "--compiler=dmd"],
+        null, Config.none, size_t.max, pkgDir,
+    );
+    // Packages without a unittest configuration still build under the default.
+    if (result.status != 0)
+        result = execute(
+            ["dub", "build", "--compiler=dmd"],
+            null, Config.none, size_t.max, pkgDir,
+        );
+    if (result.status != 0)
+        throw new Exception(
+            "dub build failed for " ~ packageName ~ ": " ~ result.output,
+        );
+}
 
-    const logPath = buildPath(outDir, "dub-compiler-invocations.log");
-    const shimPath = buildPath(outDir, "quickbite-dub-dmd");
-    writeCompilerShim(shimPath, logPath, rspDir);
-
-    auto buildResult = executeDubBuild(pkgDir, shimPath, false);
-    if (buildResult.status != 0)
-        throw new Exception(text(
-            "dub build failed for ",
-            packageName,
-            ": ",
-            buildResult.output,
-        ));
-
-    try
-        return DubBuild(rootCompilerArguments(logPath, pkgDir, sourceFiles));
-    catch (Exception) {
-        writeCompilerShim(shimPath, logPath, rspDir);
-        buildResult = executeDubBuild(pkgDir, shimPath, true);
-        if (buildResult.status != 0)
-            throw new Exception(text(
-                "dub build --force failed for ",
-                packageName,
-                ": ",
-                buildResult.output,
-            ));
-        return DubBuild(rootCompilerArguments(logPath, pkgDir, sourceFiles));
-    }
+// The frontend-relevant compiler flags dub chose for the unittest build, asked
+// for directly via `dub describe` and forwarded verbatim: dflags (e.g.
+// -preview=dip1000/dip1008), versions, debug versions, and string-import paths.
+// This replaces the old compiler-shim that scraped dub's intercepted dmd
+// invocation; dub already reports all of this, so quickbite just relays it.
+public string[] dubCompilerArguments(in string pkgDir) {
+    string[] args = dubDescribe(pkgDir, "dflags");
+    foreach (version_; dubDescribe(pkgDir, "versions"))
+        args ~= "-version=" ~ version_;
+    foreach (debugVersion; dubDescribe(pkgDir, "debug-versions"))
+        args ~= "-debug=" ~ debugVersion;
+    foreach (stringImportPath; dubDescribe(pkgDir, "string-import-paths"))
+        args ~= "-J=" ~ stringImportPath;
+    return args;
 }
 
 // Run `dub describe ... --data=<dataKind> --data-list` in pkgDir and return its
@@ -138,34 +128,6 @@ public string buildDubDependencyImage(
     return imagePath;
 }
 
-// Keep only the package's own modules (under pkgDir, so the generated test
-// runner in the dub cache and dependency sources drop out) that are not
-// non-standalone runner/package files.
-public string[] discoverFixtures(in string pkgDir, in string[] sourceFiles) {
-    import std.algorithm.iteration: filter, map;
-    import std.algorithm.sorting: sort;
-    import std.array: array;
-    import std.path: baseName, dirSeparator;
-    import std.string: startsWith;
-
-    const prefix = pkgDir ~ dirSeparator;
-    auto fixtures = sourceFiles
-        .filter!(f => f.startsWith(prefix))
-        .filter!(f => !f.baseName.isTestRunnerFile)
-        .map!(f => f.idup)
-        .array;
-    fixtures.sort;
-    return fixtures;
-}
-
-bool isTestRunnerFile(in string basename) {
-    import std.string: endsWith;
-    // Exclude non-standalone files: runner entry points and package modules.
-    return basename == "main.d"
-        || basename == "package.d"
-        || basename.endsWith("_main.d");
-}
-
 public string findPkgDir(in string name) {
     import std.algorithm.iteration: filter, map;
     import std.algorithm.sorting: sort;
@@ -205,188 +167,4 @@ public string findPkgDir(in string name) {
         throw new Exception("could not find package '" ~ name ~ "' in dub cache");
     found.sort;
     return found[$ - 1];
-}
-
-private void writeCompilerShim(
-    in string shimPath,
-    in string logPath,
-    in string rspDir,
-) {
-    import std.file: exists, remove, setAttributes, write;
-    import std.path: buildPath;
-
-    if (logPath.exists)
-        logPath.remove;
-
-    write(
-        shimPath,
-        "#!/usr/bin/env bash\n" ~
-        "set -euo pipefail\n" ~
-        "log=" ~ shellQuote(logPath) ~ "\n" ~
-        "rsp_dir=" ~ shellQuote(rspDir) ~ "\n" ~
-        "{\n" ~
-        "  printf 'CWD\\t%s\\n' \"$PWD\"\n" ~
-        "  i=0\n" ~
-        "  for arg in \"$@\"; do\n" ~
-        "    case \"$arg\" in\n" ~
-        "      @*)\n" ~
-        "        rsp=\"$rsp_dir/rsp-$$-$i.rsp\"\n" ~
-        "        cp \"${arg#@}\" \"$rsp\"\n" ~
-        "        printf 'ARG\\t@%s\\n' \"$rsp\"\n" ~
-        "        ;;\n" ~
-        "      *)\n" ~
-        "        printf 'ARG\\t%s\\n' \"$arg\"\n" ~
-        "        ;;\n" ~
-        "    esac\n" ~
-        "    i=$((i + 1))\n" ~
-        "  done\n" ~
-        "  printf 'END\\n'\n" ~
-        "} >> \"$log\"\n" ~
-        "exec dmd \"$@\"\n",
-    );
-    setAttributes(shimPath, 0x1ED); // 0755
-}
-
-private auto executeDubBuild(
-    in string pkgDir,
-    in string shimPath,
-    in bool force,
-) {
-    import std.process: Config, execute;
-
-    const forceArgs = force ? ["--force"] : [];
-    auto result = execute(
-        ["dub", "build", "--config=unittest", "--compiler=" ~ shimPath]
-            ~ forceArgs,
-        null, Config.none, size_t.max,
-        pkgDir,
-    );
-    if (result.status == 0)
-        return result;
-
-    return execute(
-        ["dub", "build", "--compiler=" ~ shimPath] ~ forceArgs,
-        null, Config.none, size_t.max,
-        pkgDir,
-    );
-}
-
-private string shellQuote(in string value) {
-    import std.array: appender;
-
-    auto quoted = appender!string;
-    quoted.put("'");
-    foreach (c; value) {
-        if (c == '\'')
-            quoted.put("'\\''");
-        else
-            quoted.put(c);
-    }
-    quoted.put("'");
-    return quoted.data;
-}
-
-private struct CompilerInvocation {
-    string cwd;
-    string[] arguments;
-}
-
-private string[] rootCompilerArguments(
-    in string logPath,
-    in string pkgDir,
-    in string[] sourceFiles,
-) {
-    import std.conv: text;
-
-    auto invocations = readCompilerInvocations(logPath);
-    size_t bestMatches;
-    string[] bestArguments;
-
-    foreach (invocation; invocations) {
-        const matches = sourceFileMatches(invocation, pkgDir, sourceFiles);
-        if (matches <= bestMatches)
-            continue;
-
-        bestMatches = matches;
-        bestArguments = invocation.arguments;
-    }
-
-    if (bestArguments.length == 0)
-        throw new Exception(text(
-            "dub compiler shim did not capture a root compiler invocation in ",
-            pkgDir,
-        ));
-
-    return bestArguments;
-}
-
-private CompilerInvocation[] readCompilerInvocations(in string logPath) {
-    import std.file: readText;
-    import std.string: lineSplitter, startsWith;
-
-    CompilerInvocation[] invocations;
-    CompilerInvocation current;
-    bool open;
-
-    foreach (line; logPath.readText.lineSplitter) {
-        if (line.startsWith("CWD\t")) {
-            current = CompilerInvocation.init;
-            current.cwd = line["CWD\t".length .. $].idup;
-            open = true;
-        } else if (line.startsWith("ARG\t")) {
-            if (!open)
-                continue;
-            current.arguments ~= line["ARG\t".length .. $].idup;
-        } else if (line == "END" && open) {
-            invocations ~= current;
-            open = false;
-        }
-    }
-
-    return invocations;
-}
-
-private size_t sourceFileMatches(
-    in CompilerInvocation invocation,
-    in string pkgDir,
-    in string[] sourceFiles,
-) {
-    import std.algorithm.searching: canFind;
-    import std.file: readText;
-    import std.path: absolutePath, buildNormalizedPath;
-
-    string[] expandedArguments;
-    foreach (argument; invocation.arguments) {
-        if (argument.length > 1 && argument[0] == '@') {
-            foreach (line; argument[1 .. $].readText.splitResponseLines)
-                expandedArguments ~= line;
-        } else
-            expandedArguments ~= argument;
-    }
-
-    size_t matches;
-    foreach (argument; expandedArguments) {
-        if (!argument.canFind(".d"))
-            continue;
-
-        const absolute = argument.absolutePath(invocation.cwd).buildNormalizedPath;
-        foreach (sourceFile; sourceFiles)
-            if (absolute == sourceFile.absolutePath(pkgDir).buildNormalizedPath) {
-                ++matches;
-                break;
-            }
-    }
-    return matches;
-}
-
-private string[] splitResponseLines(in string response) {
-    import std.algorithm.iteration: filter, map;
-    import std.array: array;
-    import std.string: splitLines, strip;
-
-    return response
-        .splitLines
-        .map!(line => line.strip.idup)
-        .filter!(line => line.length > 0)
-        .array;
 }

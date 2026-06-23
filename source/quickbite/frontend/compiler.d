@@ -51,6 +51,22 @@ public ModuleParseResult parseModule(
     return compiler.parseModule(filePath, importPaths, flags);
 }
 
+// Whether this process compiles like the single-snippet world (bin/ut, repl)
+// or like `dub test` (a whole package as one root set). The snippet world needs
+// the lightning rod + allInst to funnel every tiny fixture's borrowed template
+// instances; a dub package is its own root set (`dmd -unittest <files>`) and so
+// needs neither -- and must not parse the rod, or druntime modules home their
+// instances on the rod (which the dub link never emits) instead of on the
+// package root that instantiated them.
+public alias DubMode = imported!"std.typecons".Flag!"dubMode";
+
+// Initialise DMD's process-global state for this process. Must be called once,
+// before any parse, by the entry point (it knows whether this is a dub run).
+// Idempotent: a second call is a no-op.
+public void initialize(in DubMode dubMode) {
+    compiler.initialize(dubMode);
+}
+
 // Parse a set of files as root modules, modelling `dmd -unittest <files>
 // -I<paths>`: every file is established as a root before any import traversal,
 // so a module imported by a sibling root keeps its unittest bodies instead of
@@ -151,12 +167,33 @@ final class Compiler {
     private this() {
         import core.sync.mutex: Mutex;
 
+        // Construct only. DMD's process-global state (allInst, the lightning
+        // rod) depends on whether this is a dub run, which getopt has not seen
+        // yet at module-ctor time, so the entry point calls initialize() once
+        // it knows.
         mutex = new Mutex;
-        initializeDmdState;
+    }
+
+    void initialize(in DubMode dubMode) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        if (initialized)
+            return;
+
+        initializeDmdState(dubMode);
         initialized = true;
     }
 
-    private void initializeDmdState() {
+    private void requireInitialized() const {
+        assert(
+            initialized,
+            "quickbite.frontend.compiler.initialize(dubMode) must be called "
+            ~ "before parsing",
+        );
+    }
+
+    private void initializeDmdState(in DubMode dubMode) {
         import dmd.common.charactertables:
             IdentifierCharLookup,
             IdentifierTable;
@@ -228,10 +265,19 @@ final class Compiler {
         global.compileEnv.dCharLookupTable =
             IdentifierCharLookup.forTable(IdentifierTable.LR);
         global.params.useUnitTests = true;
-        global.params.allInst = true;
         resetErrors;
 
-        parseLightningRod;
+        // A dub package compiles like `dmd -unittest <files>`: it is its own
+        // root set, so each reachable template instance homes on the package
+        // root that instantiated it and emits in that root's object. The
+        // lightning rod + allInst funnel is only for the single-snippet world,
+        // and parsing the rod would actively break the dub link (its init
+        // fixes druntime modules' importedFrom onto the rod, which the dub
+        // codegen path never emits), so skip both entirely in dub mode.
+        if (!dubMode) {
+            global.params.allInst = true;
+            parseLightningRod;
+        }
     }
 
     // With allInst on, DMD parks every druntime/phobos template instance and
@@ -303,6 +349,7 @@ final class Compiler {
 
         mutex.lock;
         scope(exit) mutex.unlock;
+        requireInitialized;
 
         if (auto module_ = parsedModuleForFile(filePath, importPaths)) {
             ModuleParseResult result;
@@ -327,6 +374,7 @@ final class Compiler {
     ) {
         mutex.lock;
         scope(exit) mutex.unlock;
+        requireInitialized;
 
         return parseRootModulesLocked(filePaths, importPaths, flags);
     }
@@ -416,6 +464,7 @@ final class Compiler {
     ModuleParseResult parseSnippet(in string source, in string[] importPaths) {
         mutex.lock;
         scope(exit) mutex.unlock;
+        requireInitialized;
 
         return parseSourceLocked(source, importPaths, null, true);
     }
@@ -426,6 +475,7 @@ final class Compiler {
     ) {
         mutex.lock;
         scope(exit) mutex.unlock;
+        requireInitialized;
 
         return parseSourceLocked(source, importPaths, null, false);
     }
@@ -439,6 +489,7 @@ final class Compiler {
 
         mutex.lock;
         scope(exit) mutex.unlock;
+        requireInitialized;
 
         const originalCheckAction = global.params.checkAction;
         global.params.checkAction = CHECKACTION.context;
@@ -458,6 +509,7 @@ final class Compiler {
 
         mutex.lock;
         scope(exit) mutex.unlock;
+        requireInitialized;
 
         const originalCheckAction = global.params.checkAction;
         global.params.checkAction = CHECKACTION.context;
@@ -475,6 +527,7 @@ final class Compiler {
     private imported!"dmd.expression".Expression parseExpression(in string source) {
         mutex.lock;
         scope(exit) mutex.unlock;
+        requireInitialized;
         return parseExpressionLocked(source);
     }
 

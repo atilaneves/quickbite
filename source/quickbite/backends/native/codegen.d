@@ -42,6 +42,74 @@ public string[] emitObjectFilesForLink(
     return objPaths;
 }
 
+// Codegen a dub package compiled as its own root set, the way
+// `dmd -unittest <files> -I<deps>` (what `dub test` runs) does. The package's
+// modules are genuine roots from parseRootModules, where allInst was off, so
+// each reachable template instance already homed on the package root that
+// instantiated it -- including druntime instances like hashOf!(const(T)*).
+// Emitting the roots therefore emits those instances next to the code that
+// uses them.
+//
+// This deliberately omits the single-snippet apparatus that
+// emitObjectFilesForLink carries -- the lightning rod, the archive-gated
+// druntime codegen, and the foreign-member prune -- because none of it
+// applies once the package is its own root set: dependencies stay non-root
+// imports (DMD's inNonRoot skips emitting their bodies), so their symbols come
+// from the prebuilt dependency image on the link line and druntime/phobos from
+// libphobos2.so.
+public string[] emitObjectFilesForDubPackage(
+    imported!"dmd.dmodule".Module[] rootModules,
+    in string dir,
+    in CodegenInputs inputs,
+) {
+    import quickbite.frontend.compiler: withFrontendFlags;
+
+    string[] objPaths;
+    withFrontendFlags(inputs.frontendFlags, () {
+        objPaths = emitObjectFilesForDubPackageLocked(rootModules, dir);
+    });
+    return objPaths;
+}
+
+private string[] emitObjectFilesForDubPackageLocked(
+    imported!"dmd.dmodule".Module[] rootModules,
+    in string dir,
+) {
+    import quickbite.frontend.compiler: diagnosticMessage;
+    import dmd.dsymbolsem: runDeferredSemantic3;
+    import dmd.globals: global;
+    import dmd.semantic2: semantic2;
+    import dmd.semantic3: semantic3;
+    import std.conv: text;
+    import std.path: buildPath;
+
+    initialiseBackend;
+
+    // The roots completed semantic3 during parseRootModules; the guards make
+    // these idempotent, but a re-run keeps codegen robust against any deferred
+    // body that has yet to run before objects are emitted.
+    foreach (module_; rootModules) {
+        module_.semantic2(null);
+        module_.semantic3(null);
+    }
+    runDeferredSemantic3;
+    if (global.errors != 0)
+        throw new Exception(diagnosticMessage);
+
+    string[] objPaths;
+    foreach (i; 0 .. rootModules.length)
+        objPaths ~= buildPath(dir, text("obj_", i, ".o"));
+
+    // Codegen in a fork child for the same reason as the snippet path: DMD's
+    // backend is strictly once-per-process, and the disposable child image
+    // leaves the parent's cached AST untouched for the next run.
+    runInFork(() {
+        emitObjectFiles(rootModules, objPaths);
+    });
+
+    return objPaths;
+}
+
 private string[] emitObjectFilesForLinkLocked(
     imported!"dmd.dmodule".Module[] rootModules,
     in string dir,

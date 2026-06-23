@@ -42,17 +42,20 @@ private WireResult[] runRequest(in RunRequest request) {
             throw new Exception("failed to load dependency image: " ~ image);
 
     // Runtime.loadLibrary registers the library with druntime (module ctors,
-    // GC ranges, unloadable later), matching the host's in-process path.
+    // GC ranges) so the unittests run against a fully set-up runtime, exactly
+    // as `dub test` does.
+    //
+    // Deliberately no unloadLibrary: this is a one-shot process that runs one
+    // package's tests and exits, like a `dub test` binary, which never unloads
+    // itself. The in-process SystemLinker path (bin/ut) must unload because it
+    // runs many libraries in one long-lived process, but copying that here
+    // crashes: unloading unmaps the library while GC-managed fixture objects
+    // still hold vptrs into it, and druntime's exit-time final collection then
+    // dereferences the unmapped vtables. Leaving the library mapped until the
+    // process dies (the OS reclaims it) is both correct and what dub does.
     auto library = Runtime.loadLibrary(request.libPath);
     if (library is null)
         throw new Exception("failed to load shared library: " ~ request.libPath);
-    scope(exit) {
-        import core.memory: GC;
-        // Collect dead fixture objects whose vptrs point into the library
-        // while it is still mapped, then unload.
-        GC.collect;
-        Runtime.unloadLibrary(library);
-    }
 
     WireResult[] results;
     foreach (test; request.tests)

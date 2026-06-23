@@ -5,9 +5,13 @@ private:
 import std.datetime.stopwatch: Duration;
 
 public int main(string[] args) {
+    import quickbite.frontend.compiler: DubMode, initialize;
     import quickbite.repl: Repl;
     import quickbite.repl_cli: parseReplArgs;
     import std.stdio: stderr, stdin, writeln;
+
+    // The REPL evaluates single snippets, so it is the single-snippet world.
+    initialize(DubMode.no);
 
     const options = parseReplArgs(args);
     if (options.status != 0) {
