@@ -2137,9 +2137,9 @@ Inc  Contract                                          Track  Status   Ref
 12  stack-spilled extern(D) arguments (>6 int / >8 SSE) A     done     §34.5
 13  large struct returns via hidden sret + extern(D)    A     todo     §34.6
 14  scalar out-parameters (int*) with writeback         AB    todo     §34.7
-15  mutating struct member methods + receiver writeback B*    todo     §34.8
-16  mutable slice arguments with writeback              B*    todo     §34.9
-17  slices/arrays nested inside by-value structs        B*    todo     §34.10
+15  mutating struct member methods + receiver writeback B*    done     §34.8
+16  mutable slice arguments with writeback              B*    done     §34.9
+17  slices/arrays nested inside by-value structs        B*    done     §34.10
 18  class references, virtual dispatch, interfaces      AB    todo     §34.11
 19  constructors, destructors, postblits                AB    todo     §34.12
 20  native Error recovery and exception chaining        A     todo     §34.13
@@ -2341,6 +2341,14 @@ receivers that are addressable locals.
 **Done.** Mutating-member fixture green on both backends; §28/§29 read-only
 member fixtures still green.
 
+**Landed 2026-06-23** (`dependencyImage.externDMutatingMember`). The writeback
+is marshaller-side, not a core change: `InterpreterNativeMarshaller` retains the
+receiver buffer in `fillReceiver` and reifies it after the (synchronous) call
+returns (the GC buffer outlives the call because the marshaller holds it).
+`tryCallNativeMember` surfaces it via an `out` receiver-writeback `Value`, gated
+to mutable (non-`const`) receivers; `impl.d`'s `applyReceiverWriteback` assigns
+it back when the receiver is an addressable `VarExp`. No `quickbite.ffi` change.
+
 ### 34.10 Increment 16 — mutable slice arguments with writeback
 
 **Contract.** Pass a mutable D slice (`int[]`, `char[]`) that native code
@@ -2365,6 +2373,14 @@ storage).
 **Done.** Mutable-slice fixture green on both backends; immutable §34.5
 fixtures still green.
 
+**Landed 2026-06-23** (`dependencyImage.externDMutableSliceWriteback`). A
+top-level slice whose element type `isMutable` is marshalled through its own
+element buffer, retained by the marshaller and reified back into the argument's
+array `Value` after the call (the core GC-pins it across the call per §13).
+`const`-element slices stay copy-only. `impl.d`'s `nativeOutParameterVariable`
+now also resolves a plain slice `VarExp` so `applyNativeWritebacks` assigns the
+updated array back. No `quickbite.ffi` change.
+
 ### 34.11 Increment 17 — slices/arrays nested inside by-value structs
 
 **Contract.** Marshal a by-value struct one of whose fields is a slice
@@ -2385,6 +2401,13 @@ marshalling per field.
 
 **Done.** Nested-slice struct fixtures green on both backends; existing
 by-value-struct fixtures (`div`, members) still green.
+
+**Landed 2026-06-23** (`dependencyImage.externDNestedSliceStruct`) as a
+characterization pin: the existing recursive struct walk already emits the
+`{length, ptr}` sub-descriptor for a slice field (`ffiStructType` maps it via
+`ffiSliceType`; `marshalArgument`/`unmarshalStruct` recurse into it), so both
+directions (argument-read and struct-return) were already green. No production
+change — the fixture pins the behaviour, like the §34.7 sret characterization.
 
 ### 34.12 Increment 18 — class references, virtual dispatch, interfaces
 
