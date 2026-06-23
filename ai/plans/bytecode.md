@@ -943,18 +943,19 @@ dual-mode model and the `ExecutionMode` enum have been removed
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
 (5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), `structs.d` (9),
-and `control_flow.d` (10) are now complete on the new core (see Rewrite
-Coverage State). Continue with `exceptions.d` (module order 11), promoting
-one named behaviour or one tight failure-message family at a time. The
-float/builtin/string-slice machinery
-earned for `eval.d` and `math.d`, logical/comparison/short-circuit machinery
-earned for `logic.d`, narrow throw/result plumbing earned for `results.d`, the
-comparison-operator / ref-parameter / explicit-message / unittest-halt
-machinery earned for `diagnostics.d`, the native-layout array/slice/pointer/AA
-machinery earned for `arrays.d`, and the struct native-layout / methods /
-`new` / operator / `with`-`goto` / lifetime machinery earned for `structs.d`,
-and the loop/switch/goto/function-pointer/UTF-foreach machinery earned for
-`control_flow.d` are now available to the later modules.
+`control_flow.d` (10), and `exceptions.d` (11) are now complete on the new
+core (see Rewrite Coverage State). Continue with `expressions.d` (module
+order 12), promoting one named behaviour or one tight failure-message family
+at a time. The float/builtin/string-slice machinery earned for `eval.d` and
+`math.d`, logical/comparison/short-circuit machinery earned for `logic.d`,
+narrow throw/result plumbing earned for `results.d`, the comparison-operator /
+ref-parameter / explicit-message / unittest-halt machinery earned for
+`diagnostics.d`, the native-layout array/slice/pointer/AA machinery earned for
+`arrays.d`, the struct native-layout / methods / `new` / operator /
+`with`-`goto` / lifetime machinery earned for `structs.d`, the
+loop/switch/goto/function-pointer/UTF-foreach machinery earned for
+`control_flow.d`, and the exception class/catch/finally/unwinding machinery
+earned for `exceptions.d` are now available to the later modules.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
@@ -3397,3 +3398,53 @@ failures:
 ./bin/ut $(./bin/ut -l | \
     rg '^ut\\.backends\\.runner\\.ct\\.control_flow\\..*\\.BytecodeNewCore$')
 ```
+
+## exceptions.d Promotion Analysis (BytecodeNewCore)
+
+All SystemLinker-backed tests from
+`tests/ut/backends/runner/ct/exceptions.d` have been promoted to include
+`BytecodeNewCore` in their `AliasSeq` blocks. The Ctfe-only characterization
+tests remain Ctfe-only because their diagnostic text intentionally diverges
+from compiled-code behaviour.
+
+The first focused BytecodeNewCore-only run covered 26 promoted tests. Eleven
+already passed. The remaining failures grouped into these implementation
+gaps:
+
+1. Named catch variables did not expose `msg` or chained `next.msg`.
+2. Throws only supported `throw new Exception("literal")`; `throw e`, derived
+   exception classes, `Error`, and constructor-backed objects were missing.
+3. Catch handling assumed a single catch clause and did not match by dynamic
+   class.
+4. Exception unwinding discarded intermediate frames without scalar `ref`
+   parameter writeback.
+5. Explicit `return` skipped active `finally` bodies and did not snapshot the
+   return value before the finalbody could mutate referenced state.
+6. Throw exits from a `try/finally` body skipped the finalbody, and finalbody
+   throws did not preserve D's body-exception chaining order.
+
+The new core now records class metadata and catch clauses in `Program`, lowers
+try/catch as handler groups, matches thrown dynamic classes through their base
+chain, and supports `throwObject` for rethrow and constructed class objects.
+Named catch variables bind a lightweight object pointer plus compact bytecode
+string descriptors for `msg` and `next.msg`, matching the backend's existing
+string ABI. Object throws reuse the same compact descriptors, so `e.msg`,
+`e.msg.length`, and `e.msg == "literal"` agree with compiled D behaviour.
+
+Unwinding now writes back discarded frames' scalar `ref` parameters before
+resuming at a handler. Return lowering materialises and snapshots non-void
+results before running active finalbodies, then returns the saved slot.
+Throw lowering re-emits active finalbodies on throw exits; if a finalbody throws
+while an existing body throw is pending, the body exception remains the caught
+exception and the finalbody message is chained as `next`, matching
+`SystemLinker`.
+
+Final focused verification:
+
+```sh
+ninja bin/ut
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.backends\\.runner\\.ct\\.exceptions\\..*\\.BytecodeNewCore$')
+```
+
+Result: 26 tests run, 0 failed.
