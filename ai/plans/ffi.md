@@ -2153,17 +2153,17 @@ Inc  Contract                                          Track  Status   Ref
 10  D string slice RETURN value                         B*    done     §33
 11  typed (non-char) immutable slice args and returns   B*    done     §34.4
 12  stack-spilled extern(D) arguments (>6 int / >8 SSE) A     done     §34.5
-13  large struct returns via hidden sret + extern(D)    A     todo     §34.6
-14  scalar out-parameters (int*) with writeback         AB    todo     §34.7
+13  large struct returns via hidden sret + extern(D)    A     done     §34.6
+14  scalar out-parameters (int*) with writeback         AB    done     §34.7
 15  mutating struct member methods + receiver writeback B*    done     §34.8
 16  mutable slice arguments with writeback              B*    done     §34.9
 17  slices/arrays nested inside by-value structs        B*    done     §34.10
 18  class references, virtual dispatch, interfaces      AB    todo     §34.11
 19  constructors, destructors, postblits                AB    todo     §34.12
-20  native Error recovery and exception chaining        A     todo     §34.13
-21  variadics (printf-shaped; ffi_prep_cif_var)         A     todo     §34.14
+20  native Error recovery and exception chaining        A     done     §34.13
+21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.14
 22  delegates / callbacks / closures: reverse bridge    AB    todo     §34.15
-23  extern(C++) function and member ABI                 A     todo     §34.16
+23  extern(C++) function and member ABI                 A     done     §34.16
 ```
 
 `B*` = boxed-interpreter marshalling, native-layout obviates. The done rungs
@@ -2352,6 +2352,8 @@ small-struct returns and the §27 reversal fixtures still green.
 
 ### 34.8 Increment 14 — scalar out-parameters with writeback
 
+**Status: implemented.**
+
 **Contract.** Support a single-level scalar out-pointer (`int*`, `double*`)
 that the native function writes through, mapping the post-call value back into
 the caller's variable. §24.6 deferred this because `int*` is ambiguous with an
@@ -2376,6 +2378,17 @@ an in-pointer.
 
 **Done.** Scalar out-param fixture green on both backends; `strtol`'s `char**`
 endptr writeback and all `rt/cstdlib.d` still green.
+
+**Landed 2026-06-23** (`dependencyImage.externCScalarOutParameter`). The call
+site flags each `&local` argument (`nativeAddressOfLocalArguments` in `impl.d`,
+recognizing the `AddrExp`/`SymOffExp` shapes) and threads the flags through
+`callNative`/`callNativeMember` into the core. In `callViaLibffi` an argument is
+an out slot when `isOutPointer` (the unchanged `char**` rule) holds, or when the
+parameter is a single-level pointer-to-scalar (`isOutScalarPointer`) at a flagged
+slot. The out-parameter cell was generalized from a `void*` to a `ubyte[]` sized
+to the pointed-to type, and `writeOutParameter` now reifies it through that type:
+a `char**` cell yields a native pointer (identical to before), a scalar cell
+yields the scalar value. A bare pointer value (not `&local`) stays an in-pointer.
 
 ### 34.9 Increment 15 — mutating struct member methods + receiver writeback
 
