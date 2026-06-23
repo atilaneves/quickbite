@@ -4,7 +4,7 @@ import benchmarks.harness: measure, Result;
 import benchmarks.backends: BackendEnv, makeRunners;
 import quickbite.backends.runner: Runner, TestResult, runTests;
 import quickbite.benchmarks: moduleDisplayName;
-import quickbite.frontend.compiler: parseModule, parseSnippetUncached;
+import quickbite.frontend.compiler: FrontendFlags, parseModule, parseSnippetUncached;
 import dmd.dmodule: Module;
 
 public import quickbite.dub: discoverFixtures, findPkgDir;
@@ -55,16 +55,22 @@ public void run(string[] args) {
 
     string[] fixtures    = args[1 .. $].dup;
     string[] dubFixtures;
+    DubInfo dubInfo;
     BackendEnv env;
 
     if (dubPkg.length > 0) {
-        auto dubInfo = resolveDubPkg(dubPkg);
+        dubInfo = resolveDubPkg(dubPkg);
         importPaths ~= dubInfo.importPaths;
         dubFixtures  = dubInfo.fixtures;
         // The raw dub import paths, not the merged importPaths (which also
         // carries CLI --import-path args): the backend derives the archive
         // import paths from these and the package root.
-        env = BackendEnv(dubInfo.importPaths, dubInfo.linkFiles, dubInfo.packageRoot);
+        env = BackendEnv(
+            dubInfo.importPaths,
+            dubInfo.linkFiles,
+            dubInfo.packageRoot,
+            dubInfo.frontendFlags,
+        );
     }
 
     if (fixtures.length == 0 && dubFixtures.length == 0)
@@ -108,7 +114,12 @@ public void run(string[] args) {
     preparation ~= prepared.failures;
     if (dubFixtures.length > 0) {
         try {
-            auto unit = prepareDubUnit(dubPkg, dubFixtures, importPaths);
+            auto unit = prepareDubUnit(
+                dubPkg,
+                dubFixtures,
+                importPaths,
+                dubInfo.frontendFlags,
+            );
             preparation ~= PreparationRecord(
                 dubPkg, dubFixtures.length, unit.members.length, "",
             );
@@ -402,6 +413,7 @@ public struct DubInfo {
     string[] linkFiles;
     string packageRoot;
     string[] fixtures;
+    FrontendFlags frontendFlags;
 }
 
 public alias DubDependencyImageBuilder = string delegate(
@@ -477,37 +489,18 @@ public string renderPreparationSection(in PreparationRecord[] records) {
 }
 
 DubInfo resolveDubPkg(in string name) {
-    import quickbite.dub: buildDubDependencyImage, dubDescribe;
-    import std.process: Config, execute;
+    import quickbite.dub: buildDubDependencyImage, dubBuildWithCompilerShim, dubDescribe;
 
     const pkgDir = findPkgDir(name);
-
-    // dub describe reports dependency archives whether or not they have been
-    // built; build first so the link files below actually exist. dub owns
-    // their invalidation: it rebuilds on source or dub.selections.json
-    // changes.
-    auto buildResult = execute(
-        ["dub", "build", "--config=unittest"],
-        null, Config.none, size_t.max,
-        pkgDir,
-    );
-    if (buildResult.status != 0)
-        buildResult = execute(
-            ["dub", "build"],
-            null, Config.none, size_t.max,
-            pkgDir,
-        );
-    if (buildResult.status != 0)
-        throw new Exception("dub build failed for " ~ name ~ ": " ~ buildResult.output);
-
     auto importPaths = dubDescribe(pkgDir, "import-paths");
-    auto dependencyArchives = dubDescribe(pkgDir, "linker-files");
 
     // The fixtures are the modules dub compiles for the unittest config, not a
     // hardcoded tests/ glob: that lets packages keep their tests in source/
     // (no tests/ dir at all) and excludes intentionally-failing example
     // modules dub leaves out of the unittest build.
     const sourceFiles = dubDescribe(pkgDir, "source-files");
+    const build = dubBuildWithCompilerShim(name, pkgDir, sourceFiles);
+    auto dependencyArchives = dubDescribe(pkgDir, "linker-files");
 
     return dubInfoFromDescribeData(
         name,
@@ -522,6 +515,7 @@ DubInfo resolveDubPkg(in string name) {
                 outDir,
             );
         },
+        FrontendFlags(build.rootCompilerArguments.dup),
     );
 }
 
@@ -532,6 +526,7 @@ public DubInfo dubInfoFromDescribeData(
     in string[] dependencyArchives,
     in string[] sourceFiles,
     scope DubDependencyImageBuilder buildDependencyImage,
+    in FrontendFlags frontendFlags = FrontendFlags.init,
 ) {
     import std.path: buildPath;
 
@@ -549,7 +544,13 @@ public DubInfo dubInfoFromDescribeData(
             ),
         ];
 
-    return DubInfo(importPaths.dup, linkFiles, pkgDir.idup, fixtures);
+    return DubInfo(
+        importPaths.dup,
+        linkFiles,
+        pkgDir.idup,
+        fixtures,
+        FrontendFlags(frontendFlags.compilerArguments.dup),
+    );
 }
 
 void printHeader() {
@@ -690,12 +691,13 @@ public BenchmarkUnit prepareDubUnit(
     in string packageName,
     in string[] fixtures,
     in string[] importPaths,
+    in FrontendFlags frontendFlags = FrontendFlags.init,
 ) {
     import quickbite.frontend.compiler: parseRootModules;
     import core.time: MonoTime;
 
     const start   = MonoTime.currTime;
-    auto results  = parseRootModules(fixtures, importPaths);
+    auto results  = parseRootModules(fixtures, importPaths, frontendFlags);
     const elapsed = MonoTime.currTime - start;
 
     BenchmarkRun[] members;

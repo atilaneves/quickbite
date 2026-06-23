@@ -9,6 +9,10 @@ public alias ModuleParseResult = imported!"std.typecons".Tuple!(
     "diagnostics",
 );
 
+public struct FrontendFlags {
+    string[] compilerArguments;
+}
+
 // DMD owns process-global compiler state; `Compiler` serializes access with a
 // mutex and is initialized once for this process.
 __gshared Compiler compiler;
@@ -29,14 +33,22 @@ shared static ~this() {
 }
 
 public ModuleParseResult parseModule(in string filePath) {
-    return compiler.parseModule(filePath, []);
+    return compiler.parseModule(filePath, [], FrontendFlags.init);
 }
 
 public ModuleParseResult parseModule(
     in string filePath,
     in string[] importPaths,
 ) {
-    return compiler.parseModule(filePath, importPaths);
+    return compiler.parseModule(filePath, importPaths, FrontendFlags.init);
+}
+
+public ModuleParseResult parseModule(
+    in string filePath,
+    in string[] importPaths,
+    in FrontendFlags flags,
+) {
+    return compiler.parseModule(filePath, importPaths, flags);
 }
 
 // Parse a set of files as root modules, modelling `dmd -unittest <files>
@@ -47,7 +59,15 @@ public ModuleParseResult[] parseRootModules(
     in string[] filePaths,
     in string[] importPaths,
 ) {
-    return compiler.parseRootModules(filePaths, importPaths);
+    return compiler.parseRootModules(filePaths, importPaths, FrontendFlags.init);
+}
+
+public ModuleParseResult[] parseRootModules(
+    in string[] filePaths,
+    in string[] importPaths,
+    in FrontendFlags flags,
+) {
+    return compiler.parseRootModules(filePaths, importPaths, flags);
 }
 
 public ModuleParseResult parseSnippet(in string source) {
@@ -88,6 +108,16 @@ public ModuleParseResult parseModuleWithCheckActionContext(
 
 public void withCompilerLock(scope void delegate() action) {
     compiler.withLock(action);
+}
+
+public void withFrontendFlags(
+    in FrontendFlags flags,
+    scope void delegate() action,
+) {
+    const savedFlags = saveFrontendFlags;
+    scope(exit) restoreFrontendFlags(savedFlags);
+    applyFrontendFlags(flags);
+    action();
 }
 
 // The lightning rod module: the first root module parsed in this process,
@@ -266,6 +296,7 @@ final class Compiler {
     ModuleParseResult parseModule(
         in string filePath,
         in string[] importPaths,
+        in FrontendFlags flags,
     ) {
         import std.conv: text;
         import std.file: readText;
@@ -285,22 +316,25 @@ final class Compiler {
             text("file\0", filePath),
             true,
             dmdFileName(filePath, importPaths),
+            flags,
         );
     }
 
     ModuleParseResult[] parseRootModules(
         in string[] filePaths,
         in string[] importPaths,
+        in FrontendFlags flags,
     ) {
         mutex.lock;
         scope(exit) mutex.unlock;
 
-        return parseRootModulesLocked(filePaths, importPaths);
+        return parseRootModulesLocked(filePaths, importPaths, flags);
     }
 
     private ModuleParseResult[] parseRootModulesLocked(
         in string[] filePaths,
         in string[] importPaths,
+        in FrontendFlags flags,
     ) {
         import dmd.dmodule: Module;
         import dmd.dsymbolsem:
@@ -319,6 +353,10 @@ final class Compiler {
         scope(exit) global.path.setDim(originalPathLength);
         foreach (importPath; importPaths)
             addImport(importPath);
+
+        const savedFlags = saveFrontendFlags;
+        scope(exit) restoreFrontendFlags(savedFlags);
+        applyFrontendFlags(flags);
 
         resetErrors;
 
@@ -483,6 +521,7 @@ final class Compiler {
         in string cacheSalt,
         in bool useCache,
         in string filePath = null,
+        in FrontendFlags flags = FrontendFlags.init,
     ) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
@@ -505,6 +544,10 @@ final class Compiler {
         scope(exit) global.path.setDim(originalPathLength);
         foreach (importPath; importPaths)
             addImport(importPath);
+
+        const savedFlags = saveFrontendFlags;
+        scope(exit) restoreFrontendFlags(savedFlags);
+        applyFrontendFlags(flags);
 
         resetErrors;
 
@@ -605,6 +648,220 @@ final class Compiler {
 
         return filePath;
     }
+}
+
+private struct SavedFrontendFlags {
+    bool previewIn;
+    bool transitionIn;
+    bool ddocOutput;
+    size_t versionIdentifierLength;
+    size_t debugIdentifierLength;
+    size_t stringImportPathLength;
+    imported!"dmd.globals".FeatureState useDIP25;
+    imported!"dmd.globals".FeatureState useDIP1000;
+    bool ehnogc;
+    bool useDIP1021;
+    imported!"dmd.globals".FeatureState fieldwise;
+    bool fixAliasThis;
+    imported!"dmd.globals".FeatureState rvalueRefParam;
+    imported!"dmd.globals".FeatureState safer;
+    imported!"dmd.globals".FeatureState noSharedAccess;
+    bool inclusiveInContracts;
+    bool shortenedMethods;
+    bool fixImmutableConv;
+    bool fix16997;
+    imported!"dmd.globals".FeatureState dtorFields;
+    imported!"dmd.globals".FeatureState systemVariables;
+    bool bitfields;
+}
+
+private SavedFrontendFlags saveFrontendFlags() {
+    import dmd.globals: global;
+
+    return SavedFrontendFlags(
+        global.compileEnv.previewIn,
+        global.compileEnv.transitionIn,
+        global.compileEnv.ddocOutput,
+        global.versionids.length,
+        global.debugids.length,
+        global.filePath.length,
+        global.params.useDIP25,
+        global.params.useDIP1000,
+        global.params.ehnogc,
+        global.params.useDIP1021,
+        global.params.fieldwise,
+        global.params.fixAliasThis,
+        global.params.rvalueRefParam,
+        global.params.safer,
+        global.params.noSharedAccess,
+        global.params.inclusiveInContracts,
+        global.params.shortenedMethods,
+        global.params.fixImmutableConv,
+        global.params.fix16997,
+        global.params.dtorFields,
+        global.params.systemVariables,
+        global.params.bitfields,
+    );
+}
+
+private void restoreFrontendFlags(ref const SavedFrontendFlags saved) {
+    import dmd.globals: global;
+
+    global.compileEnv.previewIn = saved.previewIn;
+    global.compileEnv.transitionIn = saved.transitionIn;
+    global.compileEnv.ddocOutput = saved.ddocOutput;
+    global.versionids.setDim(saved.versionIdentifierLength);
+    global.debugids.setDim(saved.debugIdentifierLength);
+    global.filePath.setDim(saved.stringImportPathLength);
+    global.params.useDIP25 = saved.useDIP25;
+    global.params.useDIP1000 = saved.useDIP1000;
+    global.params.ehnogc = saved.ehnogc;
+    global.params.useDIP1021 = saved.useDIP1021;
+    global.params.fieldwise = saved.fieldwise;
+    global.params.fixAliasThis = saved.fixAliasThis;
+    global.params.rvalueRefParam = saved.rvalueRefParam;
+    global.params.safer = saved.safer;
+    global.params.noSharedAccess = saved.noSharedAccess;
+    global.params.previewIn = saved.previewIn;
+    global.params.inclusiveInContracts = saved.inclusiveInContracts;
+    global.params.shortenedMethods = saved.shortenedMethods;
+    global.params.fixImmutableConv = saved.fixImmutableConv;
+    global.params.fix16997 = saved.fix16997;
+    global.params.dtorFields = saved.dtorFields;
+    global.params.systemVariables = saved.systemVariables;
+    global.params.bitfields = saved.bitfields;
+}
+
+private void applyFrontendFlags(in FrontendFlags flags) {
+    import dmd.arraytypes: Strings;
+    import dmd.cli: Usage;
+    import dmd.cond: DebugCondition, VersionCondition;
+    import dmd.frontend: addStringImport;
+    import dmd.globals: FeatureState, Param, global;
+    import dmd.root.response: responseExpand;
+    import dmd.root.string: toDString;
+    import std.algorithm.searching: startsWith;
+    import std.conv: text;
+    import std.string: toStringz;
+
+    if (flags.compilerArguments.length == 0)
+        return;
+
+    auto argumentText = ["dmd"] ~ flags.compilerArguments.dup;
+    auto arguments = Strings(argumentText.length);
+    foreach (i, argument; argumentText)
+        arguments[i] = argument.toStringz;
+
+    if (const missing = responseExpand(arguments))
+        throw new Exception(text(
+            "failed to expand dub compiler response file ",
+            missing.toDString,
+        ));
+
+    Param parsedParams;
+    foreach (argz; arguments[]) {
+        const arg = argz.toDString;
+        if (arg.startsWith("-preview=")) {
+            const name = arg["-preview=".length .. $];
+            if (!applyFeature!(Usage.previews)("preview", parsedParams, name))
+                throw new Exception(text("unsupported DMD preview flag: ", arg));
+            if (parsedParams.useDIP1021)
+                parsedParams.useDIP1000 = FeatureState.enabled;
+            if (parsedParams.useDIP1000 == FeatureState.enabled)
+                parsedParams.useDIP25 = FeatureState.enabled;
+        } else if (arg.startsWith("-revert=")) {
+            const name = arg["-revert=".length .. $];
+            if (!applyFeature!(Usage.reverts)("revert", parsedParams, name))
+                throw new Exception(text("unsupported DMD revert flag: ", arg));
+        } else if (arg == "-dip1000") {
+            parsedParams.useDIP25 = FeatureState.enabled;
+            parsedParams.useDIP1000 = FeatureState.enabled;
+        } else if (arg == "-dip25")
+            parsedParams.useDIP25 = FeatureState.enabled;
+        else if (arg == "-dip1008")
+            parsedParams.ehnogc = true;
+        else if (arg.startsWith("-version="))
+            VersionCondition.addGlobalIdent(arg["-version=".length .. $]);
+        else if (arg.startsWith("-debug="))
+            DebugCondition.addGlobalIdent(arg["-debug=".length .. $]);
+        else if (arg.length > 2 && arg.startsWith("-J="))
+            addStringImport(arg["-J=".length .. $]);
+        else if (arg.length > 2 && arg.startsWith("-J"))
+            addStringImport(arg["-J".length .. $]);
+    }
+
+    applyParsedFrontendParams(parsedParams);
+    global.compileEnv.previewIn = global.params.previewIn;
+    global.compileEnv.transitionIn = global.params.v.vin;
+    global.compileEnv.ddocOutput = global.params.ddoc.doOutput;
+}
+
+private bool applyFeature(alias features)(
+    in string flagName,
+    ref imported!"dmd.globals".Param params,
+    const(char)[] ident,
+) {
+    string cases() {
+        string ret = `case "all":`;
+        foreach (feature; features) {
+            if (feature.deprecated_)
+                continue;
+            ret ~= `setFlagFor(flagName, params.` ~ feature.paramName ~ `);`;
+        }
+        ret ~= "return true;";
+
+        foreach (feature; features) {
+            ret ~= `case "` ~ feature.name ~ `":`;
+            ret ~= `setFlagFor(flagName, params.`
+                ~ feature.paramName
+                ~ `); return true;`;
+        }
+        return ret;
+    }
+
+    switch (ident) {
+        mixin(cases);
+        default:
+            return false;
+    }
+}
+
+private void setFlagFor(
+    in string flagName,
+    ref bool value,
+) @safe pure nothrow @nogc {
+    value = flagName != "revert";
+}
+
+private void setFlagFor(
+    in string flagName,
+    ref imported!"dmd.globals".FeatureState value,
+) @safe pure nothrow @nogc {
+    import dmd.globals: FeatureState;
+
+    value = flagName != "revert" ? FeatureState.enabled : FeatureState.disabled;
+}
+
+private void applyParsedFrontendParams(ref const imported!"dmd.globals".Param params) {
+    import dmd.globals: global;
+
+    global.params.useDIP25 = params.useDIP25;
+    global.params.useDIP1000 = params.useDIP1000;
+    global.params.ehnogc = params.ehnogc;
+    global.params.useDIP1021 = params.useDIP1021;
+    global.params.fieldwise = params.fieldwise;
+    global.params.fixAliasThis = params.fixAliasThis;
+    global.params.rvalueRefParam = params.rvalueRefParam;
+    global.params.safer = params.safer;
+    global.params.noSharedAccess = params.noSharedAccess;
+    global.params.previewIn = params.previewIn;
+    global.params.inclusiveInContracts = params.inclusiveInContracts;
+    global.params.shortenedMethods = params.shortenedMethods;
+    global.params.fixImmutableConv = params.fixImmutableConv;
+    global.params.fix16997 = params.fix16997;
+    global.params.dtorFields = params.dtorFields;
+    global.params.systemVariables = params.systemVariables;
+    global.params.bitfields = params.bitfields;
 }
 
 private string sourceFileName(imported!"dmd.dmodule".Module module_) @trusted {
