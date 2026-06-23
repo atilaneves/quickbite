@@ -1204,3 +1204,84 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+
+// A dependency-image class with a virtual method and a subclass override (ffi.md
+// §34.12): the factory returns a base `Widget` reference to a derived `Button`,
+// and the call must dispatch through the object's vtable to the override rather
+// than to the statically-resolved base method.
+@("dependencyImage.externDClassVirtualDispatch.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_widget_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_widget_fixture;
+
+            class Widget {
+                int draw() {
+                    return 0;
+                }
+            }
+
+            class Button: Widget {
+                override int draw() {
+                    return 42;
+                }
+            }
+
+            Widget makeButton() {
+                return new Button();
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_widget_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_widget_fixture;
+
+            class Widget {
+                int draw();
+            }
+
+            class Button: Widget {
+                override int draw();
+            }
+
+            Widget makeButton();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_widget_fixture;
+
+                unittest {
+                    Widget w = makeButton();
+                    assert(w.draw() == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
