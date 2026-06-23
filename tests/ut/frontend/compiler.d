@@ -132,3 +132,46 @@ unittest {
         importedResults[0].passed.should == true;
     }
 }
+
+
+@("parseRootModules.versionUnittestBlockCompilesIn")
+unittest {
+    import quickbite.frontend.compiler: parseRootModules;
+    import quickbite.backends.ctfe: Ctfe;
+    import std.path: buildPath;
+
+    with(immutable Sandbox()) {
+        // A helper declared inside `version (unittest) { ... }` and called from
+        // a unittest body. `dmd -unittest` sets the predefined `unittest`
+        // version identifier, so the block compiles in and the helper is
+        // declared. quickbite must do the same, or the call is an "undefined
+        // identifier".
+        const importPath = "src";
+        const modPath = buildPath(importPath, "qb_version_unittest.d");
+
+        writeFile(modPath, q{
+            module qb_version_unittest;
+            version (unittest) {
+                int qbVersionUnittestHelper() { return 42; }
+            }
+            unittest {
+                assert(qbVersionUnittestHelper == 42);
+            }
+        });
+
+        // Fails before the fix with "undefined identifier
+        // `qbVersionUnittestHelper`"; the parse should succeed and the
+        // unittest body should run.
+        auto results = parseRootModules(
+            [inSandboxPath(modPath)],
+            [inSandboxPath(importPath)],
+        );
+
+        results.length.should == 1;
+
+        auto runner = new Ctfe;
+        const testResults = runner.runTests(results[0].module_);
+        testResults.length.should == 1;
+        testResults[0].passed.should == true;
+    }
+}

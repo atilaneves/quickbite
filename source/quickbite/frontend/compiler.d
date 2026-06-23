@@ -265,6 +265,14 @@ final class Compiler {
         global.compileEnv.dCharLookupTable =
             IdentifierCharLookup.forTable(IdentifierTable.LR);
         global.params.useUnitTests = true;
+        // `dmd -unittest` pairs useUnitTests with the predefined `unittest`
+        // version identifier (addDefaultVersionIdentifiers), so that
+        // `version (unittest)` blocks compile in. initDMD's global._init()
+        // runs that pairing while useUnitTests is still false, so register it
+        // here, after the assignment and after _init, for both bin/ut and
+        // --dub.
+        import dmd.cond: VersionCondition;
+        VersionCondition.addPredefinedGlobalIdent("unittest");
         resetErrors;
 
         // A dub package compiles like `dmd -unittest <files>`: it is its own
