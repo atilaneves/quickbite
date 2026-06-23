@@ -1097,3 +1097,133 @@ diverged from the plan above in instructive ways; corrections, in order:
    unittest enumeration (couples the oracle to unit-threaded), or rely on
    multi-backend agreement (no second backend runs automem today). A package
    without such UDAs (cerealed) already produces a clean timed row.
+
+## Set The Predefined `unittest` Version Identifier (`--dub dlib` fails to prepare)
+
+Self-contained work item (planned 2026-06-23). Complete on its own; the only
+background is that `--dub` parses the package as a root set under `-unittest`
+(see "Parse Dub Packages As Root Module Sets", item 8).
+
+### Symptom
+
+```sh
+bin/bench.sh -b system-linker --dub dlib
+```
+
+never reaches a backend. The preparation section reports:
+
+```text
+dlib                                    153         0      153  not prepared: undefined identifier `fillBuffer`
+```
+
+i.e. the whole-package parse+semantic (`parseRootModules`) fails. `dlib` is the
+first corpus package to hit this; `cerealed` and `automem` prepare fine.
+
+### Root cause
+
+`fillBuffer` in `dlib/container/buffer.d` is declared inside a
+`version (unittest) { ... }` block and called from that module's `unittest`
+blocks. quickbite analyses the `unittest` *bodies* (so the calls are checked)
+but never compiles the `version (unittest)` *block* (so `fillBuffer` is never
+declared) — because it enables `-unittest` semantics without ever setting the
+predefined **`unittest` version identifier** that `dmd -unittest` sets.
+
+The two are separate switches in DMD and quickbite sets only the first:
+
+- `global.params.useUnitTests` gates whether `UnitTestDeclaration` bodies are
+  semantically analysed.
+- the predefined `version (unittest)` identifier is what makes
+  `version (unittest)` blocks compile in. DMD adds it in
+  `addDefaultVersionIdentifiers` (vendored `dmd/target.d`):
+
+  ```d
+  if (params.useUnitTests)
+      VersionCondition.addPredefinedGlobalIdent("unittest");
+  ```
+
+The bug is an **ordering** one in `quickbite.frontend.compiler`'s init
+(`source/quickbite/frontend/compiler.d`): `initDMD` is called first
+(~line 205), and `initDMD` → `addDefaultVersionIdentifiers` runs the check above
+while `useUnitTests` is still `false`. `global.params.useUnitTests = true` is
+set only afterwards (~line 267). So the `unittest` identifier is never
+registered. Moving the assignment *before* `initDMD` does not help: `initDMD`
+calls `global._init()`, which resets `global.params`.
+
+dub never supplies `unittest` to close the gap: it is compiler-implicit, not a
+package version, so it appears in no `dub describe --data=versions` list
+(`cerealed`'s are all `Have_*`). `cerealed`/`automem` only escaped the bug
+because none of their unittest code is guarded by a `version (unittest)` helper
+declaration; `dlib` uses that common idiom, so it is the first to expose it.
+
+### Fix
+
+Register the predefined `unittest` identifier whenever unittest semantics are
+enabled, mirroring exactly what `addDefaultVersionIdentifiers` does. Right after
+`global.params.useUnitTests = true;` (compiler.d ~line 267), add:
+
+```d
+import dmd.cond: VersionCondition;
+VersionCondition.addPredefinedGlobalIdent("unittest");
+```
+
+(`VersionCondition` is already imported elsewhere in the module for
+`addGlobalIdent`/`-version=` handling.) This belongs in the **shared** init, not
+the dub branch: it runs after `initDMD`'s `global._init()` so it is not wiped,
+and `bin/ut`/REPL snippets run under `-unittest` too — a snippet using
+`version (unittest)` would hit the identical gap. Both modes already set
+`useUnitTests = true` at this one site, so one line fixes both.
+
+### Why this is sound
+
+It reproduces, verbatim, the `(useUnitTests) → addPredefinedGlobalIdent("unittest")`
+pairing that `dmd -unittest` performs; quickbite was simply doing half of it.
+`unittest` is a reserved/predefined identifier, so `addPredefinedGlobalIdent`
+(not the user-facing `addGlobalIdent`) is the correct entry point and will not
+warn.
+
+### Next likely blocker after this fix (note, not yet diagnosed)
+
+`dlib` has **no `unittest` configuration of its own**, so `dub describe
+--config=unittest --data=source-files` returns a dub-**generated**
+`dub_test_root.d` (under `~/.dub/cache/.../`, with a `main()` and `static
+import`s of every module) *in addition to* dlib's own sources. Since
+`discoverFixtures` was deleted in favour of forwarding dub's source-files
+verbatim (template-emission outcome, point 3), that generated runner is now one
+of the root modules — a case neither `cerealed` nor `automem` exercises (both
+ship unit-threaded configs, so dub synthesises no runner). It is **not** the
+current failure (preparation dies earlier, on `fillBuffer`), but it is the most
+likely next obstacle once preparation succeeds. The principle still holds — *do
+what dub does* — and `dub test` does compile `dub_test_root.d`; the open
+question is only whether quickbite's codegen/enumeration should treat a
+generated `main`-bearing root specially. Defer until the `unittest`-ident fix
+lands and `dlib` preparation gets past semantic analysis.
+
+### Verification
+
+```sh
+ninja bin/ut
+bin/ut --random                                  # snippet path: unittest ident now set for it too
+bin/bench.sh -b system-linker --dub dlib         # gets past `undefined identifier fillBuffer`
+bin/bench.sh -b system-linker --dub cerealed     # unchanged: still 156/156
+```
+
+Expected: `dlib` preparation no longer fails on `fillBuffer` (it may then
+surface the generated-runner concern above or a later codegen limit — a
+different line, progress past this bug); `cerealed`/`automem` are unaffected.
+
+### Approval / TDD
+
+This fix **must** start with a failing test that contains `version (unittest)`
+code — that is the exact behaviour the bug breaks, and only such a test fails
+before the one-line change and passes after it. Write it first, watch it fail
+for the right reason ("undefined identifier"), then apply the fix.
+
+Per `AGENTS.md`, adding or changing a test needs approval first. Required shape
+of that first failing test: a frontend `parseRootModules` test over a single
+sandbox module that declares a helper inside `version (unittest) { ... }` and
+calls it from a `unittest` block — assert preparation succeeds (no "undefined
+identifier") once the identifier is registered. This is a pure-frontend test (no
+dub package, no process spawn) and exercises the shared init both `bin/ut` and
+`--dub` use. Do not settle for a `--dub dlib` smoke test in place of it: the
+smoke test would also pass for unrelated reasons and does not pin the
+`version (unittest)` behaviour.
