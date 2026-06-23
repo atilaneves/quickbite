@@ -527,6 +527,80 @@ unittest {
     }
 }
 
+// Characterization (ffi.md §34.7): a >16-byte struct returns through the hidden
+// `sret` pointer, which libffi issues transparently from the struct ffi_type and
+// the bridge reifies via NativeMarshaller.readResult. Already works; this pins
+// that behaviour across the §5 seam. The asymmetric fields also re-exercise the
+// §27 extern(D) argument reversal alongside the sret return.
+@("dependencyImage.externDLargeStructReturn.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_struct_return_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_struct_return_fixture;
+
+            struct Quad {
+                long a;
+                long b;
+                long c;
+                long d;
+            }
+
+            Quad dependencyQuad(int first, int second) {
+                return Quad(first, second, first - second, first * second);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_struct_return_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_struct_return_fixture;
+
+            struct Quad { long a; long b; long c; long d; }
+            Quad dependencyQuad(int first, int second);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_struct_return_fixture;
+
+                unittest {
+                    int first = 9;
+                    int second = 4;
+                    Quad q = dependencyQuad(first, second);
+                    assert(q.a == 9);
+                    assert(q.b == 4);
+                    assert(q.c == 5);
+                    assert(q.d == 36);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.nativeException.Interpreter")
 @Tags("Interpreter")
 unittest {
