@@ -39,6 +39,7 @@ public bool tryCallNativeMember(
     imported!"dmd.mtype".Type[] argumentTypes,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
+    out imported!"quickbite.lang".Value receiverWriteback,
 ) {
     import quickbite.ffi: callNativeMember;
 
@@ -51,7 +52,20 @@ public bool tryCallNativeMember(
 
     result = marshaller.result;
     argumentWritebacks = marshaller.writebacks;
+    // A mutating (non-const) member writes `this` back into the caller's
+    // receiver (ffi.md §34.9); a const method cannot, so leave it void.
+    if (mutatesReceiver(function_))
+        receiverWriteback = marshaller.receiverWriteback;
     return true;
+}
+
+private bool mutatesReceiver(
+    imported!"dmd.func".FuncDeclaration function_,
+) @safe {
+    import dmd.mtype: TypeFunction;
+
+    auto type = cast(TypeFunction) function_.type;
+    return type !is null && type.isMutable;
 }
 
 private final class InterpreterNativeMarshaller: NativeMarshaller {
@@ -62,6 +76,21 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     private Value _receiver;
     private Value _result;
     private Value[] _writebacks;
+    // The receiver's ABI buffer, retained so the (possibly mutated) bytes can
+    // be reified back into a Value after the call (ffi.md §34.9). The buffer is
+    // GC-allocated by the core; holding it here keeps it alive past the call.
+    private ubyte[] _receiverBuffer;
+    private Type _receiverType;
+    // Element buffers for mutable slice arguments, retained so native writes
+    // through them are reified back into the caller's array after the call
+    // (ffi.md §34.10). The core GC-pins each buffer across the call (§13).
+    private static struct SliceWriteback {
+        size_t index;
+        Type arrayType;
+        ubyte[] bytes;
+        size_t length;
+    }
+    private SliceWriteback[] _sliceWritebacks;
 
     public this(in Value[] arguments) {
         _arguments = arguments;
@@ -77,7 +106,16 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     }
 
     public Value[] writebacks() {
+        foreach (slice; _sliceWritebacks) {
+            ensureWritebacks;
+            _writebacks[slice.index] =
+                reifySliceWriteback(slice.arrayType, slice.bytes, slice.length);
+        }
         return _writebacks;
+    }
+
+    public Value receiverWriteback() {
+        return unmarshalValue(_receiverType, _receiverBuffer);
     }
 
     public override void fillArgument(
@@ -88,6 +126,25 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
+        // A mutable scalar slice is marshalled through its own element buffer
+        // and tracked for writeback; everything else (and immutable/nested
+        // slices) marshals copy-only (ffi.md §34.10).
+        if (isMutableScalarSlice(type)) {
+            auto bytes = marshalSliceArgument(
+                buffer,
+                type,
+                _arguments[index],
+                keepAliveBuffers,
+            );
+            _sliceWritebacks ~= SliceWriteback(
+                index,
+                type,
+                bytes,
+                _arguments[index].length,
+            );
+            return;
+        }
+
         marshalArgument(
             buffer,
             type,
@@ -105,6 +162,8 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
+        _receiverBuffer = buffer;
+        _receiverType = type;
         marshalArgument(
             buffer,
             type,
@@ -120,9 +179,13 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     }
 
     public override void writeOutParameter(in size_t index, void* writtenPointer) {
+        ensureWritebacks;
+        _writebacks[index] = Value.nativePointerValue(writtenPointer);
+    }
+
+    private void ensureWritebacks() {
         if (_writebacks.length == 0)
             _writebacks = new Value[](_arguments.length);
-        _writebacks[index] = Value.nativePointerValue(writtenPointer);
     }
 }
 
@@ -227,7 +290,7 @@ private void* marshalPointerArgument(
     return value.asNativePointer;
 }
 
-private void marshalSliceArgument(
+private ubyte[] marshalSliceArgument(
     ubyte[] buffer,
     imported!"dmd.mtype".Type type,
     in imported!"quickbite.lang".Value value,
@@ -253,6 +316,31 @@ private void marshalSliceArgument(
     keepAliveBuffers ~= bytes;
     *cast(size_t*) buffer.ptr = value.length;
     *cast(void**) (buffer.ptr + size_t.sizeof) = bytes.ptr;
+    return bytes;
+}
+
+// A scalar slice whose element type is mutable: native code may write through
+// it, so it needs the §34.10 writeback path rather than a copy.
+private bool isMutableScalarSlice(imported!"dmd.mtype".Type type) {
+    import quickbite.ffi: isSupportedScalarSlice;
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tarray &&
+        isSupportedScalarSlice(type) &&
+        type.nextOf.isMutable;
+}
+
+// Reify a mutable slice's (possibly native-mutated) element buffer back into a
+// backend array Value by reusing the {length, ptr} return reification.
+private imported!"quickbite.lang".Value reifySliceWriteback(
+    imported!"dmd.mtype".Type arrayType,
+    ubyte[] bytes,
+    in size_t length,
+) {
+    auto descriptor = new ubyte[](size_t.sizeof + (void*).sizeof);
+    *cast(size_t*) descriptor.ptr = length;
+    *cast(void**) (descriptor.ptr + size_t.sizeof) = bytes.ptr;
+    return unmarshalValue(arrayType, descriptor);
 }
 
 // Marshal a raw ABI return buffer back into a backend value.

@@ -392,6 +392,32 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    boxed implementation across the benchmark suite, and keep whichever wins.
    Several `B*` rungs collapse to the identity under native layout.
 
+   Result 2026-06-23 (measured): a *bolt-on* native-layout `NativeMarshaller`
+   is the wrong unit of change — keep the boxed marshaller for now. Evidence:
+   - The benchmark suite never crosses the FFI seam: `bin/bench`'s fixtures
+     (`tests/example.d`, dub projects) have no native dependency, so the
+     interpreter row is frontend + tree-walking with zero marshalling. A
+     marshaller swap is invisible to `ci.sh`/`bin/bench`; only the `rt/`
+     dependency-image suite exercises the seam.
+   - The representation gap is real but lives off the seam. Construct +
+     read-back micro-benchmark (1M iters): a boxed 4-long struct is ~26x a
+     native byte layout (1049 ns vs 40 ns); a boxed 16-long slice ~27x
+     (2220 ns vs 81 ns) — i.e. boxing's GC alloc + `SumType` tag dispatch.
+   - A native-layout marshaller cannot capture that gap while the interpreter
+     stays boxed: its inputs are already-boxed `Value`s and its output must be
+     a boxed `Value`, so it boxes on the way in and out regardless and only
+     adds blob bookkeeping. The 26x is realizable only when aggregates are
+     never boxed — the interpreter-wide native representation (decision 2026-
+     06-23, remaining-work item 3), where the seam collapses to identity.
+   - The decider is the correctness ceiling (`&local`, unions, reinterpret
+     casts, slices into locals), not latency; it lands with the
+     representation change, not a marshaller swap.
+
+   Conclusion: defer native layout to the interpreter-representation track and
+   measure it on the tree-walker hot path, not the FFI seam. The `B*` rungs
+   (§34.9/§34.10/§34.11) are landed as boxed marshalling, which is correct and
+   keeps real dub tests runnable in the meantime.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
