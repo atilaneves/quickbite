@@ -17,13 +17,14 @@ public bool tryCallNative(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.lang".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
     import quickbite.ffi: callNative;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments);
-    if (!callNative(function_, marshaller, argumentTypes))
+    if (!callNative(function_, marshaller, argumentTypes, addressOfLocalArguments))
         return false;
 
     result = marshaller.result;
@@ -37,6 +38,7 @@ public bool tryCallNativeMember(
     in imported!"quickbite.lang".Value receiver,
     in imported!"quickbite.lang".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
     out imported!"quickbite.lang".Value receiverWriteback,
@@ -47,7 +49,13 @@ public bool tryCallNativeMember(
         return false;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
-    if (!callNativeMember(function_, receiverType, marshaller, argumentTypes))
+    if (!callNativeMember(
+        function_,
+        receiverType,
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+    ))
         return false;
 
     result = marshaller.result;
@@ -178,9 +186,16 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         _result = unmarshalValue(type, buffer);
     }
 
-    public override void writeOutParameter(in size_t index, void* writtenPointer) {
+    public override void writeOutParameter(
+        in size_t index,
+        Type pointedToType,
+        in ubyte[] cell,
+    ) {
+        // Reify the written cell through the pointed-to type: a `char**` out
+        // slot yields a native pointer, a scalar out slot (`int*`) yields the
+        // scalar value (ffi.md §34.8).
         ensureWritebacks;
-        _writebacks[index] = Value.nativePointerValue(writtenPointer);
+        _writebacks[index] = unmarshalValue(pointedToType, cell);
     }
 
     private void ensureWritebacks() {

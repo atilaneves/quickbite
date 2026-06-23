@@ -1146,3 +1146,61 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+@("dependencyImage.externCScalarOutParameter.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_out_param_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_out_param_fixture;
+
+            extern(C) void dependencyDouble(int* result, int value) {
+                *result = value * 2;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_out_param_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_out_param_fixture;
+
+            extern(C) void dependencyDouble(int* result, int value);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_out_param_fixture;
+
+                unittest {
+                    int value = 21;
+                    int result;
+                    dependencyDouble(&result, value);
+                    assert(result == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

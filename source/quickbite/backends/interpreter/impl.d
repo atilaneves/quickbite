@@ -1684,6 +1684,7 @@ private struct Walker {
                             receiver,
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
+                            nativeAddressOfLocalArguments(argumentExpressions),
                             result,
                             writebacks,
                             receiverWriteback,
@@ -1724,6 +1725,7 @@ private struct Walker {
                             call.f,
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
+                            nativeAddressOfLocalArguments(argumentExpressions),
                             result,
                             writebacks,
                         )
@@ -4023,6 +4025,27 @@ private struct Walker {
 
         locals[variable] = receiverWriteback;
         uninitializedLocals.remove(variable);
+    }
+
+    // Flag each argument that is `&local`, so the FFI core can treat a
+    // single-level pointer-to-scalar at that slot as an out parameter rather
+    // than an in-pointer (ffi.md §34.8).
+    private bool[] nativeAddressOfLocalArguments(
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        auto flags = new bool[](argumentExpressions.length);
+        foreach (index, argument; argumentExpressions)
+            flags[index] = isNativeAddressOfLocal(argument);
+        return flags;
+    }
+
+    private bool isNativeAddressOfLocal(
+        imported!"dmd.expression".Expression argument,
+    ) {
+        if (auto address = argument.isAddrExp)
+            return address.e1.isVarExp !is null;
+
+        return argument.isSymOffExp !is null;
     }
 
     private imported!"dmd.declaration".VarDeclaration nativeOutParameterVariable(

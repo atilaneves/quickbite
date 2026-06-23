@@ -44,22 +44,31 @@ public interface NativeMarshaller {
 
     void readResult(imported!"dmd.mtype".Type type, in ubyte[] buffer);
 
-    void writeOutParameter(in size_t index, void* writtenPointer);
+    void writeOutParameter(
+        in size_t index,
+        imported!"dmd.mtype".Type pointedToType,
+        in ubyte[] cell,
+    );
 }
 
 // `argumentTypes` are the call site's actual argument types (one per argument).
 // Fixed parameters are taken from the signature; the variadic tail (C `...`)
 // relies on these actual types, which the signature does not carry (§34.14).
+// `addressOfLocalArguments[i]` is true when argument `i` is `&local` at the call
+// site, which disambiguates a single-level pointer-to-scalar out slot from an
+// ordinary in-pointer (ffi.md §34.8).
 public bool callNative(
     imported!"dmd.func".FuncDeclaration function_,
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
 ) {
     return callNativeImpl(
         function_,
         NativeThis.init,
         marshaller,
         argumentTypes,
+        addressOfLocalArguments,
     );
 }
 
@@ -68,6 +77,7 @@ public bool callNativeMember(
     imported!"dmd.mtype".TypeStruct receiverType,
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
 ) {
     if (receiverType is null)
         return false;
@@ -77,6 +87,7 @@ public bool callNativeMember(
         NativeThis(receiverType, true),
         marshaller,
         argumentTypes,
+        addressOfLocalArguments,
     );
 }
 
@@ -90,6 +101,7 @@ private bool callNativeImpl(
     NativeThis receiver,
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
 ) {
     import core.sys.posix.dlfcn: dlsym;
     version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
@@ -135,6 +147,7 @@ private bool callNativeImpl(
         receiver,
         marshaller,
         argumentTypes,
+        addressOfLocalArguments,
     );
 }
 
@@ -173,6 +186,7 @@ private bool callViaLibffi(
     NativeThis receiver,
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
 ) {
     import quickbite.ffi.libffi:
         ffi_cif, ffi_type, ffi_type_pointer, ffi_status, ffi_prep_cif,
@@ -276,17 +290,22 @@ private bool callViaLibffi(
 
     auto argumentBuffers = new ubyte[][](nargs);
     auto argumentValues = new void*[](nargs);
-    auto outParameterCells = new void**[](nargs);
+    auto outParameterCells = new ubyte[][](nargs);
 
     foreach (index; 0 .. nargs) {
         argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
 
-        if (isOutPointer(parameterTypes[index])) {
-            // Allocate a host cell, pass its address as the out parameter, and
-            // report the written pointer back through writeOutParameter.
-            auto cell = new void*;
-            outParameterCells[index] = cell;
-            *cast(void**) argumentBuffers[index].ptr = cast(void*) cell;
+        const addressOfLocal =
+            index < addressOfLocalArguments.length &&
+            addressOfLocalArguments[index];
+        if (isOutParameter(parameterTypes[index], addressOfLocal)) {
+            // Allocate a host cell sized to the pointed-to type, pass its
+            // address as the out parameter, and reify the written value through
+            // writeOutParameter after the call.
+            auto pointedTo = parameterTypes[index].nextOf.toBasetype;
+            outParameterCells[index] = new ubyte[](cast(size_t) size(pointedTo));
+            *cast(void**) argumentBuffers[index].ptr =
+                outParameterCells[index].ptr;
         } else {
             marshaller.fillArgument(
                 argumentBuffers[index],
@@ -335,7 +354,11 @@ private bool callViaLibffi(
     foreach (index; 0 .. nargs) {
         if (outParameterCells[index] is null)
             continue;
-        marshaller.writeOutParameter(index, *outParameterCells[index]);
+        marshaller.writeOutParameter(
+            index,
+            parameterTypes[index].nextOf.toBasetype,
+            outParameterCells[index],
+        );
     }
 
     marshaller.readResult(returnType, returnBuffer);
@@ -447,10 +470,15 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiSliceType() {
 public bool isSupportedScalarSlice(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
-    if (type.ty != TY.Tarray)
-        return false;
+    return type.ty == TY.Tarray && isScalarFfiType(type.nextOf.toBasetype);
+}
 
-    switch (type.nextOf.toBasetype.ty) with (TY) {
+// A DMD basetype that maps to a single libffi scalar ffi_type (not a pointer,
+// struct, array, or void).
+private bool isScalarFfiType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    switch (type.ty) with (TY) {
         case Tbool, Tchar, Twchar, Tdchar,
              Tint8, Tuns8, Tint16, Tuns16,
              Tint32, Tuns32, Tint64, Tuns64,
@@ -462,12 +490,31 @@ public bool isSupportedScalarSlice(imported!"dmd.mtype".Type type) {
     }
 }
 
+// Whether a parameter is an out slot the native call writes through. A
+// pointer-to-pointer (e.g. strtol's `char** endptr`) is always one by type; a
+// single-level pointer-to-scalar is one only when the call site passed `&local`
+// (ffi.md §34.8) — a bare pointer value stays an in-pointer.
+private bool isOutParameter(
+    imported!"dmd.mtype".Type type,
+    in bool addressOfLocal,
+) {
+    return isOutPointer(type) || (addressOfLocal && isOutScalarPointer(type));
+}
+
 // A pointer-to-pointer parameter (e.g. strtol's `char** endptr`) is an out
 // slot rather than an in value.
 private bool isOutPointer(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
     return type.ty == TY.Tpointer && type.nextOf.toBasetype.ty == TY.Tpointer;
+}
+
+// A single-level pointer to a scalar (e.g. `int*`, `double*`), the shape a
+// scalar out-parameter writes through (ffi.md §34.8).
+private bool isOutScalarPointer(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tpointer && isScalarFfiType(type.nextOf.toBasetype);
 }
 
 private imported!"dmd.mtype".Type parameterType(
