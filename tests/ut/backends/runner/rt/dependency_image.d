@@ -1596,3 +1596,61 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+@("dependencyImage.externDDelegateCallback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_callback_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_callback_fixture;
+
+            int dependencyApply(int x, int delegate(int) callback) {
+                return callback(x);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_callback_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_callback_fixture;
+
+            int dependencyApply(int x, int delegate(int) callback);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_callback_fixture;
+
+                unittest {
+                    int base = 100;
+                    int x = 5;
+                    int delegate(int) callback = (int n) => n + base;
+                    assert(dependencyApply(x, callback) == 105);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

@@ -13,17 +13,26 @@ import quickbite.ffi: NativeMarshaller;
 // call path and its exception type.
 public import quickbite.ffi.core: NativeCallException;
 
+// Runs an interpreted delegate that native code called back into (ffi.md
+// §34.16). The Walker supplies it so the marshaller can re-enter the
+// interpreter without this module importing the Walker.
+public alias DelegateInvoker = imported!"quickbite.lang".Value delegate(
+    in imported!"quickbite.lang".Value callee,
+    in imported!"quickbite.lang".Value[] arguments,
+);
+
 public bool tryCallNative(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.lang".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
+    DelegateInvoker invokeDelegate,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
     import quickbite.ffi: callNative;
 
-    auto marshaller = new InterpreterNativeMarshaller(arguments);
+    auto marshaller = new InterpreterNativeMarshaller(arguments, invokeDelegate);
     if (!callNative(function_, marshaller, argumentTypes, addressOfLocalArguments))
         return false;
 
@@ -170,9 +179,13 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         size_t length;
     }
     private SliceWriteback[] _sliceWritebacks;
+    // Runs an interpreted delegate passed into native code, supplied by the
+    // Walker so the reverse bridge (ffi.md §34.16) can re-enter the interpreter.
+    private DelegateInvoker _invokeDelegate;
 
-    public this(in Value[] arguments) {
+    public this(in Value[] arguments, DelegateInvoker invokeDelegate = null) {
         _arguments = arguments;
+        _invokeDelegate = invokeDelegate;
     }
 
     public this(in Value[] arguments, in Value receiver) {
@@ -261,6 +274,48 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         // The class receiver is held as an opaque native handle; its object
         // pointer is passed as hidden `this` and read for vtable dispatch.
         return cast(const(void)*) _receiver.asNativePointer;
+    }
+
+    public override void invokeClosure(
+        in size_t argumentIndex,
+        Type returnType,
+        Type[] parameterTypes,
+        void*[] argumentBuffers,
+        ubyte[] resultBuffer,
+    ) {
+        import dmd.astenums: TY;
+        import dmd.typesem: size;
+
+        assert(_invokeDelegate !is null, "native callback with no delegate invoker");
+
+        // Materialize the native callback arguments into backend values, run the
+        // interpreted closure, and marshal its result into the libffi return
+        // buffer (ffi.md §34.16).
+        Value[] callbackArguments;
+        foreach (index, parameterType; parameterTypes) {
+            const argumentSize = cast(size_t) size(parameterType);
+            callbackArguments ~= unmarshalValue(
+                parameterType,
+                (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
+            );
+        }
+
+        const callbackResult =
+            _invokeDelegate(_arguments[argumentIndex], callbackArguments);
+
+        if (returnType.ty == TY.Tvoid)
+            return;
+
+        const(char)*[] keepAlive;
+        ubyte[][] keepAliveBuffers;
+        marshalArgument(
+            resultBuffer,
+            returnType,
+            callbackResult,
+            false,
+            keepAlive,
+            keepAliveBuffers,
+        );
     }
 
     public override void writeOutParameter(

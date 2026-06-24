@@ -73,6 +73,35 @@ void ffi_call(
     void** avalue,
 ) @nogc;
 
+// A libffi closure: a runtime-generated native function pointer whose calls are
+// routed back into a handler. The reverse bridge (ffi.md §34.16) uses one per
+// interpreted delegate passed into native code. libffi defines it as
+// `{ char tramp[FFI_TRAMPOLINE_SIZE]; ffi_cif*; void function(...); void* }`,
+// 56 bytes on x86-64 SysV (tramp[32] + three pointers); the opaque blob is
+// over-sized so ffi_closure_alloc reserves enough.
+struct ffi_closure {
+    ubyte[64] _opaque;
+}
+
+// The closure handler libffi calls (with the C ABI) when native code invokes
+// the trampoline; it must be extern(C) so the (cif, ret, args, user_data)
+// arguments are read in C order.
+alias ffi_closure_fun =
+    extern(C) void function(ffi_cif*, void*, void**, void*);
+
+// ffi_closure_alloc returns the writable closure and writes the executable
+// address to `code`; ffi_prep_closure_loc binds the handler; ffi_closure_free
+// releases the writable closure.
+void* ffi_closure_alloc(size_t size, void** code) @nogc nothrow;
+void ffi_closure_free(void* closure) @nogc nothrow;
+ffi_status ffi_prep_closure_loc(
+    ffi_closure* closure,
+    ffi_cif* cif,
+    ffi_closure_fun fun,
+    void* userData,
+    void* codeloc,
+) @nogc nothrow;
+
 extern __gshared {
     ffi_type ffi_type_void;
     ffi_type ffi_type_uint8;

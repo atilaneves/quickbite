@@ -54,6 +54,19 @@ public interface NativeMarshaller {
     // itself, passed directly as hidden `this` and used to read the vtable for
     // virtual dispatch (ffi.md §34.12). Unused for non-member and struct calls.
     const(void)* receiverObjectPointer();
+
+    // Reverse bridge (ffi.md §34.16): native code called back into the
+    // interpreted delegate passed as argument `argumentIndex`. The core reifies
+    // nothing itself — it hands the native argument buffers (in source order)
+    // and the parameter/return types to the backend, which materializes its own
+    // values, runs the closure, and writes the result bytes into `resultBuffer`.
+    void invokeClosure(
+        in size_t argumentIndex,
+        imported!"dmd.mtype".Type returnType,
+        imported!"dmd.mtype".Type[] parameterTypes,
+        void*[] argumentBuffers,
+        ubyte[] resultBuffer,
+    );
 }
 
 // `argumentTypes` are the call site's actual argument types (one per argument).
@@ -256,7 +269,7 @@ private bool callViaLibffi(
 ) {
     import quickbite.ffi.libffi:
         ffi_cif, ffi_type, ffi_type_pointer, ffi_status, ffi_prep_cif,
-        ffi_prep_cif_var, ffi_call, FFI_DEFAULT_ABI;
+        ffi_prep_cif_var, ffi_call, ffi_closure_free, FFI_DEFAULT_ABI;
     import dmd.astenums: LINK, TY, VarArg;
     import dmd.mtype: Type;
     import dmd.typesem: size;
@@ -365,13 +378,34 @@ private bool callViaLibffi(
     auto argumentValues = new void*[](nargs);
     auto outParameterCells = new ubyte[][](nargs);
 
+    // Reverse-bridge state for delegate arguments (ffi.md §34.16): the libffi
+    // closures to release after the call, and the contexts they route back
+    // through, kept in a GC-scanned array so the trampoline's user data and its
+    // CIF survive the call.
+    void*[] closuresToFree;
+    ClosureContext*[] closureContexts;
+    scope(exit) foreach (closure; closuresToFree)
+        ffi_closure_free(closure);
+
     foreach (index; 0 .. nargs) {
         argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
 
         const addressOfLocal =
             index < addressOfLocalArguments.length &&
             addressOfLocalArguments[index];
-        if (isOutParameter(parameterTypes[index], addressOfLocal)) {
+        if (isDelegateParameter(parameterTypes[index])) {
+            // Build a native trampoline whose calls re-enter the backend to run
+            // the interpreted closure, and write the {context, funcptr} delegate
+            // into the argument buffer.
+            setupDelegateArgument(
+                argumentBuffers[index],
+                parameterTypes[index],
+                index,
+                marshaller,
+                closuresToFree,
+                closureContexts,
+            );
+        } else if (isOutParameter(parameterTypes[index], addressOfLocal)) {
             // Allocate a host cell sized to the pointed-to type, pass its
             // address as the out parameter, and reify the written value through
             // writeOutParameter after the call.
@@ -459,6 +493,128 @@ private size_t abiSourceIndex(
     return linkage == LINK.d ? argumentCount - abiIndex - 1 : abiIndex;
 }
 
+// The reverse-bridge routing behind one libffi closure (ffi.md §34.16): which
+// interpreted delegate argument to invoke, the call's types, and the return
+// width to write back. Held in a GC-scanned array across the call so the
+// trampoline can dereference it and so the CIF and its argument-type array (both
+// read by libffi when native code invokes the closure) survive the call.
+private struct ClosureContext {
+    NativeMarshaller marshaller;
+    size_t argumentIndex;
+    imported!"dmd.mtype".Type returnType;
+    imported!"dmd.mtype".Type[] parameterTypes;   // source order
+    size_t returnSize;
+    imported!"quickbite.ffi.libffi".ffi_cif* cif;
+    imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
+}
+
+private bool isDelegateParameter(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tdelegate;
+}
+
+// Prepare a libffi closure for an interpreted delegate argument and write the
+// resulting {context, funcptr} delegate into `buffer`. Native code invokes the
+// funcptr as `Ret(context, reverse(explicit args))` — the extern(D) delegate
+// convention confirmed by disassembly — so the trampoline CIF leads with the
+// context pointer and the explicit parameter types follow in reverse order.
+private void setupDelegateArgument(
+    ubyte[] buffer,
+    imported!"dmd.mtype".Type delegateType,
+    in size_t argumentIndex,
+    NativeMarshaller marshaller,
+    ref void*[] closuresToFree,
+    ref ClosureContext*[] closureContexts,
+) {
+    import quickbite.ffi.libffi:
+        ffi_cif, ffi_type, ffi_type_pointer, ffi_prep_cif, ffi_closure,
+        ffi_closure_alloc, ffi_prep_closure_loc, FFI_DEFAULT_ABI;
+    import dmd.astenums: LINK;
+    import dmd.mtype: Type, TypeFunction;
+
+    auto functionType = cast(TypeFunction) delegateType.nextOf;
+    auto returnType = functionType.next.toBasetype;
+    auto returnFfi = ffiTypeFor(returnType);
+
+    const np = functionType.parameterList.parameters is null
+        ? 0
+        : functionType.parameterList.parameters.length;
+    auto parameterTypes = new Type[](np);
+    foreach (index; 0 .. np)
+        parameterTypes[index] =
+            (*functionType.parameterList.parameters)[index].type.toBasetype;
+
+    // [context pointer] ++ reverse(explicit ffi types)
+    auto argumentFfiTypes = new ffi_type*[](1 + np);
+    argumentFfiTypes[0] = &ffi_type_pointer;
+    foreach (abiIndex; 0 .. np)
+        argumentFfiTypes[1 + abiIndex] =
+            ffiArgumentTypeFor(parameterTypes[abiSourceIndex(LINK.d, np, abiIndex)]);
+
+    auto cif = new ffi_cif;
+    ffi_prep_cif(
+        cif,
+        FFI_DEFAULT_ABI,
+        cast(uint) (1 + np),
+        returnFfi,
+        argumentFfiTypes.ptr,
+    );
+
+    auto context = new ClosureContext;
+    context.marshaller = marshaller;
+    context.argumentIndex = argumentIndex;
+    context.returnType = returnType;
+    context.parameterTypes = parameterTypes;
+    context.returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
+    context.cif = cif;
+    context.argumentFfiTypes = argumentFfiTypes;
+    closureContexts ~= context;
+
+    void* code;
+    auto writable = ffi_closure_alloc(ffi_closure.sizeof, &code);
+    ffi_prep_closure_loc(
+        cast(ffi_closure*) writable,
+        cif,
+        &closureTrampoline,
+        cast(void*) context,
+        code,
+    );
+    closuresToFree ~= writable;
+
+    // The D delegate: context at offset 0, funcptr at offset 8.
+    *cast(void**) buffer.ptr = cast(void*) context;
+    *cast(void**) (buffer.ptr + (void*).sizeof) = code;
+}
+
+// Invoked by native code through the libffi closure. `args[0]` is the delegate
+// context (ignored — the backend resolves the closure by argument index);
+// `args[1 ..]` are the explicit arguments in ABI (reversed) order, restored to
+// source order before the backend materializes them.
+private extern(C) void closureTrampoline(
+    imported!"quickbite.ffi.libffi".ffi_cif* cif,
+    void* ret,
+    void** args,
+    void* userData,
+) {
+    import dmd.astenums: LINK;
+
+    auto context = cast(ClosureContext*) userData;
+    const np = context.parameterTypes.length;
+    auto sourceArguments = new void*[](np);
+    foreach (abiIndex; 0 .. np)
+        sourceArguments[abiSourceIndex(LINK.d, np, abiIndex)] =
+            args[1 + abiIndex];
+
+    context.marshaller.invokeClosure(
+        context.argumentIndex,
+        context.returnType,
+        context.parameterTypes,
+        sourceArguments,
+        (cast(ubyte*) ret)[0 .. context.returnSize],
+    );
+}
+
 private imported!"quickbite.ffi.libffi".ffi_type* ffiArgumentTypeFor(
     imported!"dmd.mtype".Type type,
 ) {
@@ -499,8 +655,28 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
         case TY.Tarray:
             return isSupportedScalarSlice(type) ? ffiSliceType : null;
         case TY.Tstruct:               return ffiStructType(cast(TypeStruct) type);
+        // A delegate crosses as its two-pointer {context, funcptr} struct
+        // (ffi.md §34.16); the interpreted closure behind it is invoked through
+        // a libffi closure trampoline.
+        case TY.Tdelegate:             return ffiDelegateType;
         default:                       return null;
     }
+}
+
+// A D delegate is a two-pointer struct {void* context, void* funcptr} (context
+// at offset 0, funcptr at offset 8), classified as two INTEGER eightbytes.
+private imported!"quickbite.ffi.libffi".ffi_type* ffiDelegateType() {
+    import quickbite.ffi.libffi: ffi_type, ffi_type_pointer, FFI_TYPE_STRUCT;
+
+    auto elements = new ffi_type*[](3);
+    elements[0] = &ffi_type_pointer;
+    elements[1] = &ffi_type_pointer;
+    elements[2] = null;
+
+    auto result = new ffi_type;
+    result.type = FFI_TYPE_STRUCT;
+    result.elements = elements.ptr;
+    return result;
 }
 
 // Synthesize a STRUCT ffi_type by walking the struct's fields; libffi computes
