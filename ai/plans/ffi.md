@@ -2159,7 +2159,7 @@ Inc  Contract                                          Track  Status   Ref
 16  mutable slice arguments with writeback              B*    done     §34.9
 17  slices/arrays nested inside by-value structs        B*    done     §34.10
 18  class references, virtual dispatch, interfaces      AB    done     §34.12
-19  constructors, destructors, postblits                AB    todo     §34.12
+19  constructors, destructors, postblits                AB    done     §34.13
 20  native Error recovery and exception chaining        A     done     §34.13
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.14
 22  delegates / callbacks / closures: reverse bridge    AB    todo     §34.15
@@ -2542,6 +2542,31 @@ call and a method call could reclaim the object — out of scope here, fixed by 
 native-layout handle table).
 
 ### 34.13 Increment 19 — constructors, destructors, postblits
+
+**Status: landed (struct ctor/dtor/postblit, Interpreter).** Three
+`dependency_image.d` fixtures — `externDStructConstructor`,
+`externDStructDestructor`, `externDStructPostblit`. The constructor is the
+only one needing the bridge to do something new: a body-less `__ctor` resolves
+to a `DotVarExp` member call whose receiver is the not-yet-built variable, so
+the call site seeds `this` from the struct's default `.init`
+(`nativeConstructorReceiver`) and `tryCallNativeConstructor` reifies the
+constructed struct from the receiver buffer (a struct ctor returns `ref this`,
+so its ABI return is ignored). The destructor was already correct — a
+body-less `~this()` runs at scope exit through the existing
+`DtorExpStatement -> tryCallNativeMember` path — so its fixture is a
+characterization pin (like §34.7/§34.11). The postblit also routes through the
+member path (DMD lowers `copy = original` to `(copy = original).postblit()`),
+but it returns void and the var-initializer overwrote the copy; the fix mirrors
+the constructor — yield the post-call receiver as the expression value.
+
+Still todo for this rung (each its own approved fixture): **class** (not just
+struct) construction; `new`-expression construction of a body-less type
+(`runNewStructPointerExpression`/`runNewClassExpression` execute
+`new_.member.fbody` with no null guard, so `new T(args)` on a body-less ctor
+needs the same routing); mutating-postblit receiver writeback through a
+`BlitExp` receiver (today an addressable-lvalue writeback only triggers for a
+plain `VarExp`); and general (source-available) postblit/dtor invocation in the
+Interpreter, which is a separate language-feature gap, not FFI.
 
 **Contract.** Construct a native class/struct via its dependency-image
 constructor, and run its destructor/postblit at the right points, so the
