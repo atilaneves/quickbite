@@ -21,7 +21,7 @@
 # .so to a small DMD-built executor (bin/bench-exec, built below) over a process
 # boundary. llvmjit's in-process JIT has no such boundary and is unavailable
 # under this build; use system-linker for native post-parse rows.
-# Usage: bin/bench.sh [--dub=NAME] [bench-flags] [fixture ...]
+# Usage: bin/bench.sh [--dub=NAME ...] [bench-flags] [fixture ...]
 set -euo pipefail
 cd "$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 printf '%s\n' 'Building benchmark binary if needed...' >&2
