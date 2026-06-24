@@ -1716,3 +1716,73 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A dependency-image struct whose body-less extern(D) postblit MUTATES the copy
+// (ffi.md §34.13). Unlike externDStructPostblit (which only counts), this writes
+// through `this`, so the copied variable must reflect the post-call receiver
+// bytes — the BlitExp receiver writeback half of the rung.
+@("dependencyImage.externDMutatingPostblit.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_mut_postblit_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_mut_postblit_fixture;
+
+            struct Tracked {
+                int value;
+
+                this(this) {
+                    value += 1;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_mut_postblit_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_mut_postblit_fixture;
+
+            struct Tracked {
+                int value;
+                this(this);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_mut_postblit_fixture;
+
+                unittest {
+                    int seed = 9;
+                    Tracked original = Tracked(seed);
+                    Tracked copy = original;
+                    assert(copy.value == 10);
+                    assert(original.value == 9);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
