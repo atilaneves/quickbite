@@ -2160,7 +2160,7 @@ Inc  Contract                                          Track  Status   Ref
 17  slices/arrays nested inside by-value structs        B*    done     §34.10
 18  class references, virtual dispatch, interfaces      AB    done     §34.12
 19  constructors, destructors, postblits                AB    done     §34.13
-20  native Error recovery and exception chaining        A     done     §34.13
+20  native Error recovery and exception chaining        A     done     §34.14
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.14
 22  delegates / callbacks / closures: reverse bridge    AB    done     §34.15
 23  extern(C++) function and member ABI                 A     done     §34.16
@@ -2324,6 +2324,12 @@ where it still gates an unsupported shape.
 register-only fixture (§27 two-arg, members, `rt/cstdlib.d`) still green.
 
 ### 34.7 Increment 13 — large struct returns via sret
+
+**Status: landed** (`dependencyImage.externDLargeStructReturn`), as a
+characterization pin (like §34.11): libffi already issues the memory-return ABI
+from the struct `ffi_type` and places the hidden `sret` pointer ahead of the
+reversed explicit args, so the existing `callViaLibffi` ordering handled a
+>16-byte `extern(D)` struct return with explicit args unchanged.
 
 **Contract.** Return structs large enough to use the hidden `sret` pointer
 (beyond the in-register small structs that already work — `div`/`ldiv` are
@@ -2559,14 +2565,30 @@ member path (DMD lowers `copy = original` to `(copy = original).postblit()`),
 but it returns void and the var-initializer overwrote the copy; the fix mirrors
 the constructor — yield the post-call receiver as the expression value.
 
-Still todo for this rung (each its own approved fixture): **class** (not just
-struct) construction; `new`-expression construction of a body-less type
-(`runNewStructPointerExpression`/`runNewClassExpression` execute
-`new_.member.fbody` with no null guard, so `new T(args)` on a body-less ctor
-needs the same routing); mutating-postblit receiver writeback through a
-`BlitExp` receiver (today an addressable-lvalue writeback only triggers for a
-plain `VarExp`); and general (source-available) postblit/dtor invocation in the
-Interpreter, which is a separate language-feature gap, not FFI.
+**`new`-expression body-less struct ctor landed 2026-06-24**
+(`dependencyImage.externDNewStructConstructor`). `runNewStructPointerExpression`
+ran `new_.member.fbody` unconditionally; for a body-less native ctor that body
+is null, leaving the heap struct default-initialised. A body-less struct ctor
+now routes through `runNewStructNativeConstructor` → `tryCallNativeConstructor`
+(seeding `this` from `.init`, reusing the §34.13 value-construction path) and
+returns a pointer to the constructed value.
+
+**Mutating-postblit writeback pinned 2026-06-24**
+(`dependencyImage.externDMutatingPostblit`). A body-less postblit that mutates
+`this` already crosses back: the postblit member-call path yields the post-call
+receiver bytes as the `BlitExp` value, so the copied variable reflects the
+mutation while the original is untouched — characterization pin, no production
+change. (The earlier "only a plain `VarExp` writes back" concern was about the
+`applyReceiverWriteback` path, which the postblit case bypasses.)
+
+Still todo for this rung (each its own approved fixture): native **class**
+construction — `new C(args)` on a body-less ctor needs the runtime `ClassInfo`
+symbol for `_d_newclass`, which is backend `csym` territory not cleanly exposed
+by the frontend interface, and a GC-visible handle table (§34.12) so the
+constructed object survives a collection; both are native-layout work
+(`ai/plans/value.md`), not a boxed-interpreter rung. And general
+(source-available) postblit/dtor invocation in the Interpreter, which is a
+separate language-feature gap, not FFI.
 
 **Contract.** Construct a native class/struct via its dependency-image
 constructor, and run its destructor/postblit at the right points, so the
@@ -2592,6 +2614,14 @@ leaves. Reuse §34.11 receiver handling.
 and exception fixtures still green.
 
 ### 34.14 Increment 20 — native Error recovery and exception chaining
+
+**Status: landed (exception chaining; `Error` deliberately still fatal).**
+`dependencyImage.nativeChainedException`: `NativeCallException` carries a
+`chainedNext` link rebuilt from the caught native `Throwable.next` chain
+(`nativeCallExceptionFrom`), and `throwNativeException` rebuilds the interpreted
+chain so both messages down the chain are observable. The §30 first-direction
+rule (`Exception` → pending, `Error` → fatal) is intact; `Error` recovery was
+not pursued and remains its own separately-approved fixture if ever needed.
 
 **Contract.** Two deferred exception items from §30/§31: carry a native
 `Throwable.next` chain across the boundary, and define whether a native `Error`
@@ -2655,13 +2685,22 @@ delegate through a Walker-supplied invoker (`invokeNativeCallback` ->
 closure lives only for the call (`ffi_closure_free` on scope exit) and its
 context/CIF stay GC-reachable across it.
 
-Still todo for this rung (each its own approved fixture): multi-argument
-callbacks (the reversal is in place but only the identity case is pinned);
-callbacks that throw back across the boundary (today the interpreted closure must
-not throw — an exception would unwind through native frames); class-method and
-`extern(C)` function-pointer callbacks; and durable (escaping) callbacks that
-outlive the call, which need the GC-visible closure registry of §14 rather than
-the call-scoped closure here.
+**Multi-argument callbacks pinned 2026-06-24**
+(`dependencyImage.externDMultiArgDelegateCallback`). The trampoline already
+restores reversed explicit callback arguments to source order via
+`abiSourceIndex`, so a two-argument, order-sensitive interpreted delegate
+crosses correctly — characterization pin, no production change.
+
+Still todo for this rung, all genuinely deferred (not quick fixtures):
+callbacks that **throw** back across the boundary — an interpreted exception
+would have to unwind through the `extern(C)` libffi closure and native frames,
+which is fragile EH territory, not a marshalling rung; **class-method** and
+`extern(C)` **function-pointer** callbacks (the latter has no `{context,
+funcptr}` pair, so the trampoline's `args[0]`-is-context assumption needs a
+separate no-context path); and durable (**escaping**) callbacks that outlive
+the call — these need the GC-visible closure registry of §14, and detecting
+escape would require analysis the Interpreter cannot do over opaque native
+code, so the call-scoped closure here stays the boundary.
 
 **Contract.** The §14 reverse bridge: pass an interpreted closure to a native
 dependency API that calls it back (`sort!`, `setTimer`, etc.). This is the
