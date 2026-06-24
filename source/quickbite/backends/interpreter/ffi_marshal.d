@@ -67,6 +67,43 @@ public bool tryCallNativeMember(
     return true;
 }
 
+// Construct a native struct through its body-less extern(D) constructor
+// (ffi.md §34.13). The caller supplies the struct's default `.init` as the
+// receiver (the object the ctor initialises in place); the constructor runs
+// against an allocated `this` and the *constructed* struct is reified from that
+// receiver buffer. A struct ctor returns `ref this`, so its return value is the
+// receiver, not a separate result — `result` is the reified receiver, not the
+// (ignored) ABI return.
+public bool tryCallNativeConstructor(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.mtype".TypeStruct receiverType,
+    in imported!"quickbite.lang".Value receiver,
+    in imported!"quickbite.lang".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+    out imported!"quickbite.lang".Value result,
+    out imported!"quickbite.lang".Value[] argumentWritebacks,
+) {
+    import quickbite.ffi: callNativeMember;
+
+    if (receiverType is null || !receiver.isStruct)
+        return false;
+
+    auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
+    if (!callNativeMember(
+        function_,
+        receiverType,
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+    ))
+        return false;
+
+    result = marshaller.receiverWriteback;
+    argumentWritebacks = marshaller.writebacks;
+    return true;
+}
+
 // A member call on a native class reference (ffi.md §34.12). The receiver is an
 // opaque native handle (NativePointer); virtual dispatch happens in the core via
 // the object's vtable. The object is mutated in place through the shared pointer,

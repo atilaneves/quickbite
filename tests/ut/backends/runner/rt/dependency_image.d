@@ -1374,3 +1374,225 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A dependency-image struct constructed through its native extern(D)
+// `this(int)` constructor (ffi.md §34.13). The ctor computes the field rather
+// than plain field-init, so a passing read proves the native constructor body
+// ran across the boundary rather than an aggregate struct-literal fallback.
+@("dependencyImage.externDStructConstructor.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_ctor_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_ctor_fixture;
+
+            struct Tracked {
+                int value;
+
+                this(int seed) {
+                    value = seed + 17;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctor_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ctor_fixture;
+
+            struct Tracked {
+                int value;
+                this(int seed);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ctor_fixture;
+
+                unittest {
+                    int seed = 25;
+                    Tracked tracked = Tracked(seed);
+                    assert(tracked.value == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// A dependency-image struct whose body-less extern(D) destructor runs at scope
+// exit (ffi.md §34.13). The destructor increments a shared native counter, read
+// back through a body-less accessor, proving `~this()` fired across the boundary.
+@("dependencyImage.externDStructDestructor.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_dtor_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_dtor_fixture;
+
+            __gshared int dtorCount;
+
+            struct Tracked {
+                int value;
+
+                ~this() {
+                    dtorCount += 1;
+                }
+            }
+
+            int dtorCalls() {
+                return dtorCount;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_dtor_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_dtor_fixture;
+
+            struct Tracked {
+                int value;
+                ~this();
+            }
+
+            int dtorCalls();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_dtor_fixture;
+
+                unittest {
+                    int seed = 7;
+                    {
+                        Tracked tracked = Tracked(seed);
+                    }
+                    assert(dtorCalls() == 1);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// A dependency-image struct whose body-less extern(D) postblit runs on copy
+// (ffi.md §34.13). The postblit increments a shared native counter, read back
+// through a body-less accessor, proving `this(this)` fired across the boundary.
+@("dependencyImage.externDStructPostblit.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_postblit_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_postblit_fixture;
+
+            __gshared int postblitCount;
+
+            struct Tracked {
+                int value;
+
+                this(this) {
+                    postblitCount += 1;
+                }
+            }
+
+            int postblitCalls() {
+                return postblitCount;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_postblit_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_postblit_fixture;
+
+            struct Tracked {
+                int value;
+                this(this);
+            }
+
+            int postblitCalls();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_postblit_fixture;
+
+                unittest {
+                    int seed = 9;
+                    Tracked original = Tracked(seed);
+                    Tracked copy = original;
+                    assert(copy.value == 9);
+                    assert(postblitCalls() == 1);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
