@@ -4349,6 +4349,14 @@ private struct Walker {
         Value structVal = defaultValue(targetType);
 
         if (new_.member !is null) {
+            import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+
+            // A body-less native constructor cannot have its (null) body run;
+            // route it through the FFI bridge so the heap struct is constructed
+            // natively instead of left default-initialised (ffi.md §34.13).
+            if (hasNoAvailableSource(new_.member))
+                return runNewStructNativeConstructor(new_, targetType, structVal);
+
             // User-defined constructor: run it and capture the resulting this.
             Value[] arguments;
             if (new_.arguments !is null)
@@ -4380,6 +4388,50 @@ private struct Walker {
         }
 
         return Value.pointerValue(structVal);
+    }
+
+    // `new T(args)` where T's constructor is a body-less native leaf: construct
+    // the struct through the FFI bridge (seeding `this` from `.init`) and return
+    // a pointer to the constructed value (ffi.md §34.13).
+    private Value runNewStructNativeConstructor(
+        imported!"dmd.expression".NewExp new_,
+        imported!"dmd.mtype".Type targetType,
+        in Value initValue,
+    ) {
+        import quickbite.frontend.dmd.functions: noAvailableSourceMessage;
+        import quickbite.backends.interpreter.ffi_marshal:
+            NativeCallException, tryCallNativeConstructor;
+        import dmd.expression: Expression;
+
+        Value[] arguments;
+        Expression[] argumentExpressions;
+        if (new_.arguments !is null)
+            foreach (argument; *new_.arguments) {
+                arguments ~= runExpression(argument);
+                argumentExpressions ~= argument;
+            }
+
+        Value constructed;
+        Value[] writebacks;
+        try {
+            if (tryCallNativeConstructor(
+                new_.member,
+                targetType.isTypeStruct,
+                nativeConstructorReceiver(new_.member, initValue),
+                arguments,
+                nativeArgumentTypes(argumentExpressions),
+                nativeAddressOfLocalArguments(argumentExpressions),
+                constructed,
+                writebacks,
+            )) {
+                applyNativeWritebacks(writebacks, argumentExpressions);
+                return Value.pointerValue(constructed);
+            }
+        } catch (NativeCallException exception) {
+            throwNativeException(exception);
+        }
+
+        throw new Exception(noAvailableSourceMessage(new_.member));
     }
 
     private Value runNewClassExpression(

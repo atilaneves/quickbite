@@ -1786,3 +1786,72 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A `new T(args)` expression where T's extern(D) constructor is body-less
+// (ffi.md §34.13). Unlike externDStructConstructor (`T(seed)` value
+// construction), the new-expression path must route a body-less ctor through the
+// FFI bridge instead of running its (null) body, which would leave the heap
+// struct default-initialised (value == 0).
+@("dependencyImage.externDNewStructConstructor.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_new_struct_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_new_struct_fixture;
+
+            struct Tracked {
+                int value;
+
+                this(int seed) {
+                    value = seed + 17;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_new_struct_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_new_struct_fixture;
+
+            struct Tracked {
+                int value;
+                this(int seed);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_new_struct_fixture;
+
+                unittest {
+                    int seed = 25;
+                    Tracked* tracked = new Tracked(seed);
+                    assert(tracked.value == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
