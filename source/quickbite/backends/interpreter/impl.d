@@ -1794,6 +1794,7 @@ private struct Walker {
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
+                            &invokeNativeCallback,
                             result,
                             writebacks,
                         )
@@ -1855,6 +1856,19 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    // Run an interpreted delegate that native code called back into through the
+    // FFI reverse bridge (ffi.md §34.16). The callback supplies only values (no
+    // source argument expressions), so synthesise null placeholders, as the
+    // static-initialiser delegate path does.
+    private Value invokeNativeCallback(
+        in Value callee,
+        in Value[] arguments,
+    ) {
+        import dmd.expression: Expression;
+
+        return runDelegateCall(callee, arguments, new Expression[](arguments.length));
     }
 
     private Value runDelegateCall(
