@@ -2158,7 +2158,7 @@ Inc  Contract                                          Track  Status   Ref
 15  mutating struct member methods + receiver writeback B*    done     §34.8
 16  mutable slice arguments with writeback              B*    done     §34.9
 17  slices/arrays nested inside by-value structs        B*    done     §34.10
-18  class references, virtual dispatch, interfaces      AB    partial  §34.11
+18  class references, virtual dispatch, interfaces      AB    done     §34.12
 19  constructors, destructors, postblits                AB    todo     §34.12
 20  native Error recovery and exception chaining        A     done     §34.13
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.14
@@ -2520,12 +2520,26 @@ virtual method (falling back to `dlsym` for non-virtual), so a base-typed handle
 dispatches to the runtime override. The seam gained one Value-free method,
 `NativeMarshaller.receiverObjectPointer`.
 
-**Still todo for this rung** (each its own approved fixture): interface method
-calls through the interface table (the `this`-adjustment / itable offset differs
-from a plain class vtable); constructing native classes in the Interpreter
-(§34.13); and making the handle GC-visible per §13 (today the returned handle is
-not GC-scanned, so a collection between a factory call and a method call could
-reclaim the object — out of scope here, fixed by the native-layout handle table).
+**Landed 2026-06-24** (`dependencyImage.externDInterfaceDispatch`), the
+interface-table half, as a characterization pin (no production change, like the
+§34.7 sret and §34.11 nested-slice pins). An interface reference reifies as the
+same `NativePointer` opaque handle a class reference does (`ffiTypeFor` maps the
+interface's `TypeClass` to `&ffi_type_pointer`), and a member call on it routes
+through `tryCallNativeClassMember` exactly as a class call does — the call site's
+`receiverClassType` already returns the interface's `TypeClass`. The itable
+`this`-adjustment that distinguishes an interface from a plain class vtable is
+performed by D's own interface thunks: `resolveSymbol` reads
+`vtable[function_.vtblIndex]` from the interface reference's embedded interface
+vptr, and the resulting thunk adjusts `this` from the interface pointer back to
+the object base before jumping to the final overrider. The fixture's `draw` reads
+an instance field, so a wrong `this` would not return the field-derived value —
+pinning that the adjustment is correct.
+
+**Still todo for this rung** (each its own approved fixture): constructing native
+classes in the Interpreter (§34.13); and making the handle GC-visible per §13
+(today the returned handle is not GC-scanned, so a collection between a factory
+call and a method call could reclaim the object — out of scope here, fixed by the
+native-layout handle table).
 
 ### 34.13 Increment 19 — constructors, destructors, postblits
 

@@ -1285,3 +1285,92 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A dependency-image interface method call dispatched through the interface
+// table (ffi.md §34.12): the factory returns a `Drawable` interface reference to
+// a `Button`, and the call must dispatch through the object's interface table to
+// the implementation. `draw` reads an instance field, so a wrong `this`
+// (interface pointer not adjusted back to the object base) returns the wrong
+// value — that itable `this`-adjustment is what distinguishes interfaces from a
+// plain class vtable.
+@("dependencyImage.externDInterfaceDispatch.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_interface_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_interface_fixture;
+
+            interface Drawable {
+                int draw();
+            }
+
+            class Button: Drawable {
+                int color;
+
+                this(int color) {
+                    this.color = color;
+                }
+
+                override int draw() {
+                    return color + 2;
+                }
+            }
+
+            Drawable makeButton() {
+                return new Button(40);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_interface_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_interface_fixture;
+
+            interface Drawable {
+                int draw();
+            }
+
+            class Button: Drawable {
+                int color;
+                this(int color);
+                override int draw();
+            }
+
+            Drawable makeButton();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_interface_fixture;
+
+                unittest {
+                    Drawable d = makeButton();
+                    assert(d.draw() == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
