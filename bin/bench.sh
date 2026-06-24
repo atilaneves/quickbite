@@ -6,13 +6,16 @@
 # the :dmd-backend-vendor codegen - both dub dependencies. reggae's per-target
 # CompilerFlags optimise only the root package, never dependencies, so the dev
 # build.ninja (shared with ci.sh / `ninja bin/ut`) leaves them `-debug` and the
-# benchmark ends up timing unoptimised code while the header still prints `-O`.
+# benchmark would end up timing unoptimised code while the header still prints
+# `-O`. The lever that DOES reach the dependencies is the dub build type reggae
+# passes to `dub describe`, so this builds with reggae into its own directory
+# under `--dub-build-type=release-nobounds`, keeping the dev build `debug` for
+# fast unittest latency.
 #
-# Build instead with dub's `benchmark-opt` build type, whose buildOptions
-# (optimize + releaseMode + noBoundsCheck) propagate to the dependencies. It is
-# used rather than reggae/ninja on purpose: reggae's buildgen only accepts
-# standard dub build types, and every optimising standard type adds `-inline`,
-# which this project omits because DMD hangs inlining large lowering.d.
+# `release-nobounds` (-O -release -inline -boundscheck=off) is a standard dub
+# build type - reggae's buildgen rejects custom ones like `benchmark-opt`. Its
+# only delta from `benchmark-opt` is `-inline`, which is harmless here: the host
+# is LDC-built and the `-inline`/lowering.d hang is DMD-specific.
 #
 # The host is LDC-built: LDC nearly halves the frontend (parse + semantic) row,
 # which executes no generated code. The native post-parse backends do execute
@@ -25,7 +28,18 @@
 set -euo pipefail
 cd "$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 printf '%s\n' 'Building benchmark binary if needed...' >&2
-dub build --compiler=ldc2 --config=benchmark-ldc --build=benchmark-opt
+# Dedicated build directory so the optimised dependency objects never mix with
+# the dev `debug` build. reggae regenerates build.ninja itself when reggaefile.d
+# changes, so generation only needs to run when the directory is fresh.
+build_dir=bin/bench-build
+if [[ ! -f "$build_dir/build.ninja" ]]; then
+    dub run reggae --compiler=ldc -- -b ninja -C "$build_dir" \
+        --dub-build-type=release-nobounds --dc=ldc2
+fi
+ninja -C "$build_dir" bench
+# SystemLinker finds bench-exec next to the running binary (thisExePath.dirName),
+# so the optimised host lands in bin/ alongside the DMD-built executor.
+cp "$build_dir/bench" bin/bench
 # The run executor must be DMD-built so its druntime/extern(D) ABI matches the
 # DMD-codegen'd .so it loads.
 dub build :bench-exec --compiler=dmd
