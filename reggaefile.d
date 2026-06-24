@@ -5,11 +5,12 @@ alias utCov = dubBuild!(
     Configuration("unittest-cov"),
     CompilerFlags("-unittest -cov"),
 );
-// the flags mirror dub's `benchmark-opt` build type
-alias bench = dubBuild!(
-    Configuration("benchmark"),
-    CompilerFlags("-O -release -boundscheck=off"),
-);
+// Optimisation comes from the dub build type passed on the reggae command
+// line (`--dub-build-type=release-nobounds`), which - unlike per-target
+// CompilerFlags - propagates `-O` into the dub dependencies (dmd:frontend,
+// :dmd-backend-vendor) that the benchmark actually times. bin/bench.sh drives
+// that build into its own directory; the dev build.ninja leaves this `debug`.
+alias bench = dubBuild!(Configuration("benchmark-ldc"));
 alias qb = dubBuild!(Configuration("qb"));
 
 mixin build!(
