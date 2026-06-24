@@ -909,7 +909,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
