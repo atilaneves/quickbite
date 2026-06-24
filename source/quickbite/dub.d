@@ -53,29 +53,16 @@ public string[] dubCompilerArguments(in string pkgDir) {
 // lines. Prefer the unittest config so test-only deps (e.g. unit-threaded) are
 // included; fall back to the default config for packages without one.
 public string[] dubDescribe(in string pkgDir, in string dataKind) {
-    import std.process: Config, execute;
-
     const describe = ["dub", "describe"];
     const dataArgs = ["--data=" ~ dataKind, "--data-list"];
 
-    // Pass dub's stderr through to ours instead of merging it into the captured
-    // output. dub emits diagnostics there (e.g. arsd-official's "defines no
-    // import paths" warning); merged into `output` they would parse as bogus
-    // data values - a warning line forwarded as an lflag/linker-file fails the
-    // dependency-image link with `cannot open <warning text>`.
-    const config = Config.stderrPassThrough;
-
-    auto withUnittest = execute(  // auto: need status and output, not just lines
-        describe ~ ["--config=unittest"] ~ dataArgs,
-        null, config, size_t.max, pkgDir,
+    auto withUnittest = describeCapturingStdout(  // auto: need status and output
+        describe ~ ["--config=unittest"] ~ dataArgs, pkgDir,
     );
     if (withUnittest.status == 0)
         return parseDescribeList(withUnittest.output);
 
-    const fallback = execute(
-        describe ~ dataArgs,
-        null, config, size_t.max, pkgDir,
-    );
+    const fallback = describeCapturingStdout(describe ~ dataArgs, pkgDir);
     if (fallback.status != 0)
         throw new Exception(
             "dub describe " ~ dataKind ~ " failed in " ~ pkgDir ~ ": "
@@ -83,6 +70,34 @@ public string[] dubDescribe(in string pkgDir, in string dataKind) {
         );
 
     return parseDescribeList(fallback.output);
+}
+
+// Run a `dub describe` command in pkgDir, capturing its stdout and discarding
+// its stderr. dub emits diagnostics on stderr (e.g. dscanner's "License in
+// sub-package ... is different" warning, arsd-official's "defines no import
+// paths"). They are noise from the benchmarked project, so drop them rather than
+// forward them to our console. They must also stay out of the captured stdout:
+// merged in, a warning line parses as a bogus data value - forwarded as an
+// lflag/linker-file it fails the dependency-image link with `cannot open <text>`.
+private auto describeCapturingStdout(in string[] command, in string pkgDir) {
+    import std.conv: text;
+    import std.file: readText, tempDir;
+    import std.path: buildPath;
+    import std.process: Config, spawnProcess, thisProcessID, wait;
+    import std.stdio: File, stdin;
+    import std.typecons: tuple;
+
+    // Capture stdout via a temp file rather than a pipe so a large describe list
+    // cannot deadlock on a full pipe buffer. describe calls run sequentially, so
+    // one per-process path reused across calls is enough.
+    const stdoutPath =
+        buildPath(tempDir, "quickbite-dub-describe-" ~ text(thisProcessID) ~ ".out");
+    auto stdoutFile = File(stdoutPath, "w");
+    auto devNull = File("/dev/null", "w");
+    auto pid = spawnProcess(command, stdin, stdoutFile, devNull, null, Config.none, pkgDir);
+    const status = wait(pid);
+    stdoutFile.close();
+    return tuple!("status", "output")(status, readText(stdoutPath));
 }
 
 // Split a `dub describe --data-list` block into its non-empty, trimmed lines.
