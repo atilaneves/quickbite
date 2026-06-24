@@ -145,19 +145,23 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // size_t slot at frame offset a.
     sliceLength,
     // Read element `c` (a size_t index in a frame slot) of the slice descriptor
-    // at offset b into the 1- or 4-byte element slot at frame offset a, bounds
-    // checked against the descriptor length.
+    // at offset b into the element slot at frame offset a, bounds checked
+    // against the descriptor length. The element size is fixed by the opcode.
     indexLoad1,
+    indexLoad2,
     indexLoad4,
+    indexLoad8,
     // Read a 16-byte slice-descriptor element (`int[][]`'s element) at size_t
     // index `c` of the outer descriptor at offset b into the descriptor slot at
     // frame offset a, bounds checked against the outer length.
     indexLoad16,
-    // Write the 1- or 4-byte element slot at frame offset a into element `c`
-    // (a size_t index in a frame slot) of the slice descriptor at offset b,
-    // bounds checked against the descriptor length.
+    // Write the element slot at frame offset a into element `c` (a size_t index
+    // in a frame slot) of the slice descriptor at offset b, bounds checked
+    // against the descriptor length. The element size is fixed by the opcode.
     indexStore1,
+    indexStore2,
     indexStore4,
+    indexStore8,
     // Write the 16-byte slice descriptor at frame offset a into element `c` (a
     // size_t index in a frame slot) of the outer descriptor at offset b, bounds
     // checked against the outer length. Backs storing an inner array into an
@@ -167,9 +171,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: destination descriptor offset, b: source descriptor offset, c: offset
     // of an adjacent {lo, hi} pair of size_t bounds. The new descriptor is
     // {srcPtr + lo * elemSize, hi - lo}; the element size is fixed by the
-    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    // opcode, matching the indexLoad/indexStore split.
     subSlice1,
+    subSlice2,
     subSlice4,
+    subSlice8,
     // Copy elements from the source slice descriptor at frame offset b into the
     // destination slice descriptor at frame offset a, write-through to the
     // destination's backing memory. The two lengths must match; overlapping
@@ -227,7 +233,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // 0) and `p[i]` through a pointer into VM-owned heap memory; unchecked, like
     // compiled D. The element size is fixed by the opcode (1 or 4 bytes).
     pointerLoad1,
+    pointerLoad2,
     pointerLoad4,
+    pointerLoad8,
+    pointerLoad16,
     // Write the 1- or 4-byte slot at frame offset a to `[pointer + index *
     // elementSize]`, where the raw `size_t` pointer value is at frame offset b
     // and the `size_t` index at frame offset c. Backs `*p = v` (index 0) and
@@ -236,13 +245,16 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     pointerStore1,
     pointerStore4,
     pointerStore8,
+    pointerStore16,
     // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
     // `p[lo .. hi]`; unchecked against the original block, like compiled D. The
     // element size is fixed by the opcode (1 or 4 bytes).
     pointerSlice1,
+    pointerSlice2,
     pointerSlice4,
+    pointerSlice8,
     // a: destination (one boolean byte), b: lhs, c: rhs (unsigned 8-byte
     // comparison). Back raw pointer-value relations `p < q`, `p <= q`, `p > q`,
     // `p >= q`, which compare as `size_t`.
@@ -262,6 +274,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // through a nested struct's context: `stack[contextBase + var.offset]`, with
     // the base+offset already summed into the slot at b.
     frameLoad,
+    // Write `c` bytes from frame offset a to the absolute stack index held in
+    // the size_t slot at frame offset b. Backs writes to captured enclosing
+    // locals through the same context index used by frameLoad.
+    frameStore,
     // Write the native address of the current frame slot at offset b as a raw
     // `size_t` pointer word into frame offset a. Backs `&local` (`int* p = &x`):
     // the stack's reserved capacity keeps the address stable across the calls
@@ -271,12 +287,24 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend2to4, // a: destination frame offset, b: source (wchar -> dchar)
     signExtend4to8, // a: destination frame offset, b: source frame offset
+    zeroExtend4to8, // a: destination frame offset, b: source frame offset
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
+    // a: destination (float) frame offset, b: source frame offset, c: source
+    // integer size in bytes (1/2/4/8) OR'd with `unsignedConvertFlag` for an
+    // unsigned source. Numerically widens an integer to a float.
+    convertIntToFloat,
     // a: destination (double) frame offset, b: source frame offset, c: source
     // integer size in bytes (1/2/4/8) OR'd with `unsignedConvertFlag` for an
     // unsigned source. Numerically widens an integer to a double. Backs
     // `cast(double)intExpr` (e.g. `double d = seed;`).
     convertIntToDouble,
+    // a: destination (real) frame offset, b: source frame offset, c: source
+    // integer size in bytes (1/2/4/8) OR'd with `unsignedConvertFlag` for an
+    // unsigned source. Numerically widens an integer to a real.
+    convertIntToReal,
+    convertFloatToDouble, // a: destination frame offset, b: source frame offset
+    convertFloatToReal, // a: destination frame offset, b: source frame offset
+    convertDoubleToReal, // a: destination frame offset, b: source frame offset
     addInt4, // a: destination frame offset, b: lhs, c: rhs
     addInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
     subInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
@@ -286,14 +314,31 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     subInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
     divInt4, // a: destination frame offset, b: lhs, c: rhs (signed division)
+    modInt4, // a: destination frame offset, b: lhs, c: rhs (signed remainder)
+    shlInt4, // a: destination frame offset, b: lhs, c: rhs
+    shrInt4, // a: destination frame offset, b: lhs, c: rhs (signed shift)
+    ushrInt4, // a: destination frame offset, b: lhs, c: rhs (zero-fill shift)
+    bitAndInt4, // a: destination frame offset, b: lhs, c: rhs
+    bitXorInt4, // a: destination frame offset, b: lhs, c: rhs
+    bitNotInt4, // a: destination frame offset, b: source
     notBool, // a: destination (one boolean byte), b: source (inner == 0 ? 1 : 0)
     normaliseBool, // a: destination (one boolean byte), b: source (!= 0 ? 1 : 0)
     lessThan4, // a: destination (one boolean byte), b: lhs, c: rhs (signed <)
     greaterThan4, // a: destination (one boolean byte), b: lhs, c: rhs (signed >)
     lessOrEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (signed <=)
     greaterOrEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (signed >=)
+    // a: destination (one boolean byte), b: lhs, c: rhs (unsigned <)
+    lessThanUnsigned4,
+    // a: destination (one boolean byte), b: lhs, c: rhs (unsigned <=)
+    lessOrEqualUnsigned4,
+    // a: destination (one boolean byte), b: lhs, c: rhs (unsigned >)
+    greaterThanUnsigned4,
     // a: destination (one boolean byte), b: lhs, c: rhs (unsigned >=)
     greaterOrEqualUnsigned4,
+    lessThan8, // a: destination (one boolean byte), b: lhs, c: rhs (signed <)
+    greaterThan8, // a: destination (one boolean byte), b: lhs, c: rhs (signed >)
+    lessOrEqual8, // a: destination (one boolean byte), b: lhs, c: rhs (signed <=)
+    greaterOrEqual8, // a: destination (one boolean byte), b: lhs, c: rhs (signed >=)
     notEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (4-byte !=)
     notEqual8, // a: destination (one boolean byte), b: lhs, c: rhs (8-byte !=)
     equalFloat, // a: destination (one boolean byte), b: lhs, c: rhs
@@ -353,6 +398,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // through a function pointer (`fp()`), where the callee is not known until
     // run time; otherwise identical to `call`.
     callIndirect,
+    // a: destination size_t slot, b: class-object pointer slot, c: statically
+    // selected function index. Looks up the object's dynamic class and writes
+    // the overriding function index, or c when no override is registered.
+    classVirtualFunction,
     assertTrue, // a: condition frame offset, b: assert diagnostic index
     // a: condition frame offset, b: assert diagnostic index (verbatim message)
     assertTrueVerbatim,
@@ -459,11 +508,20 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     // When set, lhs/rhs are slice-descriptor offsets and operandType is the
     // element type; the operands render as `[e0, e1, ...]`.
     bool isArray;
+    bool isString;
+    bool lhsIsNull;
+    bool rhsIsNull;
+}
+
+package(quickbite.backends.bytecode) struct VirtualFunction {
+    ushort baseFunction;
+    ushort function_;
 }
 
 package(quickbite.backends.bytecode) struct ClassInfo {
     ushort baseClass = noExceptionClass;
     ushort msgOffset = ushort.max;
+    VirtualFunction[] virtualFunctions;
 }
 
 package(quickbite.backends.bytecode) struct CatchClause {

@@ -196,7 +196,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case indexLoad1, indexLoad4, indexLoad16:
+            case indexLoad1, indexLoad2, indexLoad4, indexLoad8, indexLoad16:
                 const loadSize = elementSize(instruction.op);
                 const loadElement = elementAddress(
                     stack, base + instruction.b,
@@ -212,7 +212,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case indexStore1, indexStore4, indexStore16:
+            case indexStore1, indexStore2, indexStore4, indexStore8,
+                indexStore16:
                 const storeSize = elementSize(instruction.op);
                 // Non-const: the heap element is written through this pointer.
                 auto storeElement = elementAddress(
@@ -229,7 +230,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case subSlice1, subSlice4:
+            case subSlice1, subSlice2, subSlice4, subSlice8:
                 const subElementSize = subSliceElementSize(instruction.op);
                 const lo = scalarValue!size_t(stack, base + instruction.c);
                 const hi = scalarValue!size_t(
@@ -317,7 +318,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case pointerLoad1, pointerLoad4:
+            case pointerLoad1, pointerLoad2, pointerLoad4, pointerLoad8,
+                pointerLoad16:
                 const pointerLoadSize = pointerElementSize(instruction.op);
                 const pointerLoadAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
@@ -333,7 +335,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case pointerStore1, pointerStore4, pointerStore8:
+            case pointerStore1, pointerStore4, pointerStore8, pointerStore16:
                 const pointerStoreSize = pointerElementSize(instruction.op);
                 const pointerStoreAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
@@ -349,7 +351,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case pointerSlice1, pointerSlice4:
+            case pointerSlice1, pointerSlice2, pointerSlice4, pointerSlice8:
                 const pointerSliceSize = pointerElementSize(instruction.op);
                 const sliceLo = scalarValue!size_t(stack, base + instruction.c);
                 const sliceHi = scalarValue!size_t(
@@ -391,6 +393,18 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
                 ] = stack[sourceIndex .. sourceIndex + instruction.c];
+                ++ip;
+                break;
+            }
+
+            case frameStore: {
+                const destinationIndex =
+                    scalarValue!size_t(stack, base + instruction.b);
+                stack[destinationIndex .. destinationIndex + instruction.c] =
+                    stack[
+                        base + instruction.a
+                        .. base + instruction.a + instruction.c
+                    ];
                 ++ip;
                 break;
             }
@@ -438,6 +452,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case zeroExtend4to8:
+                const ubyte[ulong.sizeof] zeroExtended = scalarBytes(
+                    cast(ulong) scalarValue!uint(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + ulong.sizeof]
+                    = zeroExtended;
+                ++ip;
+                break;
+
             case convertDoubleToInt:
                 const ubyte[int.sizeof] converted = scalarBytes(
                     cast(int) floatValue!double(stack, base + instruction.b),
@@ -447,11 +470,56 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case convertIntToFloat:
+                stack[
+                    base + instruction.a .. base + instruction.a + float.sizeof
+                ] = floatBytes(cast(float) integerToReal(
+                    stack, base + instruction.b, instruction.c,
+                ));
+                ++ip;
+                break;
+
             case convertIntToDouble:
                 stack[
                     base + instruction.a .. base + instruction.a + double.sizeof
-                ] = floatBytes(integerToDouble(
+                ] = floatBytes(cast(double) integerToReal(
                     stack, base + instruction.b, instruction.c,
+                ));
+                ++ip;
+                break;
+
+            case convertIntToReal:
+                stack[
+                    base + instruction.a .. base + instruction.a + real.sizeof
+                ] = floatBytes(integerToReal(
+                    stack, base + instruction.b, instruction.c,
+                ));
+                ++ip;
+                break;
+
+            case convertFloatToDouble:
+                stack[
+                    base + instruction.a .. base + instruction.a + double.sizeof
+                ] = floatBytes(cast(double) floatValue!float(
+                    stack, base + instruction.b,
+                ));
+                ++ip;
+                break;
+
+            case convertFloatToReal:
+                stack[
+                    base + instruction.a .. base + instruction.a + real.sizeof
+                ] = floatBytes(cast(real) floatValue!float(
+                    stack, base + instruction.b,
+                ));
+                ++ip;
+                break;
+
+            case convertDoubleToReal:
+                stack[
+                    base + instruction.a .. base + instruction.a + real.sizeof
+                ] = floatBytes(cast(real) floatValue!double(
+                    stack, base + instruction.b,
                 ));
                 ++ip;
                 break;
@@ -546,6 +614,75 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case modInt4:
+                const ubyte[int.sizeof] remainder = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) %
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = remainder;
+                ++ip;
+                break;
+
+            case shlInt4:
+                const ubyte[int.sizeof] leftShifted = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) <<
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = leftShifted;
+                ++ip;
+                break;
+
+            case shrInt4:
+                const ubyte[int.sizeof] rightShifted = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) >>
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = rightShifted;
+                ++ip;
+                break;
+
+            case ushrInt4:
+                const ubyte[int.sizeof] unsignedRightShifted = scalarBytes(
+                    cast(int) (scalarValue!uint(stack, base + instruction.b) >>
+                        scalarValue!int(stack, base + instruction.c)),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = unsignedRightShifted;
+                ++ip;
+                break;
+
+            case bitAndInt4:
+                const ubyte[int.sizeof] andBits = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) &
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = andBits;
+                ++ip;
+                break;
+
+            case bitXorInt4:
+                const ubyte[int.sizeof] xorBits = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) ^
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = xorBits;
+                ++ip;
+                break;
+
+            case bitNotInt4:
+                const ubyte[int.sizeof] complement = scalarBytes(
+                    ~scalarValue!int(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = complement;
+                ++ip;
+                break;
+
             case notBool:
                 stack[base + instruction.a] =
                     stack[base + instruction.b] == 0 ? 1 : 0;
@@ -586,10 +723,59 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case lessThanUnsigned4:
+                stack[base + instruction.a] =
+                    scalarValue!uint(stack, base + instruction.b) <
+                    scalarValue!uint(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessOrEqualUnsigned4:
+                stack[base + instruction.a] =
+                    scalarValue!uint(stack, base + instruction.b) <=
+                    scalarValue!uint(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterThanUnsigned4:
+                stack[base + instruction.a] =
+                    scalarValue!uint(stack, base + instruction.b) >
+                    scalarValue!uint(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
             case greaterOrEqualUnsigned4:
                 stack[base + instruction.a] =
                     scalarValue!uint(stack, base + instruction.b) >=
                     scalarValue!uint(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessThan8:
+                stack[base + instruction.a] =
+                    scalarValue!long(stack, base + instruction.b) <
+                    scalarValue!long(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterThan8:
+                stack[base + instruction.a] =
+                    scalarValue!long(stack, base + instruction.b) >
+                    scalarValue!long(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessOrEqual8:
+                stack[base + instruction.a] =
+                    scalarValue!long(stack, base + instruction.b) <=
+                    scalarValue!long(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqual8:
+                stack[base + instruction.a] =
+                    scalarValue!long(stack, base + instruction.b) >=
+                    scalarValue!long(stack, base + instruction.c) ? 1 : 0;
                 ++ip;
                 break;
 
@@ -1038,6 +1224,22 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ip = stack[base + instruction.a] != 0 ? instruction.b : ip + 1;
                 break;
 
+            case classVirtualFunction:
+                const objectPointer =
+                    scalarValue!size_t(stack, base + instruction.b);
+                const classIndex = objectPointer == 0
+                    ? noExceptionClass
+                    : objectClassIndex(objectPointer);
+                writeScalar!size_t(
+                    stack,
+                    base + instruction.a,
+                    virtualFunction(
+                        program.classes, classIndex, instruction.c,
+                    ),
+                );
+                ++ip;
+                break;
+
             case call, callIndirect:
                 // A direct `call` carries the callee's function index in
                 // `instruction.a`; an indirect `callIndirect` reads it from the
@@ -1095,6 +1297,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                     throw new Exception(assertMessage(
                         program.assertDiagnostics[instruction.b],
                         stack[base .. $],
+                        program.data,
                     ));
 
                 ++ip;
@@ -1124,6 +1327,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                     throw new Exception(assertMessage(
                         nonzeroDiagnostic,
                         stack[base .. $],
+                        program.data,
                     ));
 
                 ++ip;
@@ -1455,6 +1659,23 @@ private bool classMatches(
     return false;
 }
 
+private ushort virtualFunction(
+    in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
+    in ushort classIndex,
+    in ushort baseFunction,
+) @safe {
+    import quickbite.backends.bytecode.core.program: noExceptionClass;
+
+    if (classIndex == noExceptionClass || classIndex >= classes.length)
+        return baseFunction;
+
+    foreach (candidate; classes[classIndex].virtualFunctions)
+        if (candidate.baseFunction == baseFunction)
+            return candidate.function_;
+
+    return baseFunction;
+}
+
 // Decode/transcode the string slice descriptor at `sourceOffset` per `mode`
 // into a fresh heap block of target code units, mirroring druntime's `_aApply*`
 // foreach helpers. Returns the block (for rooting in `heap`) and the element
@@ -1692,24 +1913,37 @@ private uint elementSize(
     import quickbite.backends.bytecode.core.program: Op, sliceDescriptorSize;
     if (op == Op.indexLoad16 || op == Op.indexStore16)
         return sliceDescriptorSize;
-    return op == Op.indexLoad1 || op == Op.indexStore1 ? 1 : 4;
+    if (op == Op.indexLoad8 || op == Op.indexStore8)
+        return 8;
+    if (op == Op.indexLoad4 || op == Op.indexStore4)
+        return 4;
+    return op == Op.indexLoad2 || op == Op.indexStore2 ? 2 : 1;
 }
 
 private uint pointerElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    if (op == Op.pointerStore8)
+    if (op == Op.pointerLoad16 || op == Op.pointerStore16)
+        return 16;
+    if (op == Op.pointerLoad8 || op == Op.pointerStore8 ||
+        op == Op.pointerSlice8)
         return 8;
-    return op == Op.pointerLoad1 || op == Op.pointerSlice1 ||
-        op == Op.pointerStore1 ? 1 : 4;
+    if (op == Op.pointerLoad4 || op == Op.pointerStore4 ||
+        op == Op.pointerSlice4)
+        return 4;
+    return op == Op.pointerLoad2 || op == Op.pointerSlice2 ? 2 : 1;
 }
 
 private uint subSliceElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.subSlice1 ? 1 : 4;
+    if (op == Op.subSlice8)
+        return 8;
+    if (op == Op.subSlice4)
+        return 4;
+    return op == Op.subSlice2 ? 2 : 1;
 }
 
 private uint sliceCopyElementSize(
@@ -2028,6 +2262,7 @@ private string assertMessage(
     in imported!"quickbite.backends.bytecode.core.program".AssertDiagnostic
         diagnostic,
     in ubyte[] frame,
+    in ubyte[] data,
 ) @safe {
     import std.conv: text;
 
@@ -2056,13 +2291,38 @@ private string assertMessage(
             arrayOperandText(frame, diagnostic.rhs, diagnostic.operandType),
         );
 
+    if (diagnostic.isString)
+        return text(
+            stringOperandText(frame, diagnostic.lhs, data),
+            " ",
+            invertedOperator(diagnostic.operator),
+            " ",
+            stringOperandText(frame, diagnostic.rhs, data),
+        );
+
+    const lhs = diagnostic.lhsIsNull
+        ? "`null`"
+        : operandText(frame, diagnostic.lhs, diagnostic.operandType);
+    const rhs = diagnostic.rhsIsNull
+        ? "`null`"
+        : operandText(frame, diagnostic.rhs, diagnostic.operandType);
     return text(
-        operandText(frame, diagnostic.lhs, diagnostic.operandType),
+        lhs,
         " ",
         invertedOperator(diagnostic.operator),
         " ",
-        operandText(frame, diagnostic.rhs, diagnostic.operandType),
+        rhs,
     );
+}
+
+private string stringOperandText(
+    in ubyte[] frame,
+    in size_t offset,
+    in ubyte[] data,
+) @safe {
+    import std.conv: text;
+
+    return text(`"`, stringFromSlice(frame, offset, data), `"`);
 }
 
 // Render a dynamic-array operand as `[e0, e1, ...]`, reading the slice
@@ -2102,6 +2362,8 @@ private string invertedOperator(in string operator) @safe @nogc nothrow pure {
         case "<=": return ">";
         case ">": return "<=";
         case ">=": return "<";
+        case "is": return "!is";
+        case "!is": return "is";
         default: assert(0, "Unsupported assert operator.");
     }
 }
@@ -2186,10 +2448,10 @@ private T scalarValue(T)(
     return cast(T) raw;
 }
 
-// Read an integer source at `offset` and convert it to `double`, honouring its
+// Read an integer source at `offset` and convert it to `real`, honouring its
 // byte width (1/2/4/8) and signedness (the `unsignedConvertFlag` bit in
-// `widthAndFlag`). Backs `convertIntToDouble`.
-private double integerToDouble(
+// `widthAndFlag`). Backs the integer-to-floating conversion opcodes.
+private real integerToReal(
     in ubyte[] stack,
     in size_t offset,
     in size_t widthAndFlag,
