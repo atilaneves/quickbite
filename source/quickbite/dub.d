@@ -93,11 +93,19 @@ public string[] parseDescribeList(in string output) @safe pure {
 
 // Collapse dub-built dependency archives into the native dependency image used
 // by the hot project link. The project itself is not part of this image.
+// `systemLibs` and `linkerFlags` are dub's own `libs`/`lflags` for the package,
+// forwarded so the image resolves the external C libraries its dependencies need
+// (e.g. vibe-d's `ssl`/`crypto`); without them the image loads with undefined
+// symbols like `RAND_poll`.
 public string buildDubDependencyImage(
     in string packageName,
     in string[] dependencyArchives,
     in string outDir,
+    in string[] systemLibs = null,
+    in string[] linkerFlags = null,
 ) {
+    import std.algorithm.iteration: map;
+    import std.array: array;
     import std.conv: text;
     import std.file: mkdirRecurse;
     import std.path: buildPath;
@@ -114,7 +122,9 @@ public string buildDubDependencyImage(
     ];
     command ~= dependencyArchives
         ~ "-Wl,--no-whole-archive"
-        ~ "-lphobos2";
+        ~ "-lphobos2"
+        ~ systemLibs.map!(lib => "-l" ~ lib).array
+        ~ linkerFlags.dup;
 
     const result = execute(command);
     if (result.status != 0)
