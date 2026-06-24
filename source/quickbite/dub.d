@@ -58,16 +58,23 @@ public string[] dubDescribe(in string pkgDir, in string dataKind) {
     const describe = ["dub", "describe"];
     const dataArgs = ["--data=" ~ dataKind, "--data-list"];
 
+    // Pass dub's stderr through to ours instead of merging it into the captured
+    // output. dub emits diagnostics there (e.g. arsd-official's "defines no
+    // import paths" warning); merged into `output` they would parse as bogus
+    // data values - a warning line forwarded as an lflag/linker-file fails the
+    // dependency-image link with `cannot open <warning text>`.
+    const config = Config.stderrPassThrough;
+
     auto withUnittest = execute(  // auto: need status and output, not just lines
         describe ~ ["--config=unittest"] ~ dataArgs,
-        null, Config.none, size_t.max, pkgDir,
+        null, config, size_t.max, pkgDir,
     );
     if (withUnittest.status == 0)
         return parseDescribeList(withUnittest.output);
 
     const fallback = execute(
         describe ~ dataArgs,
-        null, Config.none, size_t.max, pkgDir,
+        null, config, size_t.max, pkgDir,
     );
     if (fallback.status != 0)
         throw new Exception(
