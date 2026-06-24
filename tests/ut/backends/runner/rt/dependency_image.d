@@ -1654,3 +1654,65 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A multi-argument interpreted delegate passed into native code (ffi.md §34.16).
+// The callback subtracts its arguments, so a wrong explicit-argument order would
+// return -7; a passing result proves the trampoline restores the reversed
+// extern(D) callback arguments to source order.
+@("dependencyImage.externDMultiArgDelegateCallback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_callback2_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_callback2_fixture;
+
+            int dependencyApply2(int x, int y, int delegate(int, int) callback) {
+                return callback(x, y);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_callback2_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_callback2_fixture;
+
+            int dependencyApply2(int x, int y, int delegate(int, int) callback);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_callback2_fixture;
+
+                unittest {
+                    int x = 10;
+                    int y = 3;
+                    int delegate(int, int) callback = (int a, int b) => a - b;
+                    assert(dependencyApply2(x, y, callback) == 7);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
