@@ -1679,12 +1679,15 @@ private struct Walker {
                     Value[] writebacks;
                     Value receiverWriteback;
                     try {
-                        // A body-less constructor builds a native struct: the
-                        // receiver `tracked` is not yet a struct (it is the
-                        // variable being constructed), so seed `this` from the
-                        // struct's default `.init` and reify the constructed
-                        // struct from the receiver buffer (ffi.md §34.13).
-                        if (auto structType = receiverStructType(dot.e1))
+                        // Constructors and postblits build/copy a native struct
+                        // and yield the (post-call) receiver as the expression
+                        // value, not their ABI return (ffi.md §34.13).
+                        if (auto structType = receiverStructType(dot.e1)) {
+                            // A body-less constructor: the receiver `tracked` is
+                            // not yet a struct (it is the variable being
+                            // constructed), so seed `this` from the struct's
+                            // default `.init` and reify the constructed struct
+                            // from the receiver buffer.
                             if (function_.isCtorDeclaration !is null) {
                                 if (tryCallNativeConstructor(
                                     function_,
@@ -1700,6 +1703,29 @@ private struct Walker {
                                     return result;
                                 }
                             }
+                            // A body-less postblit runs on the freshly blitted
+                            // copy (already evaluated as `receiver`) and returns
+                            // void; the value of `copy = original` is the
+                            // postblit-mutated receiver, not that void return.
+                            else if (function_.isPostBlitDeclaration !is null) {
+                                if (tryCallNativeMember(
+                                    function_,
+                                    structType,
+                                    receiver,
+                                    arguments,
+                                    nativeArgumentTypes(argumentExpressions),
+                                    nativeAddressOfLocalArguments(argumentExpressions),
+                                    result,
+                                    writebacks,
+                                    receiverWriteback,
+                                )) {
+                                    applyNativeWritebacks(writebacks, argumentExpressions);
+                                    return receiverWriteback == Value.void_
+                                        ? receiver
+                                        : receiverWriteback;
+                                }
+                            }
+                        }
 
                         // A native class receiver dispatches virtually through
                         // the object's vtable and is mutated in place, so it has
