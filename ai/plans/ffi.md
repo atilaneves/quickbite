@@ -2162,7 +2162,7 @@ Inc  Contract                                          Track  Status   Ref
 19  constructors, destructors, postblits                AB    done     §34.13
 20  native Error recovery and exception chaining        A     done     §34.13
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.14
-22  delegates / callbacks / closures: reverse bridge    AB    todo     §34.15
+22  delegates / callbacks / closures: reverse bridge    AB    done     §34.15
 23  extern(C++) function and member ABI                 A     done     §34.16
 ```
 
@@ -2637,6 +2637,31 @@ fixed from variadic args. Variadic calls cannot share a cached CIF.
 still green and still using the cached non-variadic CIF path.
 
 ### 34.16 Increment 22 — delegates / callbacks / closures (reverse bridge)
+
+**Status: landed (Interpreter, single-callback synchronous reverse bridge).**
+Fixture `dependencyImage.externDDelegateCallback`: a body-less `extern(D)
+int dependencyApply(int x, int delegate(int) callback)` from a prepared
+dependency image invokes an interpreted lambda capturing a local, and the result
+crosses back. A delegate argument now maps to its two-pointer `{context,
+funcptr}` ffi_type (`ffiDelegateType`); the core builds a libffi closure per
+delegate argument (`setupDelegateArgument` + `ffi_closure_alloc` /
+`ffi_prep_closure_loc`, bound in `libffi.d`) whose `extern(C)` trampoline
+(`closureTrampoline`) restores the explicit arguments to source order (the
+funcptr is `Ret(context, reverse(explicit))`, confirmed by disassembly) and
+routes back through a new Value-free seam method, `NativeMarshaller.invokeClosure`.
+The interpreter marshaller materializes the native callback arguments, runs the
+delegate through a Walker-supplied invoker (`invokeNativeCallback` ->
+`runDelegateCall`), and marshals the result into libffi's return buffer. The
+closure lives only for the call (`ffi_closure_free` on scope exit) and its
+context/CIF stay GC-reachable across it.
+
+Still todo for this rung (each its own approved fixture): multi-argument
+callbacks (the reversal is in place but only the identity case is pinned);
+callbacks that throw back across the boundary (today the interpreted closure must
+not throw — an exception would unwind through native frames); class-method and
+`extern(C)` function-pointer callbacks; and durable (escaping) callbacks that
+outlive the call, which need the GC-visible closure registry of §14 rather than
+the call-scoped closure here.
 
 **Contract.** The §14 reverse bridge: pass an interpreted closure to a native
 dependency API that calls it back (`sort!`, `setTimer`, etc.). This is the
