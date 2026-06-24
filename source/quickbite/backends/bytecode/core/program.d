@@ -285,6 +285,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     frameAddress,
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
+    signExtend2to4, // a: destination frame offset, b: source frame offset
     zeroExtend2to4, // a: destination frame offset, b: source (wchar -> dchar)
     signExtend4to8, // a: destination frame offset, b: source frame offset
     zeroExtend4to8, // a: destination frame offset, b: source frame offset

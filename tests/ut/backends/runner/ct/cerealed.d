@@ -4,7 +4,7 @@ module ut.backends.runner.ct.cerealed;
 import ut.backends;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -32,7 +32,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("refCursorReadAdvancesPosition." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -58,7 +58,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("postIncrementCursorReadAdvancesPosition." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -83,7 +83,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("templateLengthPrefixUsesRequestedWidth." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -111,7 +111,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("decodeBoolReadsSequentialBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -139,7 +139,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("encodeIntWritesBigEndianBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -170,7 +170,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("roundTripBoolBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -208,7 +208,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("roundTripEnumBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -267,7 +267,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("exampleFooRoundTripBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -307,7 +307,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("multidimensionalArrayWritesNestedLengths." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -419,7 +419,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("pointerToIntWritesPointeeBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -447,7 +447,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("ubyteArrayRoundTripUsesUbyteLength." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -488,7 +488,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("protocolUnitLengthFieldRoundTrip." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -584,7 +584,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("bitPackedStructHeaderRoundTrip." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -635,7 +635,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("inputRangeWritesLengthAndValues." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -690,7 +690,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("resetReaderRestoresOriginalOrNewBytes." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -757,7 +757,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("staticArrayRoundTripOmitsLengthPrefix." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -877,7 +877,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled bounds checks raise druntime's ArrayIndexError text; the
 // backtick-range wording in the Ctfe block above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("roundTripEnumExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -976,7 +976,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled bounds checks raise druntime's ArrayIndexError text (see above).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("roundTripBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1046,7 +1046,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled bounds checks raise druntime's ArrayIndexError text (see above).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("decodeBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1080,7 +1080,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 /++
     Known project-shaped gaps.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("encodeFloatReinterpretsBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

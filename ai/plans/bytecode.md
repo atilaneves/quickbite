@@ -3529,3 +3529,81 @@ bin/ut $(bin/ut -l | \
 ```
 
 Result: 55 tests run, 0 failed, 1/1 failing as expected.
+
+## cerealed.d Promotion Analysis (BytecodeNewCore)
+
+All SystemLinker-backed tests from
+`tests/ut/backends/runner/ct/cerealed.d` were evaluated for promotion to
+`BytecodeNewCore`. The 21 passing promotion candidates remain promoted in
+their `AliasSeq` blocks. CTFE-only characterization tests remain CTFE-only, and
+the two AA-shaped failures below remain unpromoted until their backend support
+is implemented.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.backends\\.runner\\.ct\\.cerealed\\..*\\.BytecodeNewCore$')
+```
+
+The first focused run covered 23 promoted tests. Eight tests already pass:
+`dynamicArrayAppenderPreservesRuntimeByte`, `refCursorReadAdvancesPosition`,
+`postIncrementCursorReadAdvancesPosition`, `decodeBoolReadsSequentialBytes`,
+`roundTripBoolBytes`, `roundTripBoolExhaustionReportsBoundsDiagnostic`,
+`decodeBoolExhaustionReportsBoundsDiagnostic`, and
+`templateLengthPrefixUsesRequestedWidth`. The remaining 15 failures group into
+these implementation gaps:
+
+1. Function returns and assertion operands do not yet materialize every
+   aggregate-shaped local needed by project-shaped fixtures. This shows up as
+   unsupported variables such as `encoded`, `bytes`, and DMD-generated
+   `__assertOp*` temporaries in array-return and equality checks.
+2. Dynamic and static array types are not accepted in all call signatures,
+   local declarations, and return-value paths used by this module. Failures
+   report unsupported `ubyte[]` and `int[2]` types even though narrower array
+   behaviours from `arrays.d` already pass.
+3. Compound shift assignment is missing for the decoder accumulation pattern:
+   `intValue <<= 8` currently fails before the promoted bounds diagnostic can
+   reach the compiled-oracle `ArrayIndexError` text.
+4. Nested aggregate and associative-array shapes remain incomplete:
+   recursive `Nested[int]`, `Unit[]` packet fields, and AA-backed static class
+   registries fail as unsupported aggregate or AA operands.
+5. The project-shaped class registry test needs static AA storage, classinfo
+   name lookup, delegate values stored in an AA, and invocation of the stored
+   delegate with a `ref` struct receiver.
+
+Worker assignments should keep the promoted tests in place, make the smallest
+honest backend changes, and rerun only
+`ut.backends.runner.ct.cerealed.*.BytecodeNewCore` after each fix.
+
+Current focused checkpoint after the first implementation slices:
+
+- 23 `BytecodeNewCore` promotion candidates were run; 21 pass and remain
+  promoted. The two failures below are documented and left unpromoted for this
+  PR.
+- Aggregate-shaped returns, dynamic-array descriptors, static-array by-value
+  parameters, and compound shift assignment are partially implemented.
+- `inputRangeWritesLengthAndValues` now passes after reserving enough hidden
+  struct-receiver argument bytes for small receivers and supporting DMD's
+  casted narrow-field compound assignment form, `cast(int)this.current += 1`.
+- `staticArrayRoundTripOmitsLengthPrefix` now passes after ordinary
+  dynamic-array descriptor paths learned to materialize static arrays, including
+  `foreach (ref value; values)` write-back through DMD-generated slice temps.
+- `protocolUnitLengthFieldRoundTrip` now passes after struct identity learned
+  descriptor-based comparison for dynamic-array fields and dynamic-array
+  struct elements were materialized consistently.
+- Remaining failures:
+  - `nestedStructWritesAssociativeArrayChild`: the recursive literal
+    `[7: Nested(null)]` is unsupported; associative-array literals with struct
+    values, followed by AA iteration over those values, need bytecode lowering.
+  - `classSerialisationReadsStaticChildRegistry`: the static `childWriters`
+    registry remains unsupported; it needs static associative-array storage
+    plus delegate-valued lookup/invocation with a `ref` struct receiver.
+
+Focused command:
+
+```sh
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.backends\\.runner\\.ct\\.cerealed\\..*\\.BytecodeNewCore$')
+```
