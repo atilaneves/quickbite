@@ -1672,13 +1672,33 @@ private struct Walker {
                 auto function_ = resolveMemberFunction(call.f, receiver);
                 if (hasNoAvailableSource(function_)) {
                     import quickbite.backends.interpreter.ffi_marshal:
-                        NativeCallException, tryCallNativeMember;
+                        NativeCallException, tryCallNativeMember,
+                        tryCallNativeClassMember;
 
                     Value result;
                     Value[] writebacks;
                     Value receiverWriteback;
                     try {
-                        if (tryCallNativeMember(
+                        // A native class receiver dispatches virtually through
+                        // the object's vtable and is mutated in place, so it has
+                        // no receiver writeback (ffi.md §34.12). A struct
+                        // receiver marshals its bytes and may write them back
+                        // (§34.9).
+                        if (auto classType = receiverClassType(dot.e1)) {
+                            if (tryCallNativeClassMember(
+                                function_,
+                                classType,
+                                receiver,
+                                arguments,
+                                nativeArgumentTypes(argumentExpressions),
+                                nativeAddressOfLocalArguments(argumentExpressions),
+                                result,
+                                writebacks,
+                            )) {
+                                applyNativeWritebacks(writebacks, argumentExpressions);
+                                return result;
+                            }
+                        } else if (tryCallNativeMember(
                             function_,
                             receiverStructType(dot.e1),
                             receiver,

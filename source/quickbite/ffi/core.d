@@ -49,6 +49,11 @@ public interface NativeMarshaller {
         imported!"dmd.mtype".Type pointedToType,
         in ubyte[] cell,
     );
+
+    // The receiver object pointer for a class member call: the class reference
+    // itself, passed directly as hidden `this` and used to read the vtable for
+    // virtual dispatch (ffi.md §34.12). Unused for non-member and struct calls.
+    const(void)* receiverObjectPointer();
 }
 
 // `argumentTypes` are the call site's actual argument types (one per argument).
@@ -91,9 +96,46 @@ public bool callNativeMember(
     );
 }
 
+// A member call on a native class reference (ffi.md §34.12). The receiver is an
+// opaque object pointer rather than marshalled struct bytes, and a virtual
+// method dispatches through the object's vtable (see callNativeImpl).
+public bool callNativeClassMember(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.mtype".TypeClass receiverType,
+    NativeMarshaller marshaller,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+) {
+    if (receiverType is null)
+        return false;
+
+    return callNativeImpl(
+        function_,
+        NativeThis(null, true, receiverType),
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+    );
+}
+
 private struct NativeThis {
-    private imported!"dmd.mtype".TypeStruct type;
+    private imported!"dmd.mtype".TypeStruct structType;
     private bool enabled;
+    private imported!"dmd.mtype".TypeClass classType;
+
+    private bool isClass() const @safe @nogc nothrow pure {
+        return classType !is null;
+    }
+
+    // The receiver type as a plain Type, for ffiTypeFor / size(): the class type
+    // for a class receiver, otherwise the struct type.
+    private imported!"dmd.mtype".Type type() {
+        import dmd.mtype: Type;
+
+        return classType !is null
+            ? cast(Type) classType
+            : cast(Type) structType;
+    }
 }
 
 private bool callNativeImpl(
@@ -103,14 +145,6 @@ private bool callNativeImpl(
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
 ) {
-    import core.sys.posix.dlfcn: dlsym;
-    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
-    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
-    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
-    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
-    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
-    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
-    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
     import dmd.astenums: LINK, VarArg;
     import dmd.mangle: mangleExact;
     import dmd.mtype: TypeFunction;
@@ -132,7 +166,7 @@ private bool callNativeImpl(
         function_._linkage != LINK.c)
         return false;
 
-    const symbol = dlsym(RTLD_DEFAULT, mangleExact(function_));
+    const symbol = resolveSymbol(function_, receiver, marshaller);
     if (symbol is null)
         throw new Exception(
             "Native symbol `" ~
@@ -149,6 +183,38 @@ private bool callNativeImpl(
         argumentTypes,
         addressOfLocalArguments,
     );
+}
+
+// Resolve the function pointer to call. A virtual method on a class receiver is
+// read from the object's vtable at the DMD-computed slot so a base-typed handle
+// dispatches to the runtime override (ffi.md §34.12); everything else (and
+// non-virtual class methods) resolves by mangled symbol against the process.
+private const(void)* resolveSymbol(
+    imported!"dmd.func".FuncDeclaration function_,
+    NativeThis receiver,
+    NativeMarshaller marshaller,
+) {
+    import core.sys.posix.dlfcn: dlsym;
+    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
+    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
+    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
+    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
+    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
+    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
+    import dmd.mangle: mangleExact;
+
+    if (receiver.isClass && function_.vtblIndex >= 0) {
+        auto objectPointer = marshaller.receiverObjectPointer;
+        if (objectPointer is null)
+            return null;
+        // The object's first word is __vptr; the vtable slot at vtblIndex holds
+        // the final overrider's function pointer.
+        auto vtable = *cast(const(void*)**) objectPointer;
+        return vtable[function_.vtblIndex];
+    }
+
+    return dlsym(RTLD_DEFAULT, mangleExact(function_));
 }
 
 private void loadDependencyImage(in string dependencyImage) {
@@ -275,17 +341,24 @@ private bool callViaLibffi(
     ubyte[] receiverBuffer;
     ubyte[] receiverPointerBuffer;
     if (receiver.enabled) {
-        receiverBuffer = new ubyte[](cast(size_t) size(receiver.type));
-        marshaller.fillReceiver(
-            receiverBuffer,
-            receiver.type,
-            hasOutPointer,
-            keepAlive,
-            keepAliveBuffers,
-        );
-
         receiverPointerBuffer = new ubyte[](ffi_type_pointer.size);
-        *cast(void**) receiverPointerBuffer.ptr = receiverBuffer.ptr;
+        if (receiver.isClass) {
+            // A class reference is already a pointer to the object; pass it
+            // straight through as hidden `this`, no struct-byte marshalling
+            // (ffi.md §34.12).
+            *cast(const(void)**) receiverPointerBuffer.ptr =
+                marshaller.receiverObjectPointer;
+        } else {
+            receiverBuffer = new ubyte[](cast(size_t) size(receiver.type));
+            marshaller.fillReceiver(
+                receiverBuffer,
+                receiver.type,
+                hasOutPointer,
+                keepAlive,
+                keepAliveBuffers,
+            );
+            *cast(void**) receiverPointerBuffer.ptr = receiverBuffer.ptr;
+        }
     }
 
     auto argumentBuffers = new ubyte[][](nargs);
@@ -420,6 +493,9 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
         case TY.Tfloat64:              return &ffi_type_double;
         case TY.Tfloat80:              return &ffi_type_longdouble;
         case TY.Tpointer:              return &ffi_type_pointer;
+        // A class reference is a single pointer to the object at the ABI
+        // (ffi.md §11.3/§34.12); it crosses as an opaque native handle.
+        case TY.Tclass:                return &ffi_type_pointer;
         case TY.Tarray:
             return isSupportedScalarSlice(type) ? ffiSliceType : null;
         case TY.Tstruct:               return ffiStructType(cast(TypeStruct) type);

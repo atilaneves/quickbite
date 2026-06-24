@@ -67,6 +67,40 @@ public bool tryCallNativeMember(
     return true;
 }
 
+// A member call on a native class reference (ffi.md §34.12). The receiver is an
+// opaque native handle (NativePointer); virtual dispatch happens in the core via
+// the object's vtable. The object is mutated in place through the shared pointer,
+// so there is no receiver writeback.
+public bool tryCallNativeClassMember(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.mtype".TypeClass receiverType,
+    in imported!"quickbite.lang".Value receiver,
+    in imported!"quickbite.lang".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+    out imported!"quickbite.lang".Value result,
+    out imported!"quickbite.lang".Value[] argumentWritebacks,
+) {
+    import quickbite.ffi: callNativeClassMember;
+
+    if (receiverType is null || !receiver.isNativePointer)
+        return false;
+
+    auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
+    if (!callNativeClassMember(
+        function_,
+        receiverType,
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+    ))
+        return false;
+
+    result = marshaller.result;
+    argumentWritebacks = marshaller.writebacks;
+    return true;
+}
+
 private bool mutatesReceiver(
     imported!"dmd.func".FuncDeclaration function_,
 ) @safe {
@@ -186,6 +220,12 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         _result = unmarshalValue(type, buffer);
     }
 
+    public override const(void)* receiverObjectPointer() {
+        // The class receiver is held as an opaque native handle; its object
+        // pointer is passed as hidden `this` and read for vtable dispatch.
+        return cast(const(void)*) _receiver.asNativePointer;
+    }
+
     public override void writeOutParameter(
         in size_t index,
         Type pointedToType,
@@ -241,6 +281,12 @@ private void marshalArgument(
         case TY.Tpointer:
             *cast(void**) buffer.ptr =
                 marshalPointerArgument(type, value, stableString, keepAlive);
+            return;
+
+        case TY.Tclass:
+            // A class reference is an opaque native handle (ffi.md §34.12),
+            // passed through as the object pointer.
+            *cast(void**) buffer.ptr = value.asNativePointer;
             return;
 
         case TY.Tarray:
@@ -385,6 +431,10 @@ private imported!"quickbite.lang".Value unmarshalValue(
         case TY.Tfloat64:  return Value(*cast(const double*) buffer.ptr);
         case TY.Tfloat80:  return Value(*cast(const real*) buffer.ptr);
         case TY.Tpointer:
+            return Value.nativePointerValue(*cast(void**) buffer.ptr);
+        case TY.Tclass:
+            // A returned class reference reifies as an opaque native handle
+            // (ffi.md §34.12); the object pointer is the return value itself.
             return Value.nativePointerValue(*cast(void**) buffer.ptr);
         case TY.Tarray:
             return unmarshalSlice(type, buffer);

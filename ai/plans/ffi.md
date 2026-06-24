@@ -2158,7 +2158,7 @@ Inc  Contract                                          Track  Status   Ref
 15  mutating struct member methods + receiver writeback B*    done     §34.8
 16  mutable slice arguments with writeback              B*    done     §34.9
 17  slices/arrays nested inside by-value structs        B*    done     §34.10
-18  class references, virtual dispatch, interfaces      AB    todo     §34.11
+18  class references, virtual dispatch, interfaces      AB    partial  §34.11
 19  constructors, destructors, postblits                AB    todo     §34.12
 20  native Error recovery and exception chaining        A     done     §34.13
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.14
@@ -2507,6 +2507,25 @@ the *runtime* type, not the static one. Keep the handle GC-visible per §13.
 
 **Done.** Virtual-dispatch and interface fixtures green on both backends;
 struct-member fixtures (§28/§29) unaffected.
+
+**Landed 2026-06-23** (`dependencyImage.externDClassVirtualDispatch`), the
+class-reference + virtual-dispatch half. A returned class reference reifies as a
+`NativePointer` opaque handle (`ffiTypeFor`/`unmarshalValue`/`marshalArgument`
+gained a `Tclass` case = `&ffi_type_pointer`). A member call on a class handle
+routes through the new `tryCallNativeClassMember`/`callNativeClassMember` entry
+points: `NativeThis` carries a `TypeClass`, the handle is passed straight through
+as hidden `this` (no struct-byte marshalling), and `resolveSymbol` reads the
+function pointer from the object's `__vptr` at `function_.vtblIndex` for a
+virtual method (falling back to `dlsym` for non-virtual), so a base-typed handle
+dispatches to the runtime override. The seam gained one Value-free method,
+`NativeMarshaller.receiverObjectPointer`.
+
+**Still todo for this rung** (each its own approved fixture): interface method
+calls through the interface table (the `this`-adjustment / itable offset differs
+from a plain class vtable); constructing native classes in the Interpreter
+(§34.13); and making the handle GC-visible per §13 (today the returned handle is
+not GC-scanned, so a collection between a factory call and a method call could
+reclaim the object — out of scope here, fixed by the native-layout handle table).
 
 ### 34.13 Increment 19 — constructors, destructors, postblits
 
