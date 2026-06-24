@@ -272,11 +272,21 @@ version (LDC)
 private void runExecutor(in string requestFile, in string resultsFile) {
     import std.conv: text;
     import std.process: spawnProcess, wait;
+    import std.stdio: stderr, stdin;
 
-    // The executor inherits stdout/stderr so fixture output reaches the
-    // console exactly as the in-process path shows it; results come back over
-    // the results file, not stdout, so that output cannot corrupt the frame.
-    auto pid = spawnProcess([executorPath, requestFile, resultsFile]);
+    // Send the executor's stdout to our stderr instead of inheriting it. A dub
+    // package's own unittest output (its `writeln`s, dscanner's analysis
+    // diagnostics) would otherwise interleave with the benchmark result tables
+    // on stdout - once per warmup/timed iteration - and bury them. Fixture
+    // output still reaches the console on stderr; the results stay clean on
+    // stdout so they can be redirected to a file on their own. Results come
+    // back over the results file, not stdout, so this cannot corrupt the frame.
+    auto pid = spawnProcess(
+        [executorPath, requestFile, resultsFile],
+        stdin,
+        stderr,
+        stderr,
+    );
     const status = wait(pid);
     if (status != 0)
         throw new Exception(text(

@@ -40,13 +40,16 @@ if [[ ! -f "$build_dir/build.ninja" ]]; then
     # the wrong cwd - the project root becomes $build_dir (so reggaefile.d isn't
     # found) and -C doubles to $build_dir/$build_dir - and the build fails.
     dub run reggae --compiler=ldc -- -b ninja -C "$PWD/$build_dir" \
-        --dub-build-type=release-nobounds --dc=ldc2 "$PWD"
+        --dub-build-type=release-nobounds --dc=ldc2 "$PWD" >&2
 fi
-ninja -C "$build_dir" bench
+# Build progress goes to stderr (like the message above) so the only thing on
+# this script's stdout is the benchmark's own result tables - redirecting stdout
+# to a file then captures clean results without the build chatter.
+ninja -C "$build_dir" bench >&2
 # SystemLinker finds bench-exec next to the running binary (thisExePath.dirName),
 # so the optimised host lands in bin/ alongside the DMD-built executor.
 cp "$build_dir/bench" bin/bench
 # The run executor must be DMD-built so its druntime/extern(D) ABI matches the
 # DMD-codegen'd .so it loads.
-dub build :bench-exec --compiler=dmd
+dub build :bench-exec --compiler=dmd >&2
 exec bin/bench "$@"
