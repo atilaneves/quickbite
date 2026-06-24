@@ -75,6 +75,8 @@ private struct Compiler {
     // records the pointed-at element scalar, giving the stride for arithmetic,
     // indexing, dereference, and slicing.
     private ScalarType[VarDeclaration] _pointerLocals;
+    // `ref` locals whose slot holds a raw pointer to the aliased storage.
+    private ScalarType[VarDeclaration] _refLocalPointers;
     // Locals whose slot holds a `{double re, double im}` cdouble value.
     private bool[VarDeclaration] _complexDoubleLocals;
     // Locals whose slot holds an 8-byte associative-array handle (`int[int]`):
@@ -170,6 +172,7 @@ private struct Compiler {
         _staticArrayLocals = null;
         _dynamicArrayLocals = null;
         _pointerLocals = null;
+        _refLocalPointers = null;
         _complexDoubleLocals = null;
         _assocArrayLocals = null;
         _delegateLocals = null;
@@ -242,6 +245,13 @@ private struct Compiler {
                     _structLocals[parameter] = StructLocal(
                         offset, structDeclarationOf(parameter.type),
                     );
+                    continue;
+                }
+
+                // A by-value static-array parameter is an inline block, tracked
+                // like a static-array local so indexing resolves against it.
+                if (parameter.type.toBasetype.ty == TY.Tsarray) {
+                    _staticArrayLocals[parameter] = offset;
                     continue;
                 }
 
@@ -1476,6 +1486,17 @@ private struct Compiler {
 
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _locals) {
+                    if (auto element = declaration in _refLocalPointers)
+                        return loadThroughPointer(
+                            Operand(
+                                *existing,
+                                ScalarType.ulong_,
+                                false,
+                                true,
+                                *element,
+                            ),
+                            compileSizeConstant(0),
+                        );
                     if (declaration in _stringLocals)
                         return Operand(*existing, ScalarType.void_, true);
                     if (declaration in _complexDoubleLocals)
@@ -1500,6 +1521,19 @@ private struct Compiler {
                             *existing, ScalarType.ulong_, false, true, *element,
                         );
                     return Operand(*existing, scalarType(declaration.type));
+                }
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _staticArrayLocals)
+                    return Operand(*existing, ScalarType.void_);
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _withDerefBases) {
+                    const offset =
+                        allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                    _code ~= Instruction(Op.frameAddress, offset, *existing);
+                    return Operand(
+                        offset, ScalarType.ulong_, false, true,
+                        ScalarType.void_,
+                    );
                 }
 
             // A captured enclosing local read inside a nested struct's method
@@ -1671,6 +1705,14 @@ private struct Compiler {
                 "Unsupported compound assignment in bytecode core: ",
             );
 
+        if (auto leftShiftAssign = expression.isShlAssignExp)
+            return compileLocalIntegerCompoundAssign(
+                leftShiftAssign,
+                Op.shlInt4,
+                Op.shlInt4,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
         if (auto orAssign = expression.isOrAssignExp)
             return compileLocalIntegerCompoundAssign(
                 orAssign,
@@ -1822,6 +1864,11 @@ private struct Compiler {
 
         if (auto dot = expression.isDotVarExp)
             if (auto field = tryStructField(dot)) {
+                import dmd.astenums: TY;
+
+                if (field.type.toBasetype.ty == TY.Tarray &&
+                    !isStringType(field.type))
+                    return Operand(field.offset, ScalarType.void_);
                 if (isPointerType(field.type))
                     return Operand(
                         field.offset, ScalarType.ulong_, false, true,
@@ -2005,9 +2052,16 @@ private struct Compiler {
         Expression indexExpr,
         Type resultType,
     ) {
+        import dmd.astenums: TY;
+
         const indexSlot = compileExpression(indexExpr);
-        const elementSize = size(elementType);
-        const offset = allocateBytes(elementSize, elementSize);
+        const elementSize = resultType.toBasetype.ty == TY.Tstruct
+            ? cast(uint) staticArraySize(resultType)
+            : size(elementType);
+        const alignment = resultType.toBasetype.ty == TY.Tstruct
+            ? staticArrayAlign(resultType)
+            : elementSize;
+        const offset = allocateBytes(elementSize, alignment);
         _code ~= Instruction(
             indexLoadOp(elementSize),
             offset,
@@ -2016,7 +2070,9 @@ private struct Compiler {
         );
 
         auto result = new Operand;
-        *result = isPointerType(resultType)
+        *result = resultType.toBasetype.ty == TY.Tstruct
+            ? Operand(offset, ScalarType.void_)
+            : isPointerType(resultType)
             ? Operand(
                 offset, ScalarType.ulong_, false, true,
                 pointerElementScalar(resultType),
@@ -2044,9 +2100,25 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
 
+        if (auto cast_ = expression.isCastExp)
+            if (isDynamicArrayArgument(cast_.e1))
+                return dynamicArrayDescriptorOrNull(cast_.e1);
+
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                return declaration in _dynamicArrayLocals;
+                if (auto descriptor = declaration in _dynamicArrayLocals)
+                    return descriptor;
+
+        if (auto staticArray = staticArrayOffsetOf(expression)) {
+            const elementType = dynamicArrayElementType(expression.type);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            compileStaticArrayAsDynamicInto(offset, elementType, expression);
+            auto result = new DynamicArrayLocal;
+            *result = DynamicArrayLocal(offset, elementType);
+            result.isStaticArrayView = true;
+            result.staticArrayOffset = *staticArray;
+            return result;
+        }
 
         if (auto dot = expression.isDotVarExp)
             if (auto field = tryExceptionStringField(dot)) {
@@ -2317,8 +2389,14 @@ private struct Compiler {
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
-        import dmd.astenums: TY;
+        import dmd.astenums: STC, TY;
         import std.conv: text;
+
+        if ((variable.storage_class & STC.ref_) != STC.none &&
+            compileRefLocalDeclaration(variable))
+        {
+            return;
+        }
 
         // A static array `T[N]` is a value type stored inline in the frame at
         // its DMD-computed size and alignment; no heap, no slice descriptor.
@@ -2436,6 +2514,30 @@ private struct Compiler {
             operand.offset,
             cast(ushort) slotSize,
         );
+    }
+
+    private bool compileRefLocalDeclaration(VarDeclaration variable) {
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null)
+            return false;
+
+        auto expression = initializerExpression(initializer.exp);
+        auto index = expression.isIndexExp;
+        if (index is null)
+            return false;
+
+        auto pointer = tryPointerToElement(index);
+        if (pointer is null)
+            return false;
+
+        const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _locals[variable] = offset;
+        _refLocalPointers[variable] = pointer.pointerElement;
+        _code ~= Instruction(
+            Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
+        );
+        return true;
     }
 
     private void compileComplexDoubleDeclaration(VarDeclaration variable) {
@@ -3303,6 +3405,20 @@ private struct Compiler {
 
         if (expression.type !is null &&
             expression.type.toBasetype.ty == TY.Tstruct) {
+            // `arr[i]` element of a dynamic array of structs: copy the heap
+            // element into a fresh inline block so struct field reads can use
+            // normal `base + field.offset` addressing.
+            if (auto index = expression.isIndexExp)
+                if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1)) {
+                    resolved = true;
+                    return loadDynamicArrayElement(
+                        descriptor.offset,
+                        descriptor.elementType,
+                        index.e2,
+                        expression.type,
+                    ).offset;
+                }
+
             // `arr[i]` element of a static array of structs: the element block
             // lives inline at `arrayBase + i * elementSize`.
             if (auto index = expression.isIndexExp)
@@ -3810,9 +3926,13 @@ private struct Compiler {
             return;
         }
 
+        auto source = initializerExpression(initializer.exp);
+        if (auto staticArray = staticArrayViewOffset(source)) {
+            _dynamicArrayLocals[variable].isStaticArrayView = true;
+            _dynamicArrayLocals[variable].staticArrayOffset = *staticArray;
+        }
         compileDynamicArrayInto(
-            offset, elementType, initializerExpression(initializer.exp),
-            elementIsArray);
+            offset, elementType, source, elementIsArray);
     }
 
     // An associative array `int[int]` local holds an 8-byte handle into the
@@ -3886,12 +4006,32 @@ private struct Compiler {
         Expression source,
         in bool elementIsArray = false,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
+
+        if (tryStackArrayLiteralSliceInto(destination, elementType, source))
+            return;
+
+        if (auto comma = source.isCommaExp) {
+            compileExpression(comma.e1);
+            compileDynamicArrayInto(
+                destination, elementType, comma.e2, elementIsArray,
+            );
+            return;
+        }
 
         if (source.isNullExp) {
             _code ~= Instruction(Op.nullSlice, destination);
             return;
         }
+
+        if (auto cast_ = source.isCastExp)
+            if (isDynamicArrayArgument(cast_.e1)) {
+                compileDynamicArrayInto(
+                    destination, elementType, cast_.e1, elementIsArray,
+                );
+                return;
+            }
 
         // `dest = new T[](length)` / `new T[][](rows, cols)`: heap-allocate a
         // default-filled block of `length` (a runtime size_t) elements; the
@@ -3990,6 +4130,65 @@ private struct Compiler {
             return;
         }
 
+        const elementSize =
+            dynamicArrayElementSize(source.type, elementType, elementIsArray);
+        _code ~= Instruction(
+            Op.allocArray,
+            destination,
+            cast(ushort) elementSize,
+            cast(ushort) count,
+        );
+
+        foreach (elementIndex; 0 .. count) {
+            auto element = (*literal.elements)[elementIndex];
+            const value = element.type.toBasetype.ty == TY.Tstruct
+                ? Operand(structOperandOffset(element), ScalarType.void_)
+                : compileExpression(element);
+            const index = compileSizeConstant(elementIndex);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value.offset,
+                destination,
+                index,
+            );
+        }
+    }
+
+    private bool tryStackArrayLiteralSliceInto(
+        in ushort destination,
+        in ScalarType elementType,
+        Expression source,
+    ) {
+        import dmd.astenums: TY;
+
+        auto comma = source.isCommaExp;
+        if (comma is null)
+            return false;
+
+        auto declaration = comma.e1.isDeclarationExp;
+        if (declaration is null)
+            return false;
+
+        auto variable = declaration.declaration.isVarDeclaration;
+        if (variable is null ||
+            variable.type is null ||
+            variable.type.toBasetype.ty != TY.Tsarray)
+            return false;
+
+        if (staticArrayVariableOf(comma.e2) !is variable)
+            return false;
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null)
+            return false;
+
+        auto literal =
+            initializerExpression(initializer.exp).isArrayLiteralExp;
+        if (literal is null)
+            return false;
+
+        const count = literal.elements is null ? 0 : literal.elements.length;
         const elementSize = size(elementType);
         _code ~= Instruction(
             Op.allocArray,
@@ -3999,15 +4198,71 @@ private struct Compiler {
         );
 
         foreach (elementIndex; 0 .. count) {
-            const value = compileExpression((*literal.elements)[elementIndex]);
-            const index = compileSizeConstant(elementIndex);
+            auto value = compileExpression((*literal.elements)[elementIndex]);
+            if (size(value.type) < elementSize)
+                value = extend(value, elementType);
             _code ~= Instruction(
                 indexStoreOp(elementSize),
                 value.offset,
                 destination,
+                compileSizeConstant(elementIndex),
+            );
+        }
+        return true;
+    }
+
+    private void compileStaticArrayAsDynamicInto(
+        in ushort destination,
+        in ScalarType elementType,
+        Expression source,
+    ) {
+        import std.conv: text;
+
+        auto sourceOffset = staticArrayOffsetOf(source);
+        if (sourceOffset is null)
+            throw new Exception(text(
+                "Unsupported dynamic array initializer in bytecode core: ",
+                expressionChars(source),
+            ));
+
+        auto sourceElementType = source.type.toBasetype.nextOf;
+        const sourceElementSize =
+            cast(uint) staticArraySize(sourceElementType);
+        const elementSize = elementType == ScalarType.void_
+            ? sourceElementSize
+            : cast(uint) size(elementType);
+        if (sourceElementSize < elementSize)
+            throw new Exception(text(
+                "Unsupported dynamic array initializer in bytecode core: ",
+                expressionChars(source),
+            ));
+
+        const count =
+            cast(uint) staticArraySize(source.type) / sourceElementSize;
+        _code ~= Instruction(
+            Op.allocArray,
+            destination,
+            cast(ushort) elementSize,
+            cast(ushort) count,
+        );
+
+        foreach (elementIndex; 0 .. count) {
+            const index = compileSizeConstant(elementIndex);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                cast(ushort) (*sourceOffset + elementIndex * sourceElementSize),
+                destination,
                 index,
             );
         }
+    }
+
+    private VarDeclaration staticArrayVariableOf(Expression expression) {
+        if (auto cast_ = expression.isCastExp)
+            return staticArrayVariableOf(cast_.e1);
+
+        auto variable = expression.isVarExp;
+        return variable is null ? null : variable.var.isVarDeclaration;
     }
 
     private void compileStringBytesArrayInto(
@@ -4209,7 +4464,13 @@ private struct Compiler {
         );
 
         _code ~= Instruction(
-            subSliceOp(size(elementType)),
+            subSliceOp(
+                dynamicArrayElementSize(
+                    slice.e1.type,
+                    elementType,
+                    descriptor.elementIsArray,
+                ),
+            ),
             destination,
             descriptor.offset,
             bounds,
@@ -4545,9 +4806,35 @@ private struct Compiler {
         if (index is null)
             return null;
 
+        return tryPointerToElement(index);
+    }
+
+    private Operand* tryPointerToElement(IndexExp index) {
+        import dmd.astenums: TY;
+
+        if (indexesStaticArray(index.e1)) {
+            if (index.type.toBasetype.ty == TY.Tsarray ||
+                index.type.toBasetype.ty == TY.Tstruct)
+                return null;
+
+            auto result = new Operand;
+            *result = staticArrayElementPointer(
+                staticArrayBaseOffset(index.e1), index.e2, index.type,
+            );
+            return result;
+        }
+
         auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
         if (descriptor is null)
             return null;
+
+        if (descriptor.isStaticArrayView) {
+            auto result = new Operand;
+            *result = staticArrayElementPointer(
+                descriptor.staticArrayOffset, index.e2, index.type,
+            );
+            return result;
+        }
 
         const indexSlot = compileExpression(index.e2);
         auto result = new Operand;
@@ -4555,6 +4842,30 @@ private struct Compiler {
             descriptor.offset, descriptor.elementType, indexSlot.offset,
         );
         return result;
+    }
+
+    private Operand staticArrayElementPointer(
+        in ushort baseOffset,
+        Expression indexExpression,
+        Type elementType,
+    ) {
+        const basePointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameAddress, basePointer, baseOffset);
+
+        const indexSlot = compileExpression(indexExpression);
+        const scaled =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const stride =
+            compileSizeConstant(cast(uint) staticArraySize(elementType));
+        _code ~= Instruction(Op.mulInt8, scaled, indexSlot.offset, stride);
+
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.addInt8, pointer, basePointer, scaled);
+
+        return Operand(
+            pointer, ScalarType.ulong_, false, true, scalarType(elementType),
+        );
     }
 
     // `&local` / `&base.field`: the native address of a scalar local's frame
@@ -4826,16 +5137,17 @@ private struct Compiler {
         return complexDoubleOperand(offset);
     }
 
-    // D's `|` is integer-typed; only the 4-byte int form is needed today.
+    // D's `|` is integer-typed; the opcode works on the raw 4-byte bits, so
+    // signed and unsigned operands share the same machine operation.
     private Operand compileOrExpression(OrExp or) {
         const lhs = compileExpression(or.e1);
         const rhs = compileExpression(or.e2);
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             or,
             lhs,
             rhs,
             Op.bitOrInt4,
-            ScalarType.int_,
+            scalarType(or.type),
             "Unsupported bitwise or in bytecode core: ",
         );
     }
@@ -4843,12 +5155,12 @@ private struct Compiler {
     private Operand compileAndExpression(BinExp and) {
         const lhs = compileExpression(and.e1);
         const rhs = compileExpression(and.e2);
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             and,
             lhs,
             rhs,
             Op.bitAndInt4,
-            ScalarType.int_,
+            scalarType(and.type),
             "Unsupported bitwise and in bytecode core: ",
         );
     }
@@ -4856,12 +5168,12 @@ private struct Compiler {
     private Operand compileXorExpression(BinExp xor) {
         const lhs = compileExpression(xor.e1);
         const rhs = compileExpression(xor.e2);
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             xor,
             lhs,
             rhs,
             Op.bitXorInt4,
-            ScalarType.int_,
+            scalarType(xor.type),
             "Unsupported bitwise xor in bytecode core: ",
         );
     }
@@ -4927,14 +5239,17 @@ private struct Compiler {
         in Op op,
         in string unsupportedMessage,
     ) {
-        const lhs = compileExpression(shift.e1);
-        const rhs = compileExpression(shift.e2);
-        return compileIntBinaryResult(
+        Operand lhs = compileExpression(shift.e1); // may promote narrow ints.
+        Operand rhs = compileExpression(shift.e2); // may promote narrow ints.
+        const actualOp = op == Op.shrInt4 && !isSigned(lhs.type)
+            ? Op.ushrInt4
+            : op;
+        return compileInt4BinaryResult(
             shift,
             lhs,
             rhs,
-            op,
-            ScalarType.int_,
+            actualOp,
+            scalarType(shift.type),
             unsupportedMessage,
         );
     }
@@ -5293,35 +5608,96 @@ private struct Compiler {
 
         // `p.field += rhs` through a heap struct pointer: load the field, add the
         // rhs, and store the result back through the pointer.
-        if (auto dot = addAssign.e1.isDotVarExp)
+        if (auto dot = compoundAssignDotVar(addAssign.e1))
             if (auto field = tryStructPointerField(dot)) {
                 const current = loadStructPointerField(*field);
                 const rhsValue = compileExpression(addAssign.e2);
                 const lvalueType = scalarType(field.type);
+                if (!isCompoundIntegerScalar(lvalueType) ||
+                    !isCompoundIntegerScalar(rhsValue.type))
+                    throw new Exception(text(
+                        "Unsupported compound assignment in bytecode core: ",
+                        expressionChars(addAssign),
+                    ));
+
+                if (isEightByteInteger(lvalueType) !=
+                    isEightByteInteger(rhsValue.type))
+                    throw new Exception(text(
+                        "Unsupported compound assignment in bytecode core: ",
+                        expressionChars(addAssign),
+                    ));
+
+                const operationType = isEightByteInteger(lvalueType)
+                    ? lvalueType
+                    : ScalarType.int_;
+                const lhs = integerOperationOperand(current, operationType);
+                const rhs = integerOperationOperand(rhsValue, operationType);
+                const destination = size(lvalueType) == size(operationType)
+                    ? current.offset
+                    : allocate(operationType);
                 const addOp = lvalueType == ScalarType.long_ ||
                     lvalueType == ScalarType.ulong_
                         ? Op.addInt8
                         : Op.addInt4;
                 _code ~= Instruction(
-                    addOp, current.offset, current.offset, rhsValue.offset,
+                    addOp, destination, lhs.offset, rhs.offset,
                 );
-                storeStructPointerField(*field, current.offset);
+                storeStructPointerField(*field, destination);
+                if (destination != current.offset)
+                    _code ~= Instruction(
+                        Op.copy,
+                        current.offset,
+                        destination,
+                        cast(ushort) size(lvalueType),
+                    );
                 return Operand(current.offset, lvalueType);
             }
 
         // `base.field += rhs` on an inline struct field (e.g. a `with (subject)`
         // body's `(*__withSym).field`): add into the field's own frame slot.
-        if (auto dot = addAssign.e1.isDotVarExp)
+        if (auto dot = compoundAssignDotVar(addAssign.e1))
             if (auto field = tryStructField(dot)) {
                 const lvalueType = scalarType(field.type);
                 const rhsValue = compileExpression(addAssign.e2);
+                if (!isCompoundIntegerScalar(lvalueType) ||
+                    !isCompoundIntegerScalar(rhsValue.type))
+                    throw new Exception(text(
+                        "Unsupported compound assignment in bytecode core: ",
+                        expressionChars(addAssign),
+                    ));
+
+                if (isEightByteInteger(lvalueType) !=
+                    isEightByteInteger(rhsValue.type))
+                    throw new Exception(text(
+                        "Unsupported compound assignment in bytecode core: ",
+                        expressionChars(addAssign),
+                    ));
+
+                const operationType = isEightByteInteger(lvalueType)
+                    ? lvalueType
+                    : ScalarType.int_;
+                const lhs = integerOperationOperand(
+                    Operand(field.offset, lvalueType),
+                    operationType,
+                );
+                const rhs = integerOperationOperand(rhsValue, operationType);
+                const destination = size(lvalueType) == size(operationType)
+                    ? field.offset
+                    : allocate(operationType);
                 const addOp = lvalueType == ScalarType.long_ ||
                     lvalueType == ScalarType.ulong_
                         ? Op.addInt8
                         : Op.addInt4;
                 _code ~= Instruction(
-                    addOp, field.offset, field.offset, rhsValue.offset,
+                    addOp, destination, lhs.offset, rhs.offset,
                 );
+                if (destination != field.offset)
+                    _code ~= Instruction(
+                        Op.copy,
+                        field.offset,
+                        destination,
+                        cast(ushort) size(lvalueType),
+                    );
                 return Operand(field.offset, lvalueType);
             }
 
@@ -5466,6 +5842,13 @@ private struct Compiler {
         return variable is null ? null : variable.var.isVarDeclaration;
     }
 
+    private DotVarExp compoundAssignDotVar(Expression lvalue) {
+        if (auto cast_ = lvalue.isCastExp)
+            return compoundAssignDotVar(cast_.e1);
+
+        return lvalue.isDotVarExp;
+    }
+
     private Operand integerOperationOperand(
         in Operand operand,
         in ScalarType operationType,
@@ -5507,17 +5890,17 @@ private struct Compiler {
             if (auto store = tryPointerDereferenceAssign(deref, assign.e2))
                 return *store;
 
-        // `arr[i] = rhs` for a dynamic-array element: write the scalar rhs into
-        // the heap element at `index`.
-        if (auto index = assign.e1.isIndexExp)
-            if (auto store = tryDynamicArrayElementAssign(index, assign.e2))
-                return *store;
-
         // `arr[i] = rhs` for a static-array element: write the scalar rhs into
         // the element's inline frame offset.
         if (auto index = assign.e1.isIndexExp)
             if (auto element = tryStaticArrayElement(index))
                 return compileStaticArrayElementAssign(*element, assign.e2);
+
+        // `arr[i] = rhs` for a dynamic-array element: write the scalar rhs into
+        // the heap element at `index`.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryDynamicArrayElementAssign(index, assign.e2))
+                return *store;
 
         // `matrix[] = [...]` broadcasts a one-dimensional row literal to each
         // row of a multidimensional static array in place.
@@ -5572,6 +5955,19 @@ private struct Compiler {
         if (slot is null && _hasNestedContext && declaration !is null)
             if (auto captured = declaration in _capturedOffsets)
                 return compileCapturedAssign(declaration, *captured, assign);
+        if (slot !is null)
+            if (auto element = declaration in _refLocalPointers)
+                return storeThroughPointer(
+                    Operand(
+                        *slot,
+                        ScalarType.ulong_,
+                        false,
+                        true,
+                        *element,
+                    ),
+                    compileSizeConstant(0),
+                    assign.e2,
+                );
         const type = slot is null
             ? ScalarType.void_
             : scalarType(declaration.type);
@@ -5705,7 +6101,8 @@ private struct Compiler {
 
         const descriptor = dynamicArrayDescriptor(append.e1);
         const value = compileExpression(append.e2);
-        const elementSize = size(descriptor.elementType);
+        const elementSize =
+            dynamicArrayElementSize(append.e1.type, descriptor.elementType);
         _code ~= Instruction(
             appendElementOp(elementSize),
             descriptor.offset,
@@ -5877,7 +6274,8 @@ private struct Compiler {
 
         const value = compileExpression(rhs);
         const indexSlot = compileExpression(index.e2);
-        const elementSize = size(descriptor.elementType);
+        const elementSize =
+            dynamicArrayElementSize(index.e1.type, descriptor.elementType);
         _code ~= Instruction(
             indexStoreOp(elementSize),
             value.offset,
@@ -6241,6 +6639,17 @@ private struct Compiler {
         return null;
     }
 
+    private ushort* staticArrayViewOffset(Expression expression) {
+        if (auto cast_ = expression.isCastExp)
+            return staticArrayViewOffset(cast_.e1);
+
+        if (auto slice = expression.isSliceExp)
+            if (slice.lwr is null && slice.upr is null)
+                return staticArrayOffsetOf(slice.e1);
+
+        return staticArrayOffsetOf(expression);
+    }
+
     private Operand compileEqualExpression(Expression expression) {
         import dmd.astenums: TY;
         import dmd.tokens: EXP;
@@ -6256,6 +6665,38 @@ private struct Compiler {
             const right = assocArrayHandleOffset(equal.e2);
             const offset = allocate(ScalarType.bool_);
             _code ~= Instruction(Op.aaEqual, offset, left, right);
+            if (equal.op == EXP.notEqual)
+                _code ~= Instruction(Op.notBool, offset, offset);
+            return Operand(offset, ScalarType.bool_);
+        }
+
+        if (equal.e1.type.toBasetype.ty == TY.Tstruct &&
+            equal.e2.type.toBasetype.ty == TY.Tstruct)
+            return compileStructIdentity(
+                equal.e1.type,
+                structOperandOffset(equal.e1),
+                structOperandOffset(equal.e2),
+                equal.op == EXP.notEqual,
+            );
+
+        if (equal.e1.type.toBasetype.ty == TY.Tarray &&
+            equal.e2.type.toBasetype.ty == TY.Tarray &&
+            !isStringType(equal.e1.type) &&
+            !isStringType(equal.e2.type)) {
+            const elementType = dynamicArrayElementType(equal.e1.type);
+            const left =
+                arrayDescriptorOffset(elementType, equal.e1);
+            const right =
+                arrayDescriptorOffset(elementType, equal.e2);
+            const offset = allocate(ScalarType.bool_);
+            _code ~= Instruction(
+                sliceEqualOp(
+                    dynamicArrayElementSize(equal.e1.type, elementType),
+                ),
+                offset,
+                left,
+                right,
+            );
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
             return Operand(offset, ScalarType.bool_);
@@ -6355,6 +6796,36 @@ private struct Compiler {
                 unsupportedMessage,
                 expressionChars(expression),
             ));
+
+        const offset = allocate(resultType);
+        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        return Operand(offset, resultType);
+    }
+
+    private Operand compileInt4BinaryResult(
+        BinExp expression,
+        Operand lhs,
+        Operand rhs,
+        in Op op,
+        in ScalarType resultType,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
+        if (!isCompoundIntegerScalar(lhs.type) ||
+            !isCompoundIntegerScalar(rhs.type) ||
+            size(lhs.type) > int.sizeof ||
+            size(rhs.type) > int.sizeof ||
+            size(resultType) != int.sizeof)
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(expression),
+            ));
+
+        if (size(lhs.type) < int.sizeof)
+            lhs = extend(lhs, ScalarType.int_);
+        if (size(rhs.type) < int.sizeof)
+            rhs = extend(rhs, ScalarType.int_);
 
         const offset = allocate(resultType);
         _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
@@ -6482,13 +6953,31 @@ private struct Compiler {
             );
         }
 
+        size_t nextArgumentIndex;
+        if (!layout.hasThis && !layout.hasClassThis &&
+            layout.offsets.length > 0)
+            if (auto dot = call.e1.isDotVarExp)
+                if (dot.e1.type.toBasetype.ty == TY.Tsarray &&
+                    (call.arguments is null
+                        ? 1
+                        : call.arguments.length + 1) == layout.offsets.length)
+                {
+                    emitCallArgument(
+                        cast(ushort) (argumentArea + layout.offsets[0]),
+                        layout.isReference[0],
+                        dot.e1,
+                    );
+                    nextArgumentIndex = 1;
+                }
+
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
-                    (argumentArea + layout.offsets[argumentIndex]);
+                    (argumentArea +
+                        layout.offsets[nextArgumentIndex + argumentIndex]);
                 emitCallArgument(
                     slot,
-                    layout.isReference[argumentIndex],
+                    layout.isReference[nextArgumentIndex + argumentIndex],
                     (*call.arguments)[argumentIndex],
                 );
             }
@@ -6802,6 +7291,19 @@ private struct Compiler {
                 Op.copy,
                 slot,
                 source,
+                cast(ushort) staticArraySize(argument.type),
+            );
+            return;
+        }
+
+        if (argument.type !is null &&
+            argument.type.toBasetype.ty == TY.Tsarray) {
+            auto source = staticArrayOffsetOf(argument);
+            assert(source !is null);
+            _code ~= Instruction(
+                Op.copy,
+                slot,
+                *source,
                 cast(ushort) staticArraySize(argument.type),
             );
             return;
@@ -7537,6 +8039,11 @@ private struct Compiler {
                 return true;
 
         if (op == "==" || op == "!=")
+            if (tryStaticArrayComparisonAssert(
+                    op, (*call.arguments)[1], (*call.arguments)[2]))
+                return true;
+
+        if (op == "==" || op == "!=")
             if (tryStringComparisonAssert(
                     op, (*call.arguments)[1], (*call.arguments)[2]))
                 return true;
@@ -7705,9 +8212,23 @@ private struct Compiler {
     ) {
         import dmd.tokens: EXP;
 
-        const left = structOperandOffset(identity.e1);
-        const right = structOperandOffset(identity.e2);
-        const declaration = structDeclarationOf(identity.e1.type);
+        return compileStructIdentity(
+            identity.e1.type,
+            structOperandOffset(identity.e1),
+            structOperandOffset(identity.e2),
+            identity.op == EXP.notIdentity,
+        );
+    }
+
+    private Operand compileStructIdentity(
+        Type structType,
+        in ushort left,
+        in ushort right,
+        in bool invert,
+    ) {
+        import dmd.astenums: TY;
+
+        const declaration = structDeclarationOf(structType);
 
         const result = allocate(ScalarType.bool_);
         // Assume equal, then short-circuit to false on the first unequal field.
@@ -7716,8 +8237,24 @@ private struct Compiler {
         size_t[] falseJumps;
         foreach (field; declaration.fields) {
             const fieldEqual = allocate(ScalarType.bool_);
+            auto fieldType = cast(Type) field.type;
+            if (fieldType.toBasetype.ty == TY.Tarray) {
+                const elementType = dynamicArrayElementType(fieldType);
+                _code ~= Instruction(
+                    sliceEqualOp(
+                        dynamicArrayElementSize(fieldType, elementType),
+                    ),
+                    fieldEqual,
+                    cast(ushort) (left + field.offset),
+                    cast(ushort) (right + field.offset),
+                );
+                falseJumps ~=
+                    emitJumpIfFalse(Operand(fieldEqual, ScalarType.bool_));
+                continue;
+            }
+
             _code ~= Instruction(
-                equalOp(size(scalarType(cast(Type) field.type))),
+                equalOp(size(scalarType(fieldType))),
                 fieldEqual,
                 cast(ushort) (left + field.offset),
                 cast(ushort) (right + field.offset),
@@ -7731,7 +8268,7 @@ private struct Compiler {
         _code ~= Instruction(Op.loadConstant, result, constantIndex(0), 1);
         patchJump(endJump);
 
-        if (identity.op == EXP.notIdentity)
+        if (invert)
             _code ~= Instruction(Op.notBool, result, result);
         return Operand(result, ScalarType.bool_);
     }
@@ -7780,34 +8317,25 @@ private struct Compiler {
         return false;
     }
 
-    // `assert(a[] == b[])` / `assert(a[] != b[])` over dynamic-array operands:
+    // `assert(a == b)` / `assert(a[] != b[])` over dynamic-array operands:
     // build a slice descriptor for each operand, compare them element-wise, and
     // assert the result; on failure each operand renders as `[e0, e1, ...]`.
-    // Null if either operand is not a dynamic-array slice.
+    // Null if either operand is not a dynamic-array value.
     private bool tryArrayComparisonAssert(
         in string op,
         Expression lhs,
         Expression rhs,
     ) {
-        auto lhsSlice = lhs.isSliceExp;
-        auto rhsSlice = rhs.isSliceExp;
-        if (lhsSlice is null || rhsSlice is null)
+        if (!isDynamicArrayArgument(lhs) || !isDynamicArrayArgument(rhs))
             return false;
 
-        auto lhsDescriptor = dynamicArrayDescriptorOrNull(lhsSlice.e1);
-        auto rhsDescriptor = dynamicArrayDescriptorOrNull(rhsSlice.e1);
-        if (lhsDescriptor is null || rhsDescriptor is null)
-            return false;
-
-        const elementType = lhsDescriptor.elementType;
-        const lhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileSliceInto(lhsOffset, elementType, lhsSlice);
-        const rhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileSliceInto(rhsOffset, elementType, rhsSlice);
+        const elementType = dynamicArrayElementType(lhs.type);
+        const lhsOffset = arrayDescriptorOffset(elementType, lhs);
+        const rhsOffset = arrayDescriptorOffset(elementType, rhs);
 
         const equal = allocateBytes(1, 1);
         _code ~= Instruction(
-            sliceEqualOp(size(elementType)),
+            sliceEqualOp(dynamicArrayElementSize(lhs.type, elementType)),
             equal,
             lhsOffset,
             rhsOffset,
@@ -7823,6 +8351,49 @@ private struct Compiler {
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
             AssertDiagnostic(op, lhsOffset, rhsOffset, elementType, true);
+        _code ~= Instruction(
+            Op.assertTrue,
+            condition,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    private bool tryStaticArrayComparisonAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+
+        if (lhs.type.toBasetype.ty != TY.Tsarray ||
+            rhs.type.toBasetype.ty != TY.Tsarray)
+            return false;
+
+        auto elementType = lhs.type.toBasetype.nextOf;
+        const elementScalar = scalarType(elementType);
+        const lhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileStaticArrayAsDynamicInto(lhsOffset, elementScalar, lhs);
+        const rhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileStaticArrayAsDynamicInto(rhsOffset, elementScalar, rhs);
+
+        const equal = allocateBytes(1, 1);
+        _code ~= Instruction(
+            sliceEqualOp(cast(uint) staticArraySize(elementType)),
+            equal,
+            lhsOffset,
+            rhsOffset,
+        );
+
+        ushort condition = equal;
+        if (op == "!=") {
+            condition = allocateBytes(1, 1);
+            _code ~= Instruction(Op.notBool, condition, equal);
+        }
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~=
+            AssertDiagnostic(op, lhsOffset, rhsOffset, elementScalar, true);
         _code ~= Instruction(
             Op.assertTrue,
             condition,
@@ -7977,13 +8548,16 @@ private struct Compiler {
             auto thisType = structDeclaration.type;
             const structAlign = staticArrayAlign(thisType);
             const structBytes = cast(uint) staticArraySize(thisType);
+            const argumentBytes = structBytes < uint.sizeof
+                ? cast(uint) uint.sizeof
+                : structBytes;
             layout.blockSize =
                 (layout.blockSize + structAlign - 1) & ~(structAlign - 1);
             layout.hasThis = true;
             layout.thisOffset = cast(ushort) layout.blockSize;
             layout.refParameters ~=
                 RefParameter(cast(ushort) layout.blockSize, structBytes);
-            layout.blockSize += structBytes;
+            layout.blockSize += argumentBytes;
         }
 
         if (thisClassDeclaration(function_) !is null) {
@@ -8053,6 +8627,20 @@ private struct Compiler {
                 layout.offsets ~= cast(ushort) layout.blockSize;
                 layout.isReference ~= false;
                 layout.blockSize += structBytes;
+                continue;
+            }
+
+            // A by-value static-array parameter is an inline block in the
+            // argument area, tracked like a static-array local so indexing and
+            // block-copy paths resolve against its base offset.
+            if (parameter.type.toBasetype.ty == TY.Tsarray) {
+                const arrayAlign = staticArrayAlign(parameter.type);
+                const arrayBytes = cast(uint) staticArraySize(parameter.type);
+                layout.blockSize =
+                    (layout.blockSize + arrayAlign - 1) & ~(arrayAlign - 1);
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= false;
+                layout.blockSize += arrayBytes;
                 continue;
             }
 
@@ -8136,7 +8724,27 @@ private struct Compiler {
             return scalarType(element.toBasetype.nextOf);
         if (element.toBasetype.ty == TY.Tpointer)
             return ScalarType.ulong_;
+        if (element.toBasetype.ty == TY.Tstruct ||
+            element.toBasetype.ty == TY.Tsarray)
+            return ScalarType.void_;
         return scalarType(element);
+    }
+
+    private uint dynamicArrayElementSize(
+        Type type,
+        in ScalarType elementType,
+        in bool elementIsArray = false,
+    ) {
+        import dmd.astenums: TY;
+
+        if (elementIsArray)
+            return sliceDescriptorSize;
+
+        auto element = type.toBasetype.nextOf;
+        if (element.toBasetype.ty == TY.Tstruct ||
+            element.toBasetype.ty == TY.Tsarray)
+            return cast(uint) staticArraySize(element);
+        return size(elementType);
     }
 
     // True when a dynamic array's element is itself a dynamic array (`int[][]`):
@@ -8262,6 +8870,8 @@ private struct DynamicArrayLocal {
     bool elementIsArray;
     bool writeBackThroughPointer;
     ushort pointerOffset;
+    bool isStaticArrayView;
+    ushort staticArrayOffset;
 }
 
 // A delegate local (`auto d = () => this.field;`): a 16-byte slot holding a
@@ -8351,6 +8961,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(
         case 2: return Op.indexLoad2;
         case 4: return Op.indexLoad4;
         case 8: return Op.indexLoad8;
+        case 16: return Op.indexLoad16;
         default: assert(0, "Unsupported index load element size.");
     }
 }
@@ -8404,6 +9015,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op indexStoreOp(
         case 2: return Op.indexStore2;
         case 4: return Op.indexStore4;
         case 8: return Op.indexStore8;
+        case 16: return Op.indexStore16;
         default: assert(0, "Unsupported index store element size.");
     }
 }
@@ -9167,7 +9779,10 @@ private bool isCompoundIntegerScalar(
         type == ScalarType.int_ ||
         type == ScalarType.uint_ ||
         type == ScalarType.long_ ||
-        type == ScalarType.ulong_;
+        type == ScalarType.ulong_ ||
+        type == ScalarType.char_ ||
+        type == ScalarType.wchar_ ||
+        type == ScalarType.dchar_;
 }
 
 private bool isCharacterScalar(
