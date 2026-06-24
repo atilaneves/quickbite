@@ -33,8 +33,14 @@ printf '%s\n' 'Building benchmark binary if needed...' >&2
 # changes, so generation only needs to run when the directory is fresh.
 build_dir=bin/bench-build
 if [[ ! -f "$build_dir/build.ninja" ]]; then
-    dub run reggae --compiler=ldc -- -b ninja -C "$build_dir" \
-        --dub-build-type=release-nobounds --dc=ldc2
+    # Pass absolute paths for both the project root (positional arg) and the
+    # output directory (-C). reggae bakes these args verbatim into build.ninja's
+    # rerun-check rule, which ninja re-invokes from inside $build_dir whenever a
+    # reggae input changes. With relative paths that rerun resolves them against
+    # the wrong cwd - the project root becomes $build_dir (so reggaefile.d isn't
+    # found) and -C doubles to $build_dir/$build_dir - and the build fails.
+    dub run reggae --compiler=ldc -- -b ninja -C "$PWD/$build_dir" \
+        --dub-build-type=release-nobounds --dc=ldc2 "$PWD"
 fi
 ninja -C "$build_dir" bench
 # SystemLinker finds bench-exec next to the running binary (thisExePath.dirName),
