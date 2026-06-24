@@ -22,67 +22,79 @@ public immutable string[] defaultBackendNames = [
     "llvmjit",
 ];
 
-public void run(string[] args) {
-    import std.file: readText;
+public struct BenchOptions {
+    public size_t warmup = defaultWarmup;
+    public size_t runs   = defaultRuns;
+    public bool skipCheck;
+    public string[] importPaths;
+    public string[] backendNames;
+    // Repeatable: each --dub names one dub package to benchmark. A scalar would
+    // make getopt keep only the last, silently dropping every earlier package.
+    public string[] dubPkgs;
+    public string[] fixtures;
+    public bool helpWanted;
+}
+
+public BenchOptions parseOptions(string[] args) {
     import std.getopt: defaultGetoptPrinter, getopt;
-    import std.stdio: stderr, write, writefln, writeln;
 
-    size_t warmup     = defaultWarmup;
-    size_t runs       = defaultRuns;
-    bool   skipCheck  = false;
-    string[] importPaths;
-    string[] backendNames;
-    string dubPkg;
-
+    BenchOptions opts;
     auto info = getopt(
         args,
-        "w|warmup",     "untimed iterations before sampling",          &warmup,
-        "r|runs",       "timed iterations per measurement",            &runs,
-        "skip-check",   "skip correctness checks before timing",       &skipCheck,
-        "import-path",  "add an import search path (repeatable)",      &importPaths,
-        "b|backend",    "backend to measure (repeatable)",             &backendNames,
-        "dub",          "benchmark a dub package's tests by name",     &dubPkg,
+        "w|warmup",     "untimed iterations before sampling",          &opts.warmup,
+        "r|runs",       "timed iterations per measurement",            &opts.runs,
+        "skip-check",   "skip correctness checks before timing",       &opts.skipCheck,
+        "import-path",  "add an import search path (repeatable)",      &opts.importPaths,
+        "b|backend",    "backend to measure (repeatable)",             &opts.backendNames,
+        "dub",          "benchmark a dub package's tests by name (repeatable)",
+                                                                       &opts.dubPkgs,
     );
-    if (info.helpWanted) {
+    opts.helpWanted = info.helpWanted;
+    if (info.helpWanted)
         defaultGetoptPrinter(
             "usage: bench [-w N] [-r N] [--skip-check]"
-            ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME]"
+            ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME ...]"
             ~ " [<module.d> ...]",
             info.options,
         );
-        return;
-    }
+    // getopt consumed the recognised options in place; the remaining positional
+    // arguments (after the program name) are standalone fixtures.
+    opts.fixtures = args[1 .. $].dup;
+    return opts;
+}
 
-    // A --dub run is dedicated to a dub package, compiled like `dub test` (a
+// A set of benchmark units that share one backend environment: standalone
+// fixtures under the default environment, or a single dub package under its own
+// import paths, dependency image, and package root. Each group owns the runner
+// set built from that environment because the native backends are
+// environment-specific.
+private struct BenchmarkGroup {
+    Runner[string] runners;
+    BenchmarkUnit[] units;
+}
+
+public void run(string[] args) {
+    import quickbite.backends.native: DubPackage;
+    import std.stdio: stderr, write, writefln, writeln;
+
+    const opts = parseOptions(args);
+    if (opts.helpWanted)
+        return;
+
+    const warmup    = opts.warmup;
+    const runs      = opts.runs;
+    const skipCheck = opts.skipCheck;
+
+    // A --dub run is dedicated to dub packages, compiled like `dub test` (a
     // whole root set, no lightning rod). A standalone-fixture run is the
     // single-snippet world. The frontend must know before its first parse.
     {
         import quickbite.frontend.compiler: DubMode, initialize;
-        initialize(dubPkg.length > 0 ? DubMode.yes : DubMode.no);
+        initialize(opts.dubPkgs.length > 0 ? DubMode.yes : DubMode.no);
     }
 
-    string[] fixtures    = args[1 .. $].dup;
-    string[] dubFixtures;
-    DubInfo dubInfo;
-    BackendEnv env;
-
-    if (dubPkg.length > 0) {
-        dubInfo = resolveDubPkg(dubPkg);
-        importPaths ~= dubInfo.importPaths;
-        dubFixtures  = dubInfo.fixtures;
-        // The raw dub import paths, not the merged importPaths (which also
-        // carries CLI --import-path args): the backend derives the archive
-        // import paths from these and the package root.
-        env = BackendEnv(
-            dubInfo.importPaths,
-            dubInfo.linkFiles,
-            dubInfo.packageRoot,
-            dubInfo.frontendFlags,
-            imported!"quickbite.backends.native".DubPackage.yes,
-        );
-    }
-
-    if (fixtures.length == 0 && dubFixtures.length == 0)
+    string[] fixtures = opts.fixtures.dup;
+    if (fixtures.length == 0 && opts.dubPkgs.length == 0)
         fixtures = ["tests/example.d"];
 
     if (!isOptimisedBuild) {
@@ -94,24 +106,31 @@ public void run(string[] args) {
 
     printRunHeader(warmup, runs);
 
-    auto runners = makeRunners(env);
+    // Every environment produces the same backend names, so the default runner
+    // set both validates the selection and serves the standalone fixtures.
+    auto defaultRunners = makeRunners(BackendEnv());
 
-    const usingDefaultBackends = backendNames.length == 0;
-    if (usingDefaultBackends)
-        backendNames = defaultBackendNames.dup;
+    const usingDefaultBackends = opts.backendNames.length == 0;
+    string[] backendNames = usingDefaultBackends
+        ? defaultBackendNames.dup
+        : opts.backendNames.dup;
 
     backendNames = withoutUnavailableBackends(backendNames, usingDefaultBackends);
 
     foreach (name; backendNames)
-        if (name !in runners)
+        if (name !in defaultRunners)
             throw new Exception("unknown backend: " ~ name);
 
-    auto prepared = prepareFixtureRuns(fixtures, importPaths, warmup, runs);
-
+    // Each dub package carries its own native-backend environment (import paths,
+    // dependency image, package root), so it needs its own runner set; standalone
+    // fixtures share the default one. Group units with the runners that serve them.
     PreparationRecord[] preparation;
-    BenchmarkUnit[] units;
+    BenchmarkGroup[] groups;
+
+    auto prepared = prepareFixtureRuns(fixtures, opts.importPaths, warmup, runs);
+    BenchmarkUnit[] fixtureUnits;
     foreach (run; prepared.runs) {
-        units ~= BenchmarkUnit(
+        fixtureUnits ~= BenchmarkUnit(
             run.displayName,
             [run],
             false,
@@ -121,26 +140,47 @@ public void run(string[] args) {
         preparation ~= PreparationRecord(run.displayName, 1, 1, "");
     }
     preparation ~= prepared.failures;
-    if (dubFixtures.length > 0) {
+    if (fixtureUnits.length > 0)
+        groups ~= BenchmarkGroup(defaultRunners, fixtureUnits);
+
+    foreach (dubPkg; opts.dubPkgs) {
+        auto dubInfo = resolveDubPkg(dubPkg);
+        // The raw dub import paths, not the merged ones (which also carry CLI
+        // --import-path args): the backend derives the archive import paths from
+        // these and the package root.
+        auto env = BackendEnv(
+            dubInfo.importPaths,
+            dubInfo.linkFiles,
+            dubInfo.packageRoot,
+            dubInfo.frontendFlags,
+            DubPackage.yes,
+        );
+        const pkgImportPaths = opts.importPaths ~ dubInfo.importPaths;
         try {
             auto unit = prepareDubUnit(
                 dubPkg,
-                dubFixtures,
-                importPaths,
+                dubInfo.fixtures,
+                pkgImportPaths,
                 dubInfo.frontendFlags,
             );
             preparation ~= PreparationRecord(
-                dubPkg, dubFixtures.length, unit.members.length, "",
+                dubPkg, dubInfo.fixtures.length, unit.members.length, "",
             );
-            units ~= unit;
+            groups ~= BenchmarkGroup(makeRunners(env), [unit]);
         } catch (Exception e)
             preparation ~= PreparationRecord(
-                dubPkg, dubFixtures.length, 0, e.msg.firstLine,
+                dubPkg, dubInfo.fixtures.length, 0, e.msg.firstLine,
             );
     }
 
     if (preparation.length > 0)
         write(renderPreparationSection(preparation));
+
+    // Flattened view for the per-unit sections (frontend rows, skip reporting);
+    // the check and timing loops below use each group's own runners.
+    BenchmarkUnit[] units;
+    foreach (group; groups)
+        units ~= group.units;
 
     TestResult[][string] checkedResults;
     if (skipCheck) {
@@ -148,7 +188,12 @@ public void run(string[] args) {
             foreach (unit; units)
                 checkedResults[pairKey(unit.displayName, name)] = [];
     } else {
-        checkedResults = checkRunnerResults(runners, backendNames, units);
+        foreach (group; groups) {
+            auto groupResults =
+                checkRunnerResults(group.runners, backendNames, group.units);
+            foreach (key, value; groupResults)
+                checkedResults[key] = value;
+        }
         foreach (unit; units)
             foreach (name; backendNames) {
                 const key = pairKey(unit.displayName, name);
@@ -185,48 +230,49 @@ public void run(string[] args) {
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
-    foreach (name; backendNames) {
-        auto runner = runners[name];
+    foreach (name; backendNames)
+        foreach (group; groups) {
+            auto runner = group.runners[name];
 
-        foreach (unit; units) {
-            const allPassing = skipCheck
-                || checkedTestsPassing(checkedResults, unit, name);
-            if (!allPassing) {
-                // A standalone fixture's own skip reason was already printed by
-                // checkRunnerResults; a group needs its own line because it is
-                // reported under one name its failing member does not carry.
-                if (unit.grouped)
-                    stderr.writefln(
-                        "skipping %s %s: failing fixtures", unit.displayName, name,
+            foreach (unit; group.units) {
+                const allPassing = skipCheck
+                    || checkedTestsPassing(checkedResults, unit, name);
+                if (!allPassing) {
+                    // A standalone fixture's own skip reason was already printed
+                    // by checkRunnerResults; a group needs its own line because
+                    // it is reported under one name its failing member lacks.
+                    if (unit.grouped)
+                        stderr.writefln(
+                            "skipping %s %s: failing fixtures", unit.displayName, name,
+                        );
+                    continue;
+                }
+
+                Module[] modules;
+                foreach (member; unit.members)
+                    modules ~= member.module_;
+
+                try {
+                    printRow(
+                        unit.displayName,
+                        name,
+                        checkedTestsDisplay(checkedResults, unit, name),
+                        measure(
+                            () { runTests(runner, modules); },
+                            warmup,
+                            runs,
+                        ),
                     );
-                continue;
+                } catch (Exception e) {
+                    stderr.writefln(
+                        "skipping %s %s: %s",
+                        unit.displayName, name,
+                        unit.grouped ? e.msg : e.msg.firstLine,
+                    );
+                }
+                writeln;
             }
-
-            Module[] modules;
-            foreach (member; unit.members)
-                modules ~= member.module_;
-
-            try {
-                printRow(
-                    unit.displayName,
-                    name,
-                    checkedTestsDisplay(checkedResults, unit, name),
-                    measure(
-                        () { runTests(runner, modules); },
-                        warmup,
-                        runs,
-                    ),
-                );
-            } catch (Exception e) {
-                stderr.writefln(
-                    "skipping %s %s: %s",
-                    unit.displayName, name,
-                    unit.grouped ? e.msg : e.msg.firstLine,
-                );
-            }
-            writeln;
         }
-    }
 }
 
 string firstLine(in string message) {
