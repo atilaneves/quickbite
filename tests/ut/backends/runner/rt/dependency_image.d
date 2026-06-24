@@ -1374,3 +1374,71 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A dependency-image struct constructed through its native extern(D)
+// `this(int)` constructor (ffi.md §34.13). The ctor computes the field rather
+// than plain field-init, so a passing read proves the native constructor body
+// ran across the boundary rather than an aggregate struct-literal fallback.
+@("dependencyImage.externDStructConstructor.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_ctor_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_ctor_fixture;
+
+            struct Tracked {
+                int value;
+
+                this(int seed) {
+                    value = seed + 17;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctor_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ctor_fixture;
+
+            struct Tracked {
+                int value;
+                this(int seed);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ctor_fixture;
+
+                unittest {
+                    int seed = 25;
+                    Tracked tracked = Tracked(seed);
+                    assert(tracked.value == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

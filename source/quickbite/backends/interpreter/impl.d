@@ -1672,13 +1672,35 @@ private struct Walker {
                 auto function_ = resolveMemberFunction(call.f, receiver);
                 if (hasNoAvailableSource(function_)) {
                     import quickbite.backends.interpreter.ffi_marshal:
-                        NativeCallException, tryCallNativeMember,
-                        tryCallNativeClassMember;
+                        NativeCallException, tryCallNativeConstructor,
+                        tryCallNativeMember, tryCallNativeClassMember;
 
                     Value result;
                     Value[] writebacks;
                     Value receiverWriteback;
                     try {
+                        // A body-less constructor builds a native struct: the
+                        // receiver `tracked` is not yet a struct (it is the
+                        // variable being constructed), so seed `this` from the
+                        // struct's default `.init` and reify the constructed
+                        // struct from the receiver buffer (ffi.md §34.13).
+                        if (auto structType = receiverStructType(dot.e1))
+                            if (function_.isCtorDeclaration !is null) {
+                                if (tryCallNativeConstructor(
+                                    function_,
+                                    structType,
+                                    nativeConstructorReceiver(function_, receiver),
+                                    arguments,
+                                    nativeArgumentTypes(argumentExpressions),
+                                    nativeAddressOfLocalArguments(argumentExpressions),
+                                    result,
+                                    writebacks,
+                                )) {
+                                    applyNativeWritebacks(writebacks, argumentExpressions);
+                                    return result;
+                                }
+                            }
+
                         // A native class receiver dispatches virtually through
                         // the object's vtable and is mutated in place, so it has
                         // no receiver writeback (ffi.md §34.12). A struct
@@ -4779,6 +4801,22 @@ private imported!"dmd.mtype".TypeClass receiverClassType(
         return null;
 
     return receiver.type.toBasetype.isTypeClass;
+}
+
+
+// The `this` a native constructor initialises: the struct's default `.init`.
+// The variable being constructed has no usable value yet, so the evaluated
+// receiver is not a struct (mirrors runMemberFunction's ctor seeding).
+private imported!"quickbite.lang".Value nativeConstructorReceiver(
+    imported!"dmd.func".FuncDeclaration function_,
+    in imported!"quickbite.lang".Value receiver,
+) {
+    import quickbite.frontend.dmd.values: defaultValue;
+
+    auto structDecl = function_.parent is null
+        ? null
+        : function_.parent.isStructDeclaration;
+    return structDecl !is null ? defaultValue(structDecl.type) : receiver;
 }
 
 
