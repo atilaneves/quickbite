@@ -560,6 +560,13 @@ DubInfo resolveDubPkg(in string name) {
     dubBuild(name, pkgDir);
     auto dependencyArchives = dubDescribe(pkgDir, "linker-files");
 
+    // dub's own external link inputs for the package: `libs` are system C
+    // libraries (e.g. vibe-d's ssl/crypto) the dependency archives reference but
+    // do not define; `lflags` are raw linker flags. Forwarded to the image link
+    // so it resolves instead of loading with undefined symbols like RAND_poll.
+    const systemLibs = dubDescribe(pkgDir, "libs");
+    const linkerFlags = dubDescribe(pkgDir, "lflags");
+
     return dubInfoFromDescribeData(
         name,
         pkgDir,
@@ -571,6 +578,8 @@ DubInfo resolveDubPkg(in string name) {
                 packageName,
                 dependencyArchives,
                 outDir,
+                systemLibs,
+                linkerFlags,
             );
         },
         FrontendFlags(dubCompilerArguments(pkgDir)),

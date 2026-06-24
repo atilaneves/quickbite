@@ -266,3 +266,20 @@
   is codegen-deterministic (does not scatter under `--random`). Deduping the
   `LLVMOrcAbsoluteSymbols` map does not help (the duplicate is in the object's
   symtab); a real fix needs object symtab surgery or a dmd codegen change.
+
+- The `--dub` dependency image must be linked with dub's own `libs`/`lflags`,
+  not just its dependency archives. Archives reference but do not define the
+  system C libraries the package needs (vibe-d → `ssl`/`crypto`), so an image
+  built with only `-lphobos2` builds fine (shared objects allow undefined
+  symbols) yet fails at `dlopen` (`RTLD_NOW`) with e.g. `undefined symbol:
+  RAND_poll`. Forward `dub describe --data=libs` (as `-l<name>`) and `--data=
+  lflags` to the image link. General rule: the `--dub` path relays dub's build
+  info verbatim; missing link inputs is the same class of bug as missing flags.
+
+- `makeRunners` constructs every backend eagerly, so an LDC bench run builds the
+  llvmjit backend even though it is unavailable under LDC and never timed.
+  Its ctor `dlopen`s the DMD-compiled dependency image into the LDC host; for a
+  package with real shared static ctors (vibe-core) those ctors run DMD-codegen'd
+  code against the host's LDC druntime and segfault (extern(D) ABI, ai/spikes/
+  ldc-eh/FINDINGS.md) — an uncatchable crash that the surrounding `try/catch`
+  cannot turn into a graceful skip. Don't construct a backend you cannot run.
