@@ -1461,6 +1461,20 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration)
+                if (auto base = declaration in _withDerefBases) {
+                    const pointer =
+                        allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                    _code ~= Instruction(Op.frameAddress, pointer, *base);
+                    return Operand(
+                        pointer,
+                        ScalarType.ulong_,
+                        false,
+                        true,
+                        ScalarType.void_,
+                    );
+                }
+
+            if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _locals) {
                     if (declaration in _stringLocals)
                         return Operand(*existing, ScalarType.void_, true);
@@ -3144,6 +3158,11 @@ private struct Compiler {
     // struct parameter, or the method's hidden `this` receiver), or null if
     // `expression` is not a known struct.
     private ushort* structBaseOffsetOrNull(Expression expression) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _withDerefBases)
+                    return existing;
+
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _structLocals)
@@ -6248,6 +6267,15 @@ private struct Compiler {
 
         auto lhs = compileExpression(equal.e1);
         auto rhs = compileExpression(equal.e2);
+        if (isCharacterScalar(lhs.type) && isCharacterScalar(rhs.type)) {
+            const offset = emitCharacterEquality(
+                equal.op == EXP.notEqual ? "!=" : "==",
+                lhs,
+                rhs,
+            );
+            return Operand(offset, ScalarType.bool_);
+        }
+
         const operandType = normaliseNumericOperands(
             lhs,
             rhs,
@@ -7515,6 +7543,22 @@ private struct Compiler {
 
         auto lhs = compileExpression((*call.arguments)[1]);
         auto rhs = compileExpression((*call.arguments)[2]);
+        if ((op == "==" || op == "!=") &&
+            isCharacterScalar(lhs.type) &&
+            isCharacterScalar(rhs.type))
+        {
+            const condition = emitCharacterEquality(op, lhs, rhs);
+            const diagnostic = _program.assertDiagnostics.length;
+            _program.assertDiagnostics ~=
+                AssertDiagnostic(op, lhs.offset, rhs.offset, lhs.type);
+            _code ~= Instruction(
+                Op.assertTrue,
+                condition,
+                cast(ushort) diagnostic,
+            );
+            return true;
+        }
+
         const operandType = normaliseNumericOperands(
             lhs,
             rhs,
@@ -7539,6 +7583,55 @@ private struct Compiler {
             cast(ushort) diagnostic,
         );
         return true;
+    }
+
+    private ushort emitCharacterEquality(
+        in string op,
+        ref Operand lhs,
+        ref Operand rhs,
+    ) {
+        if (lhs.type != rhs.type) {
+            lhs = characterEqualityOperand(lhs);
+            rhs = characterEqualityOperand(rhs);
+        }
+
+        return emitScalarEquality(op, lhs, rhs);
+    }
+
+    private Operand characterEqualityOperand(in Operand operand) {
+        if (operand.type == ScalarType.dchar_)
+            return operand;
+        return extend(operand, ScalarType.dchar_);
+    }
+
+    private ushort emitScalarEquality(
+        in string op,
+        in Operand lhs,
+        in Operand rhs,
+    ) {
+        import std.conv: text;
+
+        if (size(lhs.type) != size(rhs.type))
+            throw new Exception(text(
+                "Mismatched bytecode equality operands: ",
+                lhs.type,
+                " and ",
+                rhs.type,
+            ));
+
+        const equal = allocate(ScalarType.bool_);
+        _code ~= Instruction(
+            equalOp(size(lhs.type)),
+            equal,
+            lhs.offset,
+            rhs.offset,
+        );
+        if (op == "==")
+            return equal;
+
+        const notEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.notBool, notEqual, equal);
+        return notEqual;
     }
 
     private bool tryStringComparisonAssert(
@@ -8454,10 +8547,8 @@ private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
     if (sourceSize == 1 && targetSize == 4)
         return signed ? Op.signExtend1to4 : Op.zeroExtend1to4;
 
-    // `wchar` (and `ushort`) widen to `dchar`/`int` zero-extended; the only
-    // signed 2-byte source (`short`) is not exercised here.
-    if (sourceSize == 2 && targetSize == 4 && !signed)
-        return Op.zeroExtend2to4;
+    if (sourceSize == 2 && targetSize == 4)
+        return signed ? Op.signExtend2to4 : Op.zeroExtend2to4;
 
     if (sourceSize == 4 && targetSize == 8 && signed)
         return Op.signExtend4to8;
@@ -9077,6 +9168,16 @@ private bool isCompoundIntegerScalar(
         type == ScalarType.uint_ ||
         type == ScalarType.long_ ||
         type == ScalarType.ulong_;
+}
+
+private bool isCharacterScalar(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return type == ScalarType.char_ ||
+        type == ScalarType.wchar_ ||
+        type == ScalarType.dchar_;
 }
 
 // Lower a float/double literal to the raw bits loadConstant copies: the
