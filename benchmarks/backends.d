@@ -62,7 +62,17 @@ public Runner[string] makeRunners(in BackendEnv env) {
     ];
 
     Runner[string] runners;
-    foreach (name, make; registry)
+    foreach (name, make; registry) {
+        // llvmjit is unavailable under the LDC benchmark build (cli.d
+        // withoutUnavailableBackends drops it from selection), so it is never
+        // timed -- but constructing it still runs its ctor, which dlopens the
+        // DMD-compiled dependency image into the LDC host and runs that image's
+        // module ctors. For a package with non-trivial shared static ctors
+        // (e.g. vibe-core), those ctors execute DMD-codegen'd code against the
+        // host's LDC druntime -- the extern(D) ABI mismatch (ai/spikes/ldc-eh/
+        // FINDINGS.md) then segfaults the host. Don't construct what we can't run.
+        version (LDC) if (name == "llvmjit") continue;
         runners[name] = make(env);
+    }
     return runners;
 }

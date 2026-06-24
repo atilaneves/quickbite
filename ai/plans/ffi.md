@@ -2158,11 +2158,11 @@ Inc  Contract                                          Track  Status   Ref
 15  mutating struct member methods + receiver writeback B*    done     §34.8
 16  mutable slice arguments with writeback              B*    done     §34.9
 17  slices/arrays nested inside by-value structs        B*    done     §34.10
-18  class references, virtual dispatch, interfaces      AB    partial  §34.11
-19  constructors, destructors, postblits                AB    todo     §34.12
+18  class references, virtual dispatch, interfaces      AB    done     §34.12
+19  constructors, destructors, postblits                AB    done     §34.13
 20  native Error recovery and exception chaining        A     done     §34.13
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.14
-22  delegates / callbacks / closures: reverse bridge    AB    todo     §34.15
+22  delegates / callbacks / closures: reverse bridge    AB    done     §34.15
 23  extern(C++) function and member ABI                 A     done     §34.16
 ```
 
@@ -2520,14 +2520,53 @@ virtual method (falling back to `dlsym` for non-virtual), so a base-typed handle
 dispatches to the runtime override. The seam gained one Value-free method,
 `NativeMarshaller.receiverObjectPointer`.
 
-**Still todo for this rung** (each its own approved fixture): interface method
-calls through the interface table (the `this`-adjustment / itable offset differs
-from a plain class vtable); constructing native classes in the Interpreter
-(§34.13); and making the handle GC-visible per §13 (today the returned handle is
-not GC-scanned, so a collection between a factory call and a method call could
-reclaim the object — out of scope here, fixed by the native-layout handle table).
+**Landed 2026-06-24** (`dependencyImage.externDInterfaceDispatch`), the
+interface-table half, as a characterization pin (no production change, like the
+§34.7 sret and §34.11 nested-slice pins). An interface reference reifies as the
+same `NativePointer` opaque handle a class reference does (`ffiTypeFor` maps the
+interface's `TypeClass` to `&ffi_type_pointer`), and a member call on it routes
+through `tryCallNativeClassMember` exactly as a class call does — the call site's
+`receiverClassType` already returns the interface's `TypeClass`. The itable
+`this`-adjustment that distinguishes an interface from a plain class vtable is
+performed by D's own interface thunks: `resolveSymbol` reads
+`vtable[function_.vtblIndex]` from the interface reference's embedded interface
+vptr, and the resulting thunk adjusts `this` from the interface pointer back to
+the object base before jumping to the final overrider. The fixture's `draw` reads
+an instance field, so a wrong `this` would not return the field-derived value —
+pinning that the adjustment is correct.
+
+**Still todo for this rung** (each its own approved fixture): constructing native
+classes in the Interpreter (§34.13); and making the handle GC-visible per §13
+(today the returned handle is not GC-scanned, so a collection between a factory
+call and a method call could reclaim the object — out of scope here, fixed by the
+native-layout handle table).
 
 ### 34.13 Increment 19 — constructors, destructors, postblits
+
+**Status: landed (struct ctor/dtor/postblit, Interpreter).** Three
+`dependency_image.d` fixtures — `externDStructConstructor`,
+`externDStructDestructor`, `externDStructPostblit`. The constructor is the
+only one needing the bridge to do something new: a body-less `__ctor` resolves
+to a `DotVarExp` member call whose receiver is the not-yet-built variable, so
+the call site seeds `this` from the struct's default `.init`
+(`nativeConstructorReceiver`) and `tryCallNativeConstructor` reifies the
+constructed struct from the receiver buffer (a struct ctor returns `ref this`,
+so its ABI return is ignored). The destructor was already correct — a
+body-less `~this()` runs at scope exit through the existing
+`DtorExpStatement -> tryCallNativeMember` path — so its fixture is a
+characterization pin (like §34.7/§34.11). The postblit also routes through the
+member path (DMD lowers `copy = original` to `(copy = original).postblit()`),
+but it returns void and the var-initializer overwrote the copy; the fix mirrors
+the constructor — yield the post-call receiver as the expression value.
+
+Still todo for this rung (each its own approved fixture): **class** (not just
+struct) construction; `new`-expression construction of a body-less type
+(`runNewStructPointerExpression`/`runNewClassExpression` execute
+`new_.member.fbody` with no null guard, so `new T(args)` on a body-less ctor
+needs the same routing); mutating-postblit receiver writeback through a
+`BlitExp` receiver (today an addressable-lvalue writeback only triggers for a
+plain `VarExp`); and general (source-available) postblit/dtor invocation in the
+Interpreter, which is a separate language-feature gap, not FFI.
 
 **Contract.** Construct a native class/struct via its dependency-image
 constructor, and run its destructor/postblit at the right points, so the
@@ -2598,6 +2637,31 @@ fixed from variadic args. Variadic calls cannot share a cached CIF.
 still green and still using the cached non-variadic CIF path.
 
 ### 34.16 Increment 22 — delegates / callbacks / closures (reverse bridge)
+
+**Status: landed (Interpreter, single-callback synchronous reverse bridge).**
+Fixture `dependencyImage.externDDelegateCallback`: a body-less `extern(D)
+int dependencyApply(int x, int delegate(int) callback)` from a prepared
+dependency image invokes an interpreted lambda capturing a local, and the result
+crosses back. A delegate argument now maps to its two-pointer `{context,
+funcptr}` ffi_type (`ffiDelegateType`); the core builds a libffi closure per
+delegate argument (`setupDelegateArgument` + `ffi_closure_alloc` /
+`ffi_prep_closure_loc`, bound in `libffi.d`) whose `extern(C)` trampoline
+(`closureTrampoline`) restores the explicit arguments to source order (the
+funcptr is `Ret(context, reverse(explicit))`, confirmed by disassembly) and
+routes back through a new Value-free seam method, `NativeMarshaller.invokeClosure`.
+The interpreter marshaller materializes the native callback arguments, runs the
+delegate through a Walker-supplied invoker (`invokeNativeCallback` ->
+`runDelegateCall`), and marshals the result into libffi's return buffer. The
+closure lives only for the call (`ffi_closure_free` on scope exit) and its
+context/CIF stay GC-reachable across it.
+
+Still todo for this rung (each its own approved fixture): multi-argument
+callbacks (the reversal is in place but only the identity case is pinned);
+callbacks that throw back across the boundary (today the interpreted closure must
+not throw — an exception would unwind through native frames); class-method and
+`extern(C)` function-pointer callbacks; and durable (escaping) callbacks that
+outlive the call, which need the GC-visible closure registry of §14 rather than
+the call-scoped closure here.
 
 **Contract.** The §14 reverse bridge: pass an interpreted closure to a native
 dependency API that calls it back (`sort!`, `setTimer`, etc.). This is the

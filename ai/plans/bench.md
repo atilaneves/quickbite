@@ -1227,3 +1227,132 @@ dub package, no process spawn) and exercises the shared init both `bin/ut` and
 `--dub` use. Do not settle for a `--dub dlib` smoke test in place of it: the
 smoke test would also pass for unrelated reasons and does not pin the
 `version (unittest)` behaviour.
+
+## Multiple `--dub` Packages Cross-Contaminate Template Instances (diagnosis only)
+
+Diagnosed 2026-06-24. **Diagnosis only — no fix applied.**
+
+### Symptom
+
+```sh
+bin/bench.sh -b system-linker --dub fearless --dub cerealed
+```
+
+skips both packages with undefined-symbol link errors that **do not occur when
+either package is passed alone**:
+
+```text
+skipping fearless system-linker: link failed: mold: error: undefined symbol:
+  _D5tests5utils17__unittest_L15_C1FZv
+skipping cerealed system-linker: link failed: mold: error: undefined symbol:
+  _D3std4conv__T4textTAyaTQeThTQjTmTQoTAhZQBaFNaNfQBcQBfhQBjmQBnQzZQBt
+```
+
+The first symbol is `tests.utils.__unittest_L15_C1` — the unittest at
+`cerealed/tests/utils.d:15` — referenced by the **fearless** link. The second is
+a `std.conv.text!(...)` instance referenced by the **cerealed** link. Each link
+references a symbol it never defines.
+
+### Root cause: DMD template-instance homing leaks across two root sets
+
+This is the same class of defect as "Squash Template-Emission Link Failures"
+above, but the trigger is different and the dub codegen path is **not** at fault.
+Each `--dub` package already gets its own `BenchmarkGroup` with its own
+`BackendEnv` (import paths, dependency image, package root) and its own runner set
+(`cli.d`, the `foreach (dubPkg; opts.dubPkgs)` loop); the env objects are not
+shared. The leak is in **DMD's process-global state**, which all packages share
+because quickbite runs one long-lived DMD process.
+
+`cli.d` parses *both* packages (`prepareDubUnit` → `parseRootModules`) before
+*any* codegen runs, so by the time the first package is codegen'd, both root sets
+coexist in DMD's globals. Codegen then emits and links each package against only
+its own objects + its own `lib<pkg>_dub_deps.so` — so any symbol that landed in
+the *other* package's objects is undefined.
+
+The mechanism that misplaces the symbols, end to end:
+
+1. **`Module.importedFrom` is process-global and set-once**
+   (`dsymbolsem.d:7665`):
+
+   ```d
+   if (imp.mod && !imp.mod.importedFrom)
+       imp.mod.importedFrom = sc ? sc._module.importedFrom : Module.rootModule;
+   ```
+
+   The first time a dependency module (`unit_threaded.assertions`, `std.conv`, …)
+   is imported in the process, its `importedFrom` is pinned to the importing root
+   module and **never changes**. fearless is parsed first, so these pin onto a
+   fearless module (`ut.concurrency`, fearless's `tests/ut/concurrency.d`).
+
+2. **`appendToModuleMember` homes instances on `(template's module).importedFrom`**
+   (`templatesem.d:1225`). With `allInst` off (dub mode skips it) and an instance
+   whose `minst` is null or a root module, DMD inserts it into the members of the
+   template's *declaring* module's `importedFrom`. cerealed is parsed second and
+   reuses the already-cached dependency module objects, so cerealed's
+   `unit_threaded.shouldEqual!(cerealedType)` and `std.conv.text!(...)` instances
+   home onto the **fearless** module.
+
+3. **Codegen emits per package, links per package.** fearless's object for
+   `ut.concurrency` therefore *defines* a pile of cerealed-typed instances and
+   references cerealed code that is not on fearless's link line; cerealed's link
+   references shared instances that were emitted into fearless's objects.
+
+### Evidence
+
+On link failure `buildSharedLibrary` throws before `compileToSharedLibrary`'s
+cleanup `scope(exit)` is armed, so the temp object dirs leak under
+`/tmp/quickbite_native_<pid>_<index>/`. `nm` on them shows both directions
+funnel through one object — fearless's `obj_4.o` (= `tests/ut/concurrency.d`):
+
+- `_D5tests5utils17__unittest_L15_C1FZv` (cerealed's unittest): `U` (undefined)
+  in fearless's `obj_4.o`, `W` (defined) only in cerealed's objects.
+- The failing `std.conv.text!(...)` instance: `U` in cerealed's objects, `W`
+  (defined) in fearless's `obj_4.o`.
+- fearless's `obj_4.o` defines (`W`) `unit_threaded.assertions.shouldEqual!(...)`
+  / `convertToString!(...)` / `shouldThrow!(...)` instances parameterised on
+  cerealed types (`tests.static_array.Packet`, `tests.encode_decode.Foo`,
+  `tests.protocol_unit.Struct`, `tests.decode.Foo`, …) — cerealed's instances,
+  emitted into a fearless object.
+
+### Why one `--dub` works and two fails
+
+With a single package there is one root set: every dependency module's
+`importedFrom` points into that package, every instantiated template homes within
+it, and everything an instance references is emitted in that package's own
+objects. No leak. A second independent root set in the same process is what
+violates the "the package is its own root set" assumption the dub codegen path
+relies on (`codegen.d:45`).
+
+### The real-life observation (answers "should we ever home anything?")
+
+We are not asking DMD to home anything unusual — this is DMD's ordinary
+cross-module instance placement, which is only correct when there is **one build
+per process**. `Module.importedFrom`, the loaded-module cache, and
+`Module.rootModule` are all process-global; a real `dmd` invocation (and
+`dub test`) compiles exactly one root set per process, so homing is always
+correct there. quickbite deliberately keeps one long-lived DMD process across all
+benchmark runs, so two `--dub` packages are two independent builds sharing one
+process — something real-life dmd/dub never does. The builds **should** be
+independent; the cross-contamination is the shared process leaking what ought to
+be per-build state.
+
+### Fix direction (not implemented; for a future work item)
+
+The builds must be isolated so neither package's parse can pin shared dependency
+modules or home instances onto the other. Candidate approaches, to be evaluated:
+
+- **Codegen each package in a fork child whose parent has *not* parsed the other
+  package** — i.e. parse + codegen + link a package fully (in a fork, as today)
+  before the next package's `parseRootModules` ever touches DMD globals, so the
+  set-once `importedFrom` and the module cache are still clean for each. Today
+  preparation parses *all* packages up front (`cli.d`), which is what colocates
+  the two root sets; the frontend timing row's single-cold-sample constraint
+  (modules persist in DMD's symbol table) is the reason it does so, and must be
+  reconciled.
+- **One process per `--dub` package** (exec a fresh driver per package), trading
+  the persistent-process design for guaranteed isolation on multi-package runs.
+
+The decision hinges on whether the per-package parse can be deferred until that
+package's codegen without losing the frontend measurement, which is the open
+question. Until fixed, multi-`--dub` runs are unsound; single-`--dub` runs are
+unaffected.

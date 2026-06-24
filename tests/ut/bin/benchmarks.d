@@ -19,6 +19,15 @@ unittest {
     run(["bench", "--backend=ctfe", "--help"]);
 }
 
+@("cliDubOptionIsRepeatable")
+unittest {
+    // --dub used to bind to a scalar string, so getopt silently kept only the
+    // last package. It must accumulate like --backend / --import-path.
+    const opts = parseOptions(["bench", "--dub=foo", "--dub=bar", "extra.d"]);
+    opts.dubPkgs.should == ["foo", "bar"];
+    opts.fixtures.should == ["extra.d"];
+}
+
 @("benchmarkBackendsIncludeInterpreter")
 unittest {
     import benchmarks.backends: BackendEnv, makeRunners;

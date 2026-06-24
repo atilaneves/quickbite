@@ -435,11 +435,11 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case signExtend2to4:
-                const ubyte[int.sizeof] signWidenedShort = scalarBytes(
+                const ubyte[int.sizeof] shortWidened = scalarBytes(
                     cast(int) scalarValue!short(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
-                    = signWidenedShort;
+                    = shortWidened;
                 ++ip;
                 break;
 

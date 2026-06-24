@@ -1285,3 +1285,372 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A dependency-image interface method call dispatched through the interface
+// table (ffi.md §34.12): the factory returns a `Drawable` interface reference to
+// a `Button`, and the call must dispatch through the object's interface table to
+// the implementation. `draw` reads an instance field, so a wrong `this`
+// (interface pointer not adjusted back to the object base) returns the wrong
+// value — that itable `this`-adjustment is what distinguishes interfaces from a
+// plain class vtable.
+@("dependencyImage.externDInterfaceDispatch.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_interface_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_interface_fixture;
+
+            interface Drawable {
+                int draw();
+            }
+
+            class Button: Drawable {
+                int color;
+
+                this(int color) {
+                    this.color = color;
+                }
+
+                override int draw() {
+                    return color + 2;
+                }
+            }
+
+            Drawable makeButton() {
+                return new Button(40);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_interface_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_interface_fixture;
+
+            interface Drawable {
+                int draw();
+            }
+
+            class Button: Drawable {
+                int color;
+                this(int color);
+                override int draw();
+            }
+
+            Drawable makeButton();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_interface_fixture;
+
+                unittest {
+                    Drawable d = makeButton();
+                    assert(d.draw() == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// A dependency-image struct constructed through its native extern(D)
+// `this(int)` constructor (ffi.md §34.13). The ctor computes the field rather
+// than plain field-init, so a passing read proves the native constructor body
+// ran across the boundary rather than an aggregate struct-literal fallback.
+@("dependencyImage.externDStructConstructor.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_ctor_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_ctor_fixture;
+
+            struct Tracked {
+                int value;
+
+                this(int seed) {
+                    value = seed + 17;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctor_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ctor_fixture;
+
+            struct Tracked {
+                int value;
+                this(int seed);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ctor_fixture;
+
+                unittest {
+                    int seed = 25;
+                    Tracked tracked = Tracked(seed);
+                    assert(tracked.value == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// A dependency-image struct whose body-less extern(D) destructor runs at scope
+// exit (ffi.md §34.13). The destructor increments a shared native counter, read
+// back through a body-less accessor, proving `~this()` fired across the boundary.
+@("dependencyImage.externDStructDestructor.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_dtor_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_dtor_fixture;
+
+            __gshared int dtorCount;
+
+            struct Tracked {
+                int value;
+
+                ~this() {
+                    dtorCount += 1;
+                }
+            }
+
+            int dtorCalls() {
+                return dtorCount;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_dtor_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_dtor_fixture;
+
+            struct Tracked {
+                int value;
+                ~this();
+            }
+
+            int dtorCalls();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_dtor_fixture;
+
+                unittest {
+                    int seed = 7;
+                    {
+                        Tracked tracked = Tracked(seed);
+                    }
+                    assert(dtorCalls() == 1);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// A dependency-image struct whose body-less extern(D) postblit runs on copy
+// (ffi.md §34.13). The postblit increments a shared native counter, read back
+// through a body-less accessor, proving `this(this)` fired across the boundary.
+@("dependencyImage.externDStructPostblit.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_postblit_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_postblit_fixture;
+
+            __gshared int postblitCount;
+
+            struct Tracked {
+                int value;
+
+                this(this) {
+                    postblitCount += 1;
+                }
+            }
+
+            int postblitCalls() {
+                return postblitCount;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_postblit_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_postblit_fixture;
+
+            struct Tracked {
+                int value;
+                this(this);
+            }
+
+            int postblitCalls();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_postblit_fixture;
+
+                unittest {
+                    int seed = 9;
+                    Tracked original = Tracked(seed);
+                    Tracked copy = original;
+                    assert(copy.value == 9);
+                    assert(postblitCalls() == 1);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+@("dependencyImage.externDDelegateCallback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_callback_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_callback_fixture;
+
+            int dependencyApply(int x, int delegate(int) callback) {
+                return callback(x);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_callback_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_callback_fixture;
+
+            int dependencyApply(int x, int delegate(int) callback);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_callback_fixture;
+
+                unittest {
+                    int base = 100;
+                    int x = 5;
+                    int delegate(int) callback = (int n) => n + base;
+                    assert(dependencyApply(x, callback) == 105);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

@@ -1672,13 +1672,61 @@ private struct Walker {
                 auto function_ = resolveMemberFunction(call.f, receiver);
                 if (hasNoAvailableSource(function_)) {
                     import quickbite.backends.interpreter.ffi_marshal:
-                        NativeCallException, tryCallNativeMember,
-                        tryCallNativeClassMember;
+                        NativeCallException, tryCallNativeConstructor,
+                        tryCallNativeMember, tryCallNativeClassMember;
 
                     Value result;
                     Value[] writebacks;
                     Value receiverWriteback;
                     try {
+                        // Constructors and postblits build/copy a native struct
+                        // and yield the (post-call) receiver as the expression
+                        // value, not their ABI return (ffi.md §34.13).
+                        if (auto structType = receiverStructType(dot.e1)) {
+                            // A body-less constructor: the receiver `tracked` is
+                            // not yet a struct (it is the variable being
+                            // constructed), so seed `this` from the struct's
+                            // default `.init` and reify the constructed struct
+                            // from the receiver buffer.
+                            if (function_.isCtorDeclaration !is null) {
+                                if (tryCallNativeConstructor(
+                                    function_,
+                                    structType,
+                                    nativeConstructorReceiver(function_, receiver),
+                                    arguments,
+                                    nativeArgumentTypes(argumentExpressions),
+                                    nativeAddressOfLocalArguments(argumentExpressions),
+                                    result,
+                                    writebacks,
+                                )) {
+                                    applyNativeWritebacks(writebacks, argumentExpressions);
+                                    return result;
+                                }
+                            }
+                            // A body-less postblit runs on the freshly blitted
+                            // copy (already evaluated as `receiver`) and returns
+                            // void; the value of `copy = original` is the
+                            // postblit-mutated receiver, not that void return.
+                            else if (function_.isPostBlitDeclaration !is null) {
+                                if (tryCallNativeMember(
+                                    function_,
+                                    structType,
+                                    receiver,
+                                    arguments,
+                                    nativeArgumentTypes(argumentExpressions),
+                                    nativeAddressOfLocalArguments(argumentExpressions),
+                                    result,
+                                    writebacks,
+                                    receiverWriteback,
+                                )) {
+                                    applyNativeWritebacks(writebacks, argumentExpressions);
+                                    return receiverWriteback == Value.void_
+                                        ? receiver
+                                        : receiverWriteback;
+                                }
+                            }
+                        }
+
                         // A native class receiver dispatches virtually through
                         // the object's vtable and is mutated in place, so it has
                         // no receiver writeback (ffi.md §34.12). A struct
@@ -1746,6 +1794,7 @@ private struct Walker {
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
+                            &invokeNativeCallback,
                             result,
                             writebacks,
                         )
@@ -1807,6 +1856,19 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    // Run an interpreted delegate that native code called back into through the
+    // FFI reverse bridge (ffi.md §34.16). The callback supplies only values (no
+    // source argument expressions), so synthesise null placeholders, as the
+    // static-initialiser delegate path does.
+    private Value invokeNativeCallback(
+        in Value callee,
+        in Value[] arguments,
+    ) {
+        import dmd.expression: Expression;
+
+        return runDelegateCall(callee, arguments, new Expression[](arguments.length));
     }
 
     private Value runDelegateCall(
@@ -4779,6 +4841,22 @@ private imported!"dmd.mtype".TypeClass receiverClassType(
         return null;
 
     return receiver.type.toBasetype.isTypeClass;
+}
+
+
+// The `this` a native constructor initialises: the struct's default `.init`.
+// The variable being constructed has no usable value yet, so the evaluated
+// receiver is not a struct (mirrors runMemberFunction's ctor seeding).
+private imported!"quickbite.lang".Value nativeConstructorReceiver(
+    imported!"dmd.func".FuncDeclaration function_,
+    in imported!"quickbite.lang".Value receiver,
+) {
+    import quickbite.frontend.dmd.values: defaultValue;
+
+    auto structDecl = function_.parent is null
+        ? null
+        : function_.parent.isStructDeclaration;
+    return structDecl !is null ? defaultValue(structDecl.type) : receiver;
 }
 
 
