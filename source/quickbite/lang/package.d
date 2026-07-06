@@ -68,6 +68,13 @@ public struct Value {
         return Value(Struct(typeName, fields));
     }
 
+    public static Value structDisplayValue(
+        in string typeName,
+        in Value[] fields,
+    ) @safe pure {
+        return Value(Struct(typeName, fields, true));
+    }
+
     public static Value classValue(
         in string typeName,
         in string[] typeNames,
@@ -1944,12 +1951,15 @@ private struct Entry {
 private struct Struct {
     public string typeName;
     public Field[] fields;
+    private bool _literalFields;
 
     public this(
         in string typeName,
         in Value[] fields,
+        in bool literalFields = false,
     ) @safe pure {
         this.typeName = typeName;
+        _literalFields = literalFields;
 
         foreach (field; fields)
             this.fields ~= Field("", field);
@@ -1971,7 +1981,7 @@ private struct Struct {
         foreach (i, field; fields) {
             if (i != 0)
                 ret ~= ", ";
-            ret ~= field.toString;
+            ret ~= _literalFields ? field.value.toString : field.toString;
         }
 
         return ret ~ ")";

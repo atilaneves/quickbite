@@ -670,7 +670,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.expressionCellsUsePreludeFormatter." ~ backend.stringof)
     unittest {
@@ -1244,8 +1244,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     }
 }
 
-// Bytecode and BytecodeNewCore do not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+// Bytecode does not yet reify struct results for display.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.structValueRendersTypeNameAndFields." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

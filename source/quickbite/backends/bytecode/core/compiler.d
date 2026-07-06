@@ -33,7 +33,8 @@ private struct Compiler {
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
         Instruction, Op, Program,
-        RefParameter, ResultType, ScalarType, VirtualFunction, isSigned,
+        RefParameter, ResultType, ScalarType, StructDisplayField,
+        VirtualFunction, isSigned,
         noCatchObjectField, noExceptionClass, size, sliceDescriptorSize,
         stringSliceSize;
     import dmd.declaration: VarDeclaration;
@@ -9065,11 +9066,14 @@ private struct Compiler {
         // A by-value struct result is an inline block of `Type.size()` bytes,
         // copied back to the caller's destination on return like any other frame
         // block; field access then resolves against that destination's base.
-        if (type.toBasetype.ty == TY.Tstruct)
-            return ResultType(
+        if (type.toBasetype.ty == TY.Tstruct) {
+            auto result = ResultType(
                 ScalarType.void_, false, false, ScalarType.void_,
                 false, true, cast(uint) staticArraySize(type),
             );
+            populateStructDisplay(result, type);
+            return result;
+        }
 
         if (isUndisplayableType(type))
             return ResultType(
@@ -9084,6 +9088,56 @@ private struct Compiler {
             scalarType(type),
             enumMembersByValue(type),
         );
+    }
+
+    private void populateStructDisplay(ref ResultType result, Type type) {
+        auto declaration = structDeclarationOf(type);
+        if (declaration is null)
+            return;
+
+        StructDisplayField[] fields;
+        foreach (field; declaration.fields) {
+            ScalarType fieldType;
+            if (!scalarStructDisplayType(field.type, fieldType))
+                return;
+            fields ~= StructDisplayField(
+                cast(uint) field.offset,
+                fieldType,
+                enumMembersByValue(field.type),
+            );
+        }
+
+        result.structName = typeChars(type);
+        result.structFields = fields;
+    }
+
+    private bool scalarStructDisplayType(Type type, out ScalarType scalar) {
+        import dmd.astenums: TY;
+
+        if (isStringType(type))
+            return false;
+
+        switch (type.toBasetype.ty) with (TY) {
+            case Tbool:
+            case Tint8:
+            case Tuns8:
+            case Tint16:
+            case Tuns16:
+            case Tint32:
+            case Tuns32:
+            case Tint64:
+            case Tuns64:
+            case Tchar:
+            case Twchar:
+            case Tdchar:
+            case Tfloat32:
+            case Tfloat64:
+            case Tfloat80:
+                scalar = scalarType(type);
+                return true;
+            default:
+                return false;
+        }
     }
 
     // The result type of a whole function. A constructor's nominal result is its

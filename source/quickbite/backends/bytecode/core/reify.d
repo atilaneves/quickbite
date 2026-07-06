@@ -26,7 +26,32 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     if (type.isArray)
         return reifyArray(bytes, type, data, heap);
 
+    if (type.isStruct)
+        return reifyStruct(bytes, type);
+
     return reifyScalar(bytes, type.scalar, type.enumMembers);
+}
+
+private imported!"quickbite.lang".Value reifyStruct(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ResultType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: size;
+    import quickbite.lang: Value;
+
+    if (type.structName is null)
+        return Value.undisplayable;
+
+    Value[] fields;
+    foreach (field; type.structFields) {
+        const offset = field.offset;
+        fields ~= reifyScalar(
+            bytes[offset .. offset + size(field.type)],
+            field.type,
+            field.enumMembers,
+        );
+    }
+    return Value.structDisplayValue(type.structName, fields);
 }
 
 private imported!"quickbite.lang".Value reifyArray(

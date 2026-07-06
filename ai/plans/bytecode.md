@@ -4041,3 +4041,36 @@ bin/ut "$test_name"
 ```
 
 Result: 1 test run, 0 failed.
+
+The coherent Phobos/range REPL block was attempted on `BytecodeNewCore` and
+left unpromoted:
+`repl.backend.importStdExposesPhobosSymbols`,
+`repl.backend.displaysFiniteRangeResults`, and
+`repl.backend.displaysFilteredArrayResults`. The red promotion confirms the
+range/ref-argument gap is still real. `importStdExposesPhobosSymbols` fails in
+the bytecode REPL path with `Unsupported ref argument in bytecode core:
+result[cnt]`, `displaysFilteredArrayResults` fails with `Unsupported type in
+bytecode core: Result`, and `displaysFiniteRangeResults` produces no display
+output instead of `MapResult([1, 2, 3])`.
+
+The smaller associative-array display REPL block was also attempted on
+`BytecodeNewCore` and left unpromoted:
+`repl.backend.displaysAssocArrayResults`. The red promotion shows that the
+backend currently reifies/displays only the first key as `1UL`, producing
+`["1UL"]` instead of the oracle output `["[1:10, 2:20]"]`.
+
+The existing `repl.backend.expressionCellsUsePreludeFormatter` backend-matrix
+family was attempted on `BytecodeNewCore` and left unpromoted. The red
+promotion confirms the struct display gap is still real in this row too:
+`Point(1, 2)` produces no REPL output (`[]`) instead of the oracle display
+`["Point(1, 2L)"]`.
+
+The minimal simple-struct display slice is now implemented for
+`BytecodeNewCore`: struct result metadata records the struct type name plus
+scalar field offsets/types, and reification builds the existing
+struct `Value` shape from the returned byte block, using D-literal field
+display for REPL output. Non-scalar fields intentionally do not get display
+metadata in this slice. The existing
+`repl.backend.expressionCellsUsePreludeFormatter` and
+`repl.backend.structValueRendersTypeNameAndFields` rows now include
+`BytecodeNewCore`.
