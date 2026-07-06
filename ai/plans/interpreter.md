@@ -289,6 +289,18 @@ index/slice/field assignment through the unsupported base form, and a
 `concatenateElemAssign`. **Out of scope.** Tuple/destructuring lvalues and
 write-through-global-pointer unless cerealed needs them.
 
+**Slice status.** The standalone fixture
+`dynamicArray.fieldConcatenationAssignment` now covers non-scalar dynamic-array
+`concatenateAssign` through a struct field (`writer.bytes ~= chunk`). The
+interpreter routes that DMD AST expression through the existing concatenation
+element logic and writes the result back with `writeLocation`.
+
+**Slice status.** The standalone fixture
+`dynamicArray.localConcatenationAssignment` now covers non-scalar dynamic-array
+`concatenateAssign` through a local variable (`values ~= chunk`). The
+interpreter handles that local `VarExp` target with the existing concatenation
+element logic and writes the result back with `writeLocation`.
+
 **Done.** `Unsupported interpreter assignment target` and `concatenateAssign`
 gone from §7.
 
