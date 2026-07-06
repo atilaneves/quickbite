@@ -1010,6 +1010,18 @@ form as compile-time-only, so the five expression-result/`it` cases in that
 batch pass on the new core. The next REPL batch can proceed from this
 completed baseline.
 
+Second batch status: six existing REPL function-declaration/session blocks now
+include `SystemLinker` and `BytecodeNewCore`: function declarations persist
+without semicolons, same-signature redeclarations replace earlier functions,
+overloads remain distinct, user functions do not collide with the wrapper,
+template function declarations persist without display, and multiline function
+declarations buffer until complete. This batch changes only matrix tags; no
+new REPL behaviour or production code is introduced. The adjacent Ctfe-only
+module-level mutation characterization remains Ctfe-only. Focused verification
+covered the six `SystemLinker` and six `BytecodeNewCore` promoted instances:
+12 tests run, 0 failed. Full validation also passed with `bin/ut --random`
+under seed `2501466469`: 2727 tests run, 0 failed, 6/6 failing as expected.
+
 Next action is to continue adding `SystemLinker` tags in small batches after
 the first completed baseline session/display batch. Continue through the REPL
 baseline cohorts in this order: display surface, import surface, then session

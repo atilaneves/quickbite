@@ -312,7 +312,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.functionDeclarationsPersistWithoutSemicolon." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -326,7 +332,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.replacesSameSignatureFunctionDeclarations." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -345,7 +357,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.preservesFunctionOverloads." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -365,7 +383,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.userDefinedFunctionDoesNotCollideWithWrapper." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -379,7 +403,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.templateFunctionDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -397,7 +427,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
