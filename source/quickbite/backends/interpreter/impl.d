@@ -931,7 +931,7 @@ private struct Walker {
         ) {
             auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
             if (comparison is null)
-                assert(0);
+                assert(0, "comparison expression was not a CmpExp");
 
             return runComparisonExpression(comparison);
         }
@@ -1001,7 +1001,7 @@ private struct Walker {
         if (expression.op == EXP.concatenateAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
-                assert(0);
+                assert(0, "concatenateAssign expression was not a BinExp");
 
             return runArrayConcatenateAssignExpression(assign);
         }
@@ -1009,7 +1009,7 @@ private struct Walker {
         if (expression.op == EXP.concatenateElemAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
-                assert(0);
+                assert(0, "concatenateElemAssign expression was not a BinExp");
 
             return runArrayAppendAssignExpression(assign);
         }
@@ -1017,7 +1017,7 @@ private struct Walker {
         if (isScalarCompoundAssignExpression(expression)) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
-                assert(0);
+                assert(0, "compound assignment expression was not a BinExp");
 
             return runCompoundAssignExpression(assign);
         }
@@ -1169,12 +1169,12 @@ private struct Walker {
 
         auto symbol = var.var.isSymbolDeclaration;
         if (symbol is null)
-            assert(0);
+            assert(0, "non-variable VarExp was not a SymbolDeclaration");
 
         auto type = symbol.dsym is null ? symbol.type : symbol.dsym.type;
         auto structType = type is null ? null : type.toBasetype.isTypeStruct;
         if (structType is null)
-            assert(0);
+            assert(0, "SymbolDeclaration VarExp was not a struct initializer");
 
         return runExpression(structType.defaultInitLiteral(var.loc));
     }
@@ -3100,7 +3100,7 @@ private struct Walker {
                 break;
 
             default:
-                assert(0);
+                assert(0, "unsupported integer binary operator");
         }
 
         return backendCastValue(Value(result), backendCastTarget(expression.type));
