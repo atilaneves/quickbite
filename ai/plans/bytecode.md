@@ -3872,3 +3872,19 @@ bin/ut "$test_name"
 ```
 
 Result: 1 test run, 0 failed.
+
+The existing `repl.backend.typeAliasCellsDisplayTypeName` backend-matrix
+family now includes `BytecodeNewCore`. This was the adjacent narrow type-cell
+display promotion after `typeofCellsDisplayTypeName`; no production changes
+were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+typeAliasCellsDisplayTypeName.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.

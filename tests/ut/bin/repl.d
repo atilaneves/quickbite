@@ -685,7 +685,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.typeAliasCellsDisplayTypeName." ~ backend.stringof)
     unittest {
