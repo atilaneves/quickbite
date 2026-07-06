@@ -975,6 +975,13 @@ switch; `Bytecode` still defaults to the old core):
   `alias it = __quickbite_repl_value_N;` declaration into eval function
   bodies. The new core now treats function-body alias declarations like other
   semantic-only declarations and emits no bytecode for them.
+- `repl.backend.evaluatesExpressionCellsUntilQuit`,
+  `repl.backend.skipsCommentOnlyLines`, and
+  `repl.backend.evaluatesStandaloneMixinExpression` in
+  `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. These were stale coverage
+  gaps: focused promotion runs passed unchanged because the shared REPL loop
+  already skips comment-only lines, classifies standalone mixin expressions,
+  and sends expression cells through the existing new-core `evalRepl` path.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -998,11 +1005,15 @@ those value cases now would assert native-call support that does not exist.
 
 The next concrete module candidate per
 `ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
-(module order 14). The first tight REPL rebinding family now covers
-`BytecodeNewCore`: `repl.backend.localDeclarationsCanRebindNames` and
-`repl.backend.localRebindingPreservesInterveningReferences`. The next current
-REPL backend block that covers old `Bytecode` but not `BytecodeNewCore` is
-`repl.backend.evaluatesExpressionCellsUntilQuit`; its matrix is
+(module order 14). The first tight REPL rebinding family and the adjacent
+expression-loop basics now cover `BytecodeNewCore`:
+`repl.backend.localDeclarationsCanRebindNames`,
+`repl.backend.localRebindingPreservesInterveningReferences`,
+`repl.backend.evaluatesExpressionCellsUntilQuit`,
+`repl.backend.skipsCommentOnlyLines`, and
+`repl.backend.evaluatesStandaloneMixinExpression`. The next current REPL
+backend block that covers old `Bytecode` but not `BytecodeNewCore` is
+`repl.backend.lastValueBindingDisplaysLatestExpressionValue`; its matrix is
 `AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the

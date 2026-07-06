@@ -114,7 +114,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -128,7 +128,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.skipsCommentOnlyLines." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -142,7 +142,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.evaluatesStandaloneMixinExpression." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
