@@ -3283,6 +3283,10 @@ private struct Walker {
             return;
         }
 
+        if (auto call = target.isCallExp)
+            if (writeRefReturningCallLocation(call, value))
+                return;
+
         // `arr.length = n`: resize the array lvalue, padding with default
         // elements when growing and truncating when shrinking, then write the
         // rebuilt array back to its location (a local, or a field through a
@@ -3316,6 +3320,62 @@ private struct Walker {
         throw new Exception(
             text("Unsupported interpreter assignment target: ", target.op),
         );
+    }
+
+    private bool writeRefReturningCallLocation(
+        imported!"dmd.expression".CallExp call,
+        in Value value,
+    ) {
+        if (call.f is null || !returnsRef(call.f))
+            return false;
+
+        auto dot = call.e1.isDotVarExp;
+        if (dot is null)
+            return false;
+
+        const receiver = runExpression(dot.e1);
+        if (receiver == Value.null_)
+            throw new Exception("function call through null class reference `null`");
+
+        Value[] arguments;
+        imported!"dmd.expression".Expression[] argumentExpressions;
+        if (call.arguments !is null)
+            foreach (argument; *call.arguments) {
+                arguments ~= runExpression(argument);
+                argumentExpressions ~= argument;
+            }
+
+        auto function_ = resolveMemberFunction(call.f, receiver);
+        auto returned = refReturnExpression(function_.fbody);
+        if (returned is null)
+            return false;
+
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = function_;
+        child.result = Value(false);
+        child.locals = locals.dup;
+        child.localPointers = localPointers.dup;
+        child.localPointerIds = localPointerIds.dup;
+        child.nextLocalPointerId = nextLocalPointerId;
+        child.functionPointers = functionPointers.dup;
+        child.functionPointerIds = functionPointerIds.dup;
+        child.nextFunctionPointerId = nextFunctionPointerId;
+        child.delegates = delegates.dup;
+        child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.allocationCount = allocationCount;
+        child.thisValue = receiver;
+        child.hasThis = true;
+        child.bindFunctionParameters(function_, arguments);
+        child.writeLocation(returned, value);
+        writeBackMemberFunctionState(
+            function_,
+            dot.e1,
+            argumentExpressions,
+            child,
+        );
+        return true;
     }
 
     private void writeArrayLengthLocation(
@@ -4893,6 +4953,46 @@ private imported!"dmd.mtype".TypeClass receiverClassType(
         return null;
 
     return receiver.type.toBasetype.isTypeClass;
+}
+
+
+private bool returnsRef(imported!"dmd.func".FuncDeclaration function_) {
+    auto type = function_.type is null ? null : function_.type.isTypeFunction;
+    return type !is null && type.isRef;
+}
+
+
+private imported!"dmd.expression".Expression refReturnExpression(
+    imported!"dmd.statement".Statement statement,
+) {
+    if (statement is null)
+        return null;
+
+    if (auto return_ = statement.isReturnStatement)
+        return return_.exp;
+
+    if (auto scope_ = statement.isScopeStatement)
+        return refReturnExpression(scope_.statement);
+
+    if (auto compound = statement.isCompoundStatement) {
+        if (compound.statements is null)
+            return null;
+
+        foreach (child; *compound.statements)
+            if (auto expression = refReturnExpression(child))
+                return expression;
+    }
+
+    if (auto compound = statement.isCompoundDeclarationStatement) {
+        if (compound.statements is null)
+            return null;
+
+        foreach (child; *compound.statements)
+            if (auto expression = refReturnExpression(child))
+                return expression;
+    }
+
+    return null;
 }
 
 
