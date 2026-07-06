@@ -955,6 +955,33 @@ switch; `Bytecode` still defaults to the old core):
   `classSerialisationReadsStaticChildRegistry` fixtures, which added narrow
   support for associative-array literals with struct values, static
   associative-array storage, and delegate-valued AA lookup/invocation.
+- `tests/ut/backends/runner/rt/cstdlib.d` (module order 2) is reconciled on
+  the new core as explicit native-runtime deferral. The seven existing
+  Bytecode/IR design-driving no-source diagnostics now include
+  `BytecodeNewCore`: `free.null.voidReturn`,
+  `malloc.pointerReturn.nativeMemory`, `calloc.multiArg.zeroedNativeMemory`,
+  `realloc.null.pointerArgPointerReturn`,
+  `realloc.grow.preservesNativeMemory`, `div.structReturn`, and
+  `ldiv.structReturn.longArgs`. The promotion first failed because the new
+  core reported a generic unsupported-call diagnostic for body-less libc
+  leaves; it now reports the established `` `name` cannot be interpreted at
+  compile time, because it has no available source code `` diagnostic at the
+  `FuncDeclaration.fbody is null` boundary. Real `SystemLinker`-backed libc
+  execution remains deferred until the native-runtime/host-FFI bridge.
+- `repl.backend.localDeclarationsCanRebindNames` and
+  `repl.backend.localRebindingPreservesInterveningReferences` in
+  `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. The focused promotion
+  exposed that REPL expression history inserts the compile-time-only
+  `alias it = __quickbite_repl_value_N;` declaration into eval function
+  bodies. The new core now treats function-body alias declarations like other
+  semantic-only declarations and emits no bytecode for them.
+- `repl.backend.evaluatesExpressionCellsUntilQuit`,
+  `repl.backend.skipsCommentOnlyLines`, and
+  `repl.backend.evaluatesStandaloneMixinExpression` in
+  `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. These were stale coverage
+  gaps: focused promotion runs passed unchanged because the shared REPL loop
+  already skips comment-only lines, classifies standalone mixin expressions,
+  and sends expression cells through the existing new-core `evalRepl` path.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -963,28 +990,30 @@ dual-mode model and the `ExecutionMode` enum have been removed
 `SystemLinker` oracle.
 
 ## Current Next Step
-`eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
-(5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), `structs.d` (9),
-`control_flow.d` (10), `exceptions.d` (11), `expressions.d` (12), and
-`cerealed.d` (13) are now complete on the new core (see Rewrite Coverage
-State).
+`eval.d` (module order 1), `rt/cstdlib.d` (2), `integrals.d` (3),
+`logic.d` (4), `results.d` (5), `diagnostics.d` (6), `math.d` (7),
+`arrays.d` (8), `structs.d` (9), `control_flow.d` (10), `exceptions.d` (11),
+`expressions.d` (12), and `cerealed.d` (13) are now complete or explicitly
+reconciled on the new core (see Rewrite Coverage State).
 
-`tests/ut/backends/runner/rt/cstdlib.d` (module order 2) was not
-intentionally skipped. It remains an earlier outstanding module and should be
-reconciled before the rewrite is considered complete. Its current coverage is
-mixed: `Interpreter` and `SystemLinker` execute real libc behaviour for
-`atoi`, `strtol`, and `malloc.pointerRoundTrip`; `Ctfe` pins no-source
-diagnostics for libc calls; old `Bytecode` and `IR` currently cover only the
-design-driving no-source diagnostics for a future host FFI bridge. The next
-worker should decide which existing `SystemLinker`-backed runtime cases can be
-honestly promoted to `BytecodeNewCore` now, and which cases must stay deferred
-until the new core has a host FFI bridge.
+`rt/cstdlib.d` deliberately promotes only the Bytecode/IR no-source
+diagnostic cases. Runtime libc behaviours such as `atoi`, `strtol`,
+`malloc.pointerRoundTrip`, `calloc`, `realloc`, `div`/`ldiv`, `abs`/`labs`,
+`ctype`, `atof`, and `strtod` stay on `Interpreter`, `SystemLinker`, and
+`LLVMJit` until the new core has a real outbound host FFI bridge. Promoting
+those value cases now would assert native-call support that does not exist.
 
-After `rt/cstdlib.d` is reconciled, the next concrete module candidate per
-`ai/plans/backend-test-modules-order.md` is `tests/ut/bin/repl.d` (module
-order 14). The first current REPL backend block that covers old `Bytecode`
-but not `BytecodeNewCore` is
-`repl.backend.localDeclarationsCanRebindNames`; its matrix is
+The next concrete module candidate per
+`ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
+(module order 14). The first tight REPL rebinding family and the adjacent
+expression-loop basics now cover `BytecodeNewCore`:
+`repl.backend.localDeclarationsCanRebindNames`,
+`repl.backend.localRebindingPreservesInterveningReferences`,
+`repl.backend.evaluatesExpressionCellsUntilQuit`,
+`repl.backend.skipsCommentOnlyLines`, and
+`repl.backend.evaluatesStandaloneMixinExpression`. The next current REPL
+backend block that covers old `Bytecode` but not `BytecodeNewCore` is
+`repl.backend.lastValueBindingDisplaysLatestExpressionValue`; its matrix is
 `AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the
@@ -994,6 +1023,33 @@ surface is brought onto `BytecodeNewCore`.
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
 slice roadmap.
+
+## rt/cstdlib.d Reconciliation Analysis (BytecodeNewCore)
+
+The module mixes three kinds of coverage: CTFE no-source diagnostics, real
+runtime libc calls (`Interpreter`, `SystemLinker`, `LLVMJit`), and old
+Bytecode/IR design-driving diagnostics for the future host FFI bridge. The
+new core currently has no outbound host FFI bridge, so the honest promotion is
+the third group only.
+
+Seven existing diagnostic tests now include `BytecodeNewCore`:
+`free.null.voidReturn`, `malloc.pointerReturn.nativeMemory`,
+`calloc.multiArg.zeroedNativeMemory`, `realloc.null.pointerArgPointerReturn`,
+`realloc.grow.preservesNativeMemory`, `div.structReturn`, and
+`ldiv.structReturn.longArgs`. The focused red run covered those seven tests
+and failed only on diagnostic text: the new core reported
+`Unsupported call in bytecode core: ...` instead of the established no-source
+message. The implementation fix is deliberately limited to named functions
+with no available body, preserving the runtime deferral while producing the
+same diagnostic shape as the existing design-driving tests.
+
+No real libc value tests were promoted. The deferred set includes scalar calls
+(`atoi`, `abs`, `labs`, `ctype`), pointer and out-parameter calls (`strtol`,
+`strtod`), allocation calls (`malloc`, `calloc`, `realloc`, `free`), and
+struct-return calls (`div`, `ldiv`). These require the native-runtime slice:
+libffi-style outbound calls, pointer identity across VM memory and native
+memory, out-parameter writes, native allocation ownership, and ABI struct
+returns.
 
 ## math.d Promotion Analysis (BytecodeNewCore)
 

@@ -72,7 +72,7 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.localDeclarationsCanRebindNames." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -92,7 +92,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.localRebindingPreservesInterveningReferences." ~
         backend.stringof)
     unittest {
@@ -114,7 +114,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -128,7 +128,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.skipsCommentOnlyLines." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -142,7 +142,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.evaluatesStandaloneMixinExpression." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

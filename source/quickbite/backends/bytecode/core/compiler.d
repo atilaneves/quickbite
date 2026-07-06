@@ -1602,6 +1602,8 @@ private struct Compiler {
             if (declaration.declaration.isStorageClassDeclaration !is null &&
                 expressionChars(expression).startsWith("static struct "))
                 return Operand.init;
+            if (declaration.declaration.isAliasDeclaration !is null)
+                return Operand.init;
 
             // A static nested function declaration (`static int f() { ... }`
             // inside a function body) introduces no runtime storage. Its body
@@ -7026,8 +7028,12 @@ private struct Compiler {
         const layout = parameterLayout(function_);
         if (function_.fbody is null && !layout.hasClassThis)
             throw new Exception(text(
-                "Unsupported call in bytecode core: ",
-                expressionChars(call),
+                "`",
+                function_.ident is null
+                    ? expressionChars(call)
+                    : function_.ident.toString,
+                "` cannot be interpreted at compile time, ",
+                "because it has no available source code",
             ));
 
         const index = registerFunction(function_);
