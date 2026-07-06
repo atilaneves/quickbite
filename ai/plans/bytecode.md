@@ -3843,3 +3843,17 @@ bin/ut "$test_name"
 ```
 
 Result: 1 test run, 0 failed.
+
+The existing `repl.backend.displaysStringValues` backend-matrix family now
+includes `BytecodeNewCore`. This was the adjacent narrow string-display
+promotion after the scalar display rows; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.displaysStringValues.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
