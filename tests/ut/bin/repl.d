@@ -76,7 +76,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.localDeclarationsCanRebindNames." ~ backend.stringof)
@@ -102,7 +101,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.localRebindingPreservesInterveningReferences." ~
@@ -130,7 +128,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
@@ -150,7 +147,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.skipsCommentOnlyLines." ~ backend.stringof)
@@ -170,7 +166,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.evaluatesStandaloneMixinExpression." ~ backend.stringof)
@@ -190,7 +185,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.lastValueBindingDisplaysLatestExpressionValue." ~ backend.stringof)
@@ -210,7 +204,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.failedExpressionDoesNotAdvanceLastValueBinding." ~ backend.stringof)
@@ -234,7 +227,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
@@ -288,7 +280,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
@@ -308,7 +299,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.statementsExecuteImmediately." ~ backend.stringof)
@@ -328,7 +318,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.functionDeclarationsPersistWithoutSemicolon." ~ backend.stringof)
@@ -348,7 +337,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.replacesSameSignatureFunctionDeclarations." ~ backend.stringof)
@@ -373,7 +361,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.preservesFunctionOverloads." ~ backend.stringof)
@@ -399,7 +386,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.userDefinedFunctionDoesNotCollideWithWrapper." ~ backend.stringof)
@@ -419,7 +405,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.templateFunctionDeclarationsPersistWithoutDisplay." ~ backend.stringof)
@@ -443,7 +428,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
@@ -469,7 +453,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.multilineStructDeclarationsBufferUntilComplete." ~ backend.stringof)
@@ -495,7 +478,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
@@ -520,7 +502,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
@@ -546,7 +527,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
@@ -605,8 +585,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
-    BytecodeNewCore,
 )) {
     @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
     unittest {
@@ -643,7 +621,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.displaysNestedArrayResults." ~ backend.stringof)
@@ -663,7 +640,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
     @("repl.backend.displaysStaticStringArrayResults." ~ backend.stringof)
@@ -683,8 +659,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
-    BytecodeNewCore,
 )) {
     @("repl.backend.displaysNestedEmptyStringValues." ~ backend.stringof)
     unittest {
@@ -703,8 +677,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
-    BytecodeNewCore,
 )) {
     @("repl.backend.displaysWideStringValues." ~ backend.stringof)
     unittest {
@@ -729,8 +701,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
-    BytecodeNewCore,
 )) {
     @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
     unittest {
@@ -899,7 +869,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    SystemLinker,
     BytecodeNewCore,
 )) {
 

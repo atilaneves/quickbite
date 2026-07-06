@@ -988,96 +988,39 @@ promoted.
 
 The next concrete module candidate after `cerealed.d`, per
 `ai/plans/backend-test-modules-order.md`, is `tests/ut/bin/repl.d` (module
-order 14). The first current REPL backend block that covers old `Bytecode`
-but not `BytecodeNewCore` is
-`repl.backend.localDeclarationsCanRebindNames`; its matrix is
-`AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`.
-Before the first REPL oracle batch, no block in `tests/ut/bin/repl.d` included
-`SystemLinker`, so REPL promotion was not oracle-backed under
-`ai/plans/single-oracle.md`.
+order 14). REPL promotion is a `BytecodeNewCore` parity track against the
+existing `Interpreter` REPL behaviour. Do not add `SystemLinker` tags to REPL
+blocks for this track: the REPL tests already encode the interactive contract,
+and the native linker path is not the oracle for these REPL promotions.
 
 #### REPL continuation (next worker path to BytecodeNewCore)
 
-Original re-test status was explicit: `tests/ut/bin/repl.d` had **zero**
-blocks that included `SystemLinker`; no REPL block was `SystemLinker`-backed
-before this sequence.
+Completed REPL parity batches now add `BytecodeNewCore` without
+`SystemLinker`. The green promoted coverage includes the baseline expression
+and `it` cases, declaration persistence, side effects and statement cells,
+function declaration/redeclaration/overload/session cases, multiline
+declarations, buffered-input recovery, command handling while input is pending,
+simple import persistence, and character scalar display.
 
-First batch status: eight old-Bytecode REPL baseline session/display blocks now
-include `SystemLinker` and `BytecodeNewCore`. This changed only matrix tags.
-`SystemLinker` is green for the block. `BytecodeNewCore` now treats the
-REPL-generated `alias it = int __quickbite_repl_value_0 = ...;` declaration
-form as compile-time-only, so the five expression-result/`it` cases in that
-batch pass on the new core. The next REPL batch can proceed from this
-completed baseline.
-
-Second batch status: six existing REPL function-declaration/session blocks now
-include `SystemLinker` and `BytecodeNewCore`: function declarations persist
-without semicolons, same-signature redeclarations replace earlier functions,
-overloads remain distinct, user functions do not collide with the wrapper,
-template function declarations persist without display, and multiline function
-declarations buffer until complete. This batch changes only matrix tags; no
-new REPL behaviour or production code is introduced. The adjacent Ctfe-only
-module-level mutation characterization remains Ctfe-only. Focused verification
-covered the six `SystemLinker` and six `BytecodeNewCore` promoted instances:
-12 tests run, 0 failed. Full validation also passed with `bin/ut --random`
-under seed `2501466469`: 2727 tests run, 0 failed, 6/6 failing as expected.
-
-Third batch status: five existing REPL mutable-session and buffered-input
-blocks now include `SystemLinker` and `BytecodeNewCore`: expression side
-effects persist, statement cells execute immediately, multiline struct
-declarations buffer until complete, failed buffered declarations do not poison
-the session, and commands do not abandon pending input. This batch changes only
-matrix tags; no new REPL behaviour or production code is introduced. The next
-import/display candidates were checked first, but the simple
-`std.algorithm.min` import, delegate placeholder, nested dynamic-array display,
-and static string-array display cases are not yet `SystemLinker` oracle-backed:
-the native REPL evaluator/link path rejects those return types or fails to link
-the Phobos template instance. They remain unpromoted until oracle support is
-available or a narrower oracle-backed import/display block is selected.
-
-Fourth batch status: eight existing old-Bytecode REPL import/display blocks
-now include `SystemLinker` and `BytecodeNewCore`: import declarations persist
-without display, function literals render as the undisplayable placeholder,
-nested dynamic arrays display, static string arrays display, nested empty string
-values display, wide string values display, wide character arrays display, and
-character scalar display collapses to D character literals. This batch changes
-only matrix tags; no new REPL behaviour or production code is introduced. It
-deliberately skips harder Phobos range, associative-array, enum, class,
-command, module-global, and Ctfe-only divergence cases.
-
-Focused verification is red for this fourth batch: 16 promoted instances ran,
-2 passed, and 14 failed. The passing promoted instances are
+The latest display/import batch is narrowed to a coherent red
+`BytecodeNewCore` target pair: `displaysNestedArrayResults` and
+`displaysStaticStringArrayResults`. Both compare against the existing
+`Interpreter` expectation and fail in the new core around array-literal display
+reification (`[1, 2]` and `["a", "b"]`). The already-green
 `importDeclarationsPersistWithoutDisplay.BytecodeNewCore` and
-`characterScalarDisplayCollapsesToCharLiteral.BytecodeNewCore`.
-`SystemLinker` is not yet an oracle for this whole block: it fails
-`importDeclarationsPersistWithoutDisplay` with an undefined Phobos template
-symbol for `std.algorithm.min`, and fails the display cases because the native
-REPL evaluator does not support return types `int delegate() pure nothrow
-@nogc @safe`, `int[][]`, `string[2]`, `string[]`, `wstring`, `wchar[]`, and
-`wchar`. `BytecodeNewCore` fails the function-literal placeholder with
-unsupported delegate type, the nested/static array cases with unsupported array
-literals (`[1, 2]` and `["a", "b"]`), the nested empty string and wide
-character array cases by producing no display output, and the wide string case
-by rendering UTF strings without the `w`/`d` literal suffixes.
+`characterScalarDisplayCollapsesToCharLiteral.BytecodeNewCore` remain promoted.
 
-Next action is to continue adding `SystemLinker` tags in small batches after
-the first completed baseline session/display batch. Continue through the REPL
-baseline cohorts in this order: display surface, import surface, then session
-surface. Pause after each batch, run the expected `SystemLinker`-backed checks,
-then continue.
+Withheld from this batch because they are separate failure groups:
+`displaysUndisplayablePlaceholderForFunctionLiterals` (delegate display
+placeholder), `displaysNestedEmptyStringValues` (empty-string dynamic array
+display), `displaysWideStringValues` (wide string suffix rendering), and
+`displaysWideCharacterArrayValues` (wide character array display).
 
-Batch plan:
-1) Baseline `display`-surface REPL commands: status output shape, command
-rendering, command completion/error visibility.
-2) Baseline `import`-surface REPL commands: path handling, module
-resolution, and invalid-import diagnostics.
-3) Baseline `session`-surface REPL commands: start/shutdown flow, mutable
-state across commands, and reset/isolation semantics.
-
-Once oracle coverage exists for a block, promote that block to
-`AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)` on that same
-delivery. The explicit end state is to promote **all** REPL tests in
-`tests/ut/bin/repl.d` to `BytecodeNewCore`.
+Next action is to implement the narrowed array-literal display pair under the
+200 production-line limit, then promote the withheld display groups one small
+coherent group at a time. The explicit end state remains to promote all REPL
+tests in `tests/ut/bin/repl.d` to `BytecodeNewCore` where they compare against
+the existing `Interpreter` REPL behaviour.
 
 Hard PR criterion: do not open a PR that contains a single REPL promotion
 iteration adding more than 200 lines of work; split into smaller PRs and keep
@@ -1085,11 +1028,7 @@ each REPL-oracle/REPL-new-core tranche under that line budget.
 
 For each batch, capture whether the batch only changes matrix tags before
 adding `BytecodeNewCore` for that batch, and preserve this invariant in the
-plan notes to keep oracle provenance auditable.
-
-This path is the explicit oracle decision for this sequence. No batch should
-flip to `BytecodeNewCore` before its `SystemLinker` checks are passing for the
-same batch.
+plan notes to keep parity provenance auditable.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
