@@ -542,7 +542,13 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -595,7 +601,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -627,7 +639,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.displaysNestedArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -641,7 +659,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.displaysStaticStringArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -655,7 +679,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.displaysNestedEmptyStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -669,7 +699,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.displaysWideStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -689,7 +725,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -853,7 +895,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
 
     @("repl.backend.characterScalarDisplayCollapsesToCharLiteral." ~ backend.stringof)
     unittest {

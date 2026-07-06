@@ -1035,6 +1035,31 @@ the native REPL evaluator/link path rejects those return types or fails to link
 the Phobos template instance. They remain unpromoted until oracle support is
 available or a narrower oracle-backed import/display block is selected.
 
+Fourth batch status: eight existing old-Bytecode REPL import/display blocks
+now include `SystemLinker` and `BytecodeNewCore`: import declarations persist
+without display, function literals render as the undisplayable placeholder,
+nested dynamic arrays display, static string arrays display, nested empty string
+values display, wide string values display, wide character arrays display, and
+character scalar display collapses to D character literals. This batch changes
+only matrix tags; no new REPL behaviour or production code is introduced. It
+deliberately skips harder Phobos range, associative-array, enum, class,
+command, module-global, and Ctfe-only divergence cases.
+
+Focused verification is red for this fourth batch: 16 promoted instances ran,
+2 passed, and 14 failed. The passing promoted instances are
+`importDeclarationsPersistWithoutDisplay.BytecodeNewCore` and
+`characterScalarDisplayCollapsesToCharLiteral.BytecodeNewCore`.
+`SystemLinker` is not yet an oracle for this whole block: it fails
+`importDeclarationsPersistWithoutDisplay` with an undefined Phobos template
+symbol for `std.algorithm.min`, and fails the display cases because the native
+REPL evaluator does not support return types `int delegate() pure nothrow
+@nogc @safe`, `int[][]`, `string[2]`, `string[]`, `wstring`, `wchar[]`, and
+`wchar`. `BytecodeNewCore` fails the function-literal placeholder with
+unsupported delegate type, the nested/static array cases with unsupported array
+literals (`[1, 2]` and `["a", "b"]`), the nested empty string and wide
+character array cases by producing no display output, and the wide string case
+by rendering UTF strings without the `w`/`d` literal suffixes.
+
 Next action is to continue adding `SystemLinker` tags in small batches after
 the first completed baseline session/display batch. Continue through the REPL
 baseline cohorts in this order: display surface, import surface, then session
