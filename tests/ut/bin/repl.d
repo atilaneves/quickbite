@@ -284,7 +284,13 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -298,7 +304,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.statementsExecuteImmediately." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -453,7 +465,13 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.multilineStructDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -473,7 +491,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -492,7 +516,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    SystemLinker,
+    BytecodeNewCore,
+)) {
     @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;

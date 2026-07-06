@@ -1022,6 +1022,19 @@ covered the six `SystemLinker` and six `BytecodeNewCore` promoted instances:
 12 tests run, 0 failed. Full validation also passed with `bin/ut --random`
 under seed `2501466469`: 2727 tests run, 0 failed, 6/6 failing as expected.
 
+Third batch status: five existing REPL mutable-session and buffered-input
+blocks now include `SystemLinker` and `BytecodeNewCore`: expression side
+effects persist, statement cells execute immediately, multiline struct
+declarations buffer until complete, failed buffered declarations do not poison
+the session, and commands do not abandon pending input. This batch changes only
+matrix tags; no new REPL behaviour or production code is introduced. The next
+import/display candidates were checked first, but the simple
+`std.algorithm.min` import, delegate placeholder, nested dynamic-array display,
+and static string-array display cases are not yet `SystemLinker` oracle-backed:
+the native REPL evaluator/link path rejects those return types or fails to link
+the Phobos template instance. They remain unpromoted until oracle support is
+available or a narrower oracle-backed import/display block is selected.
+
 Next action is to continue adding `SystemLinker` tags in small batches after
 the first completed baseline session/display batch. Continue through the REPL
 baseline cohorts in this order: display surface, import surface, then session
