@@ -1064,20 +1064,25 @@ static foreach (backend; AliasSeq!(Interpreter)) {
         repl.submit("good + 1").should == "42";
     }
 
-    @("repl.backend.runtimeOnlyFileOpenReportsNativeBoundary." ~ backend.stringof)
+    // Superseded characterization: this used to pin the CTFE-style
+    // native-boundary diagnostic (ai/plans/interpreter.md §5); the
+    // interpreter now executes std.stdio.File's source and calls the libc
+    // leaves natively, so opening a file succeeds.
+    @("repl.backend.runtimeFileOpenSucceeds." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
+        import unit_threaded.integration: Sandbox;
+        import std.conv: text;
 
-        auto repl = Repl(newBackend!backend);
+        with (immutable Sandbox()) {
+            auto repl = Repl(newBackend!backend);
 
-        repl.submit("import std;");
-        void openFile() {
-            repl.submit(`auto f = File("/tmp/foo.txt", "w");`);
+            repl.submit("import std;").should == "";
+            repl.submit(text(
+                "auto f = File(`", inSandboxPath("repl_file.txt"), "`, `w`);",
+            )).should == "";
+            repl.submit("f.isOpen").should == "true";
         }
-
-        openFile.shouldThrow.msg.should ==
-            "`fopen64` cannot be interpreted at compile time, because it has no available source code\n" ~
-            "`malloc` cannot be interpreted at compile time, because it has no available source code";
     }
 }
 

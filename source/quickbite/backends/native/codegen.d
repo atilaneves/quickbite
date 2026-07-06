@@ -25,7 +25,8 @@ public struct CodegenInputs {
 // Fork, run DMD's backend, and write one object file per emitted module into
 // `dir`, returning the object-file paths to the parent. This is the shared
 // codegen path: it performs the rod-root assertion, user-import promotion,
-// child-side prune, and adoptTypeInfos, then emits objects. The fork child
+// child-side adopt-and-prune (adoptOrphans/pruneForeignMembers), then emits
+// objects. The fork child
 // emits to disk and exits; the parent reads the paths back. Callers consume
 // the objects however they like (dmd -shared, ORC, ...).
 public string[] emitObjectFilesForLink(
@@ -204,10 +205,12 @@ private string[] emitObjectFilesForLinkLocked(
     // parent's AST and globals are never mutated, which is what lets cached
     // (stale) parses be codegen'd repeatedly.
     runInFork(() {
-        const context = LinkContext(
-            linkSet,
-            collectMemberInstances(modules),
-        );
+        // Instance and TypeInfo emission is this link's decision (see
+        // adoptOrphans): adopt everything homed outside the link that this
+        // link may define onto the rod, then prune by provenance.
+        auto memberInstances = collectMemberInstances(modules);
+        adoptOrphans(rod, linkSet, memberInstances);
+        const context = LinkContext(linkSet, memberInstances);
         // User-import modules are root modules (see prepareForCodegen), so
         // like the rod they accumulate template instances parameterized on
         // other compilations' types; prune them all against this link.
@@ -222,7 +225,6 @@ private string[] emitObjectFilesForLinkLocked(
             keepOnlyTemplateCodegenMembers(defaultImport);
             pruneForeignMembers(defaultImport, context);
         }
-        adoptTypeInfos(rod, linkSet);
         emitObjectFiles(modules, objPaths);
     });
 
@@ -342,15 +344,16 @@ private void writeAll(int fd, in char[] data) {
     }
 }
 
-// With allInst on, every druntime/phobos template instance and TypeInfo from
-// every compilation in the process accumulates on the rod (the first root
-// module parsed; appendToModuleMember and getTypeInfoType chase importedFrom
-// to it). Codegen of the rod emits all of them — needsCodegen is
-// provenance-based, never link-set-based — so instances parameterized on
-// other snippets' types would make rod.o reference symbols this link cannot
-// resolve. Drop every member that references a module outside this link
-// (druntime/phobos modules stay: their instances are exactly what the rod is
-// for). Runs in the fork child only, so nothing needs restoring.
+// After adoptOrphans the rod holds instances and TypeInfos from every
+// compilation in the process (druntime instances home there natively —
+// object.d is loaded by the rod's own semantic — and everything else is
+// adopted at link time). Codegen of the rod would emit all of them —
+// needsCodegen is provenance-based, never link-set-based — so instances
+// parameterized on other snippets' types would make rod.o reference symbols
+// this link cannot resolve. Drop every member that references a module
+// outside this link (druntime/phobos modules stay: their instances are
+// exactly what the rod is for). Runs in the fork child only, so nothing
+// needs restoring.
 private void pruneForeignMembers(
     imported!"dmd.dmodule".Module module_,
     in LinkContext context,
@@ -408,35 +411,78 @@ private bool[imported!"dmd.dtemplate".TemplateInstance] collectMemberInstances(
     return result;
 }
 
-// TypeInfos are created once per process (genTypeInfo only reports
-// needs-codegen on vtinfo creation) and appended to the creating module's
-// importedFrom — for a root snippet, the snippet itself. A later snippet
-// using the same type gets the cached vtinfo and no member append, so
-// nothing in its own link would emit the TypeInfo (the symbol referenced by
-// e.g. a synthesized __xtoHash stays undefined). The cache is on the type
-// (Type.stringtable); re-home every aggregate-free TypeInfo onto the rod,
-// where it emits as a COMDAT — duplicate emission across links is safe.
-private void adoptTypeInfos(
+// DMD homes every deduplicated template instance and cached TypeInfo on
+// exactly one module, chosen by whichever compilation first triggered it —
+// for a lazily imported Phobos module that is an earlier test's snippet, a
+// module no later link emits. Emission is therefore this link's decision:
+// adopt everything homed outside the link that this link can define onto
+// the rod (the module every link emits). Adopted instances join
+// memberInstances so references among them survive pruneForeignMembers;
+// instances parameterized on other compilations' types are never adopted,
+// so references to them stay foreign and get pruned. Runs in the fork child
+// only, so nothing needs restoring.
+private void adoptOrphans(
     imported!"dmd.dmodule".Module rod,
     bool[imported!"dmd.dmodule".Module] linkSet,
+    ref bool[imported!"dmd.dtemplate".TemplateInstance] memberInstances,
 ) {
     import dmd.declaration: TypeInfoDeclaration;
+    import dmd.dmodule: Module;
+    import dmd.dtemplate: TemplateInstance;
     import dmd.mtype: Type;
+    import dmd.typinf: builtinTypeInfo;
 
-    // A TypeInfo already emitted by any module in this link must not be
-    // pushed onto the rod as well: emitting the same Dsymbol from two
-    // modules in one process trips symbol_add's Ssymnum assert.
-    bool[TypeInfoDeclaration] present;
+    // Template instances live in the members array of the root module that
+    // first instantiated them (appendToModuleMember chases the declaring
+    // module's importedFrom to that root). memberInstances doubles as the
+    // guard against adopting something an in-link module already emits:
+    // emitting the same Dsymbol from two members arrays in one process trips
+    // symbol_add's Ssymnum assert.
+    TemplateInstance[] candidates;
+    foreach (module_; Module.amodules) {
+        if (module_ in linkSet || !module_.isRoot || module_.members is null)
+            continue;
+
+        foreach (i; 0 .. module_.members.length)
+            if (auto instance = (*module_.members)[i].isTemplateInstance)
+                if ((instance in memberInstances) is null)
+                    candidates ~= instance;
+    }
+
+    // To a fixed point: an instance becomes adoptable once everything its
+    // arguments reference is in-link or itself adopted (e.g. a Phobos
+    // instance parameterized on another adopted Phobos instance's type).
+    for (bool progressed = true; progressed;) {
+        progressed = false;
+        foreach (candidate; candidates) {
+            if ((candidate in memberInstances) !is null)
+                continue;
+            if (instanceIsForeign(candidate, LinkContext(linkSet, memberInstances)))
+                continue;
+
+            memberInstances[candidate] = true;
+            if (candidate.inst !is null)
+                memberInstances[candidate.inst] = true;
+            rod.members.push(candidate);
+            progressed = true;
+        }
+    }
+
+    bool[TypeInfoDeclaration] presentTypeInfos;
     foreach (module_, _; linkSet) {
         if (module_.members is null)
             continue;
         foreach (i; 0 .. module_.members.length)
             if (auto typeInfo = (*module_.members)[i].isTypeInfoDeclaration)
-                present[typeInfo] = true;
+                presentTypeInfos[typeInfo] = true;
     }
 
-    // Two passes because the string table's opApply requires a nothrow
-    // delegate and the foreignness walk is not nothrow.
+    // TypeInfos are created once per process (genTypeInfo only reports
+    // needs-codegen on vtinfo creation) and cached on the type
+    // (Type.stringtable); a later compilation using the same type gets the
+    // cached vtinfo and no member append at all, so the cache is the only
+    // place to find them. Two passes because the string table's opApply
+    // requires a nothrow delegate and the foreignness walk is not nothrow.
     TypeInfoDeclaration[] cached;
     foreach (entry; Type.stringtable) {
         // The string table hands out const entries; pushing the declaration
@@ -448,8 +494,6 @@ private void adoptTypeInfos(
     }
 
     foreach (typeInfo; cached) {
-        import dmd.typinf: builtinTypeInfo;
-
         // Only aggregate-free types (builtin compositions like
         // const(int[])): their TypeInfos reference nothing but other
         // builtin-composition TypeInfos and druntime vtables, so the COMDAT
@@ -464,9 +508,9 @@ private void adoptTypeInfos(
         // asked for. Builtin TypeInfos themselves are exported by druntime.
         if (builtinTypeInfo(typeInfo.tinfo) || typeHasAggregate(typeInfo.tinfo))
             continue;
-        if (typeInfo in present)
+        if (typeInfo in presentTypeInfos)
             continue;
-        present[typeInfo] = true;
+        presentTypeInfos[typeInfo] = true;
         rod.members.push(typeInfo);
     }
 }
@@ -546,7 +590,10 @@ private bool instanceIsForeign(
         if (auto enclosing = parent.isTemplateInstance)
             return instanceIsForeign(enclosing, context);
 
-    return false;
+    // An instance nested in a function (a repl snippet's lambda, or filter!
+    // instantiated inside the snippet's eval wrapper) is emitted with — and
+    // references — its enclosing scope, so its enclosing module decides.
+    return moduleIsForeign(instance.getModule, context);
 }
 
 private bool argIsForeign(
@@ -559,9 +606,16 @@ private bool argIsForeign(
         return typeIsForeign(type, context);
     if (auto symbol = isDsymbol(arg))
         return symbolIsForeign(symbol, context);
-    if (auto expression = isExpression(arg))
+    if (auto expression = isExpression(arg)) {
+        // A lambda alias argument (e.g. a filter predicate) is foreign by
+        // where the function symbol lives, not by its type: the function
+        // type carries no aggregate, but the emitted instance calls the
+        // lambda's symbol in its defining module.
+        if (auto funcExp = expression.isFuncExp)
+            return symbolIsForeign(funcExp.fd, context);
         return expression.type !is null
             && typeIsForeign(expression.type, context);
+    }
     if (auto tuple = isTuple(arg)) {
         foreach (i; 0 .. tuple.objects.length)
             if (argIsForeign(tuple.objects[i], context))

@@ -546,3 +546,22 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
         runBackendSourceFixtureTests!backend(strtodSource);
     }
 }
+
+
+enum strlenLocalBufferSource = q{
+    unittest {
+        import core.stdc.string: strlen;
+
+        char[8] buf = "hello\0\0\0";
+
+        assert(strlen(&buf[0]) == 5);
+    }
+};
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("strlen.localBuffer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(strlenLocalBufferSource);
+    }
+}

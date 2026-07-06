@@ -81,11 +81,14 @@ to `ffi.md` rather than reimplementing it.
 
 ## 5. The masking bug: CTFE-as-diagnostic (Phase 0, prerequisite)
 
-**Status: first assignment target fixed for this PR slice.** The approved red
-test now covers the behaviour the interpreter must support: assigning through a
-`ref`-returning member call mutates the returned lvalue. The green
-implementation handles that ref-return call assignment instead of pinning the
-old unsupported-assignment diagnostic.
+**Status: closed.** The `ctfeDiagnostic` harvesting path
+(`quickbite.frontend.dmd.ctfe`, deleted) no longer exists: the interpreter's
+`eval` reports its own exception message verbatim. The characterization test
+that pinned the CTFE-style wording for a REPL `File` open
+(`repl.backend.runtimeOnlyFileOpenReportsNativeBoundary`) was superseded by
+`repl.backend.runtimeFileOpenSucceeds` — the open now works (§9.8). Earlier
+slices had fixed the first masked assignment target (assigning through a
+`ref`-returning member call).
 
 The reported failure was:
 
@@ -407,6 +410,50 @@ already-supported paths.
 **Oracle fixture.** Each characterized against `SystemLinker`: a minimal repro
 that the interpreter currently gets wrong. **Done.** All three classes gone;
 fixtures pin the corrected behaviour.
+
+### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
+
+**Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
+refcounted Impl, and `std.file.readText` agree with `SystemLinker`. Driven by
+the user-visible fixture `rt/file.d` (`file.createWriteRead`), with the
+per-root standalone fixtures `struct.voidInitialisedFieldSliceAssignment`
+(ct/) and `strlen.localBuffer` (rt/cstdlib.d).
+
+**Landed 2026-07-06.** The chain of roots this exposed, each fixed at its
+seam:
+
+```text
+- slice assignment through a struct-field base (`s.buf[i .. j] = src[]`),
+  the real error behind the §5-masked tempCString failure;
+- pointer-typed integer constants (TempCStringBuffer.useStack's
+  `cast(T*) size_t.max`) as native pointer values;
+- `&field` of a static-array struct member as an array pointer;
+- C strings marshalled from interpreter array pointers (fopen's path);
+- delegating struct constructors (`this(...)` forwarding, File's ctor);
+- native-memory struct loads/stores through the marshal layer
+  (malloc'd Impl reads/writes; Tsarray fields for stat_t);
+- struct out-parameters at flagged `&local` call sites (fstat);
+- core.internal.atomic hooks (asm bodies interpreted as plain load/store/
+  rmw; alignment asserts short-circuited) — File's refcount;
+- `ref` writeback through `*pointer` arguments (core.atomic's shared
+  overloads forward `*cast(T*)&val`) — the lost refcount store;
+- postblit-call declaration initializers (`(copy = orig).__postblit()`)
+  keeping the blitted variable, not the call's incidental result;
+- pointer-into-array argument writeback for native calls that fill
+  buffers (posix read);
+- data-segment variables materializing their static initializers
+  (std.encoding's bomTable, read by readText's BOM detection);
+- char/integer code-point equality (bytes read from native memory
+  compared through `cast(string)`).
+- `&buf[i]` folded to SymOffExp: a pointer into the array's elements, not
+  a scalar out-slot (the silent strlen-returns-0 bug).
+```
+
+The SystemLinker leg of the same fixture exposed that a Phobos template
+instance first instantiated by another test's snippet is never emitted in a
+later link; `adoptOrphans` in the native codegen (one adopt-then-prune pass,
+replacing the ad-hoc `adoptTypeInfos`) re-homes out-of-link instances and
+TypeInfos onto the rod, gated by the same provenance rules the prune uses.
 
 ## 10. Done
 

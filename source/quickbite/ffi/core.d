@@ -750,7 +750,17 @@ private bool isOutParameter(
     imported!"dmd.mtype".Type type,
     in bool addressOfLocal,
 ) {
-    return isOutPointer(type) || (addressOfLocal && isOutScalarPointer(type));
+    return isOutPointer(type) ||
+        (addressOfLocal && (isOutScalarPointer(type) || isOutStructPointer(type)));
+}
+
+// A single-level pointer to a struct passed as `&local` (e.g. fstat's
+// `stat_t*`): an out cell the callee writes and the backend reifies back
+// into the local (ffi.md §34.8).
+private bool isOutStructPointer(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tpointer && type.nextOf.toBasetype.ty == TY.Tstruct;
 }
 
 // A pointer-to-pointer parameter (e.g. strtol's `char** endptr`) is an out
