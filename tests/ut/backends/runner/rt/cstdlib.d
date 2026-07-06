@@ -155,8 +155,9 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("malloc.pointerRoundTrip." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         enum source = q{
             unittest {
