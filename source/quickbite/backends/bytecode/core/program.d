@@ -61,6 +61,8 @@ package(quickbite.backends.bytecode) struct ResultType {
     bool isStaticArray;
     uint arrayLength;
     bool arrayElementsAreStrings;
+    string[ulong] enumMembers;
+    string[ulong] elementEnumMembers;
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset

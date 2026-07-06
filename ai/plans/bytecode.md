@@ -1133,8 +1133,25 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.displaysWideCharacterArrayValues`. The string-display family was
 implementation work, not stale coverage: static/string array result
 reification and wide-string suffix preservation needed new-core result metadata
-and reification support. The next current REPL backend blocks that cover old
-`Bytecode` but not `BytecodeNewCore` are the adjacent scalar display tests:
+and reification support. `repl.backend.displaysEnumValues` now also covers
+`BytecodeNewCore`. The promotion exposed a display-only metadata gap: bytecode
+already executed enum values as their base scalar slots, so `E.a`, `[E.a,
+E.b]`, and `cast(int) E.a` all computed the right bits, but reification only
+saw `int` storage and rendered `"7"` / `"[7, 8]"`. `ResultType` now carries
+enum value-name maps for scalar results and scalar array elements; the compiler
+builds those maps from DMD `EnumDeclaration.members`, and `reify.d` converts
+matching scalar bytes back to `Value.enumValue`. Cast results keep their cast
+type, so `cast(int) E.a` still renders `"7"`. Verification for this promotion
+passed:
+
+- `ninja bin/ut`
+- `bin/ut ut.bin.repl.repl.backend.displaysEnumValues.BytecodeNewCore`
+- `bin/ut --random`
+
+The random run used seed `992721697` and reported `2783 test(s) run,
+0 failed, 6/6 failing as expected`.
+The next current REPL backend blocks that cover old `Bytecode` but not
+`BytecodeNewCore` are the adjacent scalar display tests:
 `repl.backend.characterScalarDisplayCollapsesToCharLiteral` and
 `repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL

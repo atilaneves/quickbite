@@ -26,7 +26,7 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     if (type.isArray)
         return reifyArray(bytes, type, data, heap);
 
-    return reifyScalar(bytes, type.scalar);
+    return reifyScalar(bytes, type.scalar, type.enumMembers);
 }
 
 private imported!"quickbite.lang".Value reifyArray(
@@ -44,7 +44,8 @@ private imported!"quickbite.lang".Value reifyArray(
     auto block = type.isStaticArray
         ? bytes
         : heapBlock(scalar!size_t(bytes), heap);
-    if (!type.arrayElementsAreArrays && isCharacter(type.elementType))
+    if (!type.arrayElementsAreArrays && type.elementEnumMembers.length == 0 &&
+        isCharacter(type.elementType))
         return reifyCharacterArray(block, length, type.elementType);
 
     Value[] elements;
@@ -72,6 +73,7 @@ private imported!"quickbite.lang".Value reifyArray(
                 : reifyScalar(
                     block[offset .. offset + size(type.elementType)],
                     type.elementType,
+                    type.elementEnumMembers,
                 );
         }
     }
@@ -86,7 +88,8 @@ withScalarArrayElements(
         ResultType, ScalarType;
 
     return ResultType(
-        ScalarType.void_, false, true, type.elementType, false,
+        ScalarType.void_, false, true, type.elementType, false, false, 0,
+        false, false, 0, false, type.elementEnumMembers.dup,
     );
 }
 
@@ -187,9 +190,14 @@ private bool isCharacter(
 private imported!"quickbite.lang".Value reifyScalar(
     in ubyte[] bytes,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+    in string[ulong] enumMembers = null,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program: ScalarType;
     import quickbite.lang: Value;
+
+    if (enumMembers.length != 0)
+        if (auto name = scalarKey(bytes, type) in enumMembers)
+            return Value.enumValue(*name);
 
     final switch (type) with (ScalarType) {
         case void_:
@@ -224,6 +232,48 @@ private imported!"quickbite.lang".Value reifyScalar(
             return Value(scalar!double(bytes));
         case real_:
             return Value(scalar!real(bytes));
+    }
+}
+
+private ulong scalarKey(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case void_:
+            return 0;
+        case bool_:
+            return cast(ulong) scalar!bool(bytes);
+        case byte_:
+            return cast(ulong) scalar!byte(bytes);
+        case ubyte_:
+            return cast(ulong) scalar!ubyte(bytes);
+        case short_:
+            return cast(ulong) scalar!short(bytes);
+        case ushort_:
+            return cast(ulong) scalar!ushort(bytes);
+        case int_:
+            return cast(ulong) scalar!int(bytes);
+        case uint_:
+            return cast(ulong) scalar!uint(bytes);
+        case long_:
+            return cast(ulong) scalar!long(bytes);
+        case ulong_:
+            return scalar!ulong(bytes);
+        case char_:
+            return cast(ulong) scalar!char(bytes);
+        case wchar_:
+            return cast(ulong) scalar!wchar(bytes);
+        case dchar_:
+            return cast(ulong) scalar!dchar(bytes);
+        case float_:
+            return cast(ulong) scalar!float(bytes);
+        case double_:
+            return cast(ulong) scalar!double(bytes);
+        case real_:
+            return cast(ulong) scalar!real(bytes);
     }
 }
 

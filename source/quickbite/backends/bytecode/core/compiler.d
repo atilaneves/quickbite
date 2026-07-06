@@ -9044,6 +9044,9 @@ private struct Compiler {
                 false,
                 false,
                 0,
+                false,
+                null,
+                enumMembersByValue(type.toBasetype.nextOf),
             );
 
         if (type.toBasetype.ty == TY.Tsarray && arrayElementIsString(type))
@@ -9077,7 +9080,10 @@ private struct Compiler {
         if (isPointerType(type))
             return ResultType(ScalarType.ulong_, false);
 
-        return ResultType(scalarType(type), false);
+        return ResultType(
+            scalarType(type), false, false, ScalarType.void_, false, false, 0,
+            false, false, 0, false, enumMembersByValue(type),
+        );
     }
 
     // The result type of a whole function. A constructor's nominal result is its
@@ -10376,6 +10382,39 @@ private string typeChars(imported!"dmd.mtype".Type type) {
     import std.conv: text;
 
     return text(type.toChars);
+}
+
+private string[ulong] enumMembersByValue(imported!"dmd.mtype".Type type) {
+    import std.conv: text;
+
+    if (type is null)
+        return null;
+
+    auto enumType = type.isTypeEnum;
+    if (enumType is null)
+        return null;
+
+    auto declaration = enumType.sym;
+    if (declaration is null || declaration.members is null)
+        return null;
+
+    string[ulong] members;
+    const enumName = typeChars(enumType);
+    foreach (symbol; *declaration.members) {
+        auto member = symbol.isEnumMember;
+        if (member is null)
+            continue;
+        const value = cast(ulong) member.value.toInteger;
+        if ((value in members) is null)
+            members[value] = text(enumName, ".", enumMemberName(member));
+    }
+    return members;
+}
+
+private string enumMemberName(imported!"dmd.denum".EnumMember member)
+@trusted {
+    // DMD Identifier.toString only exposes the compiler-owned identifier text.
+    return member.ident.toString.idup;
 }
 
 // The inline byte size and alignment of a static array, taken from DMD's
