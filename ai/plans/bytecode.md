@@ -3870,6 +3870,12 @@ bin/ut "$test_name"
 
 Result: 1 test run, 0 failed.
 
+Review follow-up for PR #343: replace the new enum-reification `ResultType`
+literals with named factories on `ResultType`, and generate the scalar enum
+lookup switch arms from D type names with string mixins. This keeps the
+metadata intent visible at the call sites while preserving the promoted REPL
+enum-display behaviour.
+
 All remaining narrow `tests/ut/bin/repl.d` backend rows were attempted on
 `BytecodeNewCore` in one sweep. The passing promotions retained in the matrix
 are:

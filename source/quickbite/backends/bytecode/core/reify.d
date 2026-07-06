@@ -84,12 +84,11 @@ private imported!"quickbite.backends.bytecode.core.program".ResultType
 withScalarArrayElements(
     in imported!"quickbite.backends.bytecode.core.program".ResultType type,
 ) @safe pure {
-    import quickbite.backends.bytecode.core.program:
-        ResultType, ScalarType;
+    import quickbite.backends.bytecode.core.program: ResultType;
 
-    return ResultType(
-        ScalarType.void_, false, true, type.elementType, false, false, 0,
-        false, false, 0, false, type.elementEnumMembers.dup,
+    return ResultType.scalarArrayResult(
+        type.elementType,
+        type.elementEnumMembers.dup,
     );
 }
 
@@ -240,40 +239,17 @@ private ulong scalarKey(
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program: ScalarType;
+    import std.meta: AliasSeq;
 
     final switch (type) with (ScalarType) {
         case void_:
             return 0;
-        case bool_:
-            return cast(ulong) scalar!bool(bytes);
-        case byte_:
-            return cast(ulong) scalar!byte(bytes);
-        case ubyte_:
-            return cast(ulong) scalar!ubyte(bytes);
-        case short_:
-            return cast(ulong) scalar!short(bytes);
-        case ushort_:
-            return cast(ulong) scalar!ushort(bytes);
-        case int_:
-            return cast(ulong) scalar!int(bytes);
-        case uint_:
-            return cast(ulong) scalar!uint(bytes);
-        case long_:
-            return cast(ulong) scalar!long(bytes);
-        case ulong_:
-            return scalar!ulong(bytes);
-        case char_:
-            return cast(ulong) scalar!char(bytes);
-        case wchar_:
-            return cast(ulong) scalar!wchar(bytes);
-        case dchar_:
-            return cast(ulong) scalar!dchar(bytes);
-        case float_:
-            return cast(ulong) scalar!float(bytes);
-        case double_:
-            return cast(ulong) scalar!double(bytes);
-        case real_:
-            return cast(ulong) scalar!real(bytes);
+        static foreach (T; AliasSeq!(
+            bool, byte, ubyte, short, ushort, int, uint, long, ulong,
+            char, wchar, dchar, float, double, real,
+        ))
+            mixin("case " ~ T.stringof ~ "_:" ~
+                "return cast(ulong) scalar!" ~ T.stringof ~ "(bytes);");
     }
 }
 

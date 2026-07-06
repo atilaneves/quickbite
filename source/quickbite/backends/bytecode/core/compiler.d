@@ -9080,9 +9080,9 @@ private struct Compiler {
         if (isPointerType(type))
             return ResultType(ScalarType.ulong_, false);
 
-        return ResultType(
-            scalarType(type), false, false, ScalarType.void_, false, false, 0,
-            false, false, 0, false, enumMembersByValue(type),
+        return ResultType.scalarResult(
+            scalarType(type),
+            enumMembersByValue(type),
         );
     }
 
