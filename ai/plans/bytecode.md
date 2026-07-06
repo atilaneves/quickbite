@@ -831,6 +831,14 @@ switch; `Bytecode` still defaults to the old core):
   promotions at emit time (sign/zero-extension opcodes shared with the cast
   path) and failed equality asserts render both operands from frame bytes
   at the comparison width.
+- `signedUnsignedComparisonIsUnsigned` and `wraparoundAtTypeBoundaries` in
+  `tests/ut/backends/runner/ct/integrals.d` now cover `BytecodeNewCore`.
+  `signedUnsignedComparisonIsUnsigned` was a stale coverage gap: existing
+  integer promotions and unsigned-comparison opcodes already matched the
+  `SystemLinker` oracle. `wraparoundAtTypeBoundaries` exposed missing
+  unsigned 4-byte subtraction lowering; `compileSubtractExpression` now uses
+  the existing 4-byte integer helper so `uint - uint` wraps through
+  `Op.subInt4` and stores a `uint` result.
 - All remaining `tests/ut/backends/evaluator/eval.d` blocks, completing
   `eval.d` (module order 1) on the new core. Earned in four slices:
   (a) compound assignment — `++x` lowers to `x += 1` through the existing

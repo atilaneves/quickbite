@@ -123,7 +123,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
 
 // IR is omitted: its i32 comparison is signed-only, so it evaluates
 // `-1 < 0u` as true — a semantic divergence recorded in ai/plans/ir.md.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("signedUnsignedComparisonIsUnsigned." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -147,7 +147,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
     @("wraparoundAtTypeBoundaries." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
