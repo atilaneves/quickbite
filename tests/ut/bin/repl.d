@@ -63,6 +63,44 @@ import quickbite.repl_prelude: __quickbiteFormat;
     __quickbiteFormat(["a"w, "b"w]).should == `["a"w, "b"w]`;
 }
 
+@("repl.formatter.rendersEnumMembersQualifiedAtCompileTime")
+@safe pure unittest {
+    enum E { a, b, }
+    enum actual = __quickbiteFormat(E.b);
+
+    actual.should == "E.b";
+}
+
+@("repl.formatter.rendersStructFieldsWithLiteralSuffixesAtCompileTime")
+@safe pure unittest {
+    struct Point { int x; long y; }
+    enum actual = __quickbiteFormat(Point(1, 2));
+
+    actual.should == "Point(1, 2L)";
+}
+
+@("repl.formatter.rendersStructStringFieldsQuotedAtCompileTime")
+@safe pure unittest {
+    struct Person { string name; int age; }
+    enum actual = __quickbiteFormat(Person("Bob", 42));
+
+    actual.should == `Person("Bob", 42)`;
+}
+
+@("repl.formatter.rendersAssociativeArraysAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat([1: 10]);
+
+    actual.should == "[1:10]";
+}
+
+@("repl.formatter.rendersAssociativeArrayValueSuffixesAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat(["k": 10L]);
+
+    actual.should == `["k":10L]`;
+}
+
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;

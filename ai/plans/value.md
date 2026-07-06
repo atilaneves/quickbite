@@ -186,6 +186,20 @@ suffixes (`[1u, 2u]`, `[1L, 2L]`, `["a"w, "b"w`) instead of relying on
 slice only; expression cells are not yet synthesized as
 `__quickbiteFormat(expr)`.
 
+Progress 2026-07-06: the prelude formatter now owns struct, enum, and
+associative-array rendering, closing the `text(value)` catch-all for the
+aggregate cases: enums render as qualified members (`E.b` — diverging
+from the interim `Value` path's bare member name, which is not
+round-trippable D), structs render `Name(field, ...)` with each field in
+its own round-tripping form (`Point(1, 2L)`, quoted string fields), and
+AAs render `[key:value]` with element-wise literal suffixes. Multi-entry
+AA rendering order is left unpinned (D AA iteration order is
+unspecified; round-trip validity does not depend on it). Non-member enum
+values (`cast(E)5`) are also unpinned. This completes the formatter half
+of remaining-work item 1; the wiring half is untouched and every REPL
+display still runs through the interim `displayString`/`Value.toString`
+scaffolding.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -409,9 +423,10 @@ The contract flip (decision 1) and frontend-answered `:t` (decision 5)
 are done; what is still pending, in order:
 
 1. Complete the prelude formatter `string __quickbiteFormat(T)(T value)`
-   (decision 3): structs, enums, and AAs still fall into a `text(value)`
-   catch-all that violates the round-trip spec for exactly the aggregate
-   cases the formatter exists for. Then the substantive open step — the
+   (decision 3): the formatter surface is done as of 2026-07-06 — structs,
+   enums, and AAs now render per the round-trip spec (see Progress above)
+   and the `text(value)` catch-all covers only the rule-7 no-contract
+   values. What remains is the substantive open step — the
    wiring: as of 2026-07-06 nothing in `source/` imports `repl_prelude`
    and expression cells are still synthesized as `return <expr>;`, so the
    formatter has never executed in the REPL. Synthesize expression cells
