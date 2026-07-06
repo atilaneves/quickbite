@@ -1,5 +1,15 @@
 # Building `--dub` Targets via a Custom Reggae Build
 
+**Superseded (2026-07-06 note).** The problem below was solved differently:
+`--dub` preparation now captures dub's flags via `dub describe`
+(dflags/versions/string-import-paths/source-files/linker-files; the old
+compiler shim is deleted), and the template-emission failures were fixed by
+the `DubMode` split (bench.md "Squash Template-Emission Link Failures").
+None of the four sequencing steps below were implemented and none should be
+picked up. Kept because its core argument — re-derive nothing; reggae
+handles dub dialects canonically — remains the fallback direction if the
+describe-based path ever proves incomplete for a corpus package.
+
 ## Goal
 
 `bin/bench.sh --dub <pkg>` must benchmark the package's real unittest

@@ -1,3 +1,11 @@
+# Mini-Linker Exploration (archived)
+
+**Archived (2026-07-06 note).** This is a raw exploration transcript, not a
+plan. Its conclusion — do not hand-write an in-memory linker; use LLVM
+JITLink/ORC — was adopted and implemented (`llvm-jit.md`, PRs #243/#287/#293,
+including static-archive support). No code implements anything below; the
+only inbound reference (dub-deps.md) is speculative. Kept for the record.
+
 Thought for a few seconds
 
 Yes, if you emit normal relocatable code and want to load it yourself,

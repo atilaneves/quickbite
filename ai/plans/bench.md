@@ -336,6 +336,14 @@ met: `system-linker` is the working native post-parse backend under LDC.
 
 ### The fix
 
+(Superseded 2026-06-24 by commit `84650dbe`: `bin/bench.sh` now builds the
+host with reggae into its own build directory under
+`--dub-build-type=release-nobounds` with an LDC host — the
+`-inline`/lowering.d hang that motivated `benchmark-opt` is DMD-specific, so
+the standard build type is safe under LDC. The dub-driven `benchmark-opt`
+description below is the earlier DMD-host approach, kept as history; the
+reggae objections below it predate the `--dub-build-type` usage.)
+
 `bin/bench.sh` builds with dub's `benchmark-opt` build type
 (`dub build --config=benchmark --build=benchmark-opt`), whose buildOptions
 (`optimize` + `releaseMode` + `noBoundsCheck`) **propagate to dependencies**, so
@@ -1228,9 +1236,11 @@ dub package, no process spawn) and exercises the shared init both `bin/ut` and
 smoke test would also pass for unrelated reasons and does not pin the
 `version (unittest)` behaviour.
 
-## Multiple `--dub` Packages Cross-Contaminate Template Instances (diagnosis only)
+## Multiple `--dub` Packages Cross-Contaminate Template Instances
 
-Diagnosed 2026-06-24. **Diagnosis only — no fix applied.**
+Diagnosed 2026-06-24. **Fix direction decided 2026-07-06 (see "Fix" below);
+not yet implemented.** Until it lands, multi-`--dub` runs are unsound;
+single-`--dub` runs are unaffected.
 
 ### Symptom
 
@@ -1336,23 +1346,41 @@ process — something real-life dmd/dub never does. The builds **should** be
 independent; the cross-contamination is the shared process leaking what ought to
 be per-build state.
 
-### Fix direction (not implemented; for a future work item)
+### Fix (decided 2026-07-06; not yet implemented)
 
-The builds must be isolated so neither package's parse can pin shared dependency
-modules or home instances onto the other. Candidate approaches, to be evaluated:
+**One forked child per `--dub` package.** The parent orchestrates and renders;
+each package's whole pipeline — `parseRootModules`, preparation, timing,
+execution — runs in a child forked *before* any DMD parse for that package,
+and the child reports structured per-package results over a pipe. This is the
+LLVMJit per-`runTests` fork pattern (`llvm_jit.d`, PR #243) one level up:
+DMD's process-global symbol table and set-once `importedFrom` die with each
+child, so neither package can pin shared dependency modules or home instances
+onto the other by construction — no fixpoint sequencing to reason about.
 
-- **Codegen each package in a fork child whose parent has *not* parsed the other
-  package** — i.e. parse + codegen + link a package fully (in a fork, as today)
-  before the next package's `parseRootModules` ever touches DMD globals, so the
-  set-once `importedFrom` and the module cache are still clean for each. Today
-  preparation parses *all* packages up front (`cli.d`), which is what colocates
-  the two root sets; the frontend timing row's single-cold-sample constraint
-  (modules persist in DMD's symbol table) is the reason it does so, and must be
-  reconciled.
-- **One process per `--dub` package** (exec a fresh driver per package), trading
-  the persistent-process design for guaranteed isolation on multi-package runs.
+Why fork, not the alternatives previously listed here:
 
-The decision hinges on whether the per-package parse can be deferred until that
-package's codegen without losing the frontend measurement, which is the open
-question. Until fixed, multi-`--dub` runs are unsound; single-`--dub` runs are
-unaffected.
+- Parse-to-fixpoint ordering (parse + codegen + link each package fully
+  before the next package's `parseRootModules`) keeps one process but makes
+  soundness depend on sequencing discipline instead of isolation, and still
+  has to reconcile the single-cold-sample constraint by hand.
+- Exec'ing a fresh driver per package re-pays process startup and argv
+  plumbing for no isolation gain over fork.
+
+The fork also *improves* timing fidelity: a would-be-sound sequential run
+still measures package N's frontend row in a process warmed by package N−1's
+phobos parses; a per-package child makes every frontend row genuinely cold,
+which is what the single-cold-sample rule wants. Per-package process overhead
+is never the timed quantity. Children must not write to stdout (the
+output-cleanliness work of PRs #322–#324 stays intact): all rendering happens
+in the parent from piped results.
+
+Exposing check (bench-level, not `bin/ut`): run each corpus package once
+alone and once as the *second* package of a two-package invocation, and
+compare per-package prepared-unit counts and test results — any delta is
+contamination. Slots into the existing self-check machinery
+(`testResultsMismatch`) as a `ci.sh`-invocable mode.
+
+Cross-reference: `dub-deps.md` "Open: per-fixture completeness" shares the
+root cause (first-root instance homing in a persistent process) but is
+*within* a single package, so this fork does not resolve it; that item is
+independently unblocked and needs its own re-prioritisation.

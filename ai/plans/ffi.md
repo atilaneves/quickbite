@@ -210,7 +210,7 @@ The backend maps the caught native `Exception` into its own exception state.
 The reverse direction (a backend exception becoming a native `Throwable` when
 native code calls back in) is harder and deferred (§14, §34.16). As-built status
 of the forward direction: §30 (`Exception`), §31 (subclasses); chaining and
-`Error` recovery are §34.13.
+`Error` recovery are §34.14.
 
 ## 13. GC and lifetime
 
@@ -2151,22 +2151,26 @@ as boxed marshalling without a measurement that says boxing is worth keeping.
 ```text
 Inc  Contract                                          Track  Status   Ref
 10  D string slice RETURN value                         B*    done     §33
-11  typed (non-char) immutable slice args and returns   B*    done     §34.4
-12  stack-spilled extern(D) arguments (>6 int / >8 SSE) A     done     §34.5
-13  large struct returns via hidden sret + extern(D)    A     done     §34.6
-14  scalar out-parameters (int*) with writeback         AB    done     §34.7
-15  mutating struct member methods + receiver writeback B*    done     §34.8
-16  mutable slice arguments with writeback              B*    done     §34.9
-17  slices/arrays nested inside by-value structs        B*    done     §34.10
-18  class references, virtual dispatch, interfaces      AB    done     §34.12
-19  constructors, destructors, postblits                AB    done     §34.13
+11  typed (non-char) immutable slice args and returns   B*    done     §34.5
+12  stack-spilled extern(D) arguments (>6 int / >8 SSE) A     done     §34.6
+13  large struct returns via hidden sret + extern(D)    A     done     §34.7
+14  scalar out-parameters (int*) with writeback         AB    done     §34.8
+15  mutating struct member methods + receiver writeback B*    done     §34.9
+16  mutable slice arguments with writeback              B*    done     §34.10
+17  slices/arrays nested inside by-value structs        B*    done     §34.11
+18  class references, virtual dispatch, interfaces      AB    done*    §34.12
+19  constructors, destructors, postblits                AB    done*    §34.13
 20  native Error recovery and exception chaining        A     done     §34.14
-21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.14
-22  delegates / callbacks / closures: reverse bridge    AB    done     §34.15
-23  extern(C++) function and member ABI                 A     done     §34.16
+21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.15
+22  delegates / callbacks / closures: reverse bridge    AB    done*    §34.16
+23  extern(C++) function and member ABI                 A     done     §34.17
 ```
 
-`B*` = boxed-interpreter marshalling, native-layout obviates. The done rungs
+`done*` = landed with residuals tracked in the rung's own still-todo text
+(18: GC-rooted class handles, §34.12; 19: native class construction and
+source-available postblit/dtor, §34.13; 22: throwing/escaping/method
+callbacks, §34.16). `B*` = boxed-interpreter marshalling, native-layout
+obviates. The done rungs
 10–12 are as-built history; 10/11 were boxed-slice marshalling (Track B's
 concern going forward), 12 was genuine ABI ordering (Track A). The pure-A rungs
 (13, 20, 21, 23) are independent of the representation and are the spine of the
@@ -2201,11 +2205,30 @@ set**, and the per-rung planning cadence (§34.1) should stop after it:
    extern(D) reversal already done.
 3. The exception guard (§30/§31 → §34.14): real code throws.
 
-Deferred deliberately (this is where the savings come from): the reverse bridge
-(§34.16, passing interpreted closures INTO native code) — large, and not needed
-for the common "call FFI" case; and extern(C++) (§34.17) — on demand. State both
-as known gaps, not silent ones.
+Deferred deliberately at the time of writing: the reverse bridge (§34.16,
+passing interpreted closures INTO native code) and extern(C++) (§34.17). Both
+landed on 2026-06-24 anyway — see their sections for residuals — so of this
+least-work path only item 0, the generic Type-driven marshaller audit, remains
+open. It is tracked as a rung-style item directly below.
 ```
+
+**Item 0: generic-marshaller audit (tracked 2026-07-06). Status: open.
+Owner: Track B** (interpreter-owned boxed marshalling — `value.md` item 5
+side of the seam; the `ffi/core.d` descriptor mappers are touched only where
+a leaf kind is missing). The recursion is not yet fully Type-driven; verified
+gaps as of 2026-07-06: no `Tsarray` case anywhere in `ffi_marshal.d` or
+`ffi/core.d` (a static array cannot cross the seam at all, including as a
+struct field); `isSupportedScalarSlice` gates slices to scalar elements (no
+slice-of-structs argument or return); no `Taarray` handling (should reject
+with an honest diagnostic, not a generic one). Fixture list (each needs the
+usual approval; oracle = `SystemLinker`): a by-value struct containing a
+static-array field; a slice-of-structs argument and a slice-of-structs
+return; an AA crossing rejected with a named diagnostic. Done-criterion:
+`materialize`/`reify` handle any aggregate composed of supported leaf kinds
+at any nesting depth, demonstrated by those fixtures without adding per-shape
+special cases. Scheduling: after `interpreter.md` phase 0 + rung 1 — the
+"beyond cerealed" second-package inventory will surface these gaps
+empirically and extends this fixture list.
 
 Known limitation: the boxed seam cannot faithfully cross an aggregate whose bytes
 *are* the semantics (a struct field that is a `union`, or one captured by `&` and
@@ -2214,21 +2237,24 @@ These are rare in FFI-crossing data; the full fix is the native-layout
 representation (`ai/plans/value.md`), the separate correctness endgame, not this
 least-work path.
 
-Anchors shared by most rungs (re-grep; line numbers drift):
+Anchors shared by most rungs (re-grep; line numbers drift — and the 2026-06-23
+seam carve split the old `backends/ffi.d` into the Value-free bridge core under
+`quickbite/ffi/` and the interpreter-owned boxed marshaller):
 
 ```text
-descriptor mappers   source/quickbite/backends/ffi.d
+descriptor mappers   source/quickbite/ffi/core.d
                        ffiTypeFor (return), ffiArgumentTypeFor (arg),
                        ffiStructType, ffiSliceType, isSupportedScalarSlice
-marshalling          source/quickbite/backends/ffi.d
+marshalling (boxed)  source/quickbite/backends/interpreter/ffi_marshal.d
                        marshalArgument, marshalSliceArgument,
                        unmarshalValue, unmarshalStruct
-call + ABI order     source/quickbite/backends/ffi.d
-                       callViaLibffi, abiSourceIndex, isOutPointer
-entry points         source/quickbite/backends/ffi.d
+call + ABI order     source/quickbite/ffi/core.d
+                       callViaLibffi, abiSourceIndex, isOutPointer,
+                       NativeCallException
+entry points         source/quickbite/backends/interpreter/ffi_marshal.d
                        tryCallNative, tryCallNativeMember, tryCallNativeImpl,
-                       NativeThis, NativeCallException
-libffi binding       source/quickbite/backends/libffi.d
+                       NativeThis
+libffi binding       source/quickbite/ffi/libffi.d
 call site + gates    source/quickbite/backends/interpreter/impl.d
                        Walker.runCallExpression (free-function and DotVarExp
                        member branches), throwNativeException,
@@ -2308,7 +2334,7 @@ order, libffi already spills correctly).
 
 **Out of scope.** Large by-value structs that themselves split across
 registers and stack (their classification is its own verification — defer with
-§34.6 sret work if a fixture needs it); member-call spill (compose with §28/§29
+§34.7 sret work if a fixture needs it); member-call spill (compose with §28/§29
 once this lands).
 
 **Implementation.** `externDArgumentsFitRegisterScope` currently returns
@@ -2343,7 +2369,8 @@ sret placement and the §27 reversal are exercised together.
 
 **In scope.** By-value struct returns through `sret`, free functions,
 `extern(D)` and `extern(C)`. **Out of scope.** Member functions returning
-structs via `sret` (compose later), structs containing slices/classes (§34.10).
+structs via `sret` (compose later), structs containing slices/classes
+(§34.11/§34.12).
 
 **Implementation.** libffi already issues the memory-return ABI when given the
 struct `ffi_type` (this is why small struct returns pass). The new work is
@@ -2408,7 +2435,7 @@ this adds the write-back half.
 
 **In scope.** Non-virtual struct methods, receiver passed as hidden leading
 `this` pointer, receiver copied back after the call. **Out of scope.** Class
-receivers (§34.11), virtual methods, partial-field aliasing.
+receivers (§34.12), virtual methods, partial-field aliasing.
 
 **Implementation.** In the member branch of `Walker.runCallExpression` /
 `tryCallNativeMember`, after `ffi_call`, read the (possibly mutated) receiver
@@ -2501,7 +2528,7 @@ reference to a derived instance and asserts the override runs.
 
 **In scope.** `extern(D)` class instances supplied by the dependency image,
 single-inheritance virtual dispatch, interface method calls. **Out of scope.**
-Constructing native classes in the Interpreter (that is §34.12), `synchronized`,
+Constructing native classes in the Interpreter (that is §34.13), `synchronized`,
 `__monitor`, GC finalization ordering (governed by §13 / bytecode.md).
 
 **Implementation.** Represent a native class reference as an opaque native
@@ -2542,10 +2569,26 @@ an instance field, so a wrong `this` would not return the field-derived value �
 pinning that the adjustment is correct.
 
 **Still todo for this rung** (each its own approved fixture): constructing native
-classes in the Interpreter (§34.13); and making the handle GC-visible per §13
-(today the returned handle is not GC-scanned, so a collection between a factory
-call and a method call could reclaim the object — out of scope here, fixed by the
-native-layout handle table).
+classes in the Interpreter (§34.13); and the GC-visibility hole, now tracked
+below.
+
+**GC-rooted class handles (approved 2026-07-06; next FFI work).** Today the
+returned handle is not GC-scanned: a collection between the factory call and a
+method call can reclaim the object, so every landed class/interface fixture is
+use-after-free-racy under collection pressure. Decision: do not wait for the
+native-layout handle table — root the handles now. `GC.addRoot` each
+class/interface handle at unmarshal into a per-session table,
+`GC.removeRoot` all entries on session teardown: sound immediately, leaks
+bounded by session lifetime. Exposing fixture (needs the usual approval before
+adding): dependency-image leaves `Object makeThing()` (GC-allocates a class
+instance), `void collectNow()` (`GC.collect`), and `bool isLive(void* p)`
+(`GC.addrOf(p) !is null`); test body
+`auto h = makeThing(); collectNow(); assert(isLive(h));` — green on
+`SystemLinker` (the reference is stack-scanned in compiled code), red on
+`Interpreter` until rooting lands, deterministic without relying on
+use-after-free UB. The long-term fix remains the native-layout handle table,
+which belongs to the interpreter-representation track (`ai/plans/value.md`),
+not this bridge plan; the rooting table is deleted when that lands.
 
 ### 34.13 Increment 19 — constructors, destructors, postblits
 
@@ -2648,6 +2691,10 @@ still green; `Error` remains fatal unless separately approved.
 
 ### 34.15 Increment 21 — variadics
 
+**Status: landed** (`dependencyImage.externCVariadic`): `ffi_prep_cif_var`
+bound in `ffi/libffi.d`, per-call CIF splitting fixed from variadic args;
+non-variadic calls keep the cached-CIF path.
+
 **Contract.** Call a C variadic function (`printf`-shaped) — the one signature
 class §24.6 deferred because it needs libffi's variadic CIF path.
 
@@ -2730,6 +2777,10 @@ regresses; escaping callbacks are rejected with a clear diagnostic.
 
 ### 34.17 Increment 23 — extern(C++) ABI
 
+**Status: landed** (`dependencyImage.externCppFunctionAndMember`): `LINK.cpp`
+accepted in `ffi/core.d`, resolution by the C++ mangled name, no extern(D)
+argument reversal.
+
 **Contract.** Call `extern(C++)` free and member functions (name mangling and
 the C++ `this`/ABI conventions). Lowest on the ladder: only dub packages that
 bind C++ need it, and it is independent of the D-ladder rungs above.
@@ -2750,11 +2801,14 @@ unchanged.
 
 ### 34.18 After the ladder
 
-When §34.4–§34.16 are landed, the Interpreter can call essentially any
+The ladder (§34.4–§34.17) is landed: the Interpreter can call essentially any
 non-template body-less leaf a dub package exposes, in both directions, with
-native exceptions mapped back — i.e. the terminal goal of §34.1: interpret the
-project, call the dependencies, run the whole dub project. What remains beyond
-this ladder is not Interpreter FFI but the deferred, separately-owned work:
+native exceptions mapped back. That is the *call* half of §34.1's terminal
+goal only — the *execute* half (the Interpreter running a real package's own
+source) is not built. cerealed does not run today; closing that execution gap
+is `ai/plans/interpreter.md`, and "run the whole dub project" cannot be
+claimed before it lands. What remains beyond this ladder on the FFI side is
+the deferred, separately-owned work:
 
 ```text
 - the deferred cold-path caching story (§3): dependency-image build, a prepare

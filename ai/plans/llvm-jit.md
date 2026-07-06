@@ -470,7 +470,10 @@ uncharacterized (above), so high-risk for the whole backend family; (b) **wait
 on an upstream JITLink fix** — not actionable on our timeline, and unconfirmed
 as a bug; (c) **normalize the object in our loader** before `AddObjectFile` —
 contained to `LLVMJit`, deterministic, reversible. We picked (c) as the bridge
-and should still file the upstream repro for (b). Revisit (a) only if the
+and should still file the upstream repro for (b) — **this plan's one open
+item (2026-07-06): build a minimal two-duplicate-UND-symbol object repro and
+file it against JITLink; unowned until a session picks it up**. Revisit (a)
+only if the
 normalizer proves insufficient or the uncharacterized emitter starts producing
 other malformations.
 

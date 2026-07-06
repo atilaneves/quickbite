@@ -330,12 +330,12 @@ Deltas from current behaviour (June 2026 audit):
 - Whole-number doubles render `3` today, colliding with `int 3`;
   unpinned at the `Value.toString` level (only `3.8` is pinned). Target:
   `3.0`.
-- Wide strings are normalized to plain `"..."` today, pinned
-  deliberately by `displaysWideStringValues` and
-  `displaysWideCharacterArrayValues` (tests/ut/bin/repl.d); the
-  round-trip spec changes those assertions to `"wide"w`/`"wide"d` (the
-  literal suffix, not the dropped `: wstring` annotation) — the test
-  changes still need the usual approval at implementation time.
+- Wide strings: done — `displaysWideStringValues` and
+  `displaysWideCharacterArrayValues` (tests/ut/bin/repl.d) now assert
+  `"wide"w`/`"wide"d` per the round-trip spec (approved and green). Note
+  they pass today via the interim `Value.toString` path
+  (`stringTypeAnnotation`), not the prelude formatter — see remaining-work
+  item 1.
 - Aggregates of non-default element type need no annotation under the
   round-trip spec: the elements carry their own suffixes (`[1L, 2L]`), so
   the aggregate self-identifies and `Value.Array` needs no element-type
@@ -409,10 +409,19 @@ The contract flip (decision 1) and frontend-answered `:t` (decision 5)
 are done; what is still pending, in order:
 
 1. Complete the prelude formatter `string __quickbiteFormat(T)(T value)`
-   (decision 3) beyond the implemented scalar string/character/integer/
-   floating cases, then synthesize expression cells as
-   `__quickbiteFormat(expr)` so backends render by executing D rather than
-   via the interim `displayString`/`Value.toString` scaffolding.
+   (decision 3): structs, enums, and AAs still fall into a `text(value)`
+   catch-all that violates the round-trip spec for exactly the aggregate
+   cases the formatter exists for. Then the substantive open step — the
+   wiring: as of 2026-07-06 nothing in `source/` imports `repl_prelude`
+   and expression cells are still synthesized as `return <expr>;`, so the
+   formatter has never executed in the REPL. Synthesize expression cells
+   as `__quickbiteFormat(expr)` with the prelude imported into the
+   synthesized module, gated per backend (decision 4: only views consumed
+   by backends that can execute it). Every display today runs through the
+   interim `displayString`/`Value.toString` scaffolding — including the
+   wide-string round-trip tests, so the display spec is currently
+   enforced by the path scheduled for deletion. Items 2 and 3 below are
+   blocked until this wiring lands.
 2. Delete the private reify → `Value` → `toString` scaffolding per
    backend (decision 4) as each gains the formatter.
 3. Remove the *shared* `quickbite.lang.Value` (decision 2026-06-17):
