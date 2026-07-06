@@ -803,7 +803,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
 
     @("repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint." ~ backend.stringof)
     unittest {
