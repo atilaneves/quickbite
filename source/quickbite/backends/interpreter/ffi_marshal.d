@@ -26,13 +26,18 @@ public bool tryCallNative(
     in imported!"quickbite.lang".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
+    in imported!"quickbite.lang".Value[] outParameterInputs,
     DelegateInvoker invokeDelegate,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
     import quickbite.ffi: callNative;
 
-    auto marshaller = new InterpreterNativeMarshaller(arguments, invokeDelegate);
+    auto marshaller = new InterpreterNativeMarshaller(
+        arguments,
+        outParameterInputs,
+        invokeDelegate,
+    );
     if (!callNative(function_, marshaller, argumentTypes, addressOfLocalArguments))
         return false;
 
@@ -161,6 +166,10 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     import dmd.mtype: Type;
 
     private const(Value)[] _arguments;
+    // The current value behind each `&local` argument (Value.void_ elsewhere),
+    // marshalled into the out-parameter cell before the call so in-out callees
+    // read the caller's value rather than zeroes (ffi.md §35.6).
+    private const(Value)[] _outParameterInputs;
     private Value _receiver;
     private Value _result;
     private Value[] _writebacks;
@@ -183,8 +192,13 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     // Walker so the reverse bridge (ffi.md §34.16) can re-enter the interpreter.
     private DelegateInvoker _invokeDelegate;
 
-    public this(in Value[] arguments, DelegateInvoker invokeDelegate = null) {
+    public this(
+        in Value[] arguments,
+        in Value[] outParameterInputs,
+        DelegateInvoker invokeDelegate = null,
+    ) {
         _arguments = arguments;
+        _outParameterInputs = outParameterInputs;
         _invokeDelegate = invokeDelegate;
     }
 
@@ -328,6 +342,30 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         // scalar value (ffi.md §34.8).
         ensureWritebacks;
         _writebacks[index] = unmarshalValue(pointedToType, cell);
+    }
+
+    public override void fillOutParameterCell(
+        ubyte[] cell,
+        Type pointedToType,
+        in size_t index,
+        in bool stableString,
+        ref const(char)*[] keepAlive,
+        ref ubyte[][] keepAliveBuffers,
+    ) {
+        // No input value threaded for this slot (the argument is not `&local`,
+        // or the call path does not supply inputs): the cell stays zeroed.
+        if (index >= _outParameterInputs.length ||
+            _outParameterInputs[index] == Value.void_)
+            return;
+
+        marshalArgument(
+            cell,
+            pointedToType,
+            _outParameterInputs[index],
+            stableString,
+            keepAlive,
+            keepAliveBuffers,
+        );
     }
 
     private void ensureWritebacks() {
@@ -630,7 +668,11 @@ private imported!"quickbite.lang".Value unmarshalStruct(
 // duration of the native call. A native pointer is passed straight through;
 // a backend char array is copied into a GC-owned NUL-terminated buffer.
 private const(char)* nativeString(in imported!"quickbite.lang".Value value) {
+    import quickbite.lang: Value;
     import std.string: toStringz;
+
+    if (value == Value.null_)
+        return null;
 
     if (value.isNativePointer)
         return cast(const(char)*) value.asNativePointer;
@@ -646,8 +688,12 @@ private const(char)* nativeString(in imported!"quickbite.lang".Value value) {
 private const(char)* stableNativeString(
     in imported!"quickbite.lang".Value value,
 ) {
+    import quickbite.lang: Value;
     import core.stdc.stdlib: malloc;
     import core.stdc.string: memcpy;
+
+    if (value == Value.null_)
+        return null;
 
     if (value.isNativePointer)
         return cast(const(char)*) value.asNativePointer;

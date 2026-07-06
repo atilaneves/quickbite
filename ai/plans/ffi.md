@@ -2390,8 +2390,9 @@ small-struct returns and the §27 reversal fixtures still green.
 
 ### 34.8 Increment 14 — scalar out-parameters with writeback
 
-**Status: implemented.** Residual (2026-07-06): the out cell starts zeroed,
-so in-out scalars and read-through `char**` inputs lose their value — §35.6.
+**Status: implemented.** The zeroed-out-cell residual (in-out scalars and
+read-through `char**` inputs losing their value) was fixed 2026-07-06 —
+§35.6.
 
 **Contract.** Support a single-level scalar out-pointer (`int*`, `double*`)
 that the native function writes through, mapping the post-call value back into
@@ -3001,6 +3002,13 @@ Until then, §34.10/§34.16's "reject" wording overstates what the code does
 and should be read as "the contract the caller must uphold".
 
 ### 35.6 Out-parameter marshalling discards the input value
+
+**Status: fixed 2026-07-06.** The core now asks the marshaller to fill the
+out cell with the argument's current pointed-to value before the call
+(`NativeMarshaller.fillOutParameterCell`); the interpreter call site threads
+each `&local` argument's current value alongside the flag
+(`nativeOutParameterInputValues`). The `&local` heuristic governs only
+writeback. Both exposing fixtures and the §34.8/strtol guards are green.
 
 **Claim.** §34.8 disambiguates in-pointers from out slots: a `char**` is
 always an out slot, a `&local` pointer-to-scalar is one at the call site's

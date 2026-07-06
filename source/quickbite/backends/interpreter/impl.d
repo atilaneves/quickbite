@@ -1830,6 +1830,7 @@ private struct Walker {
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
+                            nativeOutParameterInputValues(argumentExpressions),
                             &invokeNativeCallback,
                             result,
                             writebacks,
@@ -4352,6 +4353,31 @@ private struct Walker {
             return var.var.isVarDeclaration;
 
         return null;
+    }
+
+    // The current value behind each `&local` argument (Value.void_ elsewhere):
+    // the FFI core marshals it into the out-parameter cell so an in-out callee
+    // reads the caller's value instead of a zeroed cell (ffi.md §35.6). A
+    // void-initialized local marshals its default value, matching the zeroed
+    // cell compiled code cannot improve on deterministically.
+    private Value[] nativeOutParameterInputValues(
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        auto values = new Value[](argumentExpressions.length);
+        foreach (index, argument; argumentExpressions) {
+            if (!isNativeAddressOfLocal(argument))
+                continue;
+
+            auto variable = nativeOutParameterVariable(argument);
+            if (variable is null)
+                continue;
+
+            if (variable in uninitializedLocals)
+                values[index] = defaultValue(variable);
+            else if (auto current = variable in locals)
+                values[index] = *current;
+        }
+        return values;
     }
 
     private Value runIndexExpression(

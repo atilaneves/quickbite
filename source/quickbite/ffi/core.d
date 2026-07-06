@@ -50,6 +50,19 @@ public interface NativeMarshaller {
         in ubyte[] cell,
     );
 
+    // Marshal the argument's current pointed-to value into a freshly allocated
+    // out-parameter cell before the call (ffi.md §35.6): an in-out scalar or a
+    // read-through pointer input must see the caller's value, not zeroes. The
+    // `&local` disambiguation governs only writeback, never input suppression.
+    void fillOutParameterCell(
+        ubyte[] cell,
+        imported!"dmd.mtype".Type pointedToType,
+        in size_t index,
+        in bool stableString,
+        ref const(char)*[] keepAlive,
+        ref ubyte[][] keepAliveBuffers,
+    );
+
     // The receiver object pointer for a class member call: the class reference
     // itself, passed directly as hidden `this` and used to read the vtable for
     // virtual dispatch (ffi.md §34.12). Unused for non-member and struct calls.
@@ -406,11 +419,20 @@ private bool callViaLibffi(
                 closureContexts,
             );
         } else if (isOutParameter(parameterTypes[index], addressOfLocal)) {
-            // Allocate a host cell sized to the pointed-to type, pass its
-            // address as the out parameter, and reify the written value through
-            // writeOutParameter after the call.
+            // Allocate a host cell sized to the pointed-to type, marshal the
+            // argument's current value into it (ffi.md §35.6), pass its
+            // address as the out parameter, and reify the written value
+            // through writeOutParameter after the call.
             auto pointedTo = parameterTypes[index].nextOf.toBasetype;
             outParameterCells[index] = new ubyte[](cast(size_t) size(pointedTo));
+            marshaller.fillOutParameterCell(
+                outParameterCells[index],
+                pointedTo,
+                index,
+                hasOutPointer,
+                keepAlive,
+                keepAliveBuffers,
+            );
             *cast(void**) argumentBuffers[index].ptr =
                 outParameterCells[index].ptr;
         } else {
