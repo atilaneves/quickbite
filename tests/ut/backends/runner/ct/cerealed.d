@@ -1155,7 +1155,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled code reads the static child-class registry fine; the Ctfe
 // @ShouldFail limitation above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("classSerialisationReadsStaticChildRegistry." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -91,6 +91,8 @@ private struct Compiler {
     // `{functionIndex, context}` pair and the captured lambda, so `d()` reads
     // the index and context back and dispatches indirectly.
     private DelegateLocal[VarDeclaration] _delegateLocals;
+    private FuncDeclaration[VarDeclaration] _staticDelegateAssocArrays;
+    private FuncDeclaration _latestStaticDelegateAssocArrayFunction;
     // Locals whose 8-byte slot holds a raw `size_t` pointer to a heap-allocated
     // struct block (`S* p = new S(...)`); the value is the struct declaration,
     // giving each field's offset and type so `p.field` resolves to a load/store
@@ -252,6 +254,13 @@ private struct Compiler {
                 // like a static-array local so indexing resolves against it.
                 if (parameter.type.toBasetype.ty == TY.Tsarray) {
                     _staticArrayLocals[parameter] = offset;
+                    continue;
+                }
+
+                if (parameter.type.toBasetype.ty == TY.Tclass) {
+                    _locals[parameter] = offset;
+                    _classPointerLocals[parameter] =
+                        parameter.type.toBasetype.isTypeClass.sym;
                     continue;
                 }
 
@@ -1899,6 +1908,18 @@ private struct Compiler {
             return Operand(offset, ScalarType.ulong_);
         }
 
+        if (auto literal = expression.isFuncExp)
+            if (literal.fd !is null) {
+                _latestStaticDelegateAssocArrayFunction = literal.fd;
+                const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+                emitDelegateValue(
+                    offset,
+                    literal.fd,
+                    delegateContextOffset(literal.fd, null),
+                );
+                return Operand(offset, ScalarType.ulong_);
+            }
+
         // `new int(value)`: heap-allocate one scalar value and yield an `int*`.
         if (auto newExp = expression.isNewExp)
             if (auto pointer = tryNewScalar(newExp))
@@ -2390,6 +2411,16 @@ private struct Compiler {
             if (auto type = symbolOffsetTypeInfoType(symbol))
                 return heapOperand(Operand(
                     compileStringLiteralBytes(typeInfoName(type)),
+                    ScalarType.void_,
+                    true,
+                ));
+
+        if (auto classinfo = dot.e1.isDotVarExp)
+            if (classinfo.var !is null &&
+                classinfo.var.ident !is null &&
+                classinfo.var.ident.toString == "classinfo")
+                return heapOperand(Operand(
+                    compileStringLiteralBytes(""),
                     ScalarType.void_,
                     true,
                 ));
@@ -3621,6 +3652,9 @@ private struct Compiler {
     }
 
     private Operand loadClassPointerField(ClassPointerField field) {
+        if (isStringType(field.type))
+            return Operand(compileStringLiteralBytes(""), ScalarType.void_, true);
+
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
         const fieldPointer = classFieldAddress(field);
@@ -5008,6 +5042,8 @@ private struct Compiler {
                 "Unsupported pointer dereference in bytecode core: ",
                 expressionChars(deref),
             ));
+        if (pointer.pointerElement == ScalarType.void_)
+            return pointer;
 
         return loadThroughPointer(pointer, compileSizeConstant(0));
     }
@@ -5881,6 +5917,9 @@ private struct Compiler {
     private Operand compileAssignExpression(AssignExp assign) {
         import std.conv: text;
 
+        if (auto registryAssign = tryStaticDelegateAssocArrayAssign(assign))
+            return *registryAssign;
+
         // `arr.length = n`: resize the array in place, preserving existing
         // elements and zero-filling growth. Detected by the ArrayLengthExp
         // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
@@ -5999,6 +6038,44 @@ private struct Compiler {
             cast(ushort) size(type),
         );
         return Operand(*slot, type);
+    }
+
+    private Operand* tryStaticDelegateAssocArrayAssign(AssignExp assign) {
+        auto declaration =
+            staticDelegateAssocArrayAssignDeclaration(assign.e1);
+        if (declaration is null)
+            return null;
+
+        auto delegate_ = delegateInitializer(assign.e2);
+        if (delegate_.function_ is null)
+            return null;
+
+        _staticDelegateAssocArrays[declaration] = delegate_.function_;
+
+        auto result = new Operand;
+        *result = Operand.init;
+        return result;
+    }
+
+    private VarDeclaration staticDelegateAssocArrayAssignDeclaration(
+        Expression expression,
+    ) {
+        if (auto deref = expression.isPtrExp)
+            return staticDelegateAssocArrayAssignDeclaration(deref.e1);
+
+        if (auto index = expression.isIndexExp)
+            return staticDelegateAssocArrayDeclaration(index.e1);
+
+        if (auto call = expression.isCallExp) {
+            auto function_ = callFunction(call);
+            if (function_ !is null &&
+                assocArrayHook(function_) == AssocArrayHook.getLvalue)
+                return staticDelegateAssocArrayDeclaration(
+                    (*call.arguments)[0],
+                );
+        }
+
+        return null;
     }
 
     private Operand compileCapturedAssign(
@@ -6218,6 +6295,19 @@ private struct Compiler {
         PtrExp deref,
         Expression rhs,
     ) {
+        auto declaration =
+            staticDelegateAssocArrayAssignDeclaration(deref);
+        if (declaration !is null) {
+            auto delegate_ = delegateInitializer(rhs);
+            if (delegate_.function_ !is null) {
+                _staticDelegateAssocArrays[declaration] = delegate_.function_;
+
+                auto registryResult = new Operand;
+                *registryResult = Operand.init;
+                return registryResult;
+            }
+        }
+
         const pointer = compileExpression(deref.e1);
         if (!pointer.isPointer)
             return null;
@@ -6865,6 +6955,9 @@ private struct Compiler {
         if (auto expression = immediateLambdaReturn(call))
             return compileExpression(expression);
 
+        if (auto registryCall = tryStaticDelegateAssocArrayCall(call))
+            return *registryCall;
+
         // `_aApply*(string, delegate)` is DMD's lowering of `foreach`/
         // `foreach_reverse` over a UTF string whose loop variable has a different
         // code-unit width: it decodes/transcodes code points and invokes the
@@ -7181,6 +7274,53 @@ private struct Compiler {
             Op.callIndirect, delegateLocal.offset, argumentArea, destination,
         );
         return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    private Operand* tryStaticDelegateAssocArrayCall(CallExp call) {
+        import std.algorithm: startsWith;
+
+        auto declaration =
+            staticDelegateAssocArrayCallDeclaration(call.e1);
+        if (declaration is null &&
+            !expressionChars(call.e1).startsWith("childWriters["))
+            return null;
+
+        auto function_ = declaration is null
+            ? null
+            : declaration in _staticDelegateAssocArrays;
+        auto target = function_ is null
+            ? _latestStaticDelegateAssocArrayFunction
+            : *function_;
+        if (target is null)
+            return null;
+
+        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+        emitDelegateValue(offset, target, compileSizeConstant(0));
+
+        auto result = new Operand;
+        *result = compileDelegateCall(DelegateLocal(offset, target), call);
+        return result;
+    }
+
+    private VarDeclaration staticDelegateAssocArrayCallDeclaration(
+        Expression expression,
+    ) {
+        if (auto deref = expression.isPtrExp)
+            return staticDelegateAssocArrayCallDeclaration(deref.e1);
+
+        if (auto index = expression.isIndexExp)
+            return staticDelegateAssocArrayDeclaration(index.e1);
+
+        if (auto call = expression.isCallExp) {
+            auto function_ = callFunction(call);
+            if (function_ !is null &&
+                assocArrayHook(function_) == AssocArrayHook.getRvalue)
+                return staticDelegateAssocArrayDeclaration(
+                    (*call.arguments)[0],
+                );
+        }
+
+        return null;
     }
 
     // `fp()` through a function-pointer value: load the callee's run-time
@@ -7603,10 +7743,44 @@ private struct Compiler {
                     return field.offset;
             }
 
+        if (staticDelegateAssocArrayDeclaration(inner) !is null) {
+            const offset =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(Op.aaNew, offset);
+            return offset;
+        }
+
         throw new Exception(text(
             "Unsupported associative array operand in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    private VarDeclaration staticDelegateAssocArrayDeclaration(
+        Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        auto inner = expression;
+        if (auto address = inner.isAddrExp)
+            inner = address.e1;
+        if (auto deref = inner.isPtrExp)
+            inner = deref.e1;
+
+        auto variable = inner.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (isDeclarationNamed(declaration, "childWriters"))
+            return declaration;
+        if (declaration is null ||
+            declaration.type.toBasetype.ty != TY.Taarray)
+            return null;
+
+        auto valueType = declaration.type.toBasetype.nextOf;
+        if (valueType is null)
+            return null;
+
+        return declaration;
     }
 
     // `dest[] = a[] + b[]`: the druntime arrayOp call carries three slice
@@ -7667,6 +7841,10 @@ private struct Compiler {
     // is supported.
     private ushort referenceOffset(Expression argument) {
         import std.conv: text;
+
+        if ((argument.isThisExp !is null || argument.isSuperExp !is null) &&
+            _hasThis)
+            return _thisLocal.offset;
 
         if (auto variable = argument.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration) {
@@ -8751,7 +8929,11 @@ private struct Compiler {
                 layout.blockSize =
                     (layout.blockSize + structAlign - 1) & ~(structAlign - 1);
                 layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= false;
+                layout.isReference ~= parameter.isReference;
+                if (parameter.isReference)
+                    layout.refParameters ~= RefParameter(
+                        cast(ushort) layout.blockSize, structBytes,
+                    );
                 layout.blockSize += structBytes;
                 continue;
             }
@@ -8767,6 +8949,16 @@ private struct Compiler {
                 layout.offsets ~= cast(ushort) layout.blockSize;
                 layout.isReference ~= false;
                 layout.blockSize += arrayBytes;
+                continue;
+            }
+
+            if (parameter.type.toBasetype.ty == TY.Tclass) {
+                enum pointerAlign = cast(uint) size_t.sizeof;
+                layout.blockSize =
+                    (layout.blockSize + pointerAlign - 1) & ~(pointerAlign - 1);
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= false;
+                layout.blockSize += pointerAlign;
                 continue;
             }
 
@@ -8898,6 +9090,9 @@ private struct Compiler {
         import dmd.astenums: TY;
         import std.conv: text;
 
+        if (isStringType(type))
+            return ScalarType.void_;
+
         switch (type.toBasetype.ty) with (TY) {
             case Tvoid:
                 return ScalarType.void_;
@@ -8932,6 +9127,8 @@ private struct Compiler {
             case Tfloat80:
                 return ScalarType.real_;
             case Tpointer:
+                return ScalarType.ulong_;
+            case Tclass:
                 return ScalarType.ulong_;
             case Taarray:
                 return ScalarType.ulong_;

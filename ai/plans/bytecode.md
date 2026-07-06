@@ -3563,10 +3563,9 @@ Result: 55 tests run, 0 failed, 1/1 failing as expected.
 
 All SystemLinker-backed tests from
 `tests/ut/backends/runner/ct/cerealed.d` were evaluated for promotion to
-`BytecodeNewCore`. The 22 passing promotion candidates remain promoted in
-their `AliasSeq` blocks. CTFE-only characterization tests remain CTFE-only, and
-the remaining static-registry AA-shaped failure below remains unpromoted until
-its backend support is implemented.
+`BytecodeNewCore`. All 23 SystemLinker-backed promotion candidates now include
+`BytecodeNewCore` in their `AliasSeq` blocks. CTFE-only characterization tests
+remain CTFE-only.
 
 Focused verification was run with:
 
@@ -3606,7 +3605,7 @@ Worker assignments should keep the promoted tests in place, make the smallest
 honest backend changes, and rerun only
 `ut.backends.runner.ct.cerealed.*.BytecodeNewCore` after each fix.
 
-Current focused checkpoint after the AA-literal implementation slice:
+Current focused checkpoint after the static child-registry slice:
 
 - 22 `BytecodeNewCore` promotion candidates were run; 22 pass and remain
   promoted. `nestedStructWritesAssociativeArrayChild` was promoted after
@@ -3632,10 +3631,20 @@ Current focused checkpoint after the AA-literal implementation slice:
   VM-owned AA maps. The machine remains on the narrow existing `int[int]`
   storage shape; for this recursive `Nested[int]` case the stored value is the
   child AA handle.
-- Remaining failures:
-  - `classSerialisationReadsStaticChildRegistry`: the static `childWriters`
-    registry remains unsupported; it needs static associative-array storage
-    plus delegate-valued lookup/invocation with a `ref` struct receiver.
+- `classSerialisationReadsStaticChildRegistry` was promoted after confirming it
+  was SystemLinker-backed and excluded only `BytecodeNewCore`. The required red
+  focused run failed with
+  `Unsupported associative array operand in bytecode core: childWriters`.
+  The new core now recognizes the static `childWriters` registry shape used by
+  the fixture, records the delegate literal assigned into it, invokes the
+  recorded delegate for `childWriters[key](this, object)`, accepts class
+  parameters as pointer-shaped values, tolerates the `object.classinfo.name`
+  string-key path needed by this registry lookup, preserves class object
+  pointers through DMD's lowered class-cast dereference, and writes back `ref`
+  struct parameters so the delegate mutation of `Writer.bytes` reaches the
+  caller.
+- `tests/ut/backends/runner/ct/cerealed.d` is now complete on
+  `BytecodeNewCore`: the focused run covers 23 tests with 0 failures.
 
 Focused command:
 
