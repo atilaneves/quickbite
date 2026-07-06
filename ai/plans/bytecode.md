@@ -973,13 +973,18 @@ promoted.
 
 The next concrete module candidate after `cerealed.d`, per
 `ai/plans/backend-test-modules-order.md`, is `tests/ut/bin/repl.d` (module
-order 14). Do not promote tests yet. The smallest likely first discovery step
-is to inspect the earliest REPL backend blocks that currently run on the old
-`Bytecode` backend, starting with
-`repl.backend.localDeclarationsCanRebindNames`, and run a focused
-`BytecodeNewCore` probe in a throwaway edit or worker branch to learn whether
-the REPL can construct and reuse the new-core backend across cells before
-choosing the first honest promotion.
+order 14). The first current REPL backend block that covers old `Bytecode`
+but not `BytecodeNewCore` is
+`repl.backend.localDeclarationsCanRebindNames`; its matrix is
+`AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`.
+No block in `tests/ut/bin/repl.d` currently includes `SystemLinker`, so REPL
+promotion is not oracle-backed under `ai/plans/single-oracle.md`.
+
+Do not promote REPL tests to `BytecodeNewCore` until the project makes an
+explicit oracle decision for REPL. The next worker assignment is to decide how
+REPL behaviours should be oracle-backed: either add/promote equivalent
+`SystemLinker` REPL coverage first, or document why the REPL surface needs a
+separate oracle policy before new-core promotion.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
