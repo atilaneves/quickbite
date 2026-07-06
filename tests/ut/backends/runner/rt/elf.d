@@ -1,7 +1,7 @@
 module ut.backends.runner.rt.elf;
 
 
-import quickbite.backends.native.elf: normalizeDuplicateUndefinedGlobals;
+import orc.elf: normalizeDuplicateUndefinedGlobals;
 import ut;
 
 

@@ -1,4 +1,4 @@
-module quickbite.backends.native.elf;
+module orc.elf;
 
 
 private:

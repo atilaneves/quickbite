@@ -1,4 +1,4 @@
-module quickbite.backends.native.llvm_orc;
+module orc.bindings;
 
 
 // Hand-written extern(C) declarations for the ORC-V2 / Core C API functions
