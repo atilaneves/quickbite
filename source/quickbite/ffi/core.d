@@ -352,13 +352,16 @@ private bool callViaLibffi(
         return false;
 
     // libffi fills in struct ffi_type sizes during prep; cross-check against
-    // DMD's computed layout (ffi.md §24.3).
+    // DMD's computed layout (ffi.md §24.3). ffiTypeFor only claims layouts
+    // libffi reproduces exactly (ffi.md §35.7), so a mismatch is a mapper bug.
     if (returnType.ty == TY.Tstruct)
-        assert(returnFfi.size == cast(size_t) size(returnType));
+        assert(returnFfi.size == cast(size_t) size(returnType),
+            "libffi/DMD return struct layout mismatch (ffi.md §24.3)");
     foreach (index; 0 .. nargs)
         if (parameterTypes[index].ty == TY.Tstruct)
             assert(argumentFfiTypes[index].size ==
-                cast(size_t) size(parameterTypes[index]));
+                cast(size_t) size(parameterTypes[index]),
+                "libffi/DMD argument struct layout mismatch (ffi.md §24.3)");
 
     // Native buffers marshalled for pointer/slice arguments, kept alive across
     // the call below so the GC cannot reclaim them mid-call.
@@ -702,23 +705,101 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiDelegateType() {
 }
 
 // Synthesize a STRUCT ffi_type by walking the struct's fields; libffi computes
-// the laid-out size and alignment during ffi_prep_cif.
+// the laid-out size and alignment during ffi_prep_cif. A union is modelled
+// separately (ffiUnionType); a layout libffi's sequential natural walk cannot
+// reproduce (packed or over-aligned `align`, anonymous unions) returns null so
+// the caller takes the graceful no-available-source path (ffi.md §35.7).
 private imported!"quickbite.ffi.libffi".ffi_type* ffiStructType(
+    imported!"dmd.mtype".TypeStruct type,
+) {
+    import quickbite.ffi.libffi: ffi_type, FFI_TYPE_STRUCT;
+    import dmd.typesem: size;
+
+    auto sym = type.sym;
+    if (sym.isUnionDeclaration !is null)
+        return ffiUnionType(type);
+
+    auto elements = new ffi_type*[](sym.fields.length + 1);
+    size_t naturalOffset;
+    uint naturalAlignment = 1;
+    foreach (index; 0 .. sym.fields.length) {
+        auto field = sym.fields[index];
+        auto fieldType = field.type.toBasetype;
+        elements[index] = ffiTypeFor(fieldType);
+        if (elements[index] is null)
+            return null;
+
+        // libffi places each field sequentially at its natural alignment; a
+        // DMD offset that disagrees is a layout the element walk misdescribes.
+        const fieldAlignment = fieldType.alignsize;
+        naturalOffset = alignUp(naturalOffset, fieldAlignment);
+        if (naturalOffset != field.offset)
+            return null;
+        naturalOffset += cast(size_t) size(fieldType);
+        if (fieldAlignment > naturalAlignment)
+            naturalAlignment = fieldAlignment;
+    }
+    elements[$ - 1] = null;
+
+    // Explicit `align` can change the struct's alignment or total size without
+    // moving any field; both must match the natural layout libffi computes.
+    if (sym.fields.length != 0 &&
+        (sym.alignsize != naturalAlignment ||
+         alignUp(naturalOffset, naturalAlignment) != sym.structsize))
+        return null;
+
+    auto result = new ffi_type;
+    result.type = FFI_TYPE_STRUCT;
+    result.elements = elements.ptr;
+    return result;
+}
+
+private size_t alignUp(
+    in size_t offset,
+    in uint alignment,
+) @safe @nogc nothrow pure {
+    return (offset + alignment - 1) & ~(cast(size_t) alignment - 1);
+}
+
+// libffi cannot express overlapped members (ffi.md §35.7); the accepted
+// convention is a struct containing only the most-aligned member, with size
+// and alignment forced to DMD's layout — ffi_prep_cif leaves them alone
+// because it only initializes aggregates whose size is still 0. Members must
+// map to fixed-size ffi types (scalars, pointers) so ABI classification never
+// walks an unprepped aggregate; anything else returns null for the graceful
+// no-available-source path.
+private imported!"quickbite.ffi.libffi".ffi_type* ffiUnionType(
     imported!"dmd.mtype".TypeStruct type,
 ) {
     import quickbite.ffi.libffi: ffi_type, FFI_TYPE_STRUCT;
 
     auto sym = type.sym;
-    auto elements = new ffi_type*[](sym.fields.length + 1);
-    foreach (index; 0 .. sym.fields.length) {
-        elements[index] = ffiTypeFor(sym.fields[index].type.toBasetype);
-        if (elements[index] is null)
+    if (sym.fields.length == 0)
+        return null;
+
+    ffi_type* dominant;
+    uint dominantAlignment;
+    foreach (field; sym.fields) {
+        auto fieldType = field.type.toBasetype;
+        auto fieldFfi = ffiTypeFor(fieldType);
+        if (fieldFfi is null || fieldFfi.size == 0)
             return null;
+
+        const fieldAlignment = fieldType.alignsize;
+        if (dominant is null || fieldAlignment > dominantAlignment) {
+            dominant = fieldFfi;
+            dominantAlignment = fieldAlignment;
+        }
     }
-    elements[$ - 1] = null;
+
+    auto elements = new ffi_type*[](2);
+    elements[0] = dominant;
+    elements[1] = null;
 
     auto result = new ffi_type;
     result.type = FFI_TYPE_STRUCT;
+    result.size = sym.structsize;
+    result.alignment = cast(ushort) sym.alignsize;
     result.elements = elements.ptr;
     return result;
 }

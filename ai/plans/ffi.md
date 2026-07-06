@@ -3043,6 +3043,20 @@ what compiled code passes too.
 
 ### 35.7 Unions crossing by value die on an assert, not the graceful path
 
+**Status: fixed 2026-07-06.** Detection now precedes prep: `ffiStructType`
+verifies DMD's field offsets, alignment, and total size against the natural
+sequential layout libffi computes, returning null (the graceful
+no-available-source path) for packed/over-aligned/anonymous-union layouts.
+Unions are modelled via the libffi convention (`ffiUnionType`: one
+most-aligned member, size/alignment forced to DMD's, which `ffi_prep_cif`
+leaves alone), restricted to fixed-size members so ABI classification never
+walks an unprepped aggregate. The §24.3 cross-check asserts are labelled and
+now only guard shapes the mapper claims. The interpreter reifies a returned
+union as a boxed struct whose fields each unmarshal from the same overlapped
+bytes — a bit-faithful snapshot. Union *arguments* pass the mapper but the
+boxed representation cannot reproduce the overlapped bytes outbound;
+refusing them pre-call belongs to the §35.8 representability query.
+
 **Claim.** §34.2's shared invariant: a shape the bridge does not model
 returns `false` and preserves the caller's no-available-source diagnostic.
 §34.3.1's residual list names union fields as something the boxed seam
