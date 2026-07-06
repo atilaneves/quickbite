@@ -1412,7 +1412,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
             case aaDup: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
                 maps ~= handle == 0
-                    ? AssocArray.init : maps[handle - 1].dup;
+                    ? AssocArray.init : copyAssocArray(maps[handle - 1]);
                 writeScalar!size_t(stack, base + instruction.a, maps.length);
                 ++ip;
                 break;
@@ -1420,17 +1420,27 @@ package(quickbite.backends.bytecode) ubyte[] run(
 
             case aaKeys, aaValues: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
-                const elements = handle == 0
-                    ? null
-                    : (instruction.op == aaKeys
-                        ? maps[handle - 1].keys
-                        : maps[handle - 1].values);
-                auto block = new ubyte[](elements.length * int.sizeof);
-                foreach (index, element; elements)
-                    writeScalar!int(block, index * int.sizeof, element);
+                const outputElementSize =
+                    instruction.c == 0 ? int.sizeof : instruction.c;
+                const length = handle == 0
+                    ? 0
+                    : maps[handle - 1].keys.length;
+                auto block = new ubyte[](length * outputElementSize);
+                if (handle != 0) {
+                    if (instruction.op == aaKeys)
+                        foreach (index, element; maps[handle - 1].keys)
+                            writeScalar!int(
+                                block, index * outputElementSize, element,
+                            );
+                    else
+                        foreach (index, element; maps[handle - 1].values)
+                            writeScalar!int(
+                                block, index * outputElementSize, element,
+                            );
+                }
                 heap ~= block;
                 writeSliceDescriptor(
-                    stack, base + instruction.a, block, elements.length,
+                    stack, base + instruction.a, block, length,
                 );
                 ++ip;
                 break;
@@ -2516,8 +2526,9 @@ private struct AssocArray {
     }
 
     void insert(in int key, in int value) @safe nothrow pure {
-        if (auto slot = find(key)) {
-            *slot = value;
+        const index = findIndex(key);
+        if (index != size_t.max) {
+            values[index] = value;
             return;
         }
         keys ~= key;
@@ -2534,9 +2545,16 @@ private struct AssocArray {
         return false;
     }
 
-    AssocArray dup() @safe nothrow pure const {
-        return AssocArray(keys.dup, values.dup);
+    private size_t findIndex(in int key) @safe @nogc nothrow pure const {
+        foreach (index, existing; keys)
+            if (existing == key)
+                return index;
+        return size_t.max;
     }
+}
+
+private AssocArray copyAssocArray(AssocArray source) @safe nothrow pure {
+    return AssocArray(source.keys.dup, source.values.dup);
 }
 
 // Entry-set equality: equal counts and, for every key in `left`, an equal value

@@ -3563,10 +3563,10 @@ Result: 55 tests run, 0 failed, 1/1 failing as expected.
 
 All SystemLinker-backed tests from
 `tests/ut/backends/runner/ct/cerealed.d` were evaluated for promotion to
-`BytecodeNewCore`. The 21 passing promotion candidates remain promoted in
+`BytecodeNewCore`. The 22 passing promotion candidates remain promoted in
 their `AliasSeq` blocks. CTFE-only characterization tests remain CTFE-only, and
-the two AA-shaped failures below remain unpromoted until their backend support
-is implemented.
+the remaining static-registry AA-shaped failure below remains unpromoted until
+its backend support is implemented.
 
 Focused verification was run with:
 
@@ -3606,11 +3606,14 @@ Worker assignments should keep the promoted tests in place, make the smallest
 honest backend changes, and rerun only
 `ut.backends.runner.ct.cerealed.*.BytecodeNewCore` after each fix.
 
-Current focused checkpoint after the first implementation slices:
+Current focused checkpoint after the AA-literal implementation slice:
 
-- 23 `BytecodeNewCore` promotion candidates were run; 21 pass and remain
-  promoted. The two failures below are documented and left unpromoted for this
-  PR.
+- 22 `BytecodeNewCore` promotion candidates were run; 22 pass and remain
+  promoted. `nestedStructWritesAssociativeArrayChild` was promoted after
+  confirming it was SystemLinker-backed and excluded only `BytecodeNewCore`.
+- The required red focused run for
+  `nestedStructWritesAssociativeArrayChild.BytecodeNewCore` failed with
+  `Unsupported expression in bytecode core: [7:Nested(null)]`.
 - Aggregate-shaped returns, dynamic-array descriptors, static-array by-value
   parameters, and compound shift assignment are partially implemented.
 - `inputRangeWritesLengthAndValues` now passes after reserving enough hidden
@@ -3622,10 +3625,14 @@ Current focused checkpoint after the first implementation slices:
 - `protocolUnitLengthFieldRoundTrip` now passes after struct identity learned
   descriptor-based comparison for dynamic-array fields and dynamic-array
   struct elements were materialized consistently.
+- `nestedStructWritesAssociativeArrayChild` now passes after the compiler
+  learned to materialize AA literals as handle operands, initialize AA fields in
+  struct literals, treat AA field expressions as handle-typed operands, and
+  inline DMD's `_d_aaApply2` lowering for `foreach (key, value; aa)` over the
+  VM-owned AA maps. The machine remains on the narrow existing `int[int]`
+  storage shape; for this recursive `Nested[int]` case the stored value is the
+  child AA handle.
 - Remaining failures:
-  - `nestedStructWritesAssociativeArrayChild`: the recursive literal
-    `[7: Nested(null)]` is unsupported; associative-array literals with struct
-    values, followed by AA iteration over those values, need bytecode lowering.
   - `classSerialisationReadsStaticChildRegistry`: the static `childWriters`
     registry remains unsupported; it needs static associative-array storage
     plus delegate-valued lookup/invocation with a `ref` struct receiver.

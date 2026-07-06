@@ -1869,6 +1869,8 @@ private struct Compiler {
                 if (field.type.toBasetype.ty == TY.Tarray &&
                     !isStringType(field.type))
                     return Operand(field.offset, ScalarType.void_);
+                if (field.type.toBasetype.ty == TY.Taarray)
+                    return Operand(field.offset, ScalarType.ulong_);
                 if (isPointerType(field.type))
                     return Operand(
                         field.offset, ScalarType.ulong_, false, true,
@@ -1889,6 +1891,13 @@ private struct Compiler {
 
         if (auto literal = expression.isStructLiteralExp)
             return compileStructLiteralOperand(literal);
+
+        if (auto literal = expression.isAssocArrayLiteralExp) {
+            const offset =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            compileAssocArrayInto(offset, literal);
+            return Operand(offset, ScalarType.ulong_);
+        }
 
         // `new int(value)`: heap-allocate one scalar value and yield an `int*`.
         if (auto newExp = expression.isNewExp)
@@ -3118,6 +3127,11 @@ private struct Compiler {
                 compileDynamicArrayInto(
                     fieldOffset, dynamicArrayElementType(fieldType), element,
                 );
+                continue;
+            }
+
+            if (fieldType.toBasetype.ty == TY.Taarray) {
+                compileAssocArrayInto(fieldOffset, element);
                 continue;
             }
 
@@ -7427,19 +7441,123 @@ private struct Compiler {
             }
 
             case keys:
-                return compileAssocArraySlice(Op.aaKeys, handle);
+                return compileAssocArraySlice(Op.aaKeys, handle, int.sizeof);
 
             case values:
-                return compileAssocArraySlice(Op.aaValues, handle);
+                return compileAssocArraySlice(
+                    Op.aaValues,
+                    handle,
+                    dynamicArrayElementSize(
+                        call.type, dynamicArrayElementType(call.type),
+                    ),
+                );
+
+            case apply2:
+                return compileAssocArrayApply2(call, handle);
         }
     }
 
     // `m.keys` / `m.values`: a fresh `int[]` slice descriptor holding a copy of
     // the map's keys / values, rooted on the VM-owned heap.
-    private Operand compileAssocArraySlice(in Op op, in ushort handle) {
+    private Operand compileAssocArraySlice(
+        in Op op,
+        in ushort handle,
+        in uint elementSize,
+    ) {
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(op, offset, handle);
+        _code ~= Instruction(op, offset, handle, cast(ushort) elementSize);
         return Operand(offset, ScalarType.int_);
+    }
+
+    // `_d_aaApply2(aa, dg)`: DMD's lowering of `foreach (key, value; aa)`.
+    // Materialise insertion-ordered key/value slices from the VM-owned map and
+    // inline the delegate body once per entry.
+    private Operand compileAssocArrayApply2(
+        CallExp call,
+        in ushort handle,
+    ) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        if (call.arguments is null || call.arguments.length != 2)
+            throw new Exception(text(
+                "Unsupported associative array foreach in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        auto literal = (*call.arguments)[1].isFuncExp;
+        if (literal is null || literal.fd is null ||
+            literal.fd.fbody is null ||
+            literal.fd.parameters is null ||
+            literal.fd.parameters.length != 2)
+            throw new Exception(text(
+                "Unsupported associative array foreach body in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        auto keyParameter = (*literal.fd.parameters)[0];
+        auto valueParameter = (*literal.fd.parameters)[1];
+        const valueElementSize = valueParameter.type.toBasetype.ty == TY.Tstruct
+            ? cast(uint) staticArraySize(valueParameter.type)
+            : size(scalarType(valueParameter.type));
+
+        const keys = compileAssocArraySlice(Op.aaKeys, handle, int.sizeof);
+        const values = compileAssocArraySlice(
+            Op.aaValues, handle, valueElementSize,
+        );
+
+        const keySlot = allocate(ScalarType.int_);
+        _locals[keyParameter] = keySlot;
+
+        const valueSlot = allocateBytes(
+            valueElementSize,
+            valueParameter.type.toBasetype.ty == TY.Tstruct
+                ? staticArrayAlign(valueParameter.type)
+                : valueElementSize,
+        );
+        if (valueParameter.type.toBasetype.ty == TY.Tstruct)
+            _structLocals[valueParameter] = StructLocal(
+                valueSlot, structDeclarationOf(valueParameter.type),
+            );
+        else
+            _locals[valueParameter] = valueSlot;
+
+        const index = compileSizeConstant(0);
+        const length = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.sliceLength, length, keys.offset);
+
+        const conditionIndex = _code.length;
+        const condition = allocate(ScalarType.bool_);
+        _code ~= Instruction(
+            Op.lessThanUnsigned8, condition, index, length,
+        );
+        const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
+
+        _code ~= Instruction(Op.indexLoad4, keySlot, keys.offset, index);
+        _code ~= Instruction(
+            indexLoadOp(valueElementSize), valueSlot, values.offset, index,
+        );
+
+        size_t[] bodyExits;
+        auto previousExits = _applyBodyExits;
+        _applyBodyExits = &bodyExits;
+        compileStatement(literal.fd.fbody);
+        _applyBodyExits = previousExits;
+
+        const one = compileSizeConstant(1);
+        _code ~= Instruction(Op.addInt8, index, index, one);
+        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
+
+        patchJump(exitJump);
+        foreach (patch; bodyExits)
+            patchJump(patch);
+
+        const result = allocate(ScalarType.int_);
+        _code ~= Instruction(
+            Op.loadConstant, result, constantIndex(0),
+            cast(ushort) size(ScalarType.int_),
+        );
+        return Operand(result, ScalarType.int_);
     }
 
     // `m[k] = v` lowers to `_d_aaGetY(&m, k)` returning a slot pointer, written
@@ -7476,6 +7594,14 @@ private struct Compiler {
                 if (declaration in _assocArrayLocals)
                     if (auto slot = declaration in _locals)
                         return *slot;
+
+        if (auto dot = inner.isDotVarExp)
+            if (auto field = tryStructField(dot)) {
+                import dmd.astenums: TY;
+
+                if (field.type.toBasetype.ty == TY.Taarray)
+                    return field.offset;
+            }
 
         throw new Exception(text(
             "Unsupported associative array operand in bytecode core: ",
@@ -8807,6 +8933,8 @@ private struct Compiler {
                 return ScalarType.real_;
             case Tpointer:
                 return ScalarType.ulong_;
+            case Taarray:
+                return ScalarType.ulong_;
             default:
                 throw new Exception(text(
                     "Unsupported type in bytecode core: ",
@@ -9541,6 +9669,7 @@ private enum AssocArrayHook {
     dup,
     keys,
     values,
+    apply2,
 }
 
 private AssocArrayHook assocArrayHook(
@@ -9564,6 +9693,7 @@ private AssocArrayHook assocArrayHook(
         Hook("object.dup!(", AssocArrayHook.dup),
         Hook("object.keys!(", AssocArrayHook.keys),
         Hook("object.values!(", AssocArrayHook.values),
+        Hook("core.internal.newaa._d_aaApply2!(", AssocArrayHook.apply2),
     ];
 
     foreach (candidate; hooks)

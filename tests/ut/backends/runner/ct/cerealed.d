@@ -363,7 +363,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("nestedStructWritesAssociativeArrayChild." ~
         backend.stringof)
     @Tags(backend.stringof)
