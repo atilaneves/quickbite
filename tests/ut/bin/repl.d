@@ -170,7 +170,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.failedExpressionDoesNotAdvanceLastValueBinding." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -188,7 +188,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
