@@ -46,12 +46,13 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
 
         return displayEvalResult(() {
             auto compilation = compile(function_);
-            const bytes =
+            auto result =
                 run(*compilation.program, compilation.compileFunction);
             return reify(
-                bytes,
+                result.bytes,
                 compilation.program.functions[0].returnType,
                 compilation.program.data,
+                result.heap,
             );
         }, function_);
     }

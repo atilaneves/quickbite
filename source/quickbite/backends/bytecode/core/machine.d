@@ -11,9 +11,14 @@ package(quickbite.backends.bytecode) alias CompileFunction =
 // reuses the same block: raw `&local` pointers stay valid across calls.
 private enum stackCapacity = 4 * 1024 * 1024;
 
+package(quickbite.backends.bytecode) struct RunResult {
+    ubyte[] bytes;
+    ubyte[][] heap;
+}
+
 // Executes the program's entry function and returns the raw bytes of its
-// result (empty for void).
-package(quickbite.backends.bytecode) ubyte[] run(
+// result (empty for void), plus heap roots for result descriptors.
+package(quickbite.backends.bytecode) RunResult run(
     ref imported!"quickbite.backends.bytecode.core.program".Program program,
     scope CompileFunction compileFunction,
 ) {
@@ -1581,10 +1586,13 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 const resultSize =
                     size(program.functions[functionIndex].returnType);
                 if (frames.length == 0)
-                    return stack[
-                        base + instruction.a
-                        .. base + instruction.a + resultSize
-                    ].dup;
+                    return RunResult(
+                        stack[
+                            base + instruction.a
+                            .. base + instruction.a + resultSize
+                        ].dup,
+                        heap,
+                    );
 
                 const frame = frames[$ - 1];
                 frames.length -= 1;

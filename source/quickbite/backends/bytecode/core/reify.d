@@ -10,8 +10,12 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     in ubyte[] bytes,
     in imported!"quickbite.backends.bytecode.core.program".ResultType type,
     in ubyte[] data,
+    in ubyte[][] heap,
 ) @safe pure {
     import quickbite.lang: Value;
+
+    if (type.isUndisplayable)
+        return Value.undisplayable;
 
     if (type.isString) {
         const offset = scalar!uint(bytes);
@@ -19,7 +23,52 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
         return Value.stringValue(cast(const(char)[]) data[offset .. offset + length]);
     }
 
+    if (type.isArray)
+        return reifyArray(bytes, type, heap);
+
     return reifyScalar(bytes, type.scalar);
+}
+
+private imported!"quickbite.lang".Value reifyArray(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ResultType type,
+    in ubyte[][] heap,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
+    import quickbite.lang: Value;
+
+    const pointer = scalar!size_t(bytes);
+    const length = scalar!size_t(bytes[size_t.sizeof .. $]);
+    auto block = heapBlock(pointer, heap);
+    Value[] elements;
+    foreach (index; 0 .. length) {
+        const offset = index * (type.arrayElementsAreArrays
+            ? sliceDescriptorSize
+            : size(type.elementType));
+        elements ~= type.arrayElementsAreArrays
+            ? reifyArray(
+                block[offset .. offset + sliceDescriptorSize],
+                type.withScalarArrayElements,
+                heap,
+            )
+            : reifyScalar(
+                block[offset .. offset + size(type.elementType)],
+                type.elementType,
+            );
+    }
+    return Value.arrayValue(elements);
+}
+
+private imported!"quickbite.backends.bytecode.core.program".ResultType
+withScalarArrayElements(
+    in imported!"quickbite.backends.bytecode.core.program".ResultType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program:
+        ResultType, ScalarType;
+
+    return ResultType(
+        ScalarType.void_, false, true, type.elementType, false,
+    );
 }
 
 private imported!"quickbite.lang".Value reifyScalar(
@@ -63,6 +112,22 @@ private imported!"quickbite.lang".Value reifyScalar(
         case real_:
             return Value(scalar!real(bytes));
     }
+}
+
+private const(ubyte)[] heapBlock(
+    in size_t pointer,
+    in ubyte[][] heap,
+) @safe pure {
+    foreach (block; heap)
+        if (blockPointer(block) == pointer)
+            return block;
+    return null;
+}
+
+// Heap descriptors store native block pointers; comparing them requires taking
+// the slice address, while all dereferencing stays through the rooted slice.
+private size_t blockPointer(in ubyte[] block) @trusted pure {
+    return cast(size_t) block.ptr;
 }
 
 private T scalar(T)(in ubyte[] bytes) @safe pure {
