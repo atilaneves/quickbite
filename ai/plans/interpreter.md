@@ -346,9 +346,37 @@ than calling the existing zero/default-by-type `defaultValue(Type)` helper.
 symbol addresses, and non-struct `SymbolDeclaration` cases unless a remeasure
 proves cerealed reaches them.
 
+**Slice status.** The standalone fixture
+`struct.defaultInitPreservesExplicitFieldInitializers` covers `Header.init`
+against `Interpreter` and `SystemLinker`. The interpreter now handles
+`VarExp(SymbolDeclaration)` for struct initializer symbols by evaluating DMD's
+`defaultInitLiteral`, preserving explicit field initializers. In this harness
+the exact fixture was already green before the production change.
+
 **Done.** The fixture is green on `Interpreter` and `SystemLinker`, and
 `bin/bench.sh -b interpreter --dub cerealed` no longer aborts with `SIGILL`.
 Remeasure §7 immediately afterward; then proceed to the next visible class.
+
+**Post-Rung-4 remeasure.** The first remeasure exposed the next concrete
+assignment blocker in `ScopeBuffer.put`: `data[index] = value` where `data` is
+a pointer into D array storage. The standalone fixture
+`pointer.indexAssignmentWritesArrayStorage` now covers that language behaviour
+against `Interpreter` and `SystemLinker`. The interpreter routes non-native
+pointer index assignment through tracked array storage before the associative
+array slot fallback, preserves slice-parameter backing storage, and writes back
+static-array storage only after an actual tracked pointer write.
+
+The required remeasure still skips:
+
+```text
+skipping cerealed interpreter: `realloc` cannot be interpreted at compile time,
+because it has no available source code
+skipping cerealed interpreter: failing fixtures
+```
+
+So cerealed still has at least one hidden failing fixture behind the
+CTFE-style diagnostic path. Re-run §6 with failure listing before choosing the
+next standalone fixture.
 
 ### 9.5 Rung 5 — `Expected integer-compatible scalar` (7×)
 

@@ -118,6 +118,7 @@ private struct Walker {
     private StructArrayFieldAliases[VarDeclaration] structArrayFieldAliases;
     private size_t[VarDeclaration] arrayAllocations;
     private VarDeclaration[size_t] arrayAllocationVariables;
+    private bool[VarDeclaration] arrayPointerWritebacks;
     private size_t allocationCount;
     private Value result;
     private bool runningCalledFunction;
@@ -930,7 +931,7 @@ private struct Walker {
         ) {
             auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
             if (comparison is null)
-                assert(0);
+                assert(0, "comparison expression was not a CmpExp");
 
             return runComparisonExpression(comparison);
         }
@@ -1000,7 +1001,7 @@ private struct Walker {
         if (expression.op == EXP.concatenateAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
-                assert(0);
+                assert(0, "concatenateAssign expression was not a BinExp");
 
             return runArrayConcatenateAssignExpression(assign);
         }
@@ -1008,7 +1009,7 @@ private struct Walker {
         if (expression.op == EXP.concatenateElemAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
-                assert(0);
+                assert(0, "concatenateElemAssign expression was not a BinExp");
 
             return runArrayAppendAssignExpression(assign);
         }
@@ -1016,7 +1017,7 @@ private struct Walker {
         if (isScalarCompoundAssignExpression(expression)) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
-                assert(0);
+                assert(0, "compound assignment expression was not a BinExp");
 
             return runCompoundAssignExpression(assign);
         }
@@ -1128,7 +1129,7 @@ private struct Walker {
 
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
-                assert(0);
+                return runSymbolDeclarationVarExpression(var);
 
             // the magic __ctfe variable is true under AST interpretation,
             // matching dmd's own interpreter; the language requires both
@@ -1159,6 +1160,23 @@ private struct Walker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    private Value runSymbolDeclarationVarExpression(
+        imported!"dmd.expression".VarExp var,
+    ) {
+        import dmd.typesem: defaultInitLiteral;
+
+        auto symbol = var.var.isSymbolDeclaration;
+        if (symbol is null)
+            assert(0, "non-variable VarExp was not a SymbolDeclaration");
+
+        auto type = symbol.dsym is null ? symbol.type : symbol.dsym.type;
+        auto structType = type is null ? null : type.toBasetype.isTypeStruct;
+        if (structType is null)
+            assert(0, "SymbolDeclaration VarExp was not a struct initializer");
+
+        return runExpression(structType.defaultInitLiteral(var.loc));
     }
 
     private Value runLogicalAndExpression(
@@ -1386,9 +1404,13 @@ private struct Walker {
         if (current is null)
             throw new Exception(text("Unsupported eval expression: ", op));
 
+        auto source = variable;
+        if (auto alias_ = variable in sliceAliases)
+            source = alias_.source;
+
         return Value.arrayPointerValue(
             arrayPointerElements(*current),
-            allocationId(variable),
+            allocationId(source),
             arrayPointerOffset(*current, offset),
         );
     }
@@ -2382,11 +2404,13 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(function_, arguments);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions);
 
         try {
             child.runStatement(function_.fbody);
@@ -2427,8 +2451,10 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         if (receiverExpression !is null)
             if (auto var = receiverExpression.isVarExp)
@@ -2455,7 +2481,7 @@ private struct Walker {
             child.thisValue = receiver;
         }
         child.hasThis = true;
-        child.bindFunctionParameters(function_, arguments);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions);
 
         try {
             child.runStatement(function_.fbody);
@@ -2496,6 +2522,7 @@ private struct Walker {
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
         arrayAllocationVariables = child.arrayAllocationVariables;
+        arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -2519,8 +2546,10 @@ private struct Walker {
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
         arrayAllocationVariables = child.arrayAllocationVariables;
+        arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
+        writeBackArrayPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
@@ -2565,7 +2594,8 @@ private struct Walker {
             if ((variable in locals) is null)
                 continue;
 
-            if (!isDynamicArrayVariable(variable))
+            if (!isDynamicArrayVariable(variable) &&
+                (variable in child.arrayPointerWritebacks) is null)
                 continue;
 
             if (auto value = variable in child.locals)
@@ -2591,13 +2621,19 @@ private struct Walker {
             seedChildLocal(child, variable);
 
         foreach (_, variable; child.arrayAllocationVariables)
-            if (isDynamicArrayVariable(variable))
+            if (isArrayVariable(variable))
                 seedChildLocal(child, variable);
     }
 
     private void seedChildLocal(ref Walker child, VarDeclaration variable) {
         if (auto value = variable in locals)
             child.locals[variable] = *value;
+    }
+
+    private bool isArrayVariable(VarDeclaration variable) {
+        import quickbite.frontend.dmd.types: isArrayType;
+
+        return isArrayType(variable.type);
     }
 
     private bool isDynamicArrayVariable(VarDeclaration variable) {
@@ -2698,6 +2734,7 @@ private struct Walker {
     private void bindFunctionParameters(
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
+        imported!"dmd.expression".Expression[] argumentExpressions = null,
     ) {
         if (arguments.length == 0) {
             if (function_.parameters !is null && function_.parameters.length != 0)
@@ -2711,8 +2748,55 @@ private struct Walker {
         )
             throw new Exception("Unsupported interpreter call arguments.");
 
-        foreach (index, parameter; *function_.parameters)
+        foreach (index, parameter; *function_.parameters) {
             locals[parameter] = arguments[index];
+            recordParameterSliceAlias(
+                parameter,
+                arguments[index],
+                index < argumentExpressions.length
+                    ? argumentExpressions[index]
+                    : null,
+            );
+        }
+    }
+
+    private void recordParameterSliceAlias(
+        VarDeclaration parameter,
+        in Value argument,
+        imported!"dmd.expression".Expression argumentExpression,
+    ) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        auto slice = argumentExpression is null
+            ? null
+            : argumentExpression.isSliceExp;
+        if (slice is null || !argument.isArray) {
+            sliceAliases.remove(parameter);
+            return;
+        }
+
+        if (isPointerType(slice.e1.type)) {
+            sliceAliases.remove(parameter);
+            return;
+        }
+
+        auto var = slice.e1.isVarExp;
+        if (var is null) {
+            sliceAliases.remove(parameter);
+            return;
+        }
+
+        auto source = var.var.isVarDeclaration;
+        if (source is null) {
+            sliceAliases.remove(parameter);
+            return;
+        }
+
+        auto sourceAlias = source in sliceAliases;
+        sliceAliases[parameter] = SliceAlias(
+            sourceAlias is null ? source : sourceAlias.source,
+            argument.arrayAllocationOffset,
+        );
     }
 
     private void writeBackRefArguments(
@@ -3016,7 +3100,7 @@ private struct Walker {
                 break;
 
             default:
-                assert(0);
+                assert(0, "unsupported integer binary operator");
         }
 
         return backendCastValue(Value(result), backendCastTarget(expression.type));
@@ -3373,12 +3457,14 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
         child.hasThis = true;
-        child.bindFunctionParameters(function_, arguments);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions);
         child.writeLocation(returned, value);
         writeBackMemberFunctionState(
             function_,
@@ -3432,10 +3518,7 @@ private struct Walker {
     }
 
     private bool writeThroughArrayPointer(in Value pointer, in Value value) {
-        if (!pointer.isPointer || pointer.pointerAllocation == 0)
-            return false;
-
-        auto variable = pointer.pointerAllocation in arrayAllocationVariables;
+        auto variable = arrayPointerVariable(pointer);
         if (variable is null)
             return false;
 
@@ -3447,8 +3530,22 @@ private struct Walker {
             cast(size_t) pointer.pointerElementOffset,
             value,
         );
+        arrayPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
         return true;
+    }
+
+    private bool canWriteThroughArrayPointer(in Value pointer) {
+        return arrayPointerVariable(pointer) !is null;
+    }
+
+    private imported!"dmd.declaration".VarDeclaration* arrayPointerVariable(
+        in Value pointer,
+    ) {
+        if (!pointer.isPointer || pointer.pointerAllocation == 0)
+            return null;
+
+        return pointer.pointerAllocation in arrayAllocationVariables;
     }
 
     private void writeIndexLocation(
@@ -3538,10 +3635,18 @@ private struct Walker {
 
         if (isPointerType(index.e1.type)) {
             const pointer = runExpression(index.e1);
+            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
             if (pointer.isNativePointer) {
-                const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
                 const value = runExpression(rhs);
                 storeNativePointerElement(index.e1.type, pointer, arrayIndex, value);
+                return value;
+            }
+            if (canWriteThroughArrayPointer(pointer)) {
+                const value = runExpression(rhs);
+                writeThroughArrayPointer(
+                    pointer.pointerOffsetBy(cast(long) arrayIndex),
+                    value,
+                );
                 return value;
             }
             return runAssocArraySlotAssignExpression(index.e1, rhs);
@@ -4884,7 +4989,9 @@ private struct Walker {
             throw new Exception("Unsupported interpreter array element alias target.");
 
         locals[alias_.source] = source.withArrayElement(alias_.index, value);
-        writeThroughSliceAlias(alias_.source, alias_.index, value);
+        auto sliceAlias = alias_.source in sliceAliases;
+        if (sliceAlias is null || (sliceAlias.source in locals) !is null)
+            writeThroughSliceAlias(alias_.source, alias_.index, value);
         uninitializedLocals.remove(alias_.source);
     }
 
