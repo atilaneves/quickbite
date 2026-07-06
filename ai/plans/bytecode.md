@@ -3522,6 +3522,22 @@ bin/ut $(bin/ut -l | \
 
 Result: 26 tests run, 0 failed.
 
+## REPL Display Parity (BytecodeNewCore)
+
+The REPL BytecodeNewCore surface now matches the already-promoted Interpreter
+behaviour for the two array display cases that were red after the REPL display
+batch:
+
+- `displaysNestedArrayResults` now compiles expression-position dynamic array
+  literals, including the inner literals in `[[1, 2], [3, 4]]`, using the
+  existing heap-backed slice descriptor opcodes.
+- `displaysStaticStringArrayResults` now reifies static array result blocks
+  whose elements are string descriptors, so `string[2] xs = ["a", "b"]; xs`
+  displays as `["a", "b"]`.
+
+This is intentionally display-boundary support only. It does not add
+SystemLinker REPL support and does not attempt a general D array type system.
+
 ## expressions.d Promotion Analysis (BytecodeNewCore)
 
 All SystemLinker-backed tests from

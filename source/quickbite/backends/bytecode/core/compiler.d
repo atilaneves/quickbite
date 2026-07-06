@@ -1907,6 +1907,9 @@ private struct Compiler {
         if (auto literal = expression.isStructLiteralExp)
             return compileStructLiteralOperand(literal);
 
+        if (auto literal = expression.isArrayLiteralExp)
+            return compileArrayLiteralOperand(literal);
+
         if (auto literal = expression.isAssocArrayLiteralExp) {
             const offset =
                 allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -1953,6 +1956,35 @@ private struct Compiler {
         zeroFrameBlock(offset, cast(uint) staticArraySize(literal.type));
         compileStructLiteralInto(offset, literal);
         return Operand(offset, ScalarType.void_);
+    }
+
+    private Operand compileArrayLiteralOperand(ArrayLiteralExp literal) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        if (literal.type.toBasetype.ty == TY.Tarray) {
+            const elementType = dynamicArrayElementType(literal.type);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            compileDynamicArrayInto(
+                offset, elementType, literal,
+                dynamicArrayElementIsArray(literal.type),
+            );
+            return Operand(offset, ScalarType.void_);
+        }
+
+        if (literal.type.toBasetype.ty == TY.Tsarray) {
+            const offset = allocateBytes(
+                cast(uint) staticArraySize(literal.type),
+                staticArrayAlign(literal.type),
+            );
+            compileStaticArrayLiteral(offset, literal.type, literal);
+            return Operand(offset, ScalarType.void_);
+        }
+
+        throw new Exception(text(
+            "Unsupported array literal in bytecode core: ",
+            expressionChars(literal),
+        ));
     }
 
     // Read an element of a static array at a compile-time-constant index. The
@@ -4155,11 +4187,12 @@ private struct Compiler {
             ));
 
         const count = literal.elements is null ? 0 : literal.elements.length;
+        const literalElementIsArray = dynamicArrayElementIsArray(source.type);
 
         // An array-of-arrays literal (`[[..], [..]]`): each element is itself an
         // array, stored as a 16-byte descriptor. Build each inner array into a
         // fresh descriptor slot and store it into the outer block.
-        if (elementIsArray) {
+        if (literalElementIsArray) {
             _code ~= Instruction(
                 Op.allocArray,
                 destination,
@@ -6706,8 +6739,13 @@ private struct Compiler {
         import std.conv: text;
 
         auto elementType = arrayType.toBasetype.nextOf;
-        const elementScalar = scalarType(elementType);
-        const elementSize = cast(uint) size(elementScalar);
+        const elementIsString = isStringType(elementType);
+        const elementScalar =
+            elementIsString ? ScalarType.void_ : scalarType(elementType);
+        const elementSize = elementIsString
+            ? stringSliceSize
+            : cast(uint) size(elementScalar);
+        const elementStride = cast(uint) staticArraySize(elementType);
 
         if (literal.elements is null)
             throw new Exception(text(
@@ -6717,7 +6755,7 @@ private struct Compiler {
 
         foreach (elementIndex; 0 .. literal.elements.length) {
             const value = compileExpression((*literal.elements)[elementIndex]);
-            if (value.type != elementScalar)
+            if (!elementIsString && value.type != elementScalar)
                 throw new Exception(text(
                     "Unsupported static array literal element in bytecode core: ",
                     expressionChars(literal),
@@ -6725,7 +6763,7 @@ private struct Compiler {
 
             _code ~= Instruction(
                 Op.copy,
-                cast(ushort) (offset + elementIndex * elementSize),
+                cast(ushort) (offset + elementIndex * elementStride),
                 value.offset,
                 cast(ushort) elementSize,
             );
@@ -9004,13 +9042,33 @@ private struct Compiler {
                 false,
                 true,
                 dynamicArrayElementType(type),
+                false,
+                0,
+                false,
+                0,
+                dynamicArrayElementSize(
+                    type,
+                    dynamicArrayElementType(type),
+                    dynamicArrayElementIsArray(type),
+                ),
+                isStringType(type.toBasetype.nextOf),
+                dynamicArrayElementIsArray(type),
             );
 
-        if (type.toBasetype.ty == TY.Tsarray)
+        if (type.toBasetype.ty == TY.Tsarray) {
+            auto elementType = type.toBasetype.nextOf;
+            const elementSize = cast(uint) staticArraySize(elementType);
             return ResultType(
                 ScalarType.void_, false, false, ScalarType.void_,
                 true, cast(uint) staticArraySize(type),
+                true,
+                cast(uint) (staticArraySize(type) / elementSize),
+                elementSize,
+                isStringType(elementType),
+                elementType.toBasetype.ty == TY.Tarray &&
+                    !isStringType(elementType),
             );
+        }
 
         // A by-value struct result is an inline block of `Type.size()` bytes,
         // copied back to the caller's destination on return like any other frame

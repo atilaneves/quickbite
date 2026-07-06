@@ -56,6 +56,11 @@ package(quickbite.backends.bytecode) struct ResultType {
     ScalarType elementType;
     bool isStruct;
     uint structSize;
+    bool isStaticArray;
+    uint arrayLength;
+    uint arrayElementSize;
+    bool arrayElementIsString;
+    bool arrayElementIsArray;
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset

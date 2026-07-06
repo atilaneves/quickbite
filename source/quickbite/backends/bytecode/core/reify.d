@@ -11,6 +11,7 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     in imported!"quickbite.backends.bytecode.core.program".ResultType type,
     in ubyte[] data,
 ) @safe pure {
+    import quickbite.backends.bytecode.core.program: ResultType;
     import quickbite.lang: Value;
 
     if (type.isString) {
@@ -19,7 +20,47 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
         return Value.stringValue(cast(const(char)[]) data[offset .. offset + length]);
     }
 
+    if (type.isArray || type.isStaticArray)
+        return reifyArray(bytes, type, data);
+
     return reifyScalar(bytes, type.scalar);
+}
+
+private imported!"quickbite.lang".Value reifyArray(
+    in ubyte[] bytes,
+    imported!"quickbite.backends.bytecode.core.program".ResultType type,
+    in ubyte[] data,
+) @safe pure {
+    import quickbite.lang: Value;
+
+    Value[] elements;
+    const length = type.isStaticArray
+        ? type.arrayLength
+        : scalar!size_t(bytes[size_t.sizeof .. $]);
+    foreach (index; 0 .. length) {
+        const elementBytes = type.isStaticArray
+            ? bytes[
+                index * type.arrayElementSize
+                .. (index + 1) * type.arrayElementSize
+            ]
+            : dynamicArrayElementBytes(bytes, index, type.arrayElementSize);
+        if (type.arrayElementIsString) {
+            const offset = scalar!uint(elementBytes);
+            const stringLength = scalar!uint(elementBytes[uint.sizeof .. $]);
+            elements ~= Value.stringValue(
+                cast(const(char)[]) data[offset .. offset + stringLength],
+            );
+        } else if (type.arrayElementIsArray) {
+            auto innerType = type;
+            innerType.isStaticArray = false;
+            innerType.isArray = true;
+            innerType.arrayElementSize = scalarSize(type.elementType);
+            innerType.arrayElementIsArray = false;
+            elements ~= reifyArray(elementBytes, innerType, data);
+        } else
+            elements ~= reifyScalar(elementBytes, type.elementType);
+    }
+    return Value.arrayValue(elements);
 }
 
 private imported!"quickbite.lang".Value reifyScalar(
@@ -63,6 +104,40 @@ private imported!"quickbite.lang".Value reifyScalar(
         case real_:
             return Value(scalar!real(bytes));
     }
+}
+
+private uint scalarSize(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case void_:
+            return 0;
+        case bool_, byte_, ubyte_, char_:
+            return 1;
+        case short_, ushort_, wchar_:
+            return 2;
+        case int_, uint_, dchar_, float_:
+            return 4;
+        case long_, ulong_, double_:
+            return 8;
+        case real_:
+            return real.sizeof;
+    }
+}
+
+// Dynamic-array descriptors store a native heap pointer. The machine roots the
+// pointed-to block for the session, and reification only reads the element bytes
+// while producing the display value.
+private const(ubyte)[] dynamicArrayElementBytes(
+    in ubyte[] descriptor,
+    in size_t index,
+    in uint elementSize,
+) @trusted pure {
+    const pointer = scalar!size_t(descriptor);
+    const bytes = cast(ubyte*) pointer;
+    return bytes[index * elementSize .. (index + 1) * elementSize];
 }
 
 private T scalar(T)(in ubyte[] bytes) @safe pure {
