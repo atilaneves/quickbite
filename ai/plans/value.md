@@ -231,6 +231,12 @@ still narrower than all array fields: Phobos range structs with plain `int[]`
 state keep the existing `Value.toString` display contract until range displays
 are deliberately moved.
 
+Progress 2026-07-06: the formatter gate now covers struct expression cells
+with enum fields and enum-array fields. These need the prelude because enum
+members render as qualified D expressions there (`Box(E.b)`,
+`Box([E.a, E.b])`), unlike the interim `Value.toString` scaffolding's bare
+member names.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
