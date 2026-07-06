@@ -258,6 +258,31 @@ keeps the full suite green.
   the new core. When the entire matrix passes on the new core, flip the
   default and delete the old core in the same change.
 
+### REPL parity continuation
+REPL promotion is parity work against the existing `Interpreter` behaviour,
+not `SystemLinker` enablement. Do not add `SystemLinker` to
+`tests/ut/bin/repl.d` as part of this plan. The REPL still uses template code
+emission paths that are separate from the bytecode backend parity work; proving
+or fixing those paths belongs in a later plan.
+
+Continue promoting `tests/ut/bin/repl.d` to `BytecodeNewCore` in coherent
+blocks. If a promoted block fails, stop the promotion worker there. Use one
+subagent to investigate and record the concrete missing bytecode behaviour,
+then a separate subagent to implement the minimal production fix.
+
+Every non-refactor PR that changes production bytecode code must include a
+visible behavioural test delta in the same PR. A plan update is not a test
+delta. If merging or rebasing against `master` removes the test diff because
+equivalent promotions landed elsewhere, the PR is no longer valid as-is:
+either add or promote another relevant REPL parity test in that PR, or drop
+the production change.
+
+Before creating or handing off a PR, check the PR diff against `master`.
+Production bytecode changes must be paired with relevant `tests/` changes,
+and the production-code diff should stay below 200 changed lines. If the diff
+is too small and still under that limit, continue with another REPL promotion
+block instead of opening a tiny PR.
+
 ### Slice roadmap
 Earn the design back test-first, in this order. Each slice follows the
 existing discipline: red test (or an already-green matrix behaviour moved to
