@@ -236,7 +236,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -250,7 +250,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.statementsExecuteImmediately." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

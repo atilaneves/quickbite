@@ -1002,6 +1002,11 @@ switch; `Bytecode` still defaults to the old core):
   expression cells already leave the previous `it` binding intact, and
   declaration cells already persist into later expression cells without
   producing display output.
+- `repl.backend.expressionSideEffectsPersist` and
+  `repl.backend.statementsExecuteImmediately` in `tests/ut/bin/repl.d` now
+  cover `BytecodeNewCore`. These were stale coverage gaps: focused promotion
+  runs passed unchanged because REPL declaration state already persists across
+  side-effecting expression and statement cells on the new core.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -1034,10 +1039,11 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.evaluatesStandaloneMixinExpression`, and
 `repl.backend.lastValueBindingDisplaysLatestExpressionValue`,
 `repl.backend.failedExpressionDoesNotAdvanceLastValueBinding`, and
-`repl.backend.declarationCellsPersistWithoutDisplay`. The next
-current REPL backend block that covers old `Bytecode` but not
-`BytecodeNewCore` is
-`repl.backend.expressionSideEffectsPersist`; its matrix is
+`repl.backend.declarationCellsPersistWithoutDisplay`,
+`repl.backend.expressionSideEffectsPersist`, and
+`repl.backend.statementsExecuteImmediately`. The next current REPL backend
+block that covers old `Bytecode` but not `BytecodeNewCore` is
+`repl.backend.functionDeclarationsPersistWithoutSemicolon`; its matrix is
 `AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the
