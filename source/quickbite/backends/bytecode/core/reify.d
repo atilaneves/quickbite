@@ -13,6 +13,9 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
 ) @safe pure {
     import quickbite.lang: Value;
 
+    if (type.isUndisplayable)
+        return Value.undisplayable;
+
     if (type.isString) {
         const offset = scalar!uint(bytes);
         const length = scalar!uint(bytes[uint.sizeof .. $]);

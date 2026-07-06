@@ -626,6 +626,7 @@ private struct Compiler {
                 result = structOperandOffset(return_.exp);
             hasResult = true;
         } else if (return_.exp !is null &&
+            !_currentReturnType.isUndisplayable &&
             (_currentReturnType.isString ||
                 _currentReturnType.scalar != ScalarType.void_)) {
             result = compileExpression(return_.exp).offset;
@@ -9021,6 +9022,12 @@ private struct Compiler {
                 true, cast(uint) staticArraySize(type),
             );
 
+        if (isUndisplayableType(type))
+            return ResultType(
+                ScalarType.void_, false, false, ScalarType.void_,
+                false, 0, true,
+            );
+
         if (isPointerType(type))
             return ResultType(ScalarType.ulong_, false);
 
@@ -10005,6 +10012,20 @@ private bool isDynamicArrayArgument(
     return argument.type !is null &&
         argument.type.toBasetype.ty == TY.Tarray &&
         !isStringType(argument.type);
+}
+
+private bool isUndisplayableType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+
+    switch (type.toBasetype.ty) with (TY) {
+        case Tdelegate, Tfunction:
+            return true;
+        default:
+            return false;
+    }
 }
 
 // True when `type` is a raw pointer `T*` (not a function pointer or delegate);

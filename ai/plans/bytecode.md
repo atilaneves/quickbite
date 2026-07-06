@@ -1032,6 +1032,14 @@ switch; `Bytecode` still defaults to the old core):
   they still need non-trivial display/value work: delegate placeholders,
   nested/static array literal display, wide-string suffix preservation, and
   wide-character array rendering.
+- `repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals` in
+  `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was not stale:
+  the focused promotion exposed that delegate-valued REPL expression results
+  reached the new-core scalar result-type path and failed as an unsupported
+  type. The new core now has a narrow undisplayable result kind for function
+  and delegate result types, so display-only function literals reify as the
+  established `<undisplayable>` placeholder without adding general delegate
+  execution support.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -1076,18 +1084,18 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.multilineStructDeclarationsBufferUntilComplete`,
 `repl.backend.failedBufferedDeclarationDoesNotPoisonSession`, and
 `repl.backend.commandsDoNotAbandonPendingInput`, and
-`repl.backend.importDeclarationsPersistWithoutDisplay`. The next current REPL
-backend blocks that cover old `Bytecode` but not `BytecodeNewCore` are the
-adjacent display tests:
-`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals`,
+`repl.backend.importDeclarationsPersistWithoutDisplay`, and
+`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals`. The next
+current REPL backend blocks that cover old `Bytecode` but not
+`BytecodeNewCore` are the adjacent display tests:
 `repl.backend.displaysNestedArrayResults`,
 `repl.backend.displaysStaticStringArrayResults`,
 `repl.backend.displaysNestedEmptyStringValues`,
 `repl.backend.displaysWideStringValues`, and
 `repl.backend.displaysWideCharacterArrayValues`. A focused promotion attempt
 showed these require production work beyond this small import slice: delegate
-display falls through to an unsupported type, nested/static array display can
-hit unsupported array literals, some array-display cases currently produce no
+placeholder display is now covered, while nested/static array display can hit
+unsupported array literals, some array-display cases currently produce no
 output, and wide-string display drops the `w`/`d` suffixes. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the
