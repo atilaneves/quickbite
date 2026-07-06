@@ -1128,7 +1128,7 @@ private struct Walker {
 
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
-                assert(0);
+                return runSymbolDeclarationVarExpression(var);
 
             // the magic __ctfe variable is true under AST interpretation,
             // matching dmd's own interpreter; the language requires both
@@ -1159,6 +1159,23 @@ private struct Walker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    private Value runSymbolDeclarationVarExpression(
+        imported!"dmd.expression".VarExp var,
+    ) {
+        import dmd.typesem: defaultInitLiteral;
+
+        auto symbol = var.var.isSymbolDeclaration;
+        if (symbol is null)
+            assert(0);
+
+        auto type = symbol.dsym is null ? symbol.type : symbol.dsym.type;
+        auto structType = type is null ? null : type.toBasetype.isTypeStruct;
+        if (structType is null)
+            assert(0);
+
+        return runExpression(structType.defaultInitLiteral(var.loc));
     }
 
     private Value runLogicalAndExpression(

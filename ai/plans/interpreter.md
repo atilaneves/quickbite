@@ -346,6 +346,13 @@ than calling the existing zero/default-by-type `defaultValue(Type)` helper.
 symbol addresses, and non-struct `SymbolDeclaration` cases unless a remeasure
 proves cerealed reaches them.
 
+**Slice status.** The standalone fixture
+`struct.defaultInitPreservesExplicitFieldInitializers` covers `Header.init`
+against `Interpreter` and `SystemLinker`. The interpreter now handles
+`VarExp(SymbolDeclaration)` for struct initializer symbols by evaluating DMD's
+`defaultInitLiteral`, preserving explicit field initializers. In this harness
+the exact fixture was already green before the production change.
+
 **Done.** The fixture is green on `Interpreter` and `SystemLinker`, and
 `bin/bench.sh -b interpreter --dub cerealed` no longer aborts with `SIGILL`.
 Remeasure §7 immediately afterward; then proceed to the next visible class.
