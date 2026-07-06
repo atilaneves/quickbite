@@ -645,7 +645,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.displaysEnumValues." ~ backend.stringof)
     unittest {

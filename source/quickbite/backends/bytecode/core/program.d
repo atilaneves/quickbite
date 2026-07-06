@@ -61,6 +61,30 @@ package(quickbite.backends.bytecode) struct ResultType {
     bool isStaticArray;
     uint arrayLength;
     bool arrayElementsAreStrings;
+    string[ulong] enumMembers;
+    string[ulong] elementEnumMembers;
+
+    static ResultType scalarResult(
+        in ScalarType scalar,
+        string[ulong] enumMembers = null,
+    ) @safe pure {
+        ResultType result;
+        result.scalar = scalar;
+        result.enumMembers = enumMembers;
+        return result;
+    }
+
+    static ResultType scalarArrayResult(
+        in ScalarType elementType,
+        string[ulong] enumMembers = null,
+    ) @safe pure {
+        ResultType result;
+        result.scalar = ScalarType.void_;
+        result.isArray = true;
+        result.elementType = elementType;
+        result.enumMembers = enumMembers;
+        return result;
+    }
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset
