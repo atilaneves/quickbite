@@ -75,6 +75,11 @@ private struct ArrayElementAlias {
     public size_t index;
 }
 
+private struct StructFieldAlias {
+    public imported!"dmd.declaration".VarDeclaration source;
+    public size_t index;
+}
+
 private class InterpretedException: Exception {
     public imported!"quickbite.lang".Value object;
 
@@ -108,6 +113,7 @@ private struct Walker {
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private ArrayElementAlias[VarDeclaration] arrayElementAliases;
+    private StructFieldAlias[VarDeclaration] structFieldAliases;
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
     private StructArrayFieldAliases[VarDeclaration] structArrayFieldAliases;
     private size_t[VarDeclaration] arrayAllocations;
@@ -3244,6 +3250,7 @@ private struct Walker {
 
             locals[variable] = storageValue(variable.type, value);
             writeThroughArrayElementAlias(variable, locals[variable]);
+            writeThroughStructFieldAlias(variable, locals[variable]);
             uninitializedLocals.remove(variable);
             if ((variable in arrayElementAliases) is null) {
                 sliceAliases.remove(variable);
@@ -4646,6 +4653,7 @@ private struct Walker {
             const value = defaultLocalValue(variable);
             locals[variable] = value;
             structArrayFieldAliases.remove(variable);
+            structFieldAliases.remove(variable);
             return value;
         }
 
@@ -4671,6 +4679,7 @@ private struct Walker {
                 uninitializedLocals.remove(variable);
                 sliceAliases.remove(variable);
                 structArrayFieldAliases.remove(variable);
+                structFieldAliases.remove(variable);
                 return value;
             }
 
@@ -4681,6 +4690,7 @@ private struct Walker {
                 uninitializedLocals.remove(variable);
                 sliceAliases.remove(variable);
                 structArrayFieldAliases.remove(variable);
+                structFieldAliases.remove(variable);
                 return value;
             }
 
@@ -4700,6 +4710,7 @@ private struct Walker {
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
             structArrayFieldAliases.remove(variable);
+            structFieldAliases.remove(variable);
             return value;
         }
 
@@ -4709,6 +4720,7 @@ private struct Walker {
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
             structArrayFieldAliases.remove(variable);
+            structFieldAliases.remove(variable);
             return value;
         }
 
@@ -4720,12 +4732,16 @@ private struct Walker {
             arrayElementAliases.remove(variable);
             recordSliceAlias(variable, slice, lower);
             structArrayFieldAliases.remove(variable);
+            structFieldAliases.remove(variable);
             return value;
         }
 
         auto indexInitializer = initializer.isIndexExp;
         const isArrayElementAlias = isRefVariable(variable) &&
             indexInitializer !is null;
+        auto dotInitializer = initializer.isDotVarExp;
+        const isStructFieldAlias = isRefVariable(variable) &&
+            dotInitializer !is null;
         size_t arrayElementAliasIndex;
         auto literal = initializer.isFuncExp;
         auto value = storageValue(
@@ -4740,8 +4756,11 @@ private struct Walker {
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)
             recordArrayElementAlias(variable, indexInitializer, arrayElementAliasIndex);
+        else if (isStructFieldAlias)
+            recordStructFieldAlias(variable, dotInitializer);
         else {
             arrayElementAliases.remove(variable);
+            structFieldAliases.remove(variable);
             sliceAliases.remove(variable);
         }
         recordStructArrayFieldAliases(variable, initializer);
@@ -4832,6 +4851,46 @@ private struct Walker {
 
         locals[alias_.source] = source.withArrayElement(alias_.index, value);
         writeThroughSliceAlias(alias_.source, alias_.index, value);
+        uninitializedLocals.remove(alias_.source);
+    }
+
+    private void recordStructFieldAlias(
+        VarDeclaration variable,
+        imported!"dmd.expression".DotVarExp dot,
+    ) {
+        auto var = dot.e1.isVarExp;
+        if (var is null) {
+            structFieldAliases.remove(variable);
+            return;
+        }
+
+        auto source = var.var.isVarDeclaration;
+        if (source is null) {
+            structFieldAliases.remove(variable);
+            return;
+        }
+
+        structFieldAliases[variable] = StructFieldAlias(
+            source,
+            structFieldIndex(dot),
+        );
+    }
+
+    private void writeThroughStructFieldAlias(
+        VarDeclaration variable,
+        in Value value,
+    ) {
+        auto alias_ = variable in structFieldAliases;
+        if (alias_ is null)
+            return;
+
+        auto source = alias_.source in locals;
+        if (source is null)
+            throw new Exception(
+                "Unsupported interpreter struct field alias target.",
+            );
+
+        locals[alias_.source] = source.withStructField(alias_.index, value);
         uninitializedLocals.remove(alias_.source);
     }
 
