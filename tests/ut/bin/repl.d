@@ -1286,10 +1286,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// The Interpreter keeps the null field (`Callbacks(7, null)`) instead of
-// omitting it; BytecodeNewCore does not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe)) {
-    @("repl.backend.nullFunctionPointerFieldIsOmitted." ~ backend.stringof)
+// BytecodeNewCore does not yet reify struct results for display.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nullFunctionPointerFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
 
@@ -1303,14 +1302,13 @@ static foreach (backend; AliasSeq!(Ctfe)) {
             ],
         );
 
-        output.should == ["Callbacks(7)"];
+        output.should == ["Callbacks(7, null)"];
     }
 }
 
-// The Interpreter keeps the null field (`Handler(9, null)`) instead of
-// omitting it; BytecodeNewCore does not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe)) {
-    @("repl.backend.nullDelegateFieldIsOmitted." ~ backend.stringof)
+// BytecodeNewCore does not yet reify struct results for display.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nullDelegateFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
 
@@ -1324,7 +1322,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
             ],
         );
 
-        output.should == ["Handler(9)"];
+        output.should == ["Handler(9, null)"];
     }
 }
 

@@ -355,13 +355,25 @@ private bool expressionReturnNeedsPreludeFormat(
         return false;
 
     foreach (field; structType.sym.fields)
-        if (field !is null && field.type !is null)
-            with (TY) switch (field.type.toBasetype.ty) {
+        if (field !is null && field.type !is null) {
+            auto fieldType = field.type.toBasetype;
+            with (TY) switch (fieldType.ty) {
                 case Tint64, Tuns64:
                     return true;
+                case Tdelegate:
+                    return true;
+                case Tpointer:
+                    auto pointee = fieldType.nextOf;
+                    if (
+                        pointee !is null &&
+                        pointee.toBasetype.ty == Tfunction
+                    )
+                        return true;
+                    break;
                 default:
                     break;
             }
+        }
 
     return false;
 }
