@@ -933,6 +933,28 @@ switch; `Bytecode` still defaults to the old core):
   nested-lambda `this` capture, UTF string `foreach`, and the narrow
   try/catch/finally-on-goto surface needed by the module. All blocks are
   SystemLinker-oracle-backed; none were withheld.
+- All SystemLinker-backed `tests/ut/backends/runner/ct/exceptions.d`
+  blocks, completing `exceptions.d` (module order 11) on the new core
+  (26/26 promoted, see the exceptions analysis section). This covers class
+  exception construction, throw statements and expressions, uncaught-exception
+  reporting, catch matching and binding, propagation across calls and
+  branches, unwinding, `finally` ordering, return capture before `finally`,
+  `goto` through exception scopes, and exception chaining.
+- All SystemLinker-backed `tests/ut/backends/runner/ct/expressions.d`
+  blocks, completing `expressions.d` (module order 12) on the new core
+  (55/55 promoted, see the expressions analysis section). This covers the
+  remaining broad expression surface: integer operators, mixed numeric
+  conversions and comparisons, expression-level pointer/slice/cast support,
+  heap aggregate allocation, class/interface dispatch, `typeid`, delegates,
+  complex literals, vector splats, and integer `^^` lowering. CTFE-only
+  characterization tests remain CTFE-only.
+- `tests/ut/backends/runner/ct/cerealed.d` (module order 13) now has 21
+  `BytecodeNewCore` promotion candidates passing in the current checkout (see
+  the cerealed analysis section). The two remaining SystemLinker-backed
+  AA-shaped cases, `nestedStructWritesAssociativeArrayChild` and
+  `classSerialisationReadsStaticChildRegistry`, remain unpromoted until the
+  backend supports associative-array literals with struct values, static
+  associative-array storage, and delegate-valued AA lookup/invocation.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -943,19 +965,21 @@ dual-mode model and the `ExecutionMode` enum have been removed
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
 (5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), `structs.d` (9),
-`control_flow.d` (10), and `exceptions.d` (11) are now complete on the new
-core (see Rewrite Coverage State). Continue with `expressions.d` (module
-order 12), promoting one named behaviour or one tight failure-message family
-at a time. The float/builtin/string-slice machinery earned for `eval.d` and
-`math.d`, logical/comparison/short-circuit machinery earned for `logic.d`,
-narrow throw/result plumbing earned for `results.d`, the comparison-operator /
-ref-parameter / explicit-message / unittest-halt machinery earned for
-`diagnostics.d`, the native-layout array/slice/pointer/AA machinery earned for
-`arrays.d`, the struct native-layout / methods / `new` / operator /
-`with`-`goto` / lifetime machinery earned for `structs.d`, the
-loop/switch/goto/function-pointer/UTF-foreach machinery earned for
-`control_flow.d`, and the exception class/catch/finally/unwinding machinery
-earned for `exceptions.d` are now available to the later modules.
+`control_flow.d` (10), `exceptions.d` (11), and `expressions.d` (12) are now
+complete on the new core (see Rewrite Coverage State). `cerealed.d` (13) has
+21 passing `BytecodeNewCore` promotions in the current checkout; its two
+remaining SystemLinker-backed AA-shaped cases are documented but not yet
+promoted.
+
+The next concrete module candidate after `cerealed.d`, per
+`ai/plans/backend-test-modules-order.md`, is `tests/ut/bin/repl.d` (module
+order 14). Do not promote tests yet. The smallest likely first discovery step
+is to inspect the earliest REPL backend blocks that currently run on the old
+`Bytecode` backend, starting with
+`repl.backend.localDeclarationsCanRebindNames`, and run a focused
+`BytecodeNewCore` probe in a throwaway edit or worker branch to learn whether
+the REPL can construct and reuse the new-core backend across cells before
+choosing the first honest promotion.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
