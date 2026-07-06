@@ -187,6 +187,17 @@ The bottom three (garbage message, `size_t` underflow, pointer-slice over the
 allocated block) smell like **correctness bugs in existing paths**, not unbuilt
 features — they get characterized against the oracle and fixed, not "added".
 
+**Post-Rung-3 measurement blocker.** Re-running
+`bin/bench.sh -b interpreter --dub cerealed` after the Rung 3 slices no longer
+prints the old inventory. Instead, the optimised benchmark process aborts with
+`SIGILL` before it can report failures. GDB shows the trap is the
+`runExpression` `VarExp` path where `var.var.isVarDeclaration` unexpectedly
+returns `null`; the symbol is a DMD `SymbolDeclaration`, and its type is
+`TypeStruct`. This is DMD's struct default-initializer representation
+(`S.init` / `TypeStruct.defaultInit`), not the `__traits(initSymbol, S)`
+`const(void)[]` path. Treat this as the next standalone interpreter gap before
+continuing to the scalar-coercion inventory.
+
 ## 8. Method: one standalone red/green unit test per reason
 
 **The core rule.** For *each* reason the interpreter cannot run cerealed's
@@ -304,7 +315,42 @@ element logic and writes the result back with `writeLocation`.
 **Done.** `Unsupported interpreter assignment target` and `concatenateAssign`
 gone from §7.
 
-### 9.4 Rung 4 — `Expected integer-compatible scalar` (7×)
+### 9.4 Rung 4 — `VarExp(SymbolDeclaration)` struct default init
+
+**Contract.** Evaluate the `VarExp` DMD emits for a struct
+`SymbolDeclaration` when a real program reads a struct default initializer.
+The result must match compiled D, including explicit non-zero field
+initializers; plain field-type zeroing is not enough.
+
+**Oracle fixture.** Pre-approved:
+
+```d
+struct Header {
+    ubyte tag = 7;
+    int code = 42;
+}
+
+unittest {
+    auto header = Header.init;
+
+    assert(header.tag == 7);
+    assert(header.code == 42);
+}
+```
+
+**In scope.** The `runExpression` `VarExp` branch where `var.var` is a
+`SymbolDeclaration` with a `TypeStruct`; preserving DMD default-initializer
+semantics, likely by evaluating the aggregate's default-init literal rather
+than calling the existing zero/default-by-type `defaultValue(Type)` helper.
+**Out of scope.** `__traits(initSymbol, S)` as `const(void)[]`, initializer
+symbol addresses, and non-struct `SymbolDeclaration` cases unless a remeasure
+proves cerealed reaches them.
+
+**Done.** The fixture is green on `Interpreter` and `SystemLinker`, and
+`bin/bench.sh -b interpreter --dub cerealed` no longer aborts with `SIGILL`.
+Remeasure §7 immediately afterward; then proceed to the next visible class.
+
+### 9.5 Rung 5 — `Expected integer-compatible scalar` (7×)
 
 **Contract.** The scalar-coercion failures in `encode.d`/`encode_decode.d` —
 likely enum/char/width handling where the interpreter expects a plain integer
@@ -313,7 +359,7 @@ likely enum/char/width handling where the interpreter expects a plain integer
 **Oracle fixture.** Distilled from the `encode.d:95`-style sites. **Done.**
 class gone from §7.
 
-### 9.5 Rung 5 — `Unsupported eval call` (3×)
+### 9.6 Rung 6 — `Unsupported eval call` (3×)
 
 **Contract.** The call shapes in `classes.d`/`encode.d` the dispatcher rejects
 (`impl.d` ~1837). Determine per-site whether it is an interpretable source call
@@ -322,7 +368,7 @@ latter is deferred, not built here.
 
 **Done.** Each site either interprets, or is documented as an `ffi.md` rung.
 
-### 9.6 Rung 6 — correctness bugs in existing paths
+### 9.7 Rung 7 — correctness bugs in existing paths
 
 **Contract.** The three low-count, high-suspicion classes: the corrupted
 message (suspected `wchar`/`dchar` or buffer bug), the `size_t` underflow
