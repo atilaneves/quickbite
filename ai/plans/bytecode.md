@@ -831,6 +831,14 @@ switch; `Bytecode` still defaults to the old core):
   promotions at emit time (sign/zero-extension opcodes shared with the cast
   path) and failed equality asserts render both operands from frame bytes
   at the comparison width.
+- `signedUnsignedComparisonIsUnsigned` and `wraparoundAtTypeBoundaries` in
+  `tests/ut/backends/runner/ct/integrals.d` now cover `BytecodeNewCore`.
+  `signedUnsignedComparisonIsUnsigned` was a stale coverage gap: existing
+  integer promotions and unsigned-comparison opcodes already matched the
+  `SystemLinker` oracle. `wraparoundAtTypeBoundaries` exposed missing
+  unsigned 4-byte subtraction lowering; `compileSubtractExpression` now uses
+  the existing 4-byte integer helper so `uint - uint` wraps through
+  `Op.subInt4` and stores a `uint` result.
 - All remaining `tests/ut/backends/evaluator/eval.d` blocks, completing
   `eval.d` (module order 1) on the new core. Earned in four slices:
   (a) compound assignment — `++x` lowers to `x += 1` through the existing
@@ -982,6 +990,11 @@ switch; `Bytecode` still defaults to the old core):
   gaps: focused promotion runs passed unchanged because the shared REPL loop
   already skips comment-only lines, classifies standalone mixin expressions,
   and sends expression cells through the existing new-core `evalRepl` path.
+- `repl.backend.lastValueBindingDisplaysLatestExpressionValue` in
+  `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was a stale
+  coverage gap: the focused promotion run passed unchanged because the shared
+  REPL session history already updates and exposes the `it` binding through
+  the existing new-core eval path.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -1010,10 +1023,12 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.localDeclarationsCanRebindNames`,
 `repl.backend.localRebindingPreservesInterveningReferences`,
 `repl.backend.evaluatesExpressionCellsUntilQuit`,
-`repl.backend.skipsCommentOnlyLines`, and
-`repl.backend.evaluatesStandaloneMixinExpression`. The next current REPL
-backend block that covers old `Bytecode` but not `BytecodeNewCore` is
-`repl.backend.lastValueBindingDisplaysLatestExpressionValue`; its matrix is
+`repl.backend.skipsCommentOnlyLines`,
+`repl.backend.evaluatesStandaloneMixinExpression`, and
+`repl.backend.lastValueBindingDisplaysLatestExpressionValue`. The next
+current REPL backend block that covers old `Bytecode` but not
+`BytecodeNewCore` is
+`repl.backend.failedExpressionDoesNotAdvanceLastValueBinding`; its matrix is
 `AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the

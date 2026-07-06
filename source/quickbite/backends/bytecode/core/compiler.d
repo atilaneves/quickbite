@@ -5547,12 +5547,12 @@ private struct Compiler {
             scalarType(subtract.type) == lhs.type)
             return emitBinary(Op.subInt8, lhs, rhs, lhs.type);
 
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             subtract,
             lhs,
             rhs,
             Op.subInt4,
-            ScalarType.int_,
+            scalarType(subtract.type),
             "Unsupported subtraction in bytecode core: ",
         );
     }
