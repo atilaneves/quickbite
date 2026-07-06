@@ -3904,3 +3904,17 @@ bin/ut "$test_name"
 ```
 
 Result: 1 test run, 0 failed.
+
+The existing `repl.backend.noDisplayCellsReturnVoid` backend-matrix family now
+includes `BytecodeNewCore`. This was the next narrow REPL no-display-cell
+promotion after display hygiene; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.noDisplayCellsReturnVoid.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
