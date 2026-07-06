@@ -360,6 +360,8 @@ private bool expressionReturnNeedsPreludeFormat(
             with (TY) switch (fieldType.ty) {
                 case Tint64, Tuns64:
                     return true;
+                case Tclass:
+                    return true;
                 case Tdelegate:
                     return true;
                 case Tpointer:

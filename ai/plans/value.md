@@ -218,6 +218,12 @@ prelude has a callable branch that renders null function pointers and delegates
 as `null`; the Interpreter preserves null through pointer/delegate casts needed
 by DMD's lowering.
 
+Progress 2026-07-06: the formatter gate now also covers struct expression
+cells with class-reference fields, moving null class fields (`Node(5, null)`)
+onto the prelude path for CTFE and Interpreter. The display text is unchanged;
+the frontend now proves these expressions synthesize `__quickbiteFormat(expr)`
+instead of falling back to the interim `Value.toString` scaffolding.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
