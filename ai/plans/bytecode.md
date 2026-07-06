@@ -3810,3 +3810,186 @@ Focused command:
 bin/ut $(bin/ut -l | \
     rg '^ut\\.backends\\.runner\\.ct\\.cerealed\\..*\\.BytecodeNewCore$')
 ```
+
+## repl.d Promotion Checkpoint (BytecodeNewCore)
+
+The existing `repl.backend.characterScalarDisplayCollapsesToCharLiteral`
+backend-matrix family now includes `BytecodeNewCore`. This was a stale
+coverage promotion from old `Bytecode`; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+characterScalarDisplayCollapsesToCharLiteral.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+All remaining narrow `tests/ut/bin/repl.d` backend rows were attempted on
+`BytecodeNewCore` in one sweep. The passing promotions retained in the matrix
+are:
+
+- `numericScalarDisplayUsesDLiteralSuffixes`
+- `runLoadedUnittestBlocks`
+- `runLoadedTestsWithNothingLoadedReturnsVoid`
+- `loadedUnittestFailuresReportReplLocation`
+- `laterLoadedUnittestFailuresReportReplLocation`
+- `runLoadedTestsReportsEveryFailedUnittest`
+- `runLoadedFileUnittestBlocks`
+- `loadedSourceDoesNotAdvanceTypedReplLocations`
+- `loadedFileUnittestFailuresReportFileLocation`
+- `loadModuleFileErrorsHideSyntheticNames`
+- `runtimeErrorsReportOneDiagnostic`
+- `duplicateDeclarationsHideSyntheticNames`
+- `failedModuleNoDisplayCellsDoNotPoisonSession`
+- `syntaxErrorsHideWrapperInternals`
+- `diagnosticsHideSyntheticWrapperNames`
+- `functionCallMismatchShowsCandidateSignature`
+- `functionCallMismatchShowsOverloadSignatures`
+
+No production changes were needed. The focused `BytecodeNewCore` REPL run now
+covers 50 tests:
+
+```sh
+ninja bin/ut
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.bin\\.repl\\..*\\.BytecodeNewCore$')
+```
+
+Result: 50 tests run, 0 failed.
+
+The full attempted sweep initially ran 67 `BytecodeNewCore` REPL tests and
+exposed 17 failures. These were investigated and left unpromoted because they
+require broader backend work:
+
+- `moduleLevelVariablesAreVisibleToFunctions` fails on assignment to a
+  module-level variable (`Unsupported assignment in bytecode core`).
+- `importStdExposesPhobosSymbols`, `displaysFiniteRangeResults`, and
+  `displaysFilteredArrayResults` require broader Phobos range/ref-argument
+  support.
+- `displaysAssocArrayResults` and `assocArrayWithStructValuesRendersEntries`
+  need associative-array result reification for display.
+- `displaysEnumValues` currently reifies enum values as their underlying
+  integers, not qualified enum member names.
+- `expressionCtfeErrorsReportDiagnostics` expects the CTFE/Interpreter
+  bounds diagnostic; `BytecodeNewCore` reports the VM bounds diagnostic.
+- `runtimeOnlyCellsUseResidentNativeCalls` and
+  `runtimeOnlyFileOpenReportsNativeBoundary` are Interpreter-native-boundary
+  behaviours; `BytecodeNewCore` still reports missing CTFE/native support in
+  this REPL path.
+- The struct display family (`structValueRendersTypeNameAndFields`,
+  `arrayOfStructsRendersEachElement`, `nullFunctionPointerFieldIsOmitted`,
+  `nullDelegateFieldIsOmitted`, `nullClassFieldRendersAsNull`,
+  `nullPointerFieldRendersAsNull`, `nestedStructOmitsSyntheticContextField`)
+  needs richer struct result metadata/reification before the display renderer
+  can produce field-level output.
+
+The existing `repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`
+backend-matrix family now includes `BytecodeNewCore`. This was the adjacent
+stale scalar-display promotion from old `Bytecode`; no production changes were
+needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+wholeFloatingScalarDisplayKeepsDecimalPoint.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid`
+backend-matrix family now includes `BytecodeNewCore`. This was the next narrow
+REPL test-command promotion after no-display cells; no production changes were
+needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+runLoadedTestsWithNothingLoadedReturnsVoid.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.displaysStringValues` backend-matrix family now
+includes `BytecodeNewCore`. This was the adjacent narrow string-display
+promotion after the scalar display rows; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.displaysStringValues.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.typeofCellsDisplayTypeName` backend-matrix family
+now includes `BytecodeNewCore`. This was the next narrow display-family
+promotion after the string display row; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+typeofCellsDisplayTypeName.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.typeAliasCellsDisplayTypeName` backend-matrix
+family now includes `BytecodeNewCore`. This was the adjacent narrow type-cell
+display promotion after `typeofCellsDisplayTypeName`; no production changes
+were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+typeAliasCellsDisplayTypeName.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.specialTokenValuesHideWrapperInternals`
+backend-matrix family now includes `BytecodeNewCore`. This was the next narrow
+REPL display hygiene promotion after the type-cell display rows; no production
+changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+specialTokenValuesHideWrapperInternals.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.noDisplayCellsReturnVoid` backend-matrix family now
+includes `BytecodeNewCore`. This was the next narrow REPL no-display-cell
+promotion after display hygiene; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.noDisplayCellsReturnVoid.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
