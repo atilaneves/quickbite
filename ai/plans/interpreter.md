@@ -162,44 +162,43 @@ byte buffers), and already has a large `ct/cerealed.d` fixture to distil from.
 
 ## 7. The empirical gap inventory (cerealed, Interpreter)
 
-Distinct interpreter failure **classes** across cerealed's 32 modules, by
-frequency (one run, deduplicated by message):
+**Re-measured 2026-07-06, after §9.8 and with the §5 masking machinery
+deleted** — the first inventory whose messages are the interpreter's own.
+91 failing unittests across cerealed's 32 modules, deduplicated by message:
 
 ```text
-count  class                                          first seen
-   68  Expected struct.                               decode.d, encode_decode.d, bugs.d, classes.d
-    7  Unsupported eval expression: tuple             decode.d:235, encode.d:196
-    7  Expected integer-compatible scalar.            encode.d:95, encode_decode.d:75
-    6  Unsupported interpreter assignment target.     scopebuffer.d:302, cerealiser_impl.d:23
-    3  Unsupported eval call.                          classes.d:80, encode.d:125
-    2  <corrupted/garbage message>                    (suspected wchar/dchar or memory bug)
-    2  index [18446744073709551615] out of bounds     (size_t underflow)
-    2  Expected pointer.
-    1  pointer slice `[0..1]` exceeds block `[0..0]`   scopebuffer.d (ScopeBuffer length tracking)
-    1  Unsupported eval expression: concatenateAssign  cerealiser_impl.d:13 (non-scalar `~=`)
+count  class                                            plan home
+   35  Unsupported eval expression: tuple               Rung 1 (reopened)
+   21  Unsupported eval expression: identifier          triage with Rung 1
+    8  Expected integer-compatible scalar.              Rung 5
+    5  Unsupported interpreter assignment target.       Rung 3 (reopened)
+    6  index [18446744073709551615 / 0] out of bounds   Rung 7 (underflow)
+    4  pointer slice exceeds allocated memory block     Rung 7 (ScopeBuffer)
+    3  cannot read uninitialized variable `.grain.b`    void-init field reads
+    2  Expected array.                                  triage
+    2  <corrupted/garbage message>                      Rung 7 (wchar/dchar)
+    1  [0, 0, 0, 0] != [0, 0, 0, 5]                     silent wrong answer
+    1  Unsupported cast to ulong from Pointer           pointer→integer cast
+    1  gc_getArrayUsed has no available source          GC array growth (§11,
+                                                        arrived early)
+    1  Unsupported eval call.                           Rung 6
+    1  Unsupported eval expression: cast_               triage
 ```
 
-**Counts are symptoms, not independent root causes.** The 68 `Expected struct`
-failures almost certainly share one or a few roots — cerealed iterates struct
-fields via `.tupleof`, which the interpreter does not handle (the 7 `tuple`
-gaps), so the field walk fails and downstream code that expects a struct value
-gets nothing. Triage (root-cause clustering) is the first action of each rung,
-not the frequency count.
+**Counts are symptoms, not independent root causes.** The 35 `tuple` and 21
+`identifier` failures almost certainly share one or a few roots in tuple
+positions Rung 1's `foreach` lowering does not cover. Triage (root-cause
+clustering) is the first action of each rung, not the frequency count.
 
-The bottom three (garbage message, `size_t` underflow, pointer-slice over the
-allocated block) smell like **correctness bugs in existing paths**, not unbuilt
-features — they get characterized against the oracle and fixed, not "added".
+The `size_t` underflow, pointer-slice-over-block, corrupted-message, and the
+one silent value mismatch are **correctness bugs in existing paths**, not
+unbuilt features — they get characterized against the oracle and fixed, not
+"added". The silent mismatch and the corrupted message are the most urgent:
+they are wrong answers rather than honest refusals.
 
-**Post-Rung-3 measurement blocker.** Re-running
-`bin/bench.sh -b interpreter --dub cerealed` after the Rung 3 slices no longer
-prints the old inventory. Instead, the optimised benchmark process aborts with
-`SIGILL` before it can report failures. GDB shows the trap is the
-`runExpression` `VarExp` path where `var.var.isVarDeclaration` unexpectedly
-returns `null`; the symbol is a DMD `SymbolDeclaration`, and its type is
-`TypeStruct`. This is DMD's struct default-initializer representation
-(`S.init` / `TypeStruct.defaultInit`), not the `__traits(initSymbol, S)`
-`const(void)[]` path. Treat this as the next standalone interpreter gap before
-continuing to the scalar-coercion inventory.
+The original masked-era inventory (68× `Expected struct` on top) is in git
+history; it is no longer meaningful — Phase 0's full closure and §9.8 both
+reshaped it.
 
 ## 8. Method: one standalone red/green unit test per reason
 
@@ -267,8 +266,14 @@ DMD-lowered `foreach`; tuple element lvalues for the writeback half.
 **Anchors.** `runExpression` `TupleExp` fall-through (`impl.d` ~1125, generic
 "Unsupported eval expression"); the `UnrolledLoopStatement` handler
 (`impl.d` ~214) DMD lowers `.tupleof` foreach into; `Value.Struct`
-(`lang/package.d`). **Done.** `tuple` and most `Expected struct` classes drop
-out of the §7 inventory; fixture green on both backends.
+(`lang/package.d`).
+
+**Status: reopened by the 2026-07-06 remeasure (§7).** The fixture stays
+green, but `tuple` is now the top class (35×) with 21× `identifier` likely
+sharing the root: tuple positions outside the DMD-lowered `foreach` (and the
+`Expected struct` failures they previously masked are gone, so these are now
+the first thrown error). Per §8's rung-done criterion the class must leave
+the inventory; triage the surviving sites and distil new fixtures.
 
 ### 9.2 Rung 2 — residual `Expected struct`
 
@@ -315,8 +320,10 @@ element logic and writes the result back with `writeLocation`.
 interpreter handles that local `VarExp` target with the existing concatenation
 element logic and writes the result back with `writeLocation`.
 
-**Done.** `Unsupported interpreter assignment target` and `concatenateAssign`
-gone from §7.
+**Status: reopened by the 2026-07-06 remeasure (§7).** `concatenateAssign`
+is gone, and §9.8 closed further assignment shapes (struct-field slice
+bases), but 5 `Unsupported interpreter assignment target` failures remain in
+the inventory. Triage the surviving lvalue shapes and distil new fixtures.
 
 ### 9.4 Rung 4 — `VarExp(SymbolDeclaration)` struct default init
 
@@ -369,19 +376,12 @@ pointer index assignment through tracked array storage before the associative
 array slot fallback, preserves slice-parameter backing storage, and writes back
 static-array storage only after an actual tracked pointer write.
 
-The required remeasure still skips:
+The `realloc`-flavoured skip this remeasure used to print is gone for good:
+§5's masking machinery is deleted, so the bench now reports the
+interpreter's own first error, and the probe-based full listing (§6) is what
+produced the current §7 inventory.
 
-```text
-skipping cerealed interpreter: `realloc` cannot be interpreted at compile time,
-because it has no available source code
-skipping cerealed interpreter: failing fixtures
-```
-
-So cerealed still has at least one hidden failing fixture behind the
-CTFE-style diagnostic path. Re-run §6 with failure listing before choosing the
-next standalone fixture.
-
-### 9.5 Rung 5 — `Expected integer-compatible scalar` (7×)
+### 9.5 Rung 5 — `Expected integer-compatible scalar` (8×)
 
 **Contract.** The scalar-coercion failures in `encode.d`/`encode_decode.d` —
 likely enum/char/width handling where the interpreter expects a plain integer
@@ -390,7 +390,7 @@ likely enum/char/width handling where the interpreter expects a plain integer
 **Oracle fixture.** Distilled from the `encode.d:95`-style sites. **Done.**
 class gone from §7.
 
-### 9.6 Rung 6 — `Unsupported eval call` (3×)
+### 9.6 Rung 6 — `Unsupported eval call` (1×)
 
 **Contract.** The call shapes in `classes.d`/`encode.d` the dispatcher rejects
 (`impl.d` ~1837). Determine per-site whether it is an interpretable source call
@@ -401,11 +401,12 @@ latter is deferred, not built here.
 
 ### 9.7 Rung 7 — correctness bugs in existing paths
 
-**Contract.** The three low-count, high-suspicion classes: the corrupted
-message (suspected `wchar`/`dchar` or buffer bug), the `size_t` underflow
-`index [18446744073709551615]`, and the pointer slice exceeding its allocated
-block (`ScopeBuffer` length/`malloc` metadata). These are likely regressions in
-already-supported paths.
+**Contract.** The low-count, high-suspicion classes: the corrupted message
+(suspected `wchar`/`dchar` or buffer bug), the `size_t` underflow
+`index [18446744073709551615]`, the pointer slice exceeding its allocated
+block (`ScopeBuffer` length/`malloc` metadata), and — worst of all — the one
+silent value mismatch (`[0, 0, 0, 0] != [0, 0, 0, 5]`), a wrong answer with
+no diagnostic. These are likely bugs in already-supported paths.
 
 **Oracle fixture.** Each characterized against `SystemLinker`: a minimal repro
 that the interpreter currently gets wrong. **Done.** All three classes gone;
@@ -476,8 +477,10 @@ cerealed is the first driving package, not the finish line. Once it is green,
 repeat §6/§8 against a second, less struct-centric package (one exercising
 ranges, AAs, classes, or `ref` slice writeback) to surface the next gap tier.
 The architecture survey flagged the likely next blockers: GC array growth
-(`assumeSafeAppend`/`reserve`/capacity), `ref ubyte[]` writeback fidelity across
-the FFI marshalling seam, sourceless-Phobos coverage (routes to `ffi.md`), and
+(`assumeSafeAppend`/`reserve`/capacity — already in cerealed's §7 inventory
+via `gc_getArrayUsed`, so it lands before "beyond"), `ref ubyte[]` writeback
+fidelity across the FFI marshalling seam, sourceless-Phobos coverage (routes
+to `ffi.md`), and
 captured/`scope`/`lazy` delegates (where a first-class delegate `Value` kind
 meets `value.md`). Each gets its own rung under this plan when a real package
 forces it — same loop: measure, distil, approve, red → green.
