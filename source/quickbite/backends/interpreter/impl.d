@@ -2438,12 +2438,8 @@ private struct Walker {
         // fields.  When the receiver is already a valid struct (e.g.
         // MapResult created from a StructLiteralExp with elements), use it
         // as-is to preserve any hidden context fields.
-        if (function_.isCtorDeclaration !is null && !receiver.isStruct) {
-            import dmd.dstruct: StructDeclaration;
-
-            auto structDecl = function_.parent is null
-                ? null
-                : function_.parent.isStructDeclaration;
+        if (function_.isConstructorFunction && !receiver.isStruct) {
+            auto structDecl = function_.constructorStructDeclaration;
             child.thisValue = structDecl !is null
                 ? defaultValue(structDecl.type)
                 : receiver;
@@ -2471,7 +2467,7 @@ private struct Walker {
             child,
         );
 
-        if (function_.isCtorDeclaration !is null)
+        if (function_.isConstructorFunction)
             return child.thisValue;
 
         return child.result;
@@ -5439,6 +5435,27 @@ private bool isMemberFunction(imported!"dmd.func".FuncDeclaration function_) {
     return
         function_.parent.isStructDeclaration !is null ||
         function_.parent.isClassDeclaration !is null;
+}
+
+
+private bool isConstructorFunction(imported!"dmd.func".FuncDeclaration function_) {
+    return
+        function_.isCtorDeclaration !is null ||
+        (
+            function_.constructorStructDeclaration !is null &&
+            function_.ident !is null &&
+            function_.ident.toString == "this"
+        );
+}
+
+
+private imported!"dmd.dstruct".StructDeclaration constructorStructDeclaration(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    // DMD's aggregate queries are not @safe; this only reads AST links and
+    // returns an existing declaration reference.
+    imported!"dmd.aggregate".AggregateDeclaration aggregate = function_.isThis;
+    return aggregate is null ? null : aggregate.isStructDeclaration;
 }
 
 

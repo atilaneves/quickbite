@@ -266,6 +266,12 @@ fields). Triaged from the post-Rung-1 inventory, not guessed now.
 **Oracle fixture.** Per distinct residual root, distilled from the surviving
 `decode.d`/`encode_decode.d` lines. **Done.** `Expected struct` gone from §7.
 
+**Slice status.** The standalone fixture
+`struct.templatedConstructorPreservesDynamicArrayField` now covers templated
+struct constructors that assign a dynamic-array field. The interpreter treats
+the instantiated `this` function as a constructor for receiver seeding and
+returns the initialized `this` value, matching `SystemLinker`.
+
 ### 9.3 Rung 3 — unsupported assignment targets + non-scalar `~=`
 
 **Contract.** The assignment lvalue forms cerealed's buffer code needs:

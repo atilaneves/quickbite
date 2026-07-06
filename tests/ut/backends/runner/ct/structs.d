@@ -649,6 +649,33 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("struct.templatedConstructorPreservesDynamicArrayField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reader {
+                ubyte[] bytes;
+
+                this(T)(T[] input) {
+                    bytes = input;
+                }
+            }
+
+            unittest {
+                ubyte seed = 40;
+                seed += 2;
+
+                auto reader = Reader([seed]);
+
+                assert(reader.bytes.length == 1);
+                assert(reader.bytes[0] == seed);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("struct.newPointerInitializesFields." ~ backend.stringof)
     @Tags(backend.stringof)
