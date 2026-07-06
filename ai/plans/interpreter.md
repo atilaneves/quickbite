@@ -81,8 +81,11 @@ to `ffi.md` rather than reimplementing it.
 
 ## 5. The masking bug: CTFE-as-diagnostic (Phase 0, prerequisite)
 
-**Status: prototyped in worktree `ffi-cerealed-realloc`; needs `bin/ut` + an
-approved characterization test before landing.**
+**Status: first assignment target fixed for this PR slice.** The approved red
+test now covers the behaviour the interpreter must support: assigning through a
+`ref`-returning member call mutates the returned lvalue. The green
+implementation handles that ref-return call assignment instead of pinning the
+old unsupported-assignment diagnostic.
 
 The reported failure was:
 
@@ -119,19 +122,23 @@ Since FFI landed, the interpreter calls those leaves at runtime; CTFE is no
 longer the truth (`single-oracle.md`), and harvesting its diagnostic now
 **hides** the interpreter's real, actionable error behind a misleading one.
 
-**Fix.** `eval`'s catch returns the interpreter's own exception message; the
-`interpreterDiagnostic` / `isUnsupportedInterpreterAssignmentDiagnostic`
-indirection and the `quickbite.frontend.dmd.ctfe` use are removed (the module
-becomes dead and should be deleted if no other caller remains). Prefix the
-failing function's source location to the message — it is what made the gap
-inventory in §7 possible.
+**Fix direction.** Do not assert that the interpreter should fail with a generic
+unsupported-assignment diagnostic when compiled D can execute the program. This
+PR fixes the first concrete assignment target exposed by the masking bug:
+assignment through a `ref`-returning member call.
 
 **Caveat.** A characterization test may assert the old CTFE-style wording for
 the interpreter; it must be updated under the approval rule. This is the only
 behaviour change that is a *fix* rather than a *feature*, so it leads.
 
-Until Phase 0 lands, **every** interpreter gap below is invisible — they all
-collapse to the same misleading `realloc`/CTFE line. That is why this is the
+**Phase 0 test status.** The approved test in
+`tests/ut/backends/runner/ct/diagnostics.d` now executes
+`box.slot() = 42` where `slot` returns `ref int`, and asserts the assignment
+updates `box.value`. This removes one real source of the bad generic
+unsupported-assignment failure.
+
+Before Phase 0 landed, **every** interpreter gap below was invisible — they all
+collapsed to the same misleading `realloc`/CTFE line. That is why this was the
 prerequisite.
 
 ## 6. How the gap was measured (reproducible)

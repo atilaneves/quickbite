@@ -6,6 +6,32 @@ import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
 
+@("assignmentThroughRefReturningCall.Interpreter")
+@Tags(Interpreter.stringof)
+unittest {
+    runBackendSourceFixtureTests!Interpreter(q{
+        unittest {
+            import core.stdc.stdlib: realloc, free;
+
+            auto ptr = cast(ubyte*) realloc(null, 8);
+            scope(exit) free(ptr);
+            assert(ptr !is null);
+
+            struct Box {
+                int value;
+
+                ref int slot() {
+                    return value;
+                }
+            }
+
+            Box box;
+            box.slot() = 42;
+            assert(box.value == 42);
+        }
+    });
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     @Tags(backend.stringof)
