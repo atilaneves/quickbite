@@ -181,7 +181,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // before failing. Do not add tests that first fail on unrelated frontend /
 // backend gaps such as string-literal pointer lowering, local pointer out
 // params, symbolOffset, array initializers, or callbacks.
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
     @("free.null.voidReturn." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -279,7 +279,7 @@ enum reallocNullSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     unittest {
@@ -336,8 +336,9 @@ enum reallocGrowSource = q{
     }
 };
 
-// Bytecode/IR fail at the first malloc leaf; the Interpreter reaches realloc.
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+// Bytecode/BytecodeNewCore/IR fail at the first malloc leaf; the Interpreter
+// reaches realloc.
+static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     unittest {
@@ -356,7 +357,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 }
 
 
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
 
     @("div.structReturn." ~ backend.stringof)
     unittest {
