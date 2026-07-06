@@ -968,6 +968,13 @@ switch; `Bytecode` still defaults to the old core):
   compile time, because it has no available source code `` diagnostic at the
   `FuncDeclaration.fbody is null` boundary. Real `SystemLinker`-backed libc
   execution remains deferred until the native-runtime/host-FFI bridge.
+- `repl.backend.localDeclarationsCanRebindNames` and
+  `repl.backend.localRebindingPreservesInterveningReferences` in
+  `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. The focused promotion
+  exposed that REPL expression history inserts the compile-time-only
+  `alias it = __quickbite_repl_value_N;` declaration into eval function
+  bodies. The new core now treats function-body alias declarations like other
+  semantic-only declarations and emits no bytecode for them.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -990,10 +997,12 @@ diagnostic cases. Runtime libc behaviours such as `atoi`, `strtol`,
 those value cases now would assert native-call support that does not exist.
 
 The next concrete module candidate per
-`ai/plans/backend-test-modules-order.md` is `tests/ut/bin/repl.d` (module
-order 14). The first current REPL backend block that covers old `Bytecode`
-but not `BytecodeNewCore` is
-`repl.backend.localDeclarationsCanRebindNames`; its matrix is
+`ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
+(module order 14). The first tight REPL rebinding family now covers
+`BytecodeNewCore`: `repl.backend.localDeclarationsCanRebindNames` and
+`repl.backend.localRebindingPreservesInterveningReferences`. The next current
+REPL backend block that covers old `Bytecode` but not `BytecodeNewCore` is
+`repl.backend.evaluatesExpressionCellsUntilQuit`; its matrix is
 `AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the

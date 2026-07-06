@@ -1602,6 +1602,8 @@ private struct Compiler {
             if (declaration.declaration.isStorageClassDeclaration !is null &&
                 expressionChars(expression).startsWith("static struct "))
                 return Operand.init;
+            if (declaration.declaration.isAliasDeclaration !is null)
+                return Operand.init;
 
             // A static nested function declaration (`static int f() { ... }`
             // inside a function body) introduces no runtime storage. Its body
