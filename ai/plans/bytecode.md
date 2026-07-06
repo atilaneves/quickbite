@@ -447,6 +447,15 @@ on the new core before the engine default flips.
   UTF-8, marks character array literals through shared DMD type helpers, treats
   array casts as transparent, and lowers DMD conditional expressions with
   branch control flow.
+- The adjacent REPL string-display family now covers `BytecodeNewCore`:
+  `repl.backend.displaysStaticStringArrayResults`,
+  `repl.backend.displaysNestedEmptyStringValues`,
+  `repl.backend.displaysWideStringValues`, and
+  `repl.backend.displaysWideCharacterArrayValues`. This was implementation
+  work, not stale coverage: the new core now reifies dynamic and static array
+  results with character-array display metadata, preserves wide string result
+  suffixes through result-type element metadata, and handles static string
+  array result bytes.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/runner/ct/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
@@ -1092,17 +1101,17 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.commandsDoNotAbandonPendingInput`, and
 `repl.backend.importDeclarationsPersistWithoutDisplay`, and
 `repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals`, and
-`repl.backend.displaysNestedArrayResults`. The next current REPL backend
-blocks that cover old `Bytecode` but not `BytecodeNewCore` are the adjacent
-display tests:
+`repl.backend.displaysNestedArrayResults`,
 `repl.backend.displaysStaticStringArrayResults`,
 `repl.backend.displaysNestedEmptyStringValues`,
 `repl.backend.displaysWideStringValues`, and
-`repl.backend.displaysWideCharacterArrayValues`. A focused promotion attempt
-showed these require production work beyond this small import slice: delegate
-placeholder display and nested dynamic-array display are now covered, while
-static/string array display still needs result reification work and
-wide-string display drops the `w`/`d` suffixes. No block in
+`repl.backend.displaysWideCharacterArrayValues`. The string-display family was
+implementation work, not stale coverage: static/string array result
+reification and wide-string suffix preservation needed new-core result metadata
+and reification support. The next current REPL backend blocks that cover old
+`Bytecode` but not `BytecodeNewCore` are the adjacent scalar display tests:
+`repl.backend.characterScalarDisplayCollapsesToCharLiteral` and
+`repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the
 existing unit tests are enough to catch discrepancies while the REPL backend

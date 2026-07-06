@@ -58,6 +58,9 @@ package(quickbite.backends.bytecode) struct ResultType {
     bool isStruct;
     uint structSize;
     bool isUndisplayable;
+    bool isStaticArray;
+    uint arrayLength;
+    bool arrayElementsAreStrings;
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset
@@ -82,6 +85,8 @@ package(quickbite.backends.bytecode) uint size(in ResultType type)
         return type.structSize;
     if (type.isUndisplayable)
         return 0;
+    if (type.isStaticArray)
+        return type.structSize;
     if (type.isArray)
         return sliceDescriptorSize;
     return type.isString ? stringSliceSize : size(type.scalar);
