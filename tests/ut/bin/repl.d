@@ -670,6 +670,25 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+
+    @("repl.backend.expressionCellsUsePreludeFormatter." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Point { int x; long y; }",
+                "Point(1, 2)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Point(1, 2L)"];
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
