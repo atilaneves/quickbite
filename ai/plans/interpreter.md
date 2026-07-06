@@ -241,6 +241,11 @@ the 68 `Expected struct` failures as well as the 7 `tuple` ones.
 **Oracle fixture.** A struct with mixed-type fields; `foreach (ref f; s.tupleof)`
 that reads and writes each field; assert the mutated struct.
 
+**Slice status.** The standalone fixture
+`struct.tupleofForeachRefReadsAndWritesFields` now covers DMD-lowered
+`foreach (ref field; record.tupleof)` reads and writeback to mixed scalar
+fields. The interpreter handles the lowered ref local as a struct-field alias.
+
 **In scope.** `TupleExp` evaluation; `.tupleof` as an iterable in the
 DMD-lowered `foreach`; tuple element lvalues for the writeback half.
 **Out of scope.** Arbitrary `AliasSeq` of types, `TypeExp` tuples.
