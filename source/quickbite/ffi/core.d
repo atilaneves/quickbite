@@ -25,6 +25,20 @@ public class NativeCallException: Exception {
 // a buffer sized to the matching ffi_type; `readResult`/`writeOutParameter`
 // reify the return and out-parameter bytes into backend-owned state.
 public interface NativeMarshaller {
+    // Which way a value crosses the boundary: toNative marshals a backend
+    // value into ABI bytes (arguments, receivers, out-cell inputs); fromNative
+    // reifies ABI bytes into a backend value (returns, out-cell writebacks).
+    enum Direction {
+        toNative,
+        fromNative,
+    }
+
+    // Whether the backend can cross `type` in the given direction. The
+    // marshaller owns representability (ffi.md §35.8): the core consults this
+    // before ffi_prep_cif so type-mapper/marshaller drift degrades to the
+    // graceful no-available-source diagnostic instead of a post-call assert.
+    bool canRepresent(imported!"dmd.mtype".Type type, in Direction direction);
+
     void fillArgument(
         ubyte[] buffer,
         imported!"dmd.mtype".Type type,
@@ -122,6 +136,34 @@ public bool callNativeMember(
     );
 }
 
+// Call a native delegate reified from a native return value (ffi.md §35.8):
+// the inverse of the §34.16 closure trampoline. The funcptr is invoked with
+// the context pointer leading and the extern(D) explicit arguments reversed;
+// there is no symbol resolution, the pair already names the code to run.
+public bool callNativeDelegate(
+    imported!"dmd.mtype".TypeFunction type,
+    const void* funcptr,
+    const void* context,
+    NativeMarshaller marshaller,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+) {
+    import dmd.astenums: LINK;
+
+    if (type is null || funcptr is null)
+        return false;
+
+    return callViaLibffi(
+        LINK.d,
+        type,
+        funcptr,
+        NativeThis.fromRawContext(context),
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+    );
+}
+
 // A member call on a native class reference (ffi.md §34.12). The receiver is an
 // opaque object pointer rather than marshalled struct bytes, and a virtual
 // method dispatches through the object's vtable (see callNativeImpl).
@@ -148,6 +190,20 @@ private struct NativeThis {
     private imported!"dmd.mtype".TypeStruct structType;
     private bool enabled;
     private imported!"dmd.mtype".TypeClass classType;
+    // A native delegate call's context pointer (ffi.md §35.8), passed raw as
+    // the hidden leading argument with no marshalling and no type mapping.
+    private const(void)* rawContext;
+    private bool isRawContext;
+
+    private static NativeThis fromRawContext(
+        const(void)* context,
+    ) @safe @nogc nothrow pure {
+        NativeThis result;
+        result.enabled = true;
+        result.rawContext = context;
+        result.isRawContext = true;
+        return result;
+    }
 
     private bool isClass() const @safe @nogc nothrow pure {
         return classType !is null;
@@ -311,7 +367,21 @@ private bool callViaLibffi(
         if (argumentFfiTypes[index] is null)
             return false;
     }
-    if (receiver.enabled && ffiTypeFor(receiver.type) is null)
+    if (receiver.enabled && !receiver.isRawContext &&
+        ffiTypeFor(receiver.type) is null)
+        return false;
+
+    // The marshaller owns representability (ffi.md §35.8): refuse before prep
+    // any shape the type mapper claims but the backend cannot convert, so
+    // mapper/marshaller drift degrades to the caller's no-available-source
+    // diagnostic instead of a post-call assert.
+    if (!canRepresentCall(
+        marshaller,
+        returnType,
+        parameterTypes,
+        receiver,
+        addressOfLocalArguments,
+    ))
         return false;
     const hiddenNargs = receiver.enabled ? 1 : 0;
     const totalNargs = hiddenNargs + nargs;
@@ -371,7 +441,12 @@ private bool callViaLibffi(
     ubyte[] receiverPointerBuffer;
     if (receiver.enabled) {
         receiverPointerBuffer = new ubyte[](ffi_type_pointer.size);
-        if (receiver.isClass) {
+        if (receiver.isRawContext) {
+            // A native delegate's context pointer crosses raw as the hidden
+            // leading argument (ffi.md §35.8).
+            *cast(const(void)**) receiverPointerBuffer.ptr =
+                receiver.rawContext;
+        } else if (receiver.isClass) {
             // A class reference is already a pointer to the object; pass it
             // straight through as hidden `this`, no struct-byte marshalling
             // (ffi.md §34.12).
@@ -494,6 +569,47 @@ private bool callViaLibffi(
     }
 
     marshaller.readResult(returnType, returnBuffer);
+    return true;
+}
+
+// Ask the marshaller whether every value crossing the call is representable
+// in its direction (ffi.md §35.8): the return reifies fromNative; an argument
+// marshals toNative, except an out slot, whose pointed-to value crosses both
+// ways (input fill, writeback), and a delegate argument, which crosses through
+// the §34.16 closure bridge rather than the marshalling switches. A class
+// receiver and a raw delegate context cross as opaque pointers, unmarshalled.
+private bool canRepresentCall(
+    NativeMarshaller marshaller,
+    imported!"dmd.mtype".Type returnType,
+    imported!"dmd.mtype".Type[] parameterTypes,
+    NativeThis receiver,
+    in bool[] addressOfLocalArguments,
+) {
+    with (NativeMarshaller.Direction) {
+        if (!marshaller.canRepresent(returnType, fromNative))
+            return false;
+
+        foreach (index, parameter; parameterTypes) {
+            if (isDelegateParameter(parameter))
+                continue;
+
+            const addressOfLocal =
+                index < addressOfLocalArguments.length &&
+                addressOfLocalArguments[index];
+            if (isOutParameter(parameter, addressOfLocal)) {
+                auto pointedTo = parameter.nextOf.toBasetype;
+                if (!marshaller.canRepresent(pointedTo, toNative) ||
+                    !marshaller.canRepresent(pointedTo, fromNative))
+                    return false;
+            } else if (!marshaller.canRepresent(parameter, toNative))
+                return false;
+        }
+
+        if (receiver.enabled && !receiver.isRawContext && !receiver.isClass &&
+            !marshaller.canRepresent(receiver.type, toNative))
+            return false;
+    }
+
     return true;
 }
 

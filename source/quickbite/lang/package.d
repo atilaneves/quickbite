@@ -43,6 +43,7 @@ public struct Value {
         ClassObject,
         LocalPointer,
         NativePointer,
+        NativeDelegate,
         Pointer,
         Struct,
         TypeName,
@@ -136,6 +137,15 @@ public struct Value {
         return Value(NativePointer(pointer));
     }
 
+    // A delegate returned by native code: an opaque {context, funcptr} pair
+    // callable through the FFI bridge (ffi.md §35.8).
+    public static Value nativeDelegateValue(
+        const(void)* context,
+        const(void)* funcptr,
+    ) @safe pure {
+        return Value(NativeDelegate(context, funcptr));
+    }
+
     public static Value functionPointerValue(in size_t id) @safe pure {
         return Value(FunctionPointer(id));
     }
@@ -189,6 +199,10 @@ public struct Value {
     }
 
     private this(NativePointer value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(NativeDelegate value) @safe pure {
         data = Data(value);
     }
 
@@ -831,6 +845,39 @@ public struct Value {
             (_) {
                 throw new Exception("Expected native pointer.");
                 return null;
+            },
+        );
+    }
+
+    public bool isNativeDelegate() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(NativeDelegate) delegate_) => true,
+            (_) => false,
+        );
+    }
+
+    public const(void)* nativeDelegateContext() const {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(NativeDelegate) delegate_) => delegate_.context,
+            (_) {
+                throw new Exception("Expected native delegate.");
+                return cast(const(void)*) null;
+            },
+        );
+    }
+
+    public const(void)* nativeDelegateFuncptr() const {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(NativeDelegate) delegate_) => delegate_.funcptr,
+            (_) {
+                throw new Exception("Expected native delegate.");
+                return cast(const(void)*) null;
             },
         );
     }
@@ -1927,6 +1974,21 @@ private struct NativePointer {
         import std.conv: text;
 
         return text(pointer);
+    }
+}
+
+
+// A delegate returned by native code (ffi.md §35.8): the extern(D)
+// {context, funcptr} pair, opaque to the backend, callable through the FFI
+// bridge with the context pointer leading.
+private struct NativeDelegate {
+    public const(void)* context;
+    public const(void)* funcptr;
+
+    public string toString() const @safe pure {
+        import std.conv: text;
+
+        return text(funcptr);
     }
 }
 

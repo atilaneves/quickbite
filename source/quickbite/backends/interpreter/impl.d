@@ -1882,6 +1882,14 @@ private struct Walker {
         }
 
         const callee = runExpression(call.e1);
+        if (callee.isNativeDelegate)
+            return runNativeDelegateCall(
+                callee,
+                call,
+                arguments,
+                argumentExpressions,
+            );
+
         if (callee.isFunctionPointer && callee.functionPointerId in delegates)
             return runDelegateCall(callee, arguments, argumentExpressions);
 
@@ -1927,6 +1935,48 @@ private struct Walker {
             );
 
         return runFunction(runtime.function_, arguments, argumentExpressions);
+    }
+
+    // Call a native delegate the interpreter holds as an opaque
+    // {context, funcptr} value reified from a native return (ffi.md §35.8),
+    // the inverse of the §34.16 callback bridge.
+    private Value runNativeDelegateCall(
+        in Value callee,
+        imported!"dmd.expression".CallExp call,
+        in Value[] arguments,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        import quickbite.backends.interpreter.ffi_marshal:
+            NativeCallException, tryCallNativeDelegate;
+        import dmd.mtype: TypeFunction;
+
+        auto delegateType = call.e1.type.toBasetype;
+        auto functionType = delegateType.nextOf is null
+            ? null
+            : cast(TypeFunction) delegateType.nextOf;
+
+        Value result;
+        Value[] writebacks;
+        try {
+            if (tryCallNativeDelegate(
+                functionType,
+                callee,
+                arguments,
+                nativeArgumentTypes(argumentExpressions),
+                nativeAddressOfLocalArguments(argumentExpressions),
+                nativeOutParameterInputValues(argumentExpressions),
+                &invokeNativeCallback,
+                result,
+                writebacks,
+            )) {
+                applyNativeWritebacks(writebacks, argumentExpressions);
+                return result;
+            }
+        } catch (NativeCallException exception) {
+            throwNativeException(exception);
+        }
+
+        throw new Exception("Unsupported eval call.");
     }
 
     private Value delegateReceiver(in RuntimeDelegate runtime) {

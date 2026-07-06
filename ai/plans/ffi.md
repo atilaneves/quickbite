@@ -3088,6 +3088,20 @@ marshal through raw bytes rather than per-field recursion.
 
 ### 35.8 The type mapper and the marshaller disagree on what is supported
 
+**Status: fixed 2026-07-06.** Refusal is single-sourced and pre-call: the
+marshaller owns representability through a new seam method
+(`NativeMarshaller.canRepresent(type, direction)`, mirroring the
+`marshalArgument`/`unmarshalValue` switches) and the core consults it before
+`ffi_prep_cif` for the return type, every non-delegate argument (out slots
+check the pointed-to type in both directions), and struct receivers — so
+mapper/marshaller drift now degrades to the graceful no-available-source
+diagnostic with no native side effects. Union arguments are refused here
+(the boxed value cannot reproduce overlapped bytes, §35.7). The exposing
+fixture is green for real: a returned delegate reifies as an opaque
+`{context, funcptr}` value (`Value.nativeDelegateValue`) and calling it is
+the inverse of the §34.16 bridge (`callNativeDelegate`: raw context pointer
+leading, extern(D) explicit arguments reversed, same CIF machinery).
+
 **Claim.** §34.2: unmodelled shapes are refused before the call
 (`return false`, no-available-source diagnostic). The gate is
 `ffiTypeFor` returning null.

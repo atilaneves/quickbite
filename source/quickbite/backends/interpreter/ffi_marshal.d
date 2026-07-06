@@ -118,6 +118,46 @@ public bool tryCallNativeConstructor(
     return true;
 }
 
+// Call a native delegate the backend holds as an opaque {context, funcptr}
+// value reified from a native return (ffi.md §35.8). The core leads with the
+// context pointer and reverses the extern(D) explicit arguments — the inverse
+// of the §34.16 closure bridge.
+public bool tryCallNativeDelegate(
+    imported!"dmd.mtype".TypeFunction functionType,
+    in imported!"quickbite.lang".Value delegate_,
+    in imported!"quickbite.lang".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+    in imported!"quickbite.lang".Value[] outParameterInputs,
+    DelegateInvoker invokeDelegate,
+    out imported!"quickbite.lang".Value result,
+    out imported!"quickbite.lang".Value[] argumentWritebacks,
+) {
+    import quickbite.ffi: callNativeDelegate;
+
+    if (!delegate_.isNativeDelegate)
+        return false;
+
+    auto marshaller = new InterpreterNativeMarshaller(
+        arguments,
+        outParameterInputs,
+        invokeDelegate,
+    );
+    if (!callNativeDelegate(
+        functionType,
+        delegate_.nativeDelegateFuncptr,
+        delegate_.nativeDelegateContext,
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+    ))
+        return false;
+
+    result = marshaller.result;
+    argumentWritebacks = marshaller.writebacks;
+    return true;
+}
+
 // A member call on a native class reference (ffi.md §34.12). The receiver is an
 // opaque native handle (NativePointer); virtual dispatch happens in the core via
 // the object's vtable. The object is mutated in place through the shared pointer,
@@ -222,6 +262,13 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
 
     public Value receiverWriteback() {
         return unmarshalValue(_receiverType, _receiverBuffer);
+    }
+
+    public override bool canRepresent(Type type, in Direction direction) {
+        final switch (direction) with (Direction) {
+            case toNative:   return canMarshalToNative(type);
+            case fromNative: return canReifyFromNative(type);
+        }
     }
 
     public override void fillArgument(
@@ -570,8 +617,82 @@ private imported!"quickbite.lang".Value unmarshalValue(
             return unmarshalSlice(type, buffer);
         case TY.Tstruct:
             return unmarshalStruct(cast(TypeStruct) type, buffer);
+        case TY.Tdelegate:
+            // A returned native delegate reifies as an opaque callable
+            // {context, funcptr} pair (ffi.md §35.8); calling it goes back
+            // through the bridge (tryCallNativeDelegate).
+            return Value.nativeDelegateValue(
+                *cast(const(void)**) buffer.ptr,
+                *cast(const(void)**) (buffer.ptr + (void*).sizeof),
+            );
         default:
             assert(false, "unmarshalled libffi return type");
+    }
+}
+
+// Mirrors marshalArgument's switch (ffi.md §35.8): the types whose boxed
+// Value the interpreter can marshal into native ABI bytes.
+private bool canMarshalToNative(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeStruct;
+
+    switch (type.ty) with (TY) {
+        case Tbool, Tchar, Twchar, Tdchar,
+             Tint8, Tuns8, Tint16, Tuns16,
+             Tint32, Tuns32, Tint64, Tuns64,
+             Tfloat32, Tfloat64, Tfloat80,
+             Tpointer, Tclass:
+            return true;
+
+        case Tarray:
+            return canMarshalToNative(type.nextOf.toBasetype);
+
+        case Tstruct:
+            auto sym = (cast(TypeStruct) type).sym;
+            // A boxed union holds every member as its own value and cannot
+            // reproduce the members' overlapped bytes (ffi.md §35.7).
+            if (sym.isUnionDeclaration !is null)
+                return false;
+            foreach (field; sym.fields)
+                if (!canMarshalToNative(field.type.toBasetype))
+                    return false;
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+// Mirrors unmarshalValue's switch (ffi.md §35.8): the types whose native ABI
+// bytes the interpreter can reify into a boxed Value.
+private bool canReifyFromNative(imported!"dmd.mtype".Type type) {
+    import quickbite.ffi: isSupportedScalarSlice;
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeStruct;
+
+    switch (type.ty) with (TY) {
+        case Tvoid,
+             Tbool, Tchar, Twchar, Tdchar,
+             Tint8, Tuns8, Tint16, Tuns16,
+             Tint32, Tuns32, Tint64, Tuns64,
+             Tfloat32, Tfloat64, Tfloat80,
+             Tpointer, Tclass, Tdelegate:
+            return true;
+
+        case Tarray:
+            return isSupportedScalarSlice(type);
+
+        case Tstruct:
+            // Unions reify field-by-field from the same overlapped bytes — a
+            // bit-faithful snapshot — so they need no special case here.
+            auto sym = (cast(TypeStruct) type).sym;
+            foreach (field; sym.fields)
+                if (!canReifyFromNative(field.type.toBasetype))
+                    return false;
+            return true;
+
+        default:
+            return false;
     }
 }
 
