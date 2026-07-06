@@ -4058,3 +4058,9 @@ The smaller associative-array display REPL block was also attempted on
 `repl.backend.displaysAssocArrayResults`. The red promotion shows that the
 backend currently reifies/displays only the first key as `1UL`, producing
 `["1UL"]` instead of the oracle output `["[1:10, 2:20]"]`.
+
+The existing `repl.backend.expressionCellsUsePreludeFormatter` backend-matrix
+family was attempted on `BytecodeNewCore` and left unpromoted. The red
+promotion confirms the struct display gap is still real in this row too:
+`Point(1, 2)` produces no REPL output (`[]`) instead of the oracle display
+`["Point(1, 2L)"]`.
