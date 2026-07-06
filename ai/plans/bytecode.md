@@ -1014,6 +1014,16 @@ switch; `Bytecode` still defaults to the old core):
   coverage gaps: focused promotion runs passed unchanged because queued REPL
   function declarations, replacement, overload resolution, and wrapper-name
   separation already work through the existing new-core eval path.
+- The next REPL declaration-buffering family in `tests/ut/bin/repl.d` now
+  covers `BytecodeNewCore`:
+  `templateFunctionDeclarationsPersistWithoutDisplay`,
+  `multilineFunctionDeclarationsBufferUntilComplete`,
+  `multilineStructDeclarationsBufferUntilComplete`,
+  `failedBufferedDeclarationDoesNotPoisonSession`, and
+  `commandsDoNotAbandonPendingInput`. These were stale coverage gaps: focused
+  promotion runs passed unchanged because templated declarations, multiline
+  declaration buffering, failed-buffer recovery, and command rejection while
+  input is pending already work through the existing new-core REPL path.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -1052,11 +1062,16 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.functionDeclarationsPersistWithoutSemicolon`,
 `repl.backend.replacesSameSignatureFunctionDeclarations`,
 `repl.backend.preservesFunctionOverloads`, and
-`repl.backend.userDefinedFunctionDoesNotCollideWithWrapper`. The next current
-REPL backend block that covers old `Bytecode` but not `BytecodeNewCore` is
-`repl.backend.templateFunctionDeclarationsPersistWithoutDisplay`; its matrix
-is `AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block
-in `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
+`repl.backend.userDefinedFunctionDoesNotCollideWithWrapper`,
+`repl.backend.templateFunctionDeclarationsPersistWithoutDisplay`,
+`repl.backend.multilineFunctionDeclarationsBufferUntilComplete`,
+`repl.backend.multilineStructDeclarationsBufferUntilComplete`,
+`repl.backend.failedBufferedDeclarationDoesNotPoisonSession`, and
+`repl.backend.commandsDoNotAbandonPendingInput`. The next current REPL backend
+block that covers old `Bytecode` but not `BytecodeNewCore` is
+`repl.backend.importDeclarationsPersistWithoutDisplay`; its matrix is
+`AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block in
+`tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the
 existing unit tests are enough to catch discrepancies while the REPL backend
 surface is brought onto `BytecodeNewCore`.

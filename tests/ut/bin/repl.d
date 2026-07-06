@@ -331,7 +331,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.templateFunctionDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -349,7 +349,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -369,7 +369,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.multilineStructDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -389,7 +389,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -408,7 +408,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
