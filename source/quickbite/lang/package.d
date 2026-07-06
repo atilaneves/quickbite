@@ -511,7 +511,10 @@ public struct Value {
                 } else static if (is(U == EnumValue)) {
                     return Value(cast(T) value.value);
                 } else {
-                    throw new Exception("Unsupported cast.");
+                    import std.conv: text;
+                    throw new Exception(
+                        text("Unsupported cast to ", T.stringof, " from ", U.stringof),
+                    );
                     return Value.void_;
                 }
             },
@@ -835,9 +838,12 @@ public struct Value {
         return data.match!(
             (const(NativePointer) pointer) => cast(void*) pointer.pointer,
             (const(Null) null_) => null,
-            (_) {
-                throw new Exception("Expected native pointer.");
-                return null;
+            (value) {
+                import std.conv: text;
+                throw new Exception(
+                    text("Expected native pointer, not ", typeof(value).stringof),
+                );
+                return cast(void*) null;
             },
         );
     }

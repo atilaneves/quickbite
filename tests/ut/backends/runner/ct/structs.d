@@ -1285,3 +1285,28 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
         });
     }
 }
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+    @("struct.voidInitialisedFieldSliceAssignment." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Buffer {
+                char[16] bytes;
+            }
+
+            size_t fill(string source) {
+                Buffer buffer = void;
+
+                buffer.bytes[0 .. source.length] = source[];
+                buffer.bytes[source.length] = 0;
+
+                return source.length;
+            }
+
+            unittest {
+                assert(fill("hello") == 5);
+            }
+        });
+    }
+}

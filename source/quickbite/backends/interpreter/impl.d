@@ -33,34 +33,13 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.runStatement(function_.fbody);
             return EvalResult(displayString(walker.result, function_));
         } catch (Exception exception) {
-            return EvalResult(EvalResult.Diagnostic(
-                interpreterDiagnostic(exception.msg, function_),
-            ));
+            // The interpreter's own message, verbatim: rewriting it through
+            // DMD's CTFE engine (as an earlier revision did) replaced the
+            // real, actionable error with whichever body-less leaf CTFE
+            // happened to reject (ai/plans/interpreter.md §5).
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
         }
     }
-}
-
-private string interpreterDiagnostic(
-    in string message,
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    if (!isUnsupportedInterpreterAssignmentDiagnostic(message))
-        return message;
-
-    import quickbite.frontend.dmd.ctfe: ctfeDiagnostic;
-
-    const diagnostic = ctfeDiagnostic(function_);
-    return diagnostic.length == 0 ? message : diagnostic;
-}
-
-private bool isUnsupportedInterpreterAssignmentDiagnostic(
-    in string message,
-) @safe pure {
-    import std.algorithm: startsWith;
-
-    return
-        message == "Unsupported interpreter assignment target." ||
-        message.startsWith("Unsupported interpreter assignment target:");
 }
 
 private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
@@ -381,7 +360,10 @@ private struct Walker {
         }
 
         import std.conv: text;
-        throw new Exception(text("Unsupported eval statement: ", statement.stmt));
+        throw new Exception(text(
+            "Unsupported eval statement: ", statement.stmt,
+            " in ", currentFunction is null ? "?" : text(currentFunction.toPrettyChars),
+        ));
     }
 
     pragma(inline, false)
@@ -571,12 +553,32 @@ private struct Walker {
     private Value runThisConstructorCall(
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
+        imported!"dmd.expression".Expression[] argumentExpressions,
     ) {
-        if (!hasThis || !thisValue.isClassObject || !isThrowableConstructor(function_))
+        if (!hasThis)
             throw new Exception("Unsupported eval call.");
 
-        thisValue = applyThrowableConstructor(thisValue, arguments);
-        return thisValue;
+        if (thisValue.isClassObject && isThrowableConstructor(function_)) {
+            thisValue = applyThrowableConstructor(thisValue, arguments);
+            return thisValue;
+        }
+
+        // A delegating constructor (`this(...)` forwarding to another
+        // constructor, as std.stdio.File's string constructor does): run the
+        // target constructor on the current receiver and adopt the
+        // constructed value.
+        if (function_.isConstructorFunction) {
+            thisValue = runMemberFunction(
+                function_,
+                null,
+                thisValue,
+                arguments,
+                argumentExpressions,
+            );
+            return thisValue;
+        }
+
+        throw new Exception("Unsupported eval call.");
     }
 
     private bool isThisOrSuperExpression(
@@ -1078,7 +1080,7 @@ private struct Walker {
 
         if (auto symbol = expression.isSymOffExp) {
             if (auto variable = symbol.var.isVarDeclaration)
-                return localPointerValue(variable);
+                return symbolOffsetLocalValue(symbol, variable);
             if (auto function_ = symbol.var.isFuncDeclaration)
                 return functionPointerValue(function_);
         }
@@ -1170,6 +1172,25 @@ private struct Walker {
 
             if (auto current = variable in locals)
                 return *current;
+
+            // A module-level or static variable read before any write (e.g.
+            // std.encoding's immutable bomTable): materialize its static
+            // initializer, and remember it so repeated reads agree. Locals
+            // are excluded: their DeclarationExp evaluates their initializer
+            // (an initializer like _d_arrayctor's even reads the variable
+            // itself). Seed the type's default first so an initializer that
+            // reads the variable back (directly or through calls) terminates,
+            // as compiled D's pre-initialized statics do.
+            if (variable.isDataseg && variable._init !is null)
+                if (auto initializer = variable._init.isExpInitializer) {
+                    locals[variable] = defaultValue(variable);
+                    const value = storageValue(
+                        variable.type,
+                        runExpression(initializer.exp),
+                    );
+                    locals[variable] = value;
+                    return value;
+                }
 
             return defaultValue(variable);
         }
@@ -1367,7 +1388,7 @@ private struct Walker {
 
         if (auto symbol = address.e1.isSymOffExp) {
             if (auto variable = symbol.var.isVarDeclaration)
-                return localPointerValue(variable);
+                return symbolOffsetLocalValue(symbol, variable);
             if (auto function_ = symbol.var.isFuncDeclaration)
                 return functionPointerValue(function_);
         }
@@ -1381,10 +1402,20 @@ private struct Walker {
         if (auto delegate_ = address.e1.isDelegateExp)
             return runDelegateExpression(delegate_);
 
+        // `&field` (also `field.ptr`) of a struct's static-array member: a
+        // pointer to the field's first element, exactly what arrayPointer
+        // builds for `&field[0]`.
+        if (auto dot = address.e1.isDotVarExp) {
+            import quickbite.frontend.dmd.types: isStaticArrayType;
+
+            if (isStaticArrayType(dot.type))
+                return arrayPointer(dot, 0, address.op);
+        }
+
         auto index = address.e1.isIndexExp;
         if (index is null)
             throw new Exception(
-                text("Unsupported eval expression: ", address.op),
+                text("Unsupported eval expression: ", address.op, " of ", address.e1.op),
             );
 
         const offset = runExpression(index.e2).asLong;
@@ -1429,6 +1460,41 @@ private struct Walker {
             allocationId(source),
             arrayPointerOffset(*current, offset),
         );
+    }
+
+    // `&local`, and `&buf[constantIndex]` which DMD folds to
+    // SymOffExp(buf, byteOffset): a pointer into a static array's elements
+    // mirrors the unfolded `&buf[i]` IndexExp shape; anything else points at
+    // the local's slot.
+    private Value symbolOffsetLocalValue(
+        imported!"dmd.expression".SymOffExp symbol,
+        VarDeclaration variable,
+    ) {
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+
+        if (isStaticArrayType(variable.type)) {
+            if (auto current = variable in locals) {
+                import dmd.typesem: size;
+
+                auto elementType = variable.type.toBasetype.nextOf.toBasetype;
+                const elementSize = cast(size_t) size(elementType);
+                const elementOffset = elementSize == 0
+                    ? 0
+                    : cast(size_t) symbol.offset / elementSize;
+
+                auto source = variable;
+                if (auto alias_ = variable in sliceAliases)
+                    source = alias_.source;
+
+                return Value.arrayPointerValue(
+                    arrayPointerElements(*current),
+                    allocationId(source),
+                    arrayPointerOffset(*current, cast(long) elementOffset),
+                );
+            }
+        }
+
+        return localPointerValue(variable);
     }
 
     private Value localPointerValue(VarDeclaration variable) {
@@ -1686,6 +1752,15 @@ private struct Walker {
                 return runAssocArrayHookCall(call, assocArrayHook);
         }
 
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.builtins:
+                AtomicHook, tryAtomicHook;
+
+            AtomicHook atomicHook;
+            if (tryAtomicHook(call.f, atomicHook))
+                return runAtomicHookCall(call, atomicHook);
+        }
+
         auto stringForeachApply = call.f is null
             ? callExpressionFunction(call.e1)
             : call.f;
@@ -1719,7 +1794,11 @@ private struct Walker {
                     call.f.isCtorDeclaration !is null &&
                     isThisOrSuperMemberCall(call)
                 )
-                    return runThisConstructorCall(call.f, arguments);
+                    return runThisConstructorCall(
+                        call.f,
+                        arguments,
+                        argumentExpressions,
+                    );
 
                 auto function_ = resolveMemberFunction(call.f, receiver);
                 if (hasNoAvailableSource(function_)) {
@@ -1836,8 +1915,12 @@ private struct Walker {
                 NativeCallException, tryCallNative;
 
             if (hasNoAvailableSource(call.f)) {
+                import quickbite.backends.interpreter.ffi_marshal:
+                    PointerElementsWriteback;
+
                 Value result;
                 Value[] writebacks;
+                PointerElementsWriteback[] pointerWritebacks;
                 try {
                     if (
                         !call.f.needThis &&
@@ -1849,9 +1932,11 @@ private struct Walker {
                             &invokeNativeCallback,
                             result,
                             writebacks,
+                            pointerWritebacks,
                         )
                     ) {
                         applyNativeWritebacks(writebacks, argumentExpressions);
+                        applyPointerElementsWritebacks(pointerWritebacks);
                         return result;
                     }
                 } catch (NativeCallException exception) {
@@ -2239,6 +2324,75 @@ private struct Walker {
         locals[variable] = Value.arrayValue(updated);
         uninitializedLocals.remove(variable);
         return locals[variable];
+    }
+
+    // core.internal.atomic implements these with inline asm the interpreter
+    // cannot execute. Interpretation is single-threaded, so plain reads and
+    // writes of the pointed-at value are observably equivalent.
+    private Value runAtomicHookCall(
+        imported!"dmd.expression".CallExp call,
+        in imported!"quickbite.backends.interpreter.builtins".AtomicHook hook,
+    ) {
+        import quickbite.backends.interpreter.builtins: AtomicHook;
+
+        if (call.arguments is null || call.arguments.length == 0)
+            throw new Exception("Unsupported eval call.");
+
+        auto destinationExpression = (*call.arguments)[0];
+        const destination = runExpression(destinationExpression);
+
+        Value operand() {
+            if (call.arguments.length < 2)
+                throw new Exception("Unsupported eval call.");
+            return runExpression((*call.arguments)[1]);
+        }
+
+        with (AtomicHook) final switch (hook) {
+            case aligned:
+                return Value(true);
+
+            case load:
+                return readPointerTarget(destinationExpression, destination);
+
+            case store:
+                writePointerTarget(destinationExpression, destination, operand);
+                return Value.void_;
+
+            case exchange: {
+                const previous =
+                    readPointerTarget(destinationExpression, destination);
+                writePointerTarget(destinationExpression, destination, operand);
+                return previous;
+            }
+
+            case fetchAdd:
+            case fetchSub: {
+                const previous =
+                    readPointerTarget(destinationExpression, destination);
+                const delta = hook == fetchAdd
+                    ? operand.asLong
+                    : -operand.asLong;
+                writePointerTarget(
+                    destinationExpression,
+                    destination,
+                    storageValue(
+                        destinationExpression.type.toBasetype.nextOf,
+                        Value(previous.asLong + delta),
+                    ),
+                );
+                return previous;
+            }
+        }
+    }
+
+    private Value readPointerTarget(
+        imported!"dmd.expression".Expression pointerExpression,
+        in Value pointer,
+    ) {
+        if (pointer.isNativePointer)
+            return loadNativePointerElement(pointerExpression.type, pointer, 0);
+
+        return pointerTargetValue(pointer);
     }
 
     // DMD lowers associative array operations to druntime template hooks in
@@ -2739,6 +2893,7 @@ private struct Walker {
         if (
             !pointer.isPointer ||
             pointer.isLocalPointer ||
+            pointer.isNativePointer ||
             pointer.pointerAllocation == 0
         )
             return false;
@@ -2840,6 +2995,14 @@ private struct Walker {
                     continue;
                 }
 
+                // A `ref` argument spelled `*pointer` (core.atomic's shared
+                // overloads forward `*cast(T*)&val`): write back through the
+                // pointer's target.
+                if (argument.isPtrExp !is null) {
+                    writeLocation(argument, *value);
+                    continue;
+                }
+
                 if (!isWritableLocation(argument))
                     continue;
 
@@ -2922,6 +3085,16 @@ private struct Walker {
     }
 
     private bool equalValues(in Value left, in Value right) {
+        // A character compares with a numeric scalar by code point, as D's
+        // integral promotions do: bytes read from native memory keep their
+        // integer kind through `cast(string)`, e.g. in std.file.readText.
+        if (
+            (left.isNumericScalar || left.isCharacter) &&
+            (right.isNumericScalar || right.isCharacter) &&
+            (left.isCharacter || right.isCharacter)
+        )
+            return left.castTo!real.asReal == right.castTo!real.asReal;
+
         if (left.isNumericScalar && right.isNumericScalar)
             return left.asReal == right.asReal;
 
@@ -3420,6 +3593,13 @@ private struct Walker {
                 return;
             }
 
+            // A dereferenced native pointer (e.g. a malloc'd struct like
+            // std.stdio.File's Impl): write straight into native memory.
+            if (pointer.isNativePointer) {
+                storeNativePointerElement(ptr.e1.type, pointer, 0, value);
+                return;
+            }
+
             if (writeThroughArrayPointer(pointer, value))
                 return;
 
@@ -3533,6 +3713,21 @@ private struct Walker {
         return backendCastValue(value, target);
     }
 
+    // Apply the elements a native call wrote through pointers into
+    // interpreter-managed arrays (e.g. posix read filling `buf.ptr + n`)
+    // back into the arrays the pointers came from.
+    private void applyPointerElementsWritebacks(
+        in imported!"quickbite.backends.interpreter.ffi_marshal"
+            .PointerElementsWriteback[] writebacks,
+    ) {
+        foreach (writeback; writebacks)
+            foreach (index, element; writeback.elements)
+                writeThroughArrayPointer(
+                    writeback.pointer.pointerOffsetBy(cast(long) index),
+                    element,
+                );
+    }
+
     private bool writeThroughArrayPointer(in Value pointer, in Value value) {
         auto variable = arrayPointerVariable(pointer);
         if (variable is null)
@@ -3558,7 +3753,12 @@ private struct Walker {
     private imported!"dmd.declaration".VarDeclaration* arrayPointerVariable(
         in Value pointer,
     ) {
-        if (!pointer.isPointer || pointer.pointerAllocation == 0)
+        if (
+            !pointer.isPointer ||
+            pointer.isLocalPointer ||
+            pointer.isNativePointer ||
+            pointer.pointerAllocation == 0
+        )
             return null;
 
         return pointer.pointerAllocation in arrayAllocationVariables;
@@ -3775,17 +3975,29 @@ private struct Walker {
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
+        import std.conv: text;
+
         auto var = slice.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported interpreter assignment target.");
+        if (var is null) {
+            if (auto dot = slice.e1.isDotVarExp)
+                return runFieldSliceAssignExpression(slice, dot, rhs);
+            throw new Exception(text(
+                "Unsupported interpreter assignment target: slice of ",
+                slice.e1.op,
+            ));
+        }
 
         auto variable = var.var.isVarDeclaration;
         if (variable is null)
-            throw new Exception("Unsupported interpreter assignment target.");
+            throw new Exception(
+                "Unsupported interpreter assignment target: slice of non-variable.",
+            );
 
         auto current = variable in locals;
         if (current is null)
-            throw new Exception("Unsupported interpreter assignment target.");
+            throw new Exception(
+                "Unsupported interpreter assignment target: slice of unset local.",
+            );
 
         const lower = slice.lwr is null
             ? 0
@@ -3843,6 +4055,41 @@ private struct Walker {
                 "] = [", sourceLower, "..", sourceUpper, "]`",
             ));
         }
+    }
+
+    // A slice assignment through a struct field (`s.buf[i .. j] = source[]`):
+    // splice the written elements into the field's current array and write
+    // the updated struct back through the field's location.
+    private Value runFieldSliceAssignExpression(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".DotVarExp dot,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        const fieldIndex = structFieldIndex(dot);
+        const receiver = runExpression(dot.e1);
+        const current = receiver.structFieldAt(fieldIndex);
+
+        const lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? current.length
+            : cast(size_t) runExpression(slice.upr).asLong;
+
+        const block = isBlockSliceAssignment(slice, rhs);
+        const value = runExpression(rhs);
+
+        Value[] elements;
+        foreach (index; 0 .. current.length)
+            elements ~= index < lower || index >= upper
+                ? current[index]
+                : block ? copyArrayValue(value) : value[index - lower];
+
+        writeLocation(dot.e1, receiver.withStructField(
+            fieldIndex,
+            Value.arrayValue(elements),
+        ));
+        return value;
     }
 
     private bool isBlockSliceAssignment(
@@ -4243,6 +4490,20 @@ private struct Walker {
             }
 
             const upper = cast(size_t) runExpression(slice.upr).asLong;
+
+            // Slicing native memory (`ptr[0 .. n]` over a C allocation, as
+            // std.file.read does): reify the elements into an array Value.
+            if (source.isNativePointer) {
+                Value[] elements;
+                foreach (index; lower .. upper)
+                    elements ~= loadNativePointerElement(
+                        slice.e1.type,
+                        source,
+                        index,
+                    );
+                return Value.arrayValue(elements);
+            }
+
             return source.pointerSlice(lower, upper);
         }
 
@@ -4258,24 +4519,27 @@ private struct Walker {
         return runIndexExpression(index, arrayIndex);
     }
 
-    // Read a scalar element from native (C heap) memory addressed by a
-    // NativePointer. Limited to byte-addressed `ubyte*`/`char*` memory.
+    // Read an element from native (C heap) memory addressed by a
+    // NativePointer: a snapshot Value built from the pointee's bytes (a
+    // scalar, a pointer, or a whole struct such as std.stdio.File's malloc'd
+    // Impl).
     private Value loadNativePointerElement(
         imported!"dmd.mtype".Type pointerType,
         in Value pointer,
         in size_t index,
     ) {
-        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.ffi_marshal: unmarshalNative;
+        import dmd.typesem: size;
 
-        const elementByte = readNativeByte(pointer.asNativePointer, index);
-        switch (pointerType.toBasetype.nextOf.toBasetype.ty) with (TY) {
-            case Tuns8:
-                return Value(elementByte);
-            case Tchar:
-                return Value(cast(char) elementByte);
-            default:
-                throw new Exception("Unsupported native pointer element type.");
-        }
+        auto elementType = pointerType.toBasetype.nextOf.toBasetype;
+        return unmarshalNative(
+            elementType,
+            nativeElementAddress(
+                pointer.asNativePointer,
+                index,
+                cast(size_t) size(elementType),
+            ),
+        );
     }
 
     private void storeNativePointerElement(
@@ -4284,24 +4548,30 @@ private struct Walker {
         in size_t index,
         in Value value,
     ) {
-        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.ffi_marshal: marshalNative;
+        import dmd.typesem: size;
 
-        if (pointerType.toBasetype.nextOf.toBasetype.ty != TY.Tuns8)
-            throw new Exception("Unsupported native pointer element type.");
-
-        writeNativeByte(pointer.asNativePointer, index, cast(ubyte) value.asLong);
+        auto elementType = pointerType.toBasetype.nextOf.toBasetype;
+        marshalNative(
+            elementType,
+            nativeElementAddress(
+                pointer.asNativePointer,
+                index,
+                cast(size_t) size(elementType),
+            ),
+            value,
+        );
     }
 
-    private static ubyte readNativeByte(void* base, in size_t index) @trusted {
-        return (cast(ubyte*) base)[index];
-    }
-
-    private static void writeNativeByte(
+    // Pointer arithmetic on a native allocation the interpreted program
+    // itself obtained (e.g. from malloc); no more unsafe than the compiled
+    // code it mirrors.
+    private static void* nativeElementAddress(
         void* base,
         in size_t index,
-        in ubyte value,
+        in size_t elementSize,
     ) @trusted {
-        (cast(ubyte*) base)[index] = value;
+        return cast(void*) (cast(ubyte*) base + index * elementSize);
     }
 
     // Apply writebacks reported by a native call to their source argument
@@ -4361,8 +4631,19 @@ private struct Walker {
     private bool isNativeAddressOfLocal(
         imported!"dmd.expression".Expression argument,
     ) {
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+
         if (auto address = argument.isAddrExp)
-            return address.e1.isVarExp !is null;
+            if (auto var = address.e1.isVarExp)
+                if (auto variable = var.var.isVarDeclaration)
+                    return !isStaticArrayType(variable.type);
+
+        // A pointer into a static-array local (`&buf[i]`, folded to a
+        // SymOffExp) is an in-pointer to the array's elements, not an out
+        // slot for the callee to fill.
+        if (auto symbol = argument.isSymOffExp)
+            if (auto variable = symbol.var.isVarDeclaration)
+                return !isStaticArrayType(variable.type);
 
         return argument.isSymOffExp !is null;
     }
@@ -4469,6 +4750,13 @@ private struct Walker {
         in Value pointer,
         in Value value,
     ) {
+        // A native pointer (e.g. into a malloc'd struct like std.stdio.File's
+        // Impl): write straight into native memory.
+        if (pointer.isNativePointer) {
+            storeNativePointerElement(expression.type, pointer, 0, value);
+            return;
+        }
+
         if (pointer.isLocalPointer) {
             auto variable = pointer.localPointerId in localPointers;
             if (variable is null)
@@ -4871,6 +5159,30 @@ private struct Walker {
             uninitializedLocals[variable] = true;
             return Value.void_;
         }
+
+        // `auto copy = original;` for a struct with a postblit lowers to
+        // `(copy = original).__postblit()` as the initializer: the blit inside
+        // the call writes the variable, and the call's own value is the
+        // postblit's return, not the struct — do not overwrite with it.
+        if (auto postblitCall = initializer.isCallExp)
+            if (
+                postblitCall.f !is null &&
+                postblitCall.f.isPostBlitDeclaration !is null
+            ) {
+                // An interpreted postblit returns void (its walker's
+                // incidental result must not overwrite the variable); a
+                // body-less native postblit's FFI bridge returns the mutated
+                // receiver, which is the value to keep.
+                const result = runExpression(initializer);
+                uninitializedLocals.remove(variable);
+                if (result.isStruct) {
+                    locals[variable] = result;
+                    return result;
+                }
+                if (auto value = variable in locals)
+                    return *value;
+                return defaultValue(variable);
+            }
 
         import quickbite.frontend.dmd.types: isAssocArrayType, isDynamicArrayType;
 
