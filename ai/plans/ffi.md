@@ -2390,7 +2390,8 @@ small-struct returns and the §27 reversal fixtures still green.
 
 ### 34.8 Increment 14 — scalar out-parameters with writeback
 
-**Status: implemented.**
+**Status: implemented.** Residual (2026-07-06): the out cell starts zeroed,
+so in-out scalars and read-through `char**` inputs lose their value — §35.6.
 
 **Contract.** Support a single-level scalar out-pointer (`int*`, `double*`)
 that the native function writes through, mapping the post-call value back into
@@ -2998,3 +2999,99 @@ session (leak bounded by session lifetime, like §34.12's rooting table);
 extend §35.1a so backends hand out stable storage; or per-API annotations.
 Until then, §34.10/§34.16's "reject" wording overstates what the code does
 and should be read as "the contract the caller must uphold".
+
+### 35.6 Out-parameter marshalling discards the input value
+
+**Claim.** §34.8 disambiguates in-pointers from out slots: a `char**` is
+always an out slot, a `&local` pointer-to-scalar is one at the call site's
+say-so, and "a bare pointer value (not `&local`) stays an in-pointer".
+
+**Reality.** Classification is not the flaw; what the classification *does*
+is. An out slot passes a freshly zeroed host cell
+(`callViaLibffi`, `core.d`: `outParameterCells[index] = new ubyte[](...)`)
+and never consults the argument's current value. The model is write-only,
+but both classified shapes admit reads:
+
+- **In-out scalar.** `void bump(int* p) { *p += 1; }` called as
+  `int x = 41; bump(&x);` — the callee sees `*p == 0`, the writeback makes
+  `x == 1`. SystemLinker says 42. Silent wrong answer, no diagnostic.
+- **Pointer-to-pointer input.** Any callee that *reads* through `char**`
+  (argv-style lists, iconv's in-out `inbuf`) receives a pointer to a null
+  pointer: at best a wrong result, at worst a native crash.
+
+**Exposing fixtures** (2026-07-06, both red on Interpreter, green on the
+SystemLinker oracle): `dependencyImage.externCInOutScalarParameter` and
+`dependencyImage.externCPointerToPointerInput` in
+`tests/ut/backends/runner/rt/dependency_image.d`.
+
+**Work.** Marshal the argument's current value *into* the out cell before
+the call — the marshaller already knows it; a `NativeMarshaller.fillArgument`
+into the cell through the pointed-to type is the mechanism. The `&local`
+heuristic then only governs *writeback*, never input suppression. Write-only,
+in-out, and pointer-input callees all become correct with one change; the
+zeroed-cell behaviour survives nowhere. `&uninitializedLocal` (strtol's
+`endptr` idiom) marshals whatever default value the backend holds, which is
+what compiled code passes too.
+
+### 35.7 Unions crossing by value die on an assert, not the graceful path
+
+**Claim.** §34.2's shared invariant: a shape the bridge does not model
+returns `false` and preserves the caller's no-available-source diagnostic.
+§34.3.1's residual list names union fields as something the boxed seam
+cannot faithfully cross — implying they are rejected.
+
+**Reality.** Nothing rejects them. `ffiStructType` walks a union's fields
+as if laid out sequentially, so libffi computes a bigger size than DMD's
+overlapped layout, and the §24.3 layout cross-check
+(`assert(returnFfi.size == size(returnType))`, `core.d:344`) throws an
+unlabelled `AssertError` that escapes `Interpreter.runTests` entirely — in
+a resident session that is death by internal assertion, not a diagnostic.
+Any multi-field union argument or return hits it; `align`-packed structs
+whose DMD size differs from libffi's natural layout hit the same assert.
+
+**Exposing fixture** (2026-07-06, red on Interpreter via
+`AssertError@core.d(344)`, green on the SystemLinker oracle):
+`dependencyImage.externCUnionReturn` in
+`tests/ut/backends/runner/rt/dependency_image.d`. It pins the terminal
+behaviour (the union return works); the assert-vs-graceful split is the
+immediate defect.
+
+**Work.** Two layers. (1) Detection must precede prep: `ffiTypeFor` should
+recognize overlapped/packed layouts (union `StructDeclaration`s, explicit
+`align`) and either model them or return null; the §24.3 assert then only
+guards shapes the mapper claimed to model. (2) To actually model a union,
+synthesize the libffi convention for one — a struct containing only the
+largest/most-aligned member, with size/alignment forced to DMD's — and
+marshal through raw bytes rather than per-field recursion.
+
+### 35.8 The type mapper and the marshaller disagree on what is supported
+
+**Claim.** §34.2: unmodelled shapes are refused before the call
+(`return false`, no-available-source diagnostic). The gate is
+`ffiTypeFor` returning null.
+
+**Reality.** Support is decided twice: once by the core's `ffiTypeFor`
+(which types get an ffi_type) and again by the interpreter's
+`marshalArgument`/`unmarshalValue` switches (which types convert to and
+from `Value`). The three switches are only in sync for shapes a fixture
+has visited. Where they drift, the mismatch detector is
+`assert(false, "unmarshalled libffi ...")` in the marshaller — an
+`AssertError` that escapes the session, and on the return path it fires
+*after* the native call has already run its side effects. Concrete drift
+today: `ffiTypeFor` claims `Tdelegate` (§34.16 added the argument
+direction), so a native function *returning* a delegate — or taking a
+struct with a delegate field — passes the gate, calls, then dies in
+`unmarshalValue`'s default case.
+
+**Exposing fixture** (2026-07-06, red on Interpreter via
+`AssertError@ffi_marshal.d(536)` after the call ran, green on the
+SystemLinker oracle): `dependencyImage.externDDelegateReturn` in
+`tests/ut/backends/runner/rt/dependency_image.d`. It pins the terminal
+behaviour (the returned delegate is callable and yields 42).
+
+**Work.** Make refusal single-sourced and pre-call: the marshaller (the
+seam's owner of representability) should expose "can I cross this type in
+this direction?" and the core must consult it before `ffi_prep_cif`, so
+mapper/marshaller drift degrades to the graceful diagnostic instead of a
+post-call assert. Actually crossing a returned native delegate needs an
+opaque callable value (the inverse of §34.16), which is its own rung.

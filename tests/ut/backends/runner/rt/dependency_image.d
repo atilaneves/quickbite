@@ -870,6 +870,77 @@ unittest {
     }
 }
 
+// C default argument promotions on the variadic tail: a char argument must
+// arrive as int and a float as double (ffi_prep_cif_var rejects unpromoted
+// small-int/float variadic types), whether the frontend promotes at the call
+// site or the bridge has to.
+@("dependencyImage.externCVariadicPromotion.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_variadic_promotion_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_variadic_promotion_fixture;
+
+            import core.stdc.stdarg;
+
+            extern(C) int dependencyPromote(int count, ...) {
+                va_list args;
+                va_start(args, count);
+                const number = va_arg!int(args);
+                const fraction = va_arg!double(args);
+                va_end(args);
+                return number * 100 + cast(int) (fraction * 10.0);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_variadic_promotion_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_variadic_promotion_fixture;
+
+            extern(C) int dependencyPromote(int count, ...);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_variadic_promotion_fixture;
+
+                unittest {
+                    char letter = 'a';
+                    float fraction = 2.5;
+                    assert(dependencyPromote(2, letter, fraction) == 9725);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externCppFunctionAndMember.Interpreter")
 @Tags("Interpreter")
 unittest {
@@ -1186,6 +1257,278 @@ unittest {
                     int result;
                     dependencyDouble(&result, value);
                     assert(result == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// An in-out scalar parameter (ffi.md §34.8): the callee reads the pointed-to
+// value before writing it back, so the marshalled cell must carry the
+// argument's current value into the call, not start zeroed.
+@("dependencyImage.externCInOutScalarParameter.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_inout_param_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_inout_param_fixture;
+
+            extern(C) void dependencyBump(int* value) {
+                *value += 1;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_inout_param_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_inout_param_fixture;
+
+            extern(C) void dependencyBump(int* value);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_inout_param_fixture;
+
+                unittest {
+                    int value = 41;
+                    dependencyBump(&value);
+                    assert(value == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// A pointer-to-pointer parameter the callee reads through (ffi.md §34.8): the
+// `char**` shape alone does not make it an out slot, so the argument's current
+// pointer value must reach the callee. The fixture null-checks so the flaw
+// shows as a wrong return value rather than a crash.
+@("dependencyImage.externCPointerToPointerInput.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_ptr_ptr_in_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_ptr_ptr_in_fixture;
+
+            extern(C) const(char)* dependencyWord() {
+                return "hello";
+            }
+
+            extern(C) int dependencyFirstLength(const(char)** words) {
+                import core.stdc.string: strlen;
+
+                if (words is null || *words is null)
+                    return -1;
+                return cast(int) strlen(*words);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ptr_ptr_in_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ptr_ptr_in_fixture;
+
+            extern(C) const(char)* dependencyWord();
+            extern(C) int dependencyFirstLength(const(char)** words);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ptr_ptr_in_fixture;
+
+                unittest {
+                    const(char)* word = dependencyWord();
+                    assert(dependencyFirstLength(&word) == 5);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// A union crossing the boundary by value: DMD lays the fields out overlapped,
+// but ffiStructType walks them as if sequential, so libffi's computed size
+// disagrees with DMD's and the layout cross-check assert kills the call
+// instead of either calling correctly or falling back gracefully.
+@("dependencyImage.externCUnionReturn.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_union_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_union_fixture;
+
+            union Overlay {
+                int number;
+                float precise;
+            }
+
+            extern(C) Overlay dependencyOverlay() {
+                Overlay result;
+                result.number = 42;
+                return result;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_union_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_union_fixture;
+
+            union Overlay {
+                int number;
+                float precise;
+            }
+
+            extern(C) Overlay dependencyOverlay();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_union_fixture;
+
+                unittest {
+                    Overlay overlay = dependencyOverlay();
+                    assert(overlay.number == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// A delegate crossing the boundary as a RETURN value: the type mapper claims
+// delegates (ffiTypeFor handles Tdelegate) so the call proceeds, but the
+// marshaller only handles delegates as direct arguments — reifying the
+// returned {context, funcptr} pair dies on the unmarshalValue default assert
+// instead of either working or falling back gracefully before the call.
+@("dependencyImage.externDDelegateReturn.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_delegate_return_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_delegate_return_fixture;
+
+            int delegate() dependencyMakeAdder(int base) {
+                return () => base + 1;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_delegate_return_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_delegate_return_fixture;
+
+            int delegate() dependencyMakeAdder(int base);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_delegate_return_fixture;
+
+                unittest {
+                    int delegate() adder = dependencyMakeAdder(41);
+                    assert(adder() == 42);
                 }
             },
             [inSandboxPath(importPath)],

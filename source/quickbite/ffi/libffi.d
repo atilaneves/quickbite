@@ -7,6 +7,14 @@ module quickbite.ffi.libffi;
 // verified against /usr/include/ffi.h on x86-64 SysV (sizeof(ffi_cif) == 32,
 // sizeof(ffi_type) == 24, no FFI_EXTRA_CIF_FIELDS).
 
+// Everything below (FFI_DEFAULT_ABI == FFI_UNIX64, the ffi_closure blob size,
+// and the layouts documented above) is x86-64 SysV; other targets have
+// different ffitarget.h values and must not compile silently against these.
+version (X86_64) {} else static assert(false,
+    "quickbite.ffi.libffi assumes the x86-64 SysV ABI");
+version (Posix) {} else static assert(false,
+    "quickbite.ffi.libffi assumes a SysV (FFI_UNIX64) target, not Win64");
+
 private:
 
 // The dub.sdl `libs "ffi"` drives the actual link; pragma(lib) documents the
