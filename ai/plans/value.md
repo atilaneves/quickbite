@@ -200,6 +200,30 @@ of remaining-work item 1; the wiring half is untouched and every REPL
 display still runs through the interim `displayString`/`Value.toString`
 scaffolding.
 
+Progress 2026-07-06: selected expression cells now synthesize
+`__quickbiteFormat(expr)` instead of displaying the backend `Value`
+directly. `Ctfe` and `Interpreter` opt in through a backend capability; the
+frontend imports `quickbite.repl_prelude`, rewrites struct expression cells
+that need 64-bit integer suffixes, and unwraps the formatter's returned string
+at the evaluator boundary. The gate is intentionally narrow so existing range,
+delegate, null-field, function-diagnostic, enum, and scalar displays keep their
+current contracts while the `long`/`ulong` struct-field fallback moves out of
+`Value.toString`.
+
+Progress 2026-07-06: the formatter gate now covers struct expression cells
+with function-pointer and delegate fields, so CTFE and Interpreter render null
+callable fields through the prelude instead of diverging through the interim
+`Value.toString` scaffolding (`Callbacks(7, null)`, `Handler(9, null)`). The
+prelude has a callable branch that renders null function pointers and delegates
+as `null`; the Interpreter preserves null through pointer/delegate casts needed
+by DMD's lowering.
+
+Progress 2026-07-06: the formatter gate now also covers struct expression
+cells with class-reference fields, moving null class fields (`Node(5, null)`)
+onto the prelude path for CTFE and Interpreter. The display text is unchanged;
+the frontend now proves these expressions synthesize `__quickbiteFormat(expr)`
+instead of falling back to the interim `Value.toString` scaffolding.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

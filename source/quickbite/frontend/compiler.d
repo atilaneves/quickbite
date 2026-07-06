@@ -288,12 +288,15 @@ final class Compiler {
         }
     }
 
-    // With allInst on, DMD parks every druntime/phobos template instance and
-    // TypeInfo from every compilation on the first root module ever parsed
-    // (appendToModuleMember chases importedFrom). Parse a module we control
-    // first so that accumulation point is known: SystemLinker emits it,
-    // pruned, next to every snippet object so the snippet's borrowed
-    // instances resolve at link time.
+    // With allInst on, DMD parks a template instance on the root module
+    // reached through the declaring module's importedFrom. The rod's own
+    // semantic loads object/druntime, so those instances home here; a Phobos
+    // module first imported by some snippet homes its instances on that
+    // snippet instead, and link-time adoption (native codegen's adoptOrphans)
+    // re-homes them onto the rod. Parse a module we control first so the
+    // emission point is known: SystemLinker emits it, pruned, next to every
+    // snippet object so the snippet's borrowed instances resolve at link
+    // time.
     private void parseLightningRod() {
         import dmd.dmodule: Module;
         import dmd.frontend: fullSemantic, dmdParseModule = parseModule;

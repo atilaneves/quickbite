@@ -110,6 +110,20 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
+@("repl.frontend.classFieldStructExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        "({ struct Node { int id; Object payload; } " ~
+        "return Node(5, null); })()",
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.localDeclarationsCanRebindNames." ~ backend.stringof)
     unittest {
@@ -645,7 +659,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.displaysEnumValues." ~ backend.stringof)
     unittest {
@@ -670,7 +684,26 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
+
+    @("repl.backend.expressionCellsUsePreludeFormatter." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Point { int x; long y; }",
+                "Point(1, 2)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Point(1, 2L)"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
     unittest {
@@ -685,7 +718,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.typeAliasCellsDisplayTypeName." ~ backend.stringof)
     unittest {
@@ -707,7 +740,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.displaysStringValues." ~ backend.stringof)
     unittest {
@@ -722,7 +755,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.specialTokenValuesHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -737,7 +770,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.numericScalarDisplayUsesDLiteralSuffixes." ~ backend.stringof)
     unittest {
@@ -777,7 +810,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
 
     @("repl.backend.characterScalarDisplayCollapsesToCharLiteral." ~ backend.stringof)
     unittest {
@@ -803,7 +836,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
 
     @("repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint." ~ backend.stringof)
     unittest {
@@ -827,7 +860,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
@@ -841,7 +874,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runLoadedUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -854,7 +887,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid." ~ backend.stringof)
     unittest {
@@ -866,7 +899,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.loadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -883,7 +916,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.laterLoadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -902,7 +935,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
     unittest {
@@ -931,7 +964,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -944,7 +977,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.loadedSourceDoesNotAdvanceTypedReplLocations." ~
         backend.stringof)
@@ -963,7 +996,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.loadedFileUnittestFailuresReportFileLocation." ~
         backend.stringof)
@@ -998,7 +1031,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.loadModuleFileErrorsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -1064,24 +1097,29 @@ static foreach (backend; AliasSeq!(Interpreter)) {
         repl.submit("good + 1").should == "42";
     }
 
-    @("repl.backend.runtimeOnlyFileOpenReportsNativeBoundary." ~ backend.stringof)
+    // Superseded characterization: this used to pin the CTFE-style
+    // native-boundary diagnostic (ai/plans/interpreter.md §5); the
+    // interpreter now executes std.stdio.File's source and calls the libc
+    // leaves natively, so opening a file succeeds.
+    @("repl.backend.runtimeFileOpenSucceeds." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
+        import unit_threaded.integration: Sandbox;
+        import std.conv: text;
 
-        auto repl = Repl(newBackend!backend);
+        with (immutable Sandbox()) {
+            auto repl = Repl(newBackend!backend);
 
-        repl.submit("import std;");
-        void openFile() {
-            repl.submit(`auto f = File("/tmp/foo.txt", "w");`);
+            repl.submit("import std;").should == "";
+            repl.submit(text(
+                "auto f = File(`", inSandboxPath("repl_file.txt"), "`, `w`);",
+            )).should == "";
+            repl.submit("f.isOpen").should == "true";
         }
-
-        openFile.shouldThrow.msg.should ==
-            "`fopen64` cannot be interpreted at compile time, because it has no available source code\n" ~
-            "`malloc` cannot be interpreted at compile time, because it has no available source code";
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runtimeErrorsReportOneDiagnostic." ~ backend.stringof)
     unittest {
@@ -1119,7 +1157,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -1136,7 +1174,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.failedModuleNoDisplayCellsDoNotPoisonSession." ~ backend.stringof)
     unittest {
@@ -1155,7 +1193,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.syntaxErrorsHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -1171,7 +1209,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.diagnosticsHideSyntheticWrapperNames." ~ backend.stringof)
     unittest {
@@ -1186,7 +1224,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.functionCallMismatchShowsCandidateSignature." ~ backend.stringof)
     unittest {
@@ -1204,7 +1242,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.functionCallMismatchShowsOverloadSignatures." ~ backend.stringof)
     unittest {
@@ -1225,8 +1263,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+// Bytecode does not yet reify struct results for display.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.structValueRendersTypeNameAndFields." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -1246,7 +1284,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.arrayOfStructsRendersEachElement." ~ backend.stringof)
     unittest {
@@ -1267,10 +1305,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// The Interpreter keeps the null field (`Callbacks(7, null)`) instead of
-// omitting it; Bytecode reports struct literals as an unsupported expression.
-static foreach (backend; AliasSeq!(Ctfe)) {
-    @("repl.backend.nullFunctionPointerFieldIsOmitted." ~ backend.stringof)
+// BytecodeNewCore does not yet reify struct results for display.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nullFunctionPointerFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
 
@@ -1284,14 +1321,13 @@ static foreach (backend; AliasSeq!(Ctfe)) {
             ],
         );
 
-        output.should == ["Callbacks(7)"];
+        output.should == ["Callbacks(7, null)"];
     }
 }
 
-// The Interpreter keeps the null field (`Handler(9, null)`) instead of
-// omitting it; Bytecode reports struct literals as an unsupported expression.
-static foreach (backend; AliasSeq!(Ctfe)) {
-    @("repl.backend.nullDelegateFieldIsOmitted." ~ backend.stringof)
+// BytecodeNewCore does not yet reify struct results for display.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nullDelegateFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
 
@@ -1305,11 +1341,11 @@ static foreach (backend; AliasSeq!(Ctfe)) {
             ],
         );
 
-        output.should == ["Handler(9)"];
+        output.should == ["Handler(9, null)"];
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.nullClassFieldRendersAsNull." ~ backend.stringof)
     unittest {
@@ -1329,7 +1365,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.nullPointerFieldRendersAsNull." ~ backend.stringof)
     unittest {
@@ -1349,7 +1385,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.nestedStructOmitsSyntheticContextField." ~ backend.stringof)
     unittest {
@@ -1371,7 +1407,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct/AA results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.assocArrayWithStructValuesRendersEntries." ~ backend.stringof)
     unittest {

@@ -26,7 +26,32 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     if (type.isArray)
         return reifyArray(bytes, type, data, heap);
 
-    return reifyScalar(bytes, type.scalar);
+    if (type.isStruct)
+        return reifyStruct(bytes, type);
+
+    return reifyScalar(bytes, type.scalar, type.enumMembers);
+}
+
+private imported!"quickbite.lang".Value reifyStruct(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ResultType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: size;
+    import quickbite.lang: Value;
+
+    if (type.structName is null)
+        return Value.undisplayable;
+
+    Value[] fields;
+    foreach (field; type.structFields) {
+        const offset = field.offset;
+        fields ~= reifyScalar(
+            bytes[offset .. offset + size(field.type)],
+            field.type,
+            field.enumMembers,
+        );
+    }
+    return Value.structDisplayValue(type.structName, fields);
 }
 
 private imported!"quickbite.lang".Value reifyArray(
@@ -44,7 +69,8 @@ private imported!"quickbite.lang".Value reifyArray(
     auto block = type.isStaticArray
         ? bytes
         : heapBlock(scalar!size_t(bytes), heap);
-    if (!type.arrayElementsAreArrays && isCharacter(type.elementType))
+    if (!type.arrayElementsAreArrays && type.elementEnumMembers.length == 0 &&
+        isCharacter(type.elementType))
         return reifyCharacterArray(block, length, type.elementType);
 
     Value[] elements;
@@ -72,6 +98,7 @@ private imported!"quickbite.lang".Value reifyArray(
                 : reifyScalar(
                     block[offset .. offset + size(type.elementType)],
                     type.elementType,
+                    type.elementEnumMembers,
                 );
         }
     }
@@ -82,11 +109,11 @@ private imported!"quickbite.backends.bytecode.core.program".ResultType
 withScalarArrayElements(
     in imported!"quickbite.backends.bytecode.core.program".ResultType type,
 ) @safe pure {
-    import quickbite.backends.bytecode.core.program:
-        ResultType, ScalarType;
+    import quickbite.backends.bytecode.core.program: ResultType;
 
-    return ResultType(
-        ScalarType.void_, false, true, type.elementType, false,
+    return ResultType.scalarArrayResult(
+        type.elementType,
+        type.elementEnumMembers.dup,
     );
 }
 
@@ -187,9 +214,14 @@ private bool isCharacter(
 private imported!"quickbite.lang".Value reifyScalar(
     in ubyte[] bytes,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+    in string[ulong] enumMembers = null,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program: ScalarType;
     import quickbite.lang: Value;
+
+    if (enumMembers.length != 0)
+        if (auto name = scalarKey(bytes, type) in enumMembers)
+            return Value.enumValue(*name);
 
     final switch (type) with (ScalarType) {
         case void_:
@@ -224,6 +256,25 @@ private imported!"quickbite.lang".Value reifyScalar(
             return Value(scalar!double(bytes));
         case real_:
             return Value(scalar!real(bytes));
+    }
+}
+
+private ulong scalarKey(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+    import std.meta: AliasSeq;
+
+    final switch (type) with (ScalarType) {
+        case void_:
+            return 0;
+        static foreach (T; AliasSeq!(
+            bool, byte, ubyte, short, ushort, int, uint, long, ulong,
+            char, wchar, dchar, float, double, real,
+        ))
+            mixin("case " ~ T.stringof ~ "_:" ~
+                "return cast(ulong) scalar!" ~ T.stringof ~ "(bytes);");
     }
 }
 

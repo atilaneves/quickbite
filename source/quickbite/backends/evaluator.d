@@ -82,8 +82,26 @@ private class ReplayReplSession: ReplSession {
         // `:t`/type-expression cells are answered in the frontend (and repl.d
         // unwraps the backend `.stringof` fallback), so the session just
         // evaluates the cell and returns the rendered display string contract.
-        return _evaluator.eval(cell.evalCell);
+        const result = _evaluator.eval(cell.evalCell);
+        if (result.failed || !cell.evalCell.displayIsFormatted)
+            return result;
+
+        return EvalResult(unquotedStringDisplay(result.display));
     }
+}
+
+private string unquotedStringDisplay(in string display) @safe pure {
+    if (display.length < 2 || display[0] != '"')
+        return display;
+
+    size_t closing = display.length - 1;
+    while (closing > 0 && display[closing] != '"')
+        --closing;
+
+    if (closing == 0)
+        return display;
+
+    return display[1 .. closing];
 }
 
 public struct EvalResult {

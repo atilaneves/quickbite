@@ -65,6 +65,62 @@ package bool tryAssocArrayHook(
     return false;
 }
 
+package enum AtomicHook {
+    load,
+    store,
+    exchange,
+    fetchAdd,
+    fetchSub,
+    aligned,
+}
+
+// core.internal.atomic implements these primitives as inline asm the
+// interpreter cannot execute; interpretation is single-threaded, so plain
+// reads and writes of the pointed-at value at the call site are observably
+// equivalent.
+package bool tryAtomicHook(
+    imported!"dmd.func".FuncDeclaration function_,
+    out AtomicHook hook,
+) {
+    import std.algorithm: startsWith;
+    import std.conv: text;
+
+    if (function_ is null)
+        return false;
+
+    if (function_.parent is null || function_.parent.isTemplateInstance is null)
+        return false;
+
+    const name = text(function_.toPrettyChars);
+
+    static struct Hook {
+        string prefix;
+        AtomicHook hook;
+    }
+
+    static immutable hooks = [
+        Hook("core.internal.atomic.atomicLoad!(", AtomicHook.load),
+        Hook("core.internal.atomic.atomicStore!(", AtomicHook.store),
+        Hook("core.internal.atomic.atomicExchange!(", AtomicHook.exchange),
+        Hook("core.internal.atomic.atomicFetchAdd!(", AtomicHook.fetchAdd),
+        Hook("core.internal.atomic.atomicFetchSub!(", AtomicHook.fetchSub),
+        // Alignment asserts cast the pointer to size_t; interpreter values
+        // have no numeric address and are always properly aligned. A single
+        // template argument prints without parens, so match up to the `!`.
+        Hook("core.atomic.atomicValueIsProperlyAligned!", AtomicHook.aligned),
+        Hook("core.atomic.atomicPtrIsProperlyAligned!", AtomicHook.aligned),
+    ];
+
+    foreach (candidate; hooks) {
+        if (name.startsWith(candidate.prefix)) {
+            hook = candidate.hook;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 package enum InterpreterBuiltin: size_t {
     fabs,
     isInfinity,

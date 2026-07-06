@@ -69,6 +69,13 @@ public struct Value {
         return Value(Struct(typeName, fields));
     }
 
+    public static Value structDisplayValue(
+        in string typeName,
+        in Value[] fields,
+    ) @safe pure {
+        return Value(Struct(typeName, fields, true));
+    }
+
     public static Value classValue(
         in string typeName,
         in string[] typeNames,
@@ -518,7 +525,10 @@ public struct Value {
                 } else static if (is(U == EnumValue)) {
                     return Value(cast(T) value.value);
                 } else {
-                    throw new Exception("Unsupported cast.");
+                    import std.conv: text;
+                    throw new Exception(
+                        text("Unsupported cast to ", T.stringof, " from ", U.stringof),
+                    );
                     return Value.void_;
                 }
             },
@@ -842,9 +852,12 @@ public struct Value {
         return data.match!(
             (const(NativePointer) pointer) => cast(void*) pointer.pointer,
             (const(Null) null_) => null,
-            (_) {
-                throw new Exception("Expected native pointer.");
-                return null;
+            (value) {
+                import std.conv: text;
+                throw new Exception(
+                    text("Expected native pointer, not ", typeof(value).stringof),
+                );
+                return cast(void*) null;
             },
         );
     }
@@ -1373,7 +1386,7 @@ public struct Value {
             (const(Array) array) {
                 auto elements = array.elements.dup;
                 elements ~= element;
-                return Value.arrayValue(elements);
+                return Value(Array(elements, array.display));
             },
             (_) {
                 throw new Exception("Expected array.");
@@ -2006,12 +2019,15 @@ private struct Entry {
 private struct Struct {
     public string typeName;
     public Field[] fields;
+    private bool _literalFields;
 
     public this(
         in string typeName,
         in Value[] fields,
+        in bool literalFields = false,
     ) @safe pure {
         this.typeName = typeName;
+        _literalFields = literalFields;
 
         foreach (field; fields)
             this.fields ~= Field("", field);
@@ -2033,7 +2049,7 @@ private struct Struct {
         foreach (i, field; fields) {
             if (i != 0)
                 ret ~= ", ";
-            ret ~= field.toString;
+            ret ~= _literalFields ? field.value.toString : field.toString;
         }
 
         return ret ~ ")";

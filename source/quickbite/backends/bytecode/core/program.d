@@ -42,6 +42,12 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
     }
 }
 
+package(quickbite.backends.bytecode) struct StructDisplayField {
+    uint offset;
+    ScalarType type;
+    string[ulong] enumMembers;
+}
+
 // The static type of a function result: a scalar, a string, a dynamic array,
 // or a by-value struct. A string result is a slice descriptor (byte offset and
 // length into Program.data); a dynamic-array result is a 16-byte {ptr, length}
@@ -61,6 +67,32 @@ package(quickbite.backends.bytecode) struct ResultType {
     bool isStaticArray;
     uint arrayLength;
     bool arrayElementsAreStrings;
+    string[ulong] enumMembers;
+    string[ulong] elementEnumMembers;
+    string structName;
+    StructDisplayField[] structFields;
+
+    static ResultType scalarResult(
+        in ScalarType scalar,
+        string[ulong] enumMembers = null,
+    ) @safe pure {
+        ResultType result;
+        result.scalar = scalar;
+        result.enumMembers = enumMembers;
+        return result;
+    }
+
+    static ResultType scalarArrayResult(
+        in ScalarType elementType,
+        string[ulong] enumMembers = null,
+    ) @safe pure {
+        ResultType result;
+        result.scalar = ScalarType.void_;
+        result.isArray = true;
+        result.elementType = elementType;
+        result.enumMembers = enumMembers;
+        return result;
+    }
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset

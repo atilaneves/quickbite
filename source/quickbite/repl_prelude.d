@@ -2,37 +2,38 @@ module quickbite.repl_prelude;
 
 private:
 
+import std.traits: Unqual;
+
 public string __quickbiteFormat(T)(in T value) @safe pure {
     import std.conv: text;
-    import std.traits: isAssociativeArray, isDynamicArray, isStaticArray,
-        Unqual;
+    import std.traits: isAssociativeArray, isDelegate, isDynamicArray,
+        isFunctionPointer, isStaticArray, Unqual;
 
     alias U = Unqual!T;
 
     static if (is(U == enum)) {
         return text(U.stringof, ".", value);
     } else static if (is(U == char) || is(U == wchar) || is(U == dchar)) {
-        return text("'", value, "'");
-    } else static if (is(U == string)) {
-        return text(`"`, value, `"`);
-    } else static if (is(U == wstring)) {
-        return text(`"`, value, `"w`);
-    } else static if (is(U == dstring)) {
-        return text(`"`, value, `"d`);
+        return characterDisplay(value);
+    } else static if (is(U == string) || is(U == wstring) ||
+        is(U == dstring) || isCharacterArray!U) {
+        return stringDisplay(value);
     } else static if (isDynamicArray!U || isStaticArray!U) {
         return arrayDisplay(value);
     } else static if (is(U == uint)) {
-        return text(value, "u");
+        return text(value) ~ "u";
     } else static if (is(U == long)) {
-        return text(value, "L");
+        return text(value) ~ "L";
     } else static if (is(U == ulong)) {
-        return text(value, "UL");
+        return text(value) ~ "UL";
     } else static if (is(U == float)) {
-        return text(floatingDisplay(value), "f");
+        return floatingDisplay(value) ~ "f";
     } else static if (is(U == double)) {
         return floatingDisplay(value);
     } else static if (is(U == real)) {
-        return text(floatingDisplay(value), "L");
+        return floatingDisplay(value) ~ "L";
+    } else static if (isFunctionPointer!U || isDelegate!U) {
+        return callableDisplay(value);
     } else static if (isAssociativeArray!U) {
         return assocArrayDisplay(value);
     } else static if (is(U == struct)) {
@@ -53,6 +54,36 @@ private string arrayDisplay(T)(in T value) @safe pure {
     return rendered;
 }
 
+private enum isCharacterArray(T) = is(T == E[], E) &&
+    (is(E == char) || is(E == wchar) || is(E == dchar));
+
+private string characterDisplay(T)(in T value) @safe pure {
+    string rendered = "'";
+    rendered ~= cast(dchar) value;
+    rendered ~= "'";
+    return rendered;
+}
+
+private string stringDisplay(T)(in T value) @safe pure {
+    import std.traits: Unqual;
+
+    string rendered = `"`;
+    foreach (dchar character; value)
+        rendered ~= character;
+    rendered ~= `"`;
+
+    static if (isWcharArray!T) {
+        rendered ~= "w";
+    } else static if (isDcharArray!T) {
+        rendered ~= "d";
+    }
+
+    return rendered;
+}
+
+private enum isWcharArray(T) = is(Unqual!T == E[], E) && is(Unqual!E == wchar);
+private enum isDcharArray(T) = is(Unqual!T == E[], E) && is(Unqual!E == dchar);
+
 private string assocArrayDisplay(T)(in T value) @safe pure {
     string rendered = "[";
     bool first = true;
@@ -64,6 +95,12 @@ private string assocArrayDisplay(T)(in T value) @safe pure {
     }
     rendered ~= "]";
     return rendered;
+}
+
+private string callableDisplay(T)(in T value) @safe pure {
+    import std.conv: text;
+
+    return value is null ? "null" : text(value);
 }
 
 private string structDisplay(T)(in T value) @safe pure {

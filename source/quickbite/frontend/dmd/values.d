@@ -14,6 +14,12 @@ public imported!"quickbite.lang".Value integerValue(
         return Value(cast(long) value);
 
     switch (type.ty) with (TY) {
+        // A pointer-typed integer constant (e.g. a `cast(T*) size_t.max`
+        // sentinel like Phobos' TempCStringBuffer.useStack): a native pointer
+        // holding the address, so comparisons against it behave like
+        // compiled D.
+        case Tpointer:
+            return Value.nativePointerValue(cast(void*) value);
         case Tbool:
             return Value(value != 0);
         case Tint8:

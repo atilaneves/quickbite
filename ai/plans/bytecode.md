@@ -258,6 +258,31 @@ keeps the full suite green.
   the new core. When the entire matrix passes on the new core, flip the
   default and delete the old core in the same change.
 
+### REPL parity continuation
+REPL promotion is parity work against the existing `Interpreter` behaviour,
+not `SystemLinker` enablement. Do not add `SystemLinker` to
+`tests/ut/bin/repl.d` as part of this plan. The REPL still uses template code
+emission paths that are separate from the bytecode backend parity work; proving
+or fixing those paths belongs in a later plan.
+
+Continue promoting `tests/ut/bin/repl.d` to `BytecodeNewCore` in coherent
+blocks. If a promoted block fails, stop the promotion worker there. Use one
+subagent to investigate and record the concrete missing bytecode behaviour,
+then a separate subagent to implement the minimal production fix.
+
+Every non-refactor PR that changes production bytecode code must include a
+visible behavioural test delta in the same PR. A plan update is not a test
+delta. If merging or rebasing against `master` removes the test diff because
+equivalent promotions landed elsewhere, the PR is no longer valid as-is:
+either add or promote another relevant REPL parity test in that PR, or drop
+the production change.
+
+Before creating or handing off a PR, check the PR diff against `master`.
+Production bytecode changes must be paired with relevant `tests/` changes,
+and the production-code diff should stay below 200 changed lines. If the diff
+is too small and still under that limit, continue with another REPL promotion
+block instead of opening a tiny PR.
+
 ### Slice roadmap
 Earn the design back test-first, in this order. Each slice follows the
 existing discipline: red test (or an already-green matrix behaviour moved to
@@ -1108,8 +1133,25 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.displaysWideCharacterArrayValues`. The string-display family was
 implementation work, not stale coverage: static/string array result
 reification and wide-string suffix preservation needed new-core result metadata
-and reification support. The next current REPL backend blocks that cover old
-`Bytecode` but not `BytecodeNewCore` are the adjacent scalar display tests:
+and reification support. `repl.backend.displaysEnumValues` now also covers
+`BytecodeNewCore`. The promotion exposed a display-only metadata gap: bytecode
+already executed enum values as their base scalar slots, so `E.a`, `[E.a,
+E.b]`, and `cast(int) E.a` all computed the right bits, but reification only
+saw `int` storage and rendered `"7"` / `"[7, 8]"`. `ResultType` now carries
+enum value-name maps for scalar results and scalar array elements; the compiler
+builds those maps from DMD `EnumDeclaration.members`, and `reify.d` converts
+matching scalar bytes back to `Value.enumValue`. Cast results keep their cast
+type, so `cast(int) E.a` still renders `"7"`. Verification for this promotion
+passed:
+
+- `ninja bin/ut`
+- `bin/ut ut.bin.repl.repl.backend.displaysEnumValues.BytecodeNewCore`
+- `bin/ut --random`
+
+The random run used seed `992721697` and reported `2783 test(s) run,
+0 failed, 6/6 failing as expected`.
+The next current REPL backend blocks that cover old `Bytecode` but not
+`BytecodeNewCore` are the adjacent scalar display tests:
 `repl.backend.characterScalarDisplayCollapsesToCharLiteral` and
 `repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
@@ -3810,3 +3852,225 @@ Focused command:
 bin/ut $(bin/ut -l | \
     rg '^ut\\.backends\\.runner\\.ct\\.cerealed\\..*\\.BytecodeNewCore$')
 ```
+
+## repl.d Promotion Checkpoint (BytecodeNewCore)
+
+The existing `repl.backend.characterScalarDisplayCollapsesToCharLiteral`
+backend-matrix family now includes `BytecodeNewCore`. This was a stale
+coverage promotion from old `Bytecode`; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+characterScalarDisplayCollapsesToCharLiteral.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+Review follow-up for PR #343: replace the new enum-reification `ResultType`
+literals with named factories on `ResultType`, and generate the scalar enum
+lookup switch arms from D type names with string mixins. This keeps the
+metadata intent visible at the call sites while preserving the promoted REPL
+enum-display behaviour.
+
+All remaining narrow `tests/ut/bin/repl.d` backend rows were attempted on
+`BytecodeNewCore` in one sweep. The passing promotions retained in the matrix
+are:
+
+- `numericScalarDisplayUsesDLiteralSuffixes`
+- `runLoadedUnittestBlocks`
+- `runLoadedTestsWithNothingLoadedReturnsVoid`
+- `loadedUnittestFailuresReportReplLocation`
+- `laterLoadedUnittestFailuresReportReplLocation`
+- `runLoadedTestsReportsEveryFailedUnittest`
+- `runLoadedFileUnittestBlocks`
+- `loadedSourceDoesNotAdvanceTypedReplLocations`
+- `loadedFileUnittestFailuresReportFileLocation`
+- `loadModuleFileErrorsHideSyntheticNames`
+- `runtimeErrorsReportOneDiagnostic`
+- `duplicateDeclarationsHideSyntheticNames`
+- `failedModuleNoDisplayCellsDoNotPoisonSession`
+- `syntaxErrorsHideWrapperInternals`
+- `diagnosticsHideSyntheticWrapperNames`
+- `functionCallMismatchShowsCandidateSignature`
+- `functionCallMismatchShowsOverloadSignatures`
+
+No production changes were needed. The focused `BytecodeNewCore` REPL run now
+covers 50 tests:
+
+```sh
+ninja bin/ut
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.bin\\.repl\\..*\\.BytecodeNewCore$')
+```
+
+Result: 50 tests run, 0 failed.
+
+The full attempted sweep initially ran 67 `BytecodeNewCore` REPL tests and
+exposed 17 failures. These were investigated and left unpromoted because they
+require broader backend work:
+
+- `moduleLevelVariablesAreVisibleToFunctions` fails on assignment to a
+  module-level variable (`Unsupported assignment in bytecode core`).
+- `importStdExposesPhobosSymbols`, `displaysFiniteRangeResults`, and
+  `displaysFilteredArrayResults` require broader Phobos range/ref-argument
+  support.
+- `displaysAssocArrayResults` and `assocArrayWithStructValuesRendersEntries`
+  need associative-array result reification for display.
+- `displaysEnumValues` currently reifies enum values as their underlying
+  integers, not qualified enum member names.
+- `expressionCtfeErrorsReportDiagnostics` expects the CTFE/Interpreter
+  bounds diagnostic; `BytecodeNewCore` reports the VM bounds diagnostic.
+- `runtimeOnlyCellsUseResidentNativeCalls` and
+  `runtimeOnlyFileOpenReportsNativeBoundary` are Interpreter-native-boundary
+  behaviours; `BytecodeNewCore` still reports missing CTFE/native support in
+  this REPL path.
+- The struct display family (`structValueRendersTypeNameAndFields`,
+  `arrayOfStructsRendersEachElement`, `nullFunctionPointerFieldIsOmitted`,
+  `nullDelegateFieldIsOmitted`, `nullClassFieldRendersAsNull`,
+  `nullPointerFieldRendersAsNull`, `nestedStructOmitsSyntheticContextField`)
+  needs richer struct result metadata/reification before the display renderer
+  can produce field-level output.
+
+The existing `repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`
+backend-matrix family now includes `BytecodeNewCore`. This was the adjacent
+stale scalar-display promotion from old `Bytecode`; no production changes were
+needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+wholeFloatingScalarDisplayKeepsDecimalPoint.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid`
+backend-matrix family now includes `BytecodeNewCore`. This was the next narrow
+REPL test-command promotion after no-display cells; no production changes were
+needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+runLoadedTestsWithNothingLoadedReturnsVoid.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.displaysStringValues` backend-matrix family now
+includes `BytecodeNewCore`. This was the adjacent narrow string-display
+promotion after the scalar display rows; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.displaysStringValues.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.typeofCellsDisplayTypeName` backend-matrix family
+now includes `BytecodeNewCore`. This was the next narrow display-family
+promotion after the string display row; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+typeofCellsDisplayTypeName.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.typeAliasCellsDisplayTypeName` backend-matrix
+family now includes `BytecodeNewCore`. This was the adjacent narrow type-cell
+display promotion after `typeofCellsDisplayTypeName`; no production changes
+were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+typeAliasCellsDisplayTypeName.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.specialTokenValuesHideWrapperInternals`
+backend-matrix family now includes `BytecodeNewCore`. This was the next narrow
+REPL display hygiene promotion after the type-cell display rows; no production
+changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+specialTokenValuesHideWrapperInternals.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.noDisplayCellsReturnVoid` backend-matrix family now
+includes `BytecodeNewCore`. This was the next narrow REPL no-display-cell
+promotion after display hygiene; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.noDisplayCellsReturnVoid.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The coherent Phobos/range REPL block was attempted on `BytecodeNewCore` and
+left unpromoted:
+`repl.backend.importStdExposesPhobosSymbols`,
+`repl.backend.displaysFiniteRangeResults`, and
+`repl.backend.displaysFilteredArrayResults`. The red promotion confirms the
+range/ref-argument gap is still real. `importStdExposesPhobosSymbols` fails in
+the bytecode REPL path with `Unsupported ref argument in bytecode core:
+result[cnt]`, `displaysFilteredArrayResults` fails with `Unsupported type in
+bytecode core: Result`, and `displaysFiniteRangeResults` produces no display
+output instead of `MapResult([1, 2, 3])`.
+
+The smaller associative-array display REPL block was also attempted on
+`BytecodeNewCore` and left unpromoted:
+`repl.backend.displaysAssocArrayResults`. The red promotion shows that the
+backend currently reifies/displays only the first key as `1UL`, producing
+`["1UL"]` instead of the oracle output `["[1:10, 2:20]"]`.
+
+The existing `repl.backend.expressionCellsUsePreludeFormatter` backend-matrix
+family was attempted on `BytecodeNewCore` and left unpromoted. The red
+promotion confirms the struct display gap is still real in this row too:
+`Point(1, 2)` produces no REPL output (`[]`) instead of the oracle display
+`["Point(1, 2L)"]`.
+
+The minimal simple-struct display slice is now implemented for
+`BytecodeNewCore`: struct result metadata records the struct type name plus
+scalar field offsets/types, and reification builds the existing
+struct `Value` shape from the returned byte block, using D-literal field
+display for REPL output. Non-scalar fields intentionally do not get display
+metadata in this slice. The existing
+`repl.backend.expressionCellsUsePreludeFormatter` and
+`repl.backend.structValueRendersTypeNameAndFields` rows now include
+`BytecodeNewCore`.

@@ -15,7 +15,10 @@ public struct Repl {
     ) {
         this.backend = backend;
         this.importPaths = importPaths.dup;
-        this.frontendSession = typeof(frontendSession)(this.importPaths);
+        this.frontendSession = typeof(frontendSession)(
+            this.importPaths,
+            backend.supportsReplPreludeFormatter,
+        );
         this.backendSession = backend.createReplSession;
     }
 

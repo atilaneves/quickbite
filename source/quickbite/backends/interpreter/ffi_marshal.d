@@ -21,6 +21,15 @@ public alias DelegateInvoker = imported!"quickbite.lang".Value delegate(
     in imported!"quickbite.lang".Value[] arguments,
 );
 
+// A native write through a pointer into interpreter-managed array memory
+// (e.g. posix read filling `buf.ptr + offset`): the pointed-at elements as
+// they stand after the call, for the walker to write back through the
+// pointer value.
+public struct PointerElementsWriteback {
+    public imported!"quickbite.lang".Value pointer;
+    public imported!"quickbite.lang".Value[] elements;
+}
+
 public bool tryCallNative(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.lang".Value[] arguments,
@@ -30,6 +39,7 @@ public bool tryCallNative(
     DelegateInvoker invokeDelegate,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
+    out PointerElementsWriteback[] pointerWritebacks,
 ) {
     import quickbite.ffi: callNative;
 
@@ -43,6 +53,7 @@ public bool tryCallNative(
 
     result = marshaller.result;
     argumentWritebacks = marshaller.writebacks;
+    pointerWritebacks = marshaller.pointerWritebacks;
     return true;
 }
 
@@ -228,6 +239,15 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         size_t length;
     }
     private SliceWriteback[] _sliceWritebacks;
+    // Native buffers marshalled for pointer-into-array arguments, retained so
+    // native writes through them (e.g. posix read filling a buffer) are
+    // reified back through the pointer value after the call.
+    private static struct PointerBufferWriteback {
+        Type elementType;
+        Value pointer;
+        ubyte[] bytes;
+    }
+    private PointerBufferWriteback[] _pointerWritebacks;
     // Runs an interpreted delegate passed into native code, supplied by the
     // Walker so the reverse bridge (ffi.md §34.16) can re-enter the interpreter.
     private DelegateInvoker _invokeDelegate;
@@ -271,6 +291,23 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         }
     }
 
+    public PointerElementsWriteback[] pointerWritebacks() {
+        import dmd.typesem: size;
+
+        PointerElementsWriteback[] result;
+        foreach (writeback; _pointerWritebacks) {
+            const elementSize = cast(size_t) size(writeback.elementType);
+            Value[] elements;
+            foreach (index; 0 .. writeback.bytes.length / elementSize)
+                elements ~= unmarshalValue(
+                    writeback.elementType,
+                    writeback.bytes[index * elementSize .. (index + 1) * elementSize],
+                );
+            result ~= PointerElementsWriteback(writeback.pointer, elements);
+        }
+        return result;
+    }
+
     public override void fillArgument(
         ubyte[] buffer,
         Type type,
@@ -279,6 +316,34 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
+        import dmd.astenums: TY;
+
+        // A non-char pointer into interpreter-managed array memory (e.g.
+        // posix read's `void*` receiving `buf.ptr + n`): marshal the
+        // pointed-at elements into a native buffer and track it, so bytes the
+        // callee writes reify back through the pointer value after the call.
+        if (
+            type.ty == TY.Tpointer &&
+            type.nextOf.toBasetype.ty != TY.Tchar &&
+            _arguments[index].isPointer &&
+            !_arguments[index].isNativePointer &&
+            !_arguments[index].isLocalPointer
+        ) {
+            auto elementType = pointerElementType(type);
+            auto bytes = marshalPointerElements(
+                elementType,
+                _arguments[index],
+            );
+            keepAliveBuffers ~= bytes;
+            fillPointerCell(buffer, bytes);
+            _pointerWritebacks ~= PointerBufferWriteback(
+                elementType,
+                _arguments[index],
+                bytes,
+            );
+            return;
+        }
+
         // A mutable scalar slice is marshalled through its own element buffer
         // and tracked for writeback; everything else (and immutable/nested
         // slices) marshals copy-only (ffi.md §34.10).
@@ -487,6 +552,25 @@ private void marshalArgument(
             }
             return;
 
+        case TY.Tsarray: {
+            import dmd.mtype: TypeSArray;
+
+            auto staticArray = cast(TypeSArray) type;
+            auto elementType = staticArray.next.toBasetype;  // mutable for size()
+            const elementSize = cast(size_t) size(elementType);
+            const length = cast(size_t) staticArray.dim.toInteger;
+            foreach (index; 0 .. length)
+                marshalArgument(
+                    buffer[index * elementSize .. (index + 1) * elementSize],
+                    elementType,
+                    value[index],
+                    stableString,
+                    keepAlive,
+                    keepAliveBuffers,
+                );
+            return;
+        }
+
         default:
             assert(false, "unmarshalled libffi argument type");
     }
@@ -503,7 +587,9 @@ private long scalarBits(
             return value.castTo!long.asLong;
 
         default:
-            return value.asLong;
+            // A char value behind a type-erased pointer (fwrite's `void*`
+            // receiving string bytes) reinterprets to its integer bits.
+            return value.isCharacter ? value.castTo!long.asLong : value.asLong;
     }
 }
 
@@ -525,7 +611,92 @@ private void* marshalPointerArgument(
         return cast(void*) text;
     }
 
+    if (value.isPointer && !value.isNativePointer && !value.isLocalPointer)
+        return pointedAtByteBuffer(value);
+
     return value.asNativePointer;
+}
+
+// The element type behind a pointer parameter; a type-erased `void*` reads
+// and writes bytes.
+private imported!"dmd.mtype".Type pointerElementType(
+    imported!"dmd.mtype".Type pointerType,
+) {
+    import dmd.astenums: TY;
+    import dmd.mtype: Type;
+
+    auto elementType = pointerType.nextOf.toBasetype;
+    return elementType.ty == TY.Tvoid ? Type.tuns8 : elementType;
+}
+
+// Marshal the elements a backend array pointer points at (from its offset to
+// the end of the allocation) into a GC buffer for a native call. Elements
+// still `= void` (an uninitialized read buffer) marshal as zero bytes.
+private ubyte[] marshalPointerElements(
+    imported!"dmd.mtype".Type elementType,
+    in imported!"quickbite.lang".Value pointer,
+) {
+    import quickbite.lang: Value;
+    import dmd.typesem: size;
+
+    const elementSize = cast(size_t) size(elementType);
+    const offset = cast(size_t) pointer.pointerElementOffset;
+    const length = pointer.pointerLength - offset;
+    auto bytes = new ubyte[](length * elementSize);
+
+    const(char)*[] keepAlive;
+    ubyte[][] keepAliveBuffers;
+    foreach (index; 0 .. length) {
+        const element = pointer.pointerIndex(index);
+        if (element == Value.void_)
+            continue;
+        marshalArgument(
+            bytes[index * elementSize .. (index + 1) * elementSize],
+            elementType,
+            element,
+            true,
+            keepAlive,
+            keepAliveBuffers,
+        );
+    }
+
+    return bytes;
+}
+
+// Writing the buffer's address into the pointer-sized argument cell is the
+// same reinterpretation every other marshalling site performs.
+private void fillPointerCell(ubyte[] cell, in ubyte[] bytes) @trusted {
+    *cast(const(void)**) cell.ptr = bytes.ptr;
+}
+
+// A pointer into interpreter-managed array memory passed as a raw pointer
+// (e.g. fwrite's `const void*` receiving a string's `.ptr`): copy the
+// pointed-at bytes into a C-heap buffer that outlives the call (leaked;
+// native allocations are reclaimed at process exit, ffi.md §5). Only
+// byte-wide elements have an unambiguous memory image through a type-erased
+// pointer, so anything wider is refused rather than silently truncated.
+private void* pointedAtByteBuffer(in imported!"quickbite.lang".Value value) {
+    const offset = cast(size_t) value.pointerElementOffset;
+    const length = value.pointerLength - offset;
+    auto buffer = byteBuffer(length == 0 ? 1 : length);
+    foreach (index; 0 .. length) {
+        const element = value.pointerIndex(index);
+        const bits = element.isChar ? element.asChar : element.asLong;
+        if (bits < 0 || bits > ubyte.max)
+            throw new Exception(
+                "Unsupported non-byte element behind a type-erased native pointer argument.",
+            );
+        buffer[index] = cast(ubyte) bits;
+    }
+    return buffer.ptr;
+}
+
+// The buffer deliberately leaks (see pointedAtByteBuffer); bounds are the
+// allocation's own size.
+private ubyte[] byteBuffer(in size_t length) @trusted {
+    import core.stdc.stdlib: malloc;
+
+    return (cast(ubyte*) malloc(length))[0 .. length];
 }
 
 private ubyte[] marshalSliceArgument(
@@ -615,6 +786,8 @@ private imported!"quickbite.lang".Value unmarshalValue(
             return Value.nativePointerValue(*cast(void**) buffer.ptr);
         case TY.Tarray:
             return unmarshalSlice(type, buffer);
+        case TY.Tsarray:
+            return unmarshalStaticArray(type, buffer);
         case TY.Tstruct:
             return unmarshalStruct(cast(TypeStruct) type, buffer);
         case TY.Tdelegate:
@@ -644,7 +817,7 @@ private bool canMarshalToNative(imported!"dmd.mtype".Type type) {
              Tpointer, Tclass:
             return true;
 
-        case Tarray:
+        case Tarray, Tsarray:
             return canMarshalToNative(type.nextOf.toBasetype);
 
         case Tstruct:
@@ -682,6 +855,9 @@ private bool canReifyFromNative(imported!"dmd.mtype".Type type) {
         case Tarray:
             return isSupportedScalarSlice(type);
 
+        case Tsarray:
+            return canReifyFromNative(type.nextOf.toBasetype);
+
         case Tstruct:
             // Unions reify field-by-field from the same overlapped bytes — a
             // bit-faithful snapshot — so they need no special case here.
@@ -694,6 +870,31 @@ private bool canReifyFromNative(imported!"dmd.mtype".Type type) {
         default:
             return false;
     }
+}
+
+// A static array laid out inline (e.g. a reserved field inside stat_t): one
+// element after another, no descriptor.
+private imported!"quickbite.lang".Value unmarshalStaticArray(
+    imported!"dmd.mtype".Type type,
+    in ubyte[] buffer,
+) {
+    import quickbite.lang: Value;
+    import dmd.mtype: TypeSArray;
+    import dmd.typesem: size;
+
+    auto staticArray = cast(TypeSArray) type;
+    auto elementType = staticArray.next.toBasetype;  // mutable for size()
+    const elementSize = cast(size_t) size(elementType);
+    const length = cast(size_t) staticArray.dim.toInteger;
+
+    Value[] elements;
+    foreach (index; 0 .. length)
+        elements ~= unmarshalValue(
+            elementType,
+            buffer[index * elementSize .. (index + 1) * elementSize],
+        );
+
+    return Value.arrayValue(elements);
 }
 
 private imported!"quickbite.lang".Value unmarshalSlice(
@@ -762,6 +963,59 @@ private imported!"quickbite.lang".Value emptySliceValue(
     }
 }
 
+// Read a value out of native memory (`*pointer`, e.g. a malloc'd struct
+// like std.stdio.File's Impl, or a scalar inside one): a snapshot Value
+// built from the pointee's bytes.
+public imported!"quickbite.lang".Value unmarshalNative(
+    imported!"dmd.mtype".Type type,
+    in void* address,
+) {
+    import dmd.typesem: size;
+
+    return unmarshalValue(type, nativeBytes(address, cast(size_t) size(type)));
+}
+
+// Write a Value into native memory. String and slice fields are backed by
+// buffers pinned for the rest of the process: native allocations are
+// reclaimed at process exit (ffi.md §5).
+public void marshalNative(
+    imported!"dmd.mtype".Type type,
+    void* address,
+    in imported!"quickbite.lang".Value value,
+) {
+    import dmd.typesem: size;
+
+    const(char)*[] keepAlive;
+    ubyte[][] keepAliveBuffers;
+    marshalArgument(
+        mutableNativeBytes(address, cast(size_t) size(type)),
+        type,
+        value,
+        true,
+        keepAlive,
+        keepAliveBuffers,
+    );
+    pinnedNativeStrings ~= keepAlive;
+    pinnedNativeBuffers ~= keepAliveBuffers;
+}
+
+// GC-owned backing memory that native structs now point into; pinned so a
+// collection cannot free it while the C heap still references it.
+private const(char)*[] pinnedNativeStrings;
+private ubyte[][] pinnedNativeBuffers;
+
+// Reading raw process memory the interpreter was handed a pointer to is as
+// (un)safe as the compiled D it mirrors; the length comes from the struct
+// type's own size.
+private const(ubyte)[] nativeBytes(in void* address, in size_t length) @trusted {
+    return (cast(const(ubyte)*) address)[0 .. length];
+}
+
+// Same justification as nativeBytes, for the write direction.
+private ubyte[] mutableNativeBytes(void* address, in size_t length) @trusted {
+    return (cast(ubyte*) address)[0 .. length];
+}
+
 private imported!"quickbite.lang".Value unmarshalStruct(
     imported!"dmd.mtype".TypeStruct type,
     in ubyte[] buffer,
@@ -798,7 +1052,25 @@ private const(char)* nativeString(in imported!"quickbite.lang".Value value) {
     if (value.isNativePointer)
         return cast(const(char)*) value.asNativePointer;
 
+    // A pointer into interpreter-managed array memory (e.g. `buffer.ptr` of
+    // a struct's static-array field, as Phobos' tempCString returns): the
+    // chars up to the NUL the D code wrote, which is all a native callee may
+    // read of a C string.
+    if (value.isPointer)
+        return pointedAtCString(value).toStringz;
+
     return value.asCharArrayString.toStringz;
+}
+
+private string pointedAtCString(in imported!"quickbite.lang".Value value) {
+    char[] chars;
+    foreach (index; 0 .. value.pointerLength) {
+        const character = value.pointerIndex(index).asChar;
+        if (character == '\0')
+            break;
+        chars ~= character;
+    }
+    return chars.idup;
 }
 
 // Like nativeString, but backs the C string with a stable C-heap buffer that

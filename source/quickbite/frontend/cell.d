@@ -19,6 +19,7 @@ public struct Cell {
     private string[] moduleFunctionSignatures;
     private string[] promotedLocalNames;
     private TranscriptCell[] promotedLocalCells;
+    public bool displayIsFormatted;
 }
 
 public struct EvalSourceParseResult {
@@ -51,9 +52,13 @@ public struct EvalSession {
     private TranscriptCell[] moduleCells;
     private uint evalCellCount;
     private uint valueCellCount;
+    private bool formatExpressionCells;
 
-    public this(in string[] importPaths) {
-        this.importPaths = importPaths.dup;
+    public this(in string[] importPaths, in bool formatExpressionCells = false) {
+        this.formatExpressionCells = formatExpressionCells;
+        this.importPaths = formatExpressionCells
+            ? importPaths.withReplPreludeImportPath
+            : importPaths.dup;
     }
 
     public Cell submit(in string input) {
@@ -159,11 +164,23 @@ public struct EvalSession {
             );
         }
 
-        const source = evalSource(
+        const rawSource = evalSource(
             moduleSource,
-            localTranscriptSource ~ "return " ~ input ~ ";",
+            localTranscriptSource ~ expressionReturnSource(
+                input,
+                false,
+            ),
             evalFunctionName,
         );
+        const formatExpression = formatExpressionCells &&
+            expressionReturnNeedsPreludeFormat(rawSource, importPaths);
+        const source = formatExpression
+            ? evalSource(
+                moduleSource,
+                localTranscriptSource ~ expressionReturnSource(input, true),
+                evalFunctionName,
+            )
+            : rawSource;
         return evalCellFromSource(
             Cell.Kind.expression,
             source,
@@ -174,6 +191,7 @@ public struct EvalSession {
             [],
             [],
             [],
+            formatExpression,
         );
     }
 
@@ -294,6 +312,88 @@ private string expressionHistory(
         valueSource,
         ";\n",
     );
+}
+
+private string expressionReturnSource(
+    in string input,
+    in bool formatExpression,
+) @safe pure {
+    if (!formatExpression)
+        return "return " ~ input ~ ";";
+
+    return
+        "import quickbite.repl_prelude: __quickbiteFormat;\n" ~
+        "return __quickbiteFormat(" ~ input ~ ");";
+}
+
+private bool expressionReturnNeedsPreludeFormat(
+    in string source,
+    in string[] importPaths,
+) {
+    import dmd.astenums: TY;
+    import dmd.dmodule: Module;
+    import quickbite.frontend.compiler: parseSnippet;
+
+    Module module_;
+    try {
+        module_ = parseSnippet(source, importPaths).module_;
+    } catch (Exception) {
+        return false;
+    }
+
+    auto type = evalFunction(module_).type;
+    auto functionType = type is null ? null : type.isTypeFunction;
+    if (functionType is null || functionType.next is null)
+        return false;
+
+    auto returnType = functionType.next.toBasetype;
+    if (returnType is null)
+        return false;
+
+    auto structType = returnType.isTypeStruct;
+    if (structType is null)
+        return false;
+
+    foreach (field; structType.sym.fields)
+        if (field !is null && field.type !is null) {
+            auto fieldType = field.type.toBasetype;
+            with (TY) switch (fieldType.ty) {
+                case Tint64, Tuns64:
+                    return true;
+                case Tclass:
+                    return true;
+                case Tdelegate:
+                    return true;
+                case Tpointer:
+                    auto pointee = fieldType.nextOf;
+                    if (
+                        pointee !is null &&
+                        pointee.toBasetype.ty == Tfunction
+                    )
+                        return true;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+    return false;
+}
+
+private string[] withReplPreludeImportPath(in string[] importPaths) @safe pure {
+    auto result = importPaths.dup;
+    result ~= quickbiteSourceImportPath;
+    return result;
+}
+
+private string quickbiteSourceImportPath() @safe pure {
+    enum suffix = "/quickbite/frontend/cell.d";
+    enum filePath = __FILE_FULL_PATH__;
+
+    static assert(filePath.length > suffix.length);
+    static assert(filePath[$ - suffix.length .. $] == suffix);
+
+    return filePath[0 .. $ - suffix.length];
 }
 
 private string toSource(ref const LoadedModuleSource loadedModuleSource)
@@ -543,6 +643,7 @@ private Cell evalCellFromSource(
     in string[] moduleFunctionSignatures,
     in string[] promotedLocalNames,
     in TranscriptCell[] promotedLocalCells,
+    in bool displayIsFormatted = false,
 ) {
     import quickbite.frontend.compiler: parseSnippet;
 
@@ -558,6 +659,7 @@ private Cell evalCellFromSource(
             moduleFunctionSignatures.dup,
             promotedLocalNames.dup,
             copyTranscriptCells(promotedLocalCells),
+            displayIsFormatted,
         );
     } catch (Exception exception) {
         throw new Exception(withCandidateSignatures(source, exception.msg));
