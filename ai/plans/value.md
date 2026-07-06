@@ -210,6 +210,14 @@ delegate, null-field, function-diagnostic, enum, and scalar displays keep their
 current contracts while the `long`/`ulong` struct-field fallback moves out of
 `Value.toString`.
 
+Progress 2026-07-06: the formatter gate now covers struct expression cells
+with function-pointer and delegate fields, so CTFE and Interpreter render null
+callable fields through the prelude instead of diverging through the interim
+`Value.toString` scaffolding (`Callbacks(7, null)`, `Handler(9, null)`). The
+prelude has a callable branch that renders null function pointers and delegates
+as `null`; the Interpreter preserves null through pointer/delegate casts needed
+by DMD's lowering.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

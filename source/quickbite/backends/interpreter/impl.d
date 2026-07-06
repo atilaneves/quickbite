@@ -4051,6 +4051,9 @@ private struct Walker {
         if (type.ty == TY.Tbool)
             return boolCastValue(cast_);
 
+        if (type.ty == TY.Tdelegate)
+            return delegateCastValue(cast_);
+
         if (isPointerType(type))
             return pointerCastValue(cast_);
 
@@ -4076,6 +4079,16 @@ private struct Walker {
             return Value(false);
 
         return backendCastValue(value, backendCastTarget(cast_.to));
+    }
+
+    private Value delegateCastValue(imported!"dmd.expression".CastExp cast_) {
+        import std.conv: text;
+
+        const value = runExpression(cast_.e1);
+        if (value == Value.null_ || value.isFunctionPointer)
+            return value;
+
+        throw new Exception(text("Unsupported eval expression: ", cast_.op));
     }
 
     private Value classCastValue(imported!"dmd.expression".CastExp cast_) {
@@ -4125,6 +4138,8 @@ private struct Walker {
             return arrayPointer(cast_.e1, 0, cast_.op);
 
         const value = runExpression(cast_.e1);
+        if (value == Value.null_)
+            return value;
         if (value.isPointer)
             return value;
 

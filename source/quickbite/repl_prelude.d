@@ -6,8 +6,8 @@ import std.traits: Unqual;
 
 public string __quickbiteFormat(T)(in T value) @safe pure {
     import std.conv: text;
-    import std.traits: isAssociativeArray, isDynamicArray, isStaticArray,
-        Unqual;
+    import std.traits: isAssociativeArray, isDelegate, isDynamicArray,
+        isFunctionPointer, isStaticArray, Unqual;
 
     alias U = Unqual!T;
 
@@ -32,6 +32,8 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
         return floatingDisplay(value);
     } else static if (is(U == real)) {
         return floatingDisplay(value) ~ "L";
+    } else static if (isFunctionPointer!U || isDelegate!U) {
+        return callableDisplay(value);
     } else static if (isAssociativeArray!U) {
         return assocArrayDisplay(value);
     } else static if (is(U == struct)) {
@@ -93,6 +95,12 @@ private string assocArrayDisplay(T)(in T value) @safe pure {
     }
     rendered ~= "]";
     return rendered;
+}
+
+private string callableDisplay(T)(in T value) @safe pure {
+    import std.conv: text;
+
+    return value is null ? "null" : text(value);
 }
 
 private string structDisplay(T)(in T value) @safe pure {
