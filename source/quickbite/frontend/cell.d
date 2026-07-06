@@ -364,6 +364,8 @@ private bool expressionReturnNeedsPreludeFormat(
                     return true;
                 case Tdelegate:
                     return true;
+                case Tarray, Tsarray:
+                    return arrayElementNeedsPreludeFormat(fieldType);
                 case Tpointer:
                     auto pointee = fieldType.nextOf;
                     if (
@@ -378,6 +380,21 @@ private bool expressionReturnNeedsPreludeFormat(
         }
 
     return false;
+}
+
+private bool arrayElementNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    auto elementType = type.nextOf;
+    if (elementType is null)
+        return false;
+
+    with (TY) switch (elementType.toBasetype.ty) {
+        case Tint64, Tuns64:
+            return true;
+        default:
+            return false;
+    }
 }
 
 private string[] withReplPreludeImportPath(in string[] importPaths) @safe pure {
