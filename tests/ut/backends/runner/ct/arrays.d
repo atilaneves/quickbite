@@ -1409,6 +1409,35 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.indexAssignmentWritesArrayStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Buffer {
+                char* data;
+
+                this(char[] storage) {
+                    data = storage.ptr;
+                }
+
+                void put(size_t index, char value) {
+                    data[index] = value;
+                }
+            }
+
+            unittest {
+                char[2] storage;
+                auto buffer = Buffer(storage[]);
+
+                buffer.put(1, 'x');
+
+                assert(storage[1] == 'x');
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported expression `rows.length`"), BytecodeNewCore
 // ("Unsupported type in bytecode core: int[][]"), and IR (unsupported nested
 // array literal) cannot run jagged arrays.
