@@ -3810,3 +3810,20 @@ Focused command:
 bin/ut $(bin/ut -l | \
     rg '^ut\\.backends\\.runner\\.ct\\.cerealed\\..*\\.BytecodeNewCore$')
 ```
+
+## repl.d Promotion Checkpoint (BytecodeNewCore)
+
+The existing `repl.backend.characterScalarDisplayCollapsesToCharLiteral`
+backend-matrix family now includes `BytecodeNewCore`. This was a stale
+coverage promotion from old `Bytecode`; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+characterScalarDisplayCollapsesToCharLiteral.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
