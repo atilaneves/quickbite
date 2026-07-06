@@ -9033,8 +9033,8 @@ private struct Compiler {
         // A non-string dynamic array `T[]` result is a 16-byte slice
         // descriptor; `elementType` gives the element size for indexing the
         // returned descriptor.
-        if (type.toBasetype.ty == TY.Tarray)
-            return ResultType(
+        if (type.toBasetype.ty == TY.Tarray) {
+            auto result = ResultType(
                 ScalarType.void_,
                 false,
                 true,
@@ -9049,6 +9049,9 @@ private struct Compiler {
                 null,
                 enumMembersByValue(type.toBasetype.nextOf),
             );
+            populateArrayElementStructDisplay(result, type);
+            return result;
+        }
 
         if (type.toBasetype.ty == TY.Tsarray && arrayElementIsString(type))
             return ResultType(
@@ -9109,6 +9112,30 @@ private struct Compiler {
 
         result.structName = typeChars(type);
         result.structFields = fields;
+    }
+
+    private void populateArrayElementStructDisplay(
+        ref ResultType result,
+        Type type,
+    ) {
+        import dmd.astenums: TY;
+
+        auto element = type.toBasetype.nextOf;
+        if (element.toBasetype.ty != TY.Tstruct)
+            return;
+
+        auto elementResult = ResultType(
+            ScalarType.void_, false, false, ScalarType.void_,
+            false, true, cast(uint) staticArraySize(element),
+        );
+        populateStructDisplay(elementResult, element);
+        if (elementResult.structName is null)
+            return;
+
+        result.arrayElementsAreStructs = true;
+        result.elementStructSize = elementResult.structSize;
+        result.elementStructName = elementResult.structName;
+        result.elementStructFields = elementResult.structFields;
     }
 
     private bool scalarStructDisplayType(Type type, out ScalarType scalar) {

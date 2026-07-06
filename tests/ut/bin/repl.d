@@ -1271,7 +1271,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 }
 
 // Bytecode and BytecodeNewCore do not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.arrayOfStructsRendersEachElement." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

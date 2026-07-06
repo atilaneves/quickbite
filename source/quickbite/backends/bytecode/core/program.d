@@ -71,6 +71,10 @@ package(quickbite.backends.bytecode) struct ResultType {
     string[ulong] elementEnumMembers;
     string structName;
     StructDisplayField[] structFields;
+    bool arrayElementsAreStructs;
+    uint elementStructSize;
+    string elementStructName;
+    StructDisplayField[] elementStructFields;
 
     static ResultType scalarResult(
         in ScalarType scalar,

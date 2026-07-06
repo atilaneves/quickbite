@@ -4074,3 +4074,20 @@ metadata in this slice. The existing
 `repl.backend.expressionCellsUsePreludeFormatter` and
 `repl.backend.structValueRendersTypeNameAndFields` rows now include
 `BytecodeNewCore`.
+
+The existing `repl.backend.arrayOfStructsRendersEachElement` backend-matrix
+family now includes `BytecodeNewCore`. This focused REPL promotion extends the
+simple-struct display slice to dynamic-array elements: result metadata records
+scalar-field display information for struct element types, and reification
+renders each element from its native-layout byte block.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+arrayOfStructsRendersEachElement.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
