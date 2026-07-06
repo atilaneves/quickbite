@@ -447,6 +447,21 @@ on the new core before the engine default flips.
   UTF-8, marks character array literals through shared DMD type helpers, treats
   array casts as transparent, and lowers DMD conditional expressions with
   branch control flow.
+- The first REPL oracle/promotion batch in `tests/ut/bin/repl.d` now adds
+  `SystemLinker` and `BytecodeNewCore` to eight already-existing old-Bytecode
+  baseline session/display blocks: `localDeclarationsCanRebindNames`,
+  `localRebindingPreservesInterveningReferences`,
+  `evaluatesExpressionCellsUntilQuit`, `skipsCommentOnlyLines`,
+  `evaluatesStandaloneMixinExpression`,
+  `lastValueBindingDisplaysLatestExpressionValue`,
+  `failedExpressionDoesNotAdvanceLastValueBinding`, and
+  `declarationCellsPersistWithoutDisplay`. This batch changed only backend
+  matrix tags; no REPL test behaviour or production code changed.
+  `SystemLinker` passed for the promoted block. `BytecodeNewCore` passes the
+  no-display declaration, comment-only, and standalone-mixin cases, and fails
+  the five expression-result/`it` cases because REPL emits declarations shaped
+  like `alias it = int __quickbite_repl_value_0 = ...;`, which the new core
+  currently rejects as an unsupported declaration.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/runner/ct/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
@@ -977,14 +992,53 @@ order 14). The first current REPL backend block that covers old `Bytecode`
 but not `BytecodeNewCore` is
 `repl.backend.localDeclarationsCanRebindNames`; its matrix is
 `AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`.
-No block in `tests/ut/bin/repl.d` currently includes `SystemLinker`, so REPL
-promotion is not oracle-backed under `ai/plans/single-oracle.md`.
+Before the first REPL oracle batch, no block in `tests/ut/bin/repl.d` included
+`SystemLinker`, so REPL promotion was not oracle-backed under
+`ai/plans/single-oracle.md`.
 
-Do not promote REPL tests to `BytecodeNewCore` until the project makes an
-explicit oracle decision for REPL. The next worker assignment is to decide how
-REPL behaviours should be oracle-backed: either add/promote equivalent
-`SystemLinker` REPL coverage first, or document why the REPL surface needs a
-separate oracle policy before new-core promotion.
+#### REPL continuation (next worker path to BytecodeNewCore)
+
+Original re-test status was explicit: `tests/ut/bin/repl.d` had **zero**
+blocks that included `SystemLinker`; no REPL block was `SystemLinker`-backed
+before this sequence.
+
+First batch status: eight old-Bytecode REPL baseline session/display blocks now
+include `SystemLinker` and `BytecodeNewCore`. This changed only matrix tags.
+`SystemLinker` is green for the block. `BytecodeNewCore` still needs support
+for the REPL-generated `alias it = int __quickbite_repl_value_0 = ...;`
+declaration form before the five expression-result/`it` cases are green. The
+next REPL batch should wait until this promoted failure mode is addressed.
+
+Next action is to continue adding `SystemLinker` tags in small batches after
+the first completed baseline session/display batch. Continue through the REPL
+baseline cohorts in this order: display surface, import surface, then session
+surface. Pause after each batch, run the expected `SystemLinker`-backed checks,
+then continue.
+
+Batch plan:
+1) Baseline `display`-surface REPL commands: status output shape, command
+rendering, command completion/error visibility.
+2) Baseline `import`-surface REPL commands: path handling, module
+resolution, and invalid-import diagnostics.
+3) Baseline `session`-surface REPL commands: start/shutdown flow, mutable
+state across commands, and reset/isolation semantics.
+
+Once oracle coverage exists for a block, promote that block to
+`AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)` on that same
+delivery. The explicit end state is to promote **all** REPL tests in
+`tests/ut/bin/repl.d` to `BytecodeNewCore`.
+
+Hard PR criterion: do not open a PR that contains a single REPL promotion
+iteration adding more than 200 lines of work; split into smaller PRs and keep
+each REPL-oracle/REPL-new-core tranche under that line budget.
+
+For each batch, capture whether the batch only changes matrix tags before
+adding `BytecodeNewCore` for that batch, and preserve this invariant in the
+plan notes to keep oracle provenance auditable.
+
+This path is the explicit oracle decision for this sequence. No batch should
+flip to `BytecodeNewCore` before its `SystemLinker` checks are passing for the
+same batch.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
