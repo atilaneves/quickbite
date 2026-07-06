@@ -298,6 +298,29 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.fieldConcatenationAssignment." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Writer {
+                ubyte[] bytes;
+            }
+
+            unittest {
+                Writer writer;
+                ubyte[] chunk = [cast(ubyte) 7, cast(ubyte) 42];
+
+                writer.bytes ~= chunk;
+
+                assert(writer.bytes.length == 2);
+                assert(writer.bytes[0] == 7);
+                assert(writer.bytes[1] == 42);
+            }
+        });
+    }
+}
+
 
 /++
     Slices.

@@ -997,6 +997,14 @@ private struct Walker {
         if (auto blit = expression.isBlitExp)
             return runAssignExpression(blit);
 
+        if (expression.op == EXP.concatenateAssign) {
+            auto assign = cast(imported!"dmd.expression".BinExp) expression;
+            if (assign is null)
+                assert(0);
+
+            return runArrayConcatenateAssignExpression(assign);
+        }
+
         if (expression.op == EXP.concatenateElemAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
@@ -3835,6 +3843,21 @@ private struct Walker {
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
         return locals[variable];
+    }
+
+    private Value runArrayConcatenateAssignExpression(
+        imported!"dmd.expression".BinExp assign,
+    ) {
+        if (assign.e1.isDotVarExp !is null) {
+            const concatenated = Value.arrayValue(
+                concatenationElements(assign.e1) ~
+                    concatenationElements(assign.e2),
+            );
+            writeLocation(assign.e1, concatenated);
+            return concatenated;
+        }
+
+        throw new Exception("Unsupported interpreter array concatenate target.");
     }
 
     private Value runIndexedArrayAppendAssignExpression(
