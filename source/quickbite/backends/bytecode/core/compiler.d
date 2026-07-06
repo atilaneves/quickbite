@@ -1610,6 +1610,12 @@ private struct Compiler {
             if (declaration.declaration.isFuncDeclaration !is null)
                 return Operand.init;
 
+            // A REPL expression cell emits a function-scope alias binding its
+            // display name (`it`) to the generated value declaration. Semantic
+            // has already resolved uses of the alias; it has no runtime work.
+            if (declaration.declaration.isAliasDeclaration !is null)
+                return Operand.init;
+
             throw new Exception(text(
                 "Unsupported declaration in bytecode core: ",
                 expressionChars(expression),

@@ -1004,10 +1004,11 @@ before this sequence.
 
 First batch status: eight old-Bytecode REPL baseline session/display blocks now
 include `SystemLinker` and `BytecodeNewCore`. This changed only matrix tags.
-`SystemLinker` is green for the block. `BytecodeNewCore` still needs support
-for the REPL-generated `alias it = int __quickbite_repl_value_0 = ...;`
-declaration form before the five expression-result/`it` cases are green. The
-next REPL batch should wait until this promoted failure mode is addressed.
+`SystemLinker` is green for the block. `BytecodeNewCore` now treats the
+REPL-generated `alias it = int __quickbite_repl_value_0 = ...;` declaration
+form as compile-time-only, so the five expression-result/`it` cases in that
+batch pass on the new core. The next REPL batch can proceed from this
+completed baseline.
 
 Next action is to continue adding `SystemLinker` tags in small batches after
 the first completed baseline session/display batch. Continue through the REPL
