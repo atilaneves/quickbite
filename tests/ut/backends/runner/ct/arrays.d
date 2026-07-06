@@ -269,6 +269,26 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.localConcatenationAssignment." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] values = [cast(ubyte) 1];
+                ubyte[] chunk = [cast(ubyte) 7, cast(ubyte) 42];
+
+                values ~= chunk;
+
+                assert(values.length == 3);
+                assert(values[0] == 1);
+                assert(values[1] == 7);
+                assert(values[2] == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("dynamicArray.elementConcatenatesWithArray." ~ backend.stringof)
     @Tags(backend.stringof)

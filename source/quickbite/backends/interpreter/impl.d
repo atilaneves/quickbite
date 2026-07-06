@@ -3857,6 +3857,21 @@ private struct Walker {
             return concatenated;
         }
 
+        if (auto var = assign.e1.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null)
+                throw new Exception(
+                    "Unsupported interpreter array concatenate target.",
+                );
+
+            const concatenated = Value.arrayValue(
+                concatenationElements(assign.e1) ~
+                    concatenationElements(assign.e2),
+            );
+            writeLocation(assign.e1, concatenated);
+            return concatenated;
+        }
+
         throw new Exception("Unsupported interpreter array concatenate target.");
     }
 
