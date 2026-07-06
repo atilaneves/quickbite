@@ -54,6 +54,7 @@ package(quickbite.backends.bytecode) struct ResultType {
     bool isString;
     bool isArray;
     ScalarType elementType;
+    bool arrayElementsAreArrays;
     bool isStruct;
     uint structSize;
     bool isUndisplayable;

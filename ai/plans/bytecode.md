@@ -1028,10 +1028,10 @@ switch; `Bytecode` still defaults to the old core):
   `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was a stale
   coverage gap: the focused promotion run passed unchanged because REPL import
   declarations already persist into later expression cells on the new-core
-  eval path. The adjacent display tests were tried and left unpromoted because
-  they still need non-trivial display/value work: delegate placeholders,
-  nested/static array literal display, wide-string suffix preservation, and
-  wide-character array rendering.
+  eval path. The adjacent display tests were tried next because they still
+  needed non-trivial display/value work: delegate placeholders, nested/static
+  array literal display, wide-string suffix preservation, and wide-character
+  array rendering.
 - `repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals` in
   `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was not stale:
   the focused promotion exposed that delegate-valued REPL expression results
@@ -1040,6 +1040,12 @@ switch; `Bytecode` still defaults to the old core):
   and delegate result types, so display-only function literals reify as the
   established `<undisplayable>` placeholder without adding general delegate
   execution support.
+- `repl.backend.displaysNestedArrayResults` in `tests/ut/bin/repl.d` now
+  covers `BytecodeNewCore`. This was not stale: the focused promotion exposed
+  that array-literal REPL expression results did not materialise dynamic-array
+  descriptors on the new core, and nested-array results needed heap roots plus
+  array-aware reification at the evaluator boundary. The new core now renders
+  nested scalar dynamic-array results such as `int[][]`.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -1085,18 +1091,18 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.failedBufferedDeclarationDoesNotPoisonSession`, and
 `repl.backend.commandsDoNotAbandonPendingInput`, and
 `repl.backend.importDeclarationsPersistWithoutDisplay`, and
-`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals`. The next
-current REPL backend blocks that cover old `Bytecode` but not
-`BytecodeNewCore` are the adjacent display tests:
-`repl.backend.displaysNestedArrayResults`,
+`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals`, and
+`repl.backend.displaysNestedArrayResults`. The next current REPL backend
+blocks that cover old `Bytecode` but not `BytecodeNewCore` are the adjacent
+display tests:
 `repl.backend.displaysStaticStringArrayResults`,
 `repl.backend.displaysNestedEmptyStringValues`,
 `repl.backend.displaysWideStringValues`, and
 `repl.backend.displaysWideCharacterArrayValues`. A focused promotion attempt
 showed these require production work beyond this small import slice: delegate
-placeholder display is now covered, while nested/static array display can hit
-unsupported array literals, some array-display cases currently produce no
-output, and wide-string display drops the `w`/`d` suffixes. No block in
+placeholder display and nested dynamic-array display are now covered, while
+static/string array display still needs result reification work and
+wide-string display drops the `w`/`d` suffixes. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the
 existing unit tests are enough to catch discrepancies while the REPL backend

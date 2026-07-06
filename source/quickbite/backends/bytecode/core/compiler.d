@@ -613,7 +613,9 @@ private struct Compiler {
 
         if (_currentReturnType.isArray) {
             result = arrayDescriptorOffset(
-                _currentReturnType.elementType, return_.exp,
+                _currentReturnType.elementType,
+                return_.exp,
+                _currentReturnType.arrayElementsAreArrays,
             );
             hasResult = true;
         } else if (_currentReturnType.isStruct) {
@@ -1453,6 +1455,9 @@ private struct Compiler {
 
         if (auto string_ = expression.isStringExp)
             return compileStringLiteral(string_);
+
+        if (auto array = expression.isArrayLiteralExp)
+            return compileArrayLiteralExpression(array);
 
         if (auto typeid_ = expression.isTypeidExp)
             return compileTypeidExpression(typeid_);
@@ -4461,12 +4466,13 @@ private struct Compiler {
     private ushort arrayDescriptorOffset(
         in ScalarType elementType,
         Expression source,
+        in bool elementIsArray = false,
     ) {
         if (auto descriptor = dynamicArrayDescriptorOrNull(source))
             return descriptor.offset;
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileDynamicArrayInto(offset, elementType, source);
+        compileDynamicArrayInto(offset, elementType, source, elementIsArray);
         return offset;
     }
 
@@ -9005,12 +9011,13 @@ private struct Compiler {
                 false,
                 true,
                 dynamicArrayElementType(type),
+                dynamicArrayElementIsArray(type),
             );
 
         if (type.toBasetype.ty == TY.Tsarray)
             return ResultType(
                 ScalarType.void_, false, false, ScalarType.void_,
-                true, cast(uint) staticArraySize(type),
+                false, true, cast(uint) staticArraySize(type),
             );
 
         // A by-value struct result is an inline block of `Type.size()` bytes,
@@ -9019,13 +9026,13 @@ private struct Compiler {
         if (type.toBasetype.ty == TY.Tstruct)
             return ResultType(
                 ScalarType.void_, false, false, ScalarType.void_,
-                true, cast(uint) staticArraySize(type),
+                false, true, cast(uint) staticArraySize(type),
             );
 
         if (isUndisplayableType(type))
             return ResultType(
                 ScalarType.void_, false, false, ScalarType.void_,
-                false, 0, true,
+                false, false, 0, true,
             );
 
         if (isPointerType(type))
@@ -9059,6 +9066,15 @@ private struct Compiler {
             element.toBasetype.ty == TY.Tsarray)
             return ScalarType.void_;
         return scalarType(element);
+    }
+
+    private Operand compileArrayLiteralExpression(ArrayLiteralExp array) {
+        const elementType = dynamicArrayElementType(array.type);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileDynamicArrayInto(
+            offset, elementType, array, dynamicArrayElementIsArray(array.type),
+        );
+        return Operand(offset, ScalarType.void_, false, false, elementType);
     }
 
     private uint dynamicArrayElementSize(
