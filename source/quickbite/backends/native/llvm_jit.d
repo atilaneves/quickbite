@@ -285,24 +285,18 @@ private void loadDependencyImage(in string dependencyImage) {
     }
 }
 
-// Emit the objects (shared codegen path, child emits, no link) and stand up an
-// LLJIT with them all added to the main JITDylib, plus a process-symbol
-// generator so druntime/phobos symbols resolve from the running bin/ut.
-private imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jitForObjects(
+// Emit the objects (shared codegen path, child emits, no link) and hand them
+// to the frontend-free ORC loader (orc.loader), which stands up an LLJIT with
+// them all added to the main JITDylib, plus a process-symbol generator so
+// druntime/phobos symbols resolve from the running bin/ut.
+private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
     imported!"dmd.dmodule".Module[] modules,
     in LLVMJitInputs inputs,
 ) {
     import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForLink;
-    import quickbite.backends.native.llvm_orc:
-        LLVMOrcCreateLLJIT,
-        LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess,
-        LLVMOrcDefinitionGeneratorRef,
-        LLVMOrcJITDylibAddGenerator,
-        LLVMOrcLLJITGetGlobalPrefix,
-        LLVMOrcLLJITGetMainJITDylib,
-        LLVMOrcLLJITRef;
     import quickbite.frontend.compiler: FrontendFlags;
     import quickbite.frontend.compiler: withCompilerLock;
+    import orc.loader: createJit;
     import core.atomic: atomicFetchAdd;
     import core.sys.posix.unistd: getpid;
     import std.conv: text;
@@ -314,8 +308,8 @@ private imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jitForObje
     const index = atomicFetchAdd(_jitCounter, 1u);
     const dir = buildPath(tempDir, text("quickbite_jit_", getpid, "_", index));
     mkdirRecurse(dir);
-    // The JIT reads the objects into memory buffers before we return, so the
-    // files can go as soon as they are added.
+    // The loader reads the objects into memory buffers before it returns, so
+    // the files can go as soon as it has.
     scope(exit) rmdirRecurse(dir);
 
     string[] objPaths;
@@ -330,267 +324,41 @@ private imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jitForObje
         );
     });
 
-    initialiseNativeTarget;
-
-    LLVMOrcLLJITRef jit;
-    // Null builder requests host defaults: on this host that is the JITLink
-    // ObjectLinkingLayer, whose EHFrameRegistrationPlugin calls
-    // __register_frame so thrown Throwables unwind into the host catch (see
-    // the gate in ai/plans/llvm-jit.md).
-    throwOnError(LLVMOrcCreateLLJIT(&jit, null), "LLVMOrcCreateLLJIT");
-
-    auto dylib = LLVMOrcLLJITGetMainJITDylib(jit);
-
-    LLVMOrcDefinitionGeneratorRef generator;
-    throwOnError(
-        LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(
-            &generator,
-            LLVMOrcLLJITGetGlobalPrefix(jit),
-            null,
-            null,
-        ),
-        "process-symbol generator",
-    );
-    LLVMOrcJITDylibAddGenerator(dylib, generator);
-
-    foreach (staticLibrary; inputs.staticLibraries)
-        addStaticLibraryGenerator(jit, dylib, staticLibrary);
-
-    foreach (objPath; objPaths)
-        addObjectFile(jit, dylib, objPath);
-
-    return jit;
-}
-
-private void addStaticLibraryGenerator(
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jit,
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcJITDylibRef dylib,
-    in string staticLibrary,
-) {
-    import quickbite.backends.native.llvm_orc:
-        LLVMOrcCreateStaticLibrarySearchGeneratorForPath,
-        LLVMOrcDefinitionGeneratorRef,
-        LLVMOrcJITDylibAddGenerator,
-        LLVMOrcLLJITGetObjLinkingLayer;
-    import std.conv: text;
-    import std.string: toStringz;
-
-    LLVMOrcDefinitionGeneratorRef generator;
-    throwOnError(
-        LLVMOrcCreateStaticLibrarySearchGeneratorForPath(
-            &generator,
-            LLVMOrcLLJITGetObjLinkingLayer(jit),
-            staticLibrary.toStringz,
-        ),
-        text("static library generator ", staticLibrary),
-    );
-    LLVMOrcJITDylibAddGenerator(dylib, generator);
-}
-
-// dmd emits many druntime/phobos template instances and TypeInfos into the rod
-// object as weak (COMDAT) definitions, and some of those bodies are degenerate
-// stubs (e.g. core.checkedint.mulu returns 0): the real bodies live in the
-// host's libphobos2.so. When dmd's .so is dlopen'd, ELF interposition makes
-// those calls bind to libphobos2's correct copies because the host is earlier
-// in the global symbol scope. ORC has no such interposition: a symbol the added
-// object defines (even weakly) is "resolved" within the JITDylib, so the
-// process-symbol generator — which only fills *unresolved* symbols — never
-// overrides it, and the broken stub runs. Replicate interposition by defining
-// the host's copy of every object symbol the running process already exports as
-// a weak absolute symbol *before* adding the object: ORC then discards the
-// object's weak definition in favour of ours, while a symbol unique to the
-// object (the unittest function, the module's own ModuleInfo) is not in the
-// host, so dlsym misses it and the object keeps providing it. Weak flags mean a
-// strong object definition, if any, still wins — exactly ELF semantics.
-private void defineHostSymbols(
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jit,
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcJITDylibRef dylib,
-    imported!"quickbite.backends.native.llvm_orc".LLVMMemoryBufferRef buffer,
-) {
-    import quickbite.backends.native.llvm_orc:
-        LLVMCreateBinary,
-        LLVMDisposeBinary,
-        LLVMDisposeSymbolIterator,
-        LLVMGetSymbolName,
-        LLVMJITEvaluatedSymbol,
-        LLVMJITSymbolFlags,
-        LLVMJITSymbolGenericFlags,
-        LLVMMoveToNextSymbol,
-        LLVMObjectFileCopySymbolIterator,
-        LLVMObjectFileIsSymbolIteratorAtEnd,
-        LLVMOrcAbsoluteSymbols,
-        LLVMOrcCSymbolMapPair,
-        LLVMOrcDisposeMaterializationUnit,
-        LLVMOrcExecutorAddress,
-        LLVMOrcJITDylibDefine,
-        LLVMOrcLLJITMangleAndIntern;
-    import core.sys.linux.dlfcn: RTLD_DEFAULT;
-    import core.sys.posix.dlfcn: dlsym;
-    import std.conv: text;
-    import std.string: fromStringz;
-
-    // The buffer stays owned by the caller (LLVMCreateBinary borrows it) and
-    // is later handed to AddObjectFile, so the binary must be disposed first.
-    char* binMessage;
-    auto binary = LLVMCreateBinary(buffer, null, &binMessage);
-    if (binary is null) {
-        const detail = binMessage is null ? "" : binMessage.fromStringz.idup;
-        throw new Exception(text("could not parse object: ", detail));
-    }
-    scope(exit) LLVMDisposeBinary(binary);
-
-    LLVMOrcCSymbolMapPair[] pairs;
-    auto iterator = LLVMObjectFileCopySymbolIterator(binary);
-    if (iterator !is null) {
-        scope(exit) LLVMDisposeSymbolIterator(iterator);
-        enum genericFlags = LLVMJITSymbolGenericFlags.exported
-            | LLVMJITSymbolGenericFlags.weak
-            | LLVMJITSymbolGenericFlags.callable;
-        for (; !LLVMObjectFileIsSymbolIteratorAtEnd(binary, iterator);
-                LLVMMoveToNextSymbol(iterator)) {
-            auto name = LLVMGetSymbolName(iterator);
-            if (name is null)
-                continue;
-            // RTLD_DEFAULT searches the global scope the loader built for
-            // bin/ut, i.e. libphobos2.so and friends; a hit is the host's
-            // definitive copy of this symbol.
-            auto hostAddress = dlsym(RTLD_DEFAULT, name);
-            if (hostAddress is null)
-                continue;
-            pairs ~= LLVMOrcCSymbolMapPair(
-                LLVMOrcLLJITMangleAndIntern(jit, name),
-                LLVMJITEvaluatedSymbol(
-                    cast(LLVMOrcExecutorAddress) hostAddress,
-                    LLVMJITSymbolFlags(cast(ubyte) genericFlags, 0),
-                ),
-            );
-        }
-    }
-
-    if (pairs.length == 0)
-        return;
-
-    auto unit = LLVMOrcAbsoluteSymbols(pairs.ptr, pairs.length);
-    if (auto err = LLVMOrcJITDylibDefine(dylib, unit)) {
-        // Define failed: the unit was not adopted, so dispose it. The names it
-        // holds are released with it; ours were already consumed by the unit.
-        LLVMOrcDisposeMaterializationUnit(unit);
-        throwOnError(err, "defining host symbols");
-    }
-    // On success the dylib owns the unit and the names; nothing to free here
-    // (LLVMOrcAbsoluteSymbols consumed each interned name's reference).
-}
-
-// LLJIT can only build for the host triple once the host target, its
-// code-generator MC layer and asm printer are registered. Idempotent and
-// process-wide, so do it once.
-private void initialiseNativeTarget() {
-    import quickbite.backends.native.llvm_orc:
-        LLVMInitializeX86AsmPrinter,
-        LLVMInitializeX86Target,
-        LLVMInitializeX86TargetInfo,
-        LLVMInitializeX86TargetMC;
-
-    if (_nativeTargetInitialised)
-        return;
-    _nativeTargetInitialised = true;
-
-    LLVMInitializeX86TargetInfo();
-    LLVMInitializeX86Target();
-    LLVMInitializeX86TargetMC();
-    LLVMInitializeX86AsmPrinter();
-}
-
-private void addObjectFile(
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jit,
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcJITDylibRef dylib,
-    in string objPath,
-) {
-    import quickbite.backends.native.elf: normalizeDuplicateUndefinedGlobalsInFile;
-    import quickbite.backends.native.llvm_orc:
-        LLVMCreateMemoryBufferWithContentsOfFile,
-        LLVMMemoryBufferRef,
-        LLVMOrcLLJITAddObjectFile;
-    import std.conv: text;
-    import std.string: fromStringz, toStringz;
-
-    normalizeDuplicateUndefinedGlobalsInFile(objPath);
-
-    LLVMMemoryBufferRef buffer;
-    char* message;
-    if (LLVMCreateMemoryBufferWithContentsOfFile(objPath.toStringz, &buffer, &message) != 0) {
-        const detail = message is null ? "" : message.fromStringz.idup;
-        throw new Exception(text("could not read object file ", objPath, ": ", detail));
-    }
-    // Inject the host's copies of the object's weak druntime/phobos symbols
-    // before adding it, so ORC binds calls to libphobos2 rather than to the
-    // object's (sometimes degenerate) weak COMDAT bodies. This borrows the
-    // buffer; AddObjectFile below consumes it.
-    defineHostSymbols(jit, dylib, buffer);
-    // AddObjectFile takes ownership of the buffer even on failure.
-    throwOnError(
-        LLVMOrcLLJITAddObjectFile(jit, dylib, buffer),
-        text("AddObjectFile ", objPath),
-    );
+    return createJit(objPaths, inputs.staticLibraries);
 }
 
 private imported!"quickbite.backends.runner".TestResult runUnitTest(
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jit,
+    imported!"orc.bindings".LLVMOrcLLJITRef jit,
     imported!"dmd.declaration".UnitTestDeclaration unitTest,
 ) {
-    import quickbite.backends.native.llvm_orc:
-        LLVMOrcExecutorAddress,
-        LLVMOrcLLJITLookup;
     import quickbite.backends.runner: TestResult;
+    import orc.loader: runSymbol;
     import dmd.mangle: mangleExact;
     import std.string: fromStringz;
 
-    // On Linux x86-64 ELF the global prefix is empty, so the lookup name is the
-    // dmd mangled name as-is, exactly what SystemLinker passes to dlsym.
-    LLVMOrcExecutorAddress address;
-    throwOnError(
-        LLVMOrcLLJITLookup(jit, &address, mangleExact(unitTest)),
-        "lookup of " ~ mangleExact(unitTest).fromStringz.idup,
-    );
+    const run = runSymbol(jit, mangleExact(unitTest).fromStringz);
 
-    auto test = cast(void function()) address;
-
-    auto result = TestResult(
-        true,
+    return TestResult(
+        run.passed,
         unitTest.ident.toChars.fromStringz.idup,
         unitTest.loc.toChars.fromStringz.idup,
-        "",
+        run.message,
     );
-
-    try
-        test();
-    catch (Throwable throwable) { // assert failures are Errors, not Exceptions
-        result.passed = false;
-        result.message = throwable.msg.idup;
-    }
-
-    return result;
 }
 
 private imported!"quickbite.backends.evaluator".EvalResult evalCompiledFunction(
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jit,
+    imported!"orc.bindings".LLVMOrcLLJITRef jit,
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     import quickbite.backends.native.evaluator: callNativeFunction, evalNativeFunction;
-    import quickbite.backends.native.llvm_orc:
-        LLVMOrcExecutorAddress,
-        LLVMOrcLLJITLookup;
+    import orc.loader: symbolAddress;
     import dmd.mangle: mangleExact;
     import std.string: fromStringz;
 
-    LLVMOrcExecutorAddress address;
-    throwOnError(
-        LLVMOrcLLJITLookup(jit, &address, mangleExact(function_)),
-        "lookup of " ~ mangleExact(function_).fromStringz.idup,
-    );
+    auto address = symbolAddress(jit, mangleExact(function_).fromStringz);
 
     return evalNativeFunction(
-        () => callNativeFunction(cast(void*) address, function_),
+        () => callNativeFunction(address, function_),
         function_,
     );
 }
@@ -701,27 +469,4 @@ private ubyte readByte(const(ubyte)[] data, ref size_t pos) {
     return data[pos++];
 }
 
-// An LLVMErrorRef is null on success; on failure it carries a message that
-// LLVMGetErrorMessage consumes (frees), so the message must be copied first.
-private void throwOnError(
-    imported!"quickbite.backends.native.llvm_orc".LLVMErrorRef err,
-    in string what,
-) {
-    import quickbite.backends.native.llvm_orc:
-        LLVMDisposeErrorMessage,
-        LLVMGetErrorMessage;
-    import std.conv: text;
-    import std.string: fromStringz;
-
-    if (err is null)
-        return;
-
-    auto raw = LLVMGetErrorMessage(err);
-    const message = raw is null ? "" : raw.fromStringz.idup;
-    if (raw !is null)
-        LLVMDisposeErrorMessage(raw);
-    throw new Exception(text(what, " failed: ", message));
-}
-
 private __gshared uint _jitCounter;
-private __gshared bool _nativeTargetInitialised;

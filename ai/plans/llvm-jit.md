@@ -728,6 +728,18 @@ automatically once the runner is constructed.
 - **Timing comparability**: both native rows now include executor spawn; note
   it in `bench.md` when flipping the Phase 2′ clause so nobody reads the LDC
   rows as pure link cost.
+- **eh_frame Delta32 range** (pre-existing, found during slice 2): a rare
+  `bin/ut --random` flake — JITLink rejects the object with "section
+  .eh_frame: relocation target (DW.ref.__dmd_personality_v0) is out of range
+  of Delta32 fixup" when the interposed host copy of that symbol lands more
+  than 2 GiB from the JIT allocation. Address-space roulette, not
+  order-determinism: seed 660421069 failed once and passed on same-seed
+  re-run; master fails the same way (~1 in 5 runs either side of the slice-2
+  refactor, always `staticArrayCopyRunsPostblitAndDtors.LLVMJit` so far).
+  Likely fix when it graduates from flake to blocker: exclude `DW.ref.*`
+  from host-symbol interposition so the fixup targets the object's own
+  adjacent indirection cell (which itself points at the host personality via
+  a 64-bit relocation).
 
 ## Non-goals
 
