@@ -4041,3 +4041,20 @@ bin/ut "$test_name"
 ```
 
 Result: 1 test run, 0 failed.
+
+The coherent Phobos/range REPL block was attempted on `BytecodeNewCore` and
+left unpromoted:
+`repl.backend.importStdExposesPhobosSymbols`,
+`repl.backend.displaysFiniteRangeResults`, and
+`repl.backend.displaysFilteredArrayResults`. The red promotion confirms the
+range/ref-argument gap is still real. `importStdExposesPhobosSymbols` fails in
+the bytecode REPL path with `Unsupported ref argument in bytecode core:
+result[cnt]`, `displaysFilteredArrayResults` fails with `Unsupported type in
+bytecode core: Result`, and `displaysFiniteRangeResults` produces no display
+output instead of `MapResult([1, 2, 3])`.
+
+The smaller associative-array display REPL block was also attempted on
+`BytecodeNewCore` and left unpromoted:
+`repl.backend.displaysAssocArrayResults`. The red promotion shows that the
+backend currently reifies/displays only the first key as `1UL`, producing
+`["1UL"]` instead of the oracle output `["[1:10, 2:20]"]`.
