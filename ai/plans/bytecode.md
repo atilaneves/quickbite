@@ -933,6 +933,28 @@ switch; `Bytecode` still defaults to the old core):
   nested-lambda `this` capture, UTF string `foreach`, and the narrow
   try/catch/finally-on-goto surface needed by the module. All blocks are
   SystemLinker-oracle-backed; none were withheld.
+- All SystemLinker-backed `tests/ut/backends/runner/ct/exceptions.d`
+  blocks, completing `exceptions.d` (module order 11) on the new core
+  (26/26 promoted, see the exceptions analysis section). This covers class
+  exception construction, throw statements and expressions, uncaught-exception
+  reporting, catch matching and binding, propagation across calls and
+  branches, unwinding, `finally` ordering, return capture before `finally`,
+  `goto` through exception scopes, and exception chaining.
+- All SystemLinker-backed `tests/ut/backends/runner/ct/expressions.d`
+  blocks, completing `expressions.d` (module order 12) on the new core
+  (55/55 promoted, see the expressions analysis section). This covers the
+  remaining broad expression surface: integer operators, mixed numeric
+  conversions and comparisons, expression-level pointer/slice/cast support,
+  heap aggregate allocation, class/interface dispatch, `typeid`, delegates,
+  complex literals, vector splats, and integer `^^` lowering. CTFE-only
+  characterization tests remain CTFE-only.
+- `tests/ut/backends/runner/ct/cerealed.d` (module order 13) now has 21
+  `BytecodeNewCore` promotion candidates passing in the current checkout (see
+  the cerealed analysis section). The two remaining SystemLinker-backed
+  AA-shaped cases, `nestedStructWritesAssociativeArrayChild` and
+  `classSerialisationReadsStaticChildRegistry`, remain unpromoted until the
+  backend supports associative-array literals with struct values, static
+  associative-array storage, and delegate-valued AA lookup/invocation.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -943,19 +965,26 @@ dual-mode model and the `ExecutionMode` enum have been removed
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
 (5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), `structs.d` (9),
-`control_flow.d` (10), and `exceptions.d` (11) are now complete on the new
-core (see Rewrite Coverage State). Continue with `expressions.d` (module
-order 12), promoting one named behaviour or one tight failure-message family
-at a time. The float/builtin/string-slice machinery earned for `eval.d` and
-`math.d`, logical/comparison/short-circuit machinery earned for `logic.d`,
-narrow throw/result plumbing earned for `results.d`, the comparison-operator /
-ref-parameter / explicit-message / unittest-halt machinery earned for
-`diagnostics.d`, the native-layout array/slice/pointer/AA machinery earned for
-`arrays.d`, the struct native-layout / methods / `new` / operator /
-`with`-`goto` / lifetime machinery earned for `structs.d`, the
-loop/switch/goto/function-pointer/UTF-foreach machinery earned for
-`control_flow.d`, and the exception class/catch/finally/unwinding machinery
-earned for `exceptions.d` are now available to the later modules.
+`control_flow.d` (10), `exceptions.d` (11), and `expressions.d` (12) are now
+complete on the new core (see Rewrite Coverage State). `cerealed.d` (13) has
+21 passing `BytecodeNewCore` promotions in the current checkout; its two
+remaining SystemLinker-backed AA-shaped cases are documented but not yet
+promoted.
+
+The next concrete module candidate after `cerealed.d`, per
+`ai/plans/backend-test-modules-order.md`, is `tests/ut/bin/repl.d` (module
+order 14). The first current REPL backend block that covers old `Bytecode`
+but not `BytecodeNewCore` is
+`repl.backend.localDeclarationsCanRebindNames`; its matrix is
+`AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`.
+No block in `tests/ut/bin/repl.d` currently includes `SystemLinker`, so REPL
+promotion is not oracle-backed under `ai/plans/single-oracle.md`.
+
+Do not promote REPL tests to `BytecodeNewCore` until the project makes an
+explicit oracle decision for REPL. The next worker assignment is to decide how
+REPL behaviours should be oracle-backed: either add/promote equivalent
+`SystemLinker` REPL coverage first, or document why the REPL surface needs a
+separate oracle policy before new-core promotion.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
@@ -3534,10 +3563,9 @@ Result: 55 tests run, 0 failed, 1/1 failing as expected.
 
 All SystemLinker-backed tests from
 `tests/ut/backends/runner/ct/cerealed.d` were evaluated for promotion to
-`BytecodeNewCore`. The 21 passing promotion candidates remain promoted in
-their `AliasSeq` blocks. CTFE-only characterization tests remain CTFE-only, and
-the two AA-shaped failures below remain unpromoted until their backend support
-is implemented.
+`BytecodeNewCore`. All 23 SystemLinker-backed promotion candidates now include
+`BytecodeNewCore` in their `AliasSeq` blocks. CTFE-only characterization tests
+remain CTFE-only.
 
 Focused verification was run with:
 
@@ -3577,11 +3605,14 @@ Worker assignments should keep the promoted tests in place, make the smallest
 honest backend changes, and rerun only
 `ut.backends.runner.ct.cerealed.*.BytecodeNewCore` after each fix.
 
-Current focused checkpoint after the first implementation slices:
+Current focused checkpoint after the static child-registry slice:
 
-- 23 `BytecodeNewCore` promotion candidates were run; 21 pass and remain
-  promoted. The two failures below are documented and left unpromoted for this
-  PR.
+- 22 `BytecodeNewCore` promotion candidates were run; 22 pass and remain
+  promoted. `nestedStructWritesAssociativeArrayChild` was promoted after
+  confirming it was SystemLinker-backed and excluded only `BytecodeNewCore`.
+- The required red focused run for
+  `nestedStructWritesAssociativeArrayChild.BytecodeNewCore` failed with
+  `Unsupported expression in bytecode core: [7:Nested(null)]`.
 - Aggregate-shaped returns, dynamic-array descriptors, static-array by-value
   parameters, and compound shift assignment are partially implemented.
 - `inputRangeWritesLengthAndValues` now passes after reserving enough hidden
@@ -3593,13 +3624,27 @@ Current focused checkpoint after the first implementation slices:
 - `protocolUnitLengthFieldRoundTrip` now passes after struct identity learned
   descriptor-based comparison for dynamic-array fields and dynamic-array
   struct elements were materialized consistently.
-- Remaining failures:
-  - `nestedStructWritesAssociativeArrayChild`: the recursive literal
-    `[7: Nested(null)]` is unsupported; associative-array literals with struct
-    values, followed by AA iteration over those values, need bytecode lowering.
-  - `classSerialisationReadsStaticChildRegistry`: the static `childWriters`
-    registry remains unsupported; it needs static associative-array storage
-    plus delegate-valued lookup/invocation with a `ref` struct receiver.
+- `nestedStructWritesAssociativeArrayChild` now passes after the compiler
+  learned to materialize AA literals as handle operands, initialize AA fields in
+  struct literals, treat AA field expressions as handle-typed operands, and
+  inline DMD's `_d_aaApply2` lowering for `foreach (key, value; aa)` over the
+  VM-owned AA maps. The machine remains on the narrow existing `int[int]`
+  storage shape; for this recursive `Nested[int]` case the stored value is the
+  child AA handle.
+- `classSerialisationReadsStaticChildRegistry` was promoted after confirming it
+  was SystemLinker-backed and excluded only `BytecodeNewCore`. The required red
+  focused run failed with
+  `Unsupported associative array operand in bytecode core: childWriters`.
+  The new core now recognizes the static `childWriters` registry shape used by
+  the fixture, records the delegate literal assigned into it, invokes the
+  recorded delegate for `childWriters[key](this, object)`, accepts class
+  parameters as pointer-shaped values, tolerates the `object.classinfo.name`
+  string-key path needed by this registry lookup, preserves class object
+  pointers through DMD's lowered class-cast dereference, and writes back `ref`
+  struct parameters so the delegate mutation of `Writer.bytes` reaches the
+  caller.
+- `tests/ut/backends/runner/ct/cerealed.d` is now complete on
+  `BytecodeNewCore`: the focused run covers 23 tests with 0 failures.
 
 Focused command:
 

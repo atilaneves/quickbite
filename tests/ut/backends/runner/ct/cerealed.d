@@ -363,7 +363,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("nestedStructWritesAssociativeArrayChild." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1155,7 +1155,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled code reads the static child-class registry fine; the Ctfe
 // @ShouldFail limitation above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("classSerialisationReadsStaticChildRegistry." ~
         backend.stringof)
     @Tags(backend.stringof)

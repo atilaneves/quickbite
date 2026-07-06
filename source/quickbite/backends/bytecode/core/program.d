@@ -411,10 +411,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // unconditional abort throwing the "unittest failure" message, for a
     // literal-false assert lexically inside a unittest body
     haltUnittest,
-    // Associative-array hooks operating on VM-owned `int[int]` maps. A `T[K]`
-    // local's 8-byte slot holds a `size_t` handle: a 1-based index into the
-    // machine's map table, or 0 for a not-yet-created (empty) map. The map table
-    // is rooted by the machine, keeping every entry's keys/values alive.
+    // Associative-array hooks operating on VM-owned maps. A `T[K]` local's
+    // 8-byte slot holds a `size_t` handle: a 1-based index into the machine's
+    // map table, or 0 for a not-yet-created (empty) map. The current map table
+    // stores int keys and int-sized values; wider `aaValues` elements are
+    // zero-extended when materialised for narrow struct-handle cases.
     aaNew, // a: handle slot; create a fresh empty map and write its handle
     aaLength, // a: size_t result, b: handle slot; entry count (0 if handle 0)
     // a: handle slot, b: key slot, c: value slot; insert/overwrite. Creates the
@@ -432,8 +433,8 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: bool result, b: handle slot, c: handle slot; entry-set equality.
     aaEqual,
     aaDup, // a: handle slot result, b: handle slot; an independent copy
-    // a: 16-byte slice-descriptor result, b: handle slot; a fresh heap block (an
-    // `int[]`) holding a copy of the map's keys / values.
+    // a: 16-byte slice-descriptor result, b: handle slot, c: element byte size;
+    // a fresh heap block holding a copy of the map's keys / values.
     aaKeys,
     aaValues,
     // a: frame offset of a string-slice descriptor, b: thrown exception-class
