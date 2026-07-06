@@ -737,7 +737,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.numericScalarDisplayUsesDLiteralSuffixes." ~ backend.stringof)
     unittest {
@@ -841,7 +841,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runLoadedUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -854,7 +854,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid." ~ backend.stringof)
     unittest {
@@ -866,7 +866,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.loadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -883,7 +883,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.laterLoadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -902,7 +902,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
     unittest {
@@ -931,7 +931,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -944,7 +944,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.loadedSourceDoesNotAdvanceTypedReplLocations." ~
         backend.stringof)
@@ -963,7 +963,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.loadedFileUnittestFailuresReportFileLocation." ~
         backend.stringof)
@@ -998,7 +998,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.loadModuleFileErrorsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -1081,7 +1081,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.runtimeErrorsReportOneDiagnostic." ~ backend.stringof)
     unittest {
@@ -1119,7 +1119,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -1136,7 +1136,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.failedModuleNoDisplayCellsDoNotPoisonSession." ~ backend.stringof)
     unittest {
@@ -1155,7 +1155,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.syntaxErrorsHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -1171,7 +1171,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.diagnosticsHideSyntheticWrapperNames." ~ backend.stringof)
     unittest {
@@ -1186,7 +1186,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.functionCallMismatchShowsCandidateSignature." ~ backend.stringof)
     unittest {
@@ -1204,7 +1204,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.functionCallMismatchShowsOverloadSignatures." ~ backend.stringof)
     unittest {
@@ -1225,7 +1225,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.structValueRendersTypeNameAndFields." ~ backend.stringof)
     unittest {
@@ -1246,7 +1246,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.arrayOfStructsRendersEachElement." ~ backend.stringof)
     unittest {
@@ -1268,7 +1268,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 }
 
 // The Interpreter keeps the null field (`Callbacks(7, null)`) instead of
-// omitting it; Bytecode reports struct literals as an unsupported expression.
+// omitting it; BytecodeNewCore does not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("repl.backend.nullFunctionPointerFieldIsOmitted." ~ backend.stringof)
     unittest {
@@ -1289,7 +1289,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // The Interpreter keeps the null field (`Handler(9, null)`) instead of
-// omitting it; Bytecode reports struct literals as an unsupported expression.
+// omitting it; BytecodeNewCore does not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("repl.backend.nullDelegateFieldIsOmitted." ~ backend.stringof)
     unittest {
@@ -1309,7 +1309,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.nullClassFieldRendersAsNull." ~ backend.stringof)
     unittest {
@@ -1329,7 +1329,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.nullPointerFieldRendersAsNull." ~ backend.stringof)
     unittest {
@@ -1349,7 +1349,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.nestedStructOmitsSyntheticContextField." ~ backend.stringof)
     unittest {
@@ -1371,7 +1371,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode reports struct literals as an unsupported expression.
+// Bytecode and BytecodeNewCore do not yet reify struct/AA results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.assocArrayWithStructValuesRendersEntries." ~ backend.stringof)
     unittest {

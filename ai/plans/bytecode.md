@@ -3828,6 +3828,65 @@ bin/ut "$test_name"
 
 Result: 1 test run, 0 failed.
 
+All remaining narrow `tests/ut/bin/repl.d` backend rows were attempted on
+`BytecodeNewCore` in one sweep. The passing promotions retained in the matrix
+are:
+
+- `numericScalarDisplayUsesDLiteralSuffixes`
+- `runLoadedUnittestBlocks`
+- `runLoadedTestsWithNothingLoadedReturnsVoid`
+- `loadedUnittestFailuresReportReplLocation`
+- `laterLoadedUnittestFailuresReportReplLocation`
+- `runLoadedTestsReportsEveryFailedUnittest`
+- `runLoadedFileUnittestBlocks`
+- `loadedSourceDoesNotAdvanceTypedReplLocations`
+- `loadedFileUnittestFailuresReportFileLocation`
+- `loadModuleFileErrorsHideSyntheticNames`
+- `runtimeErrorsReportOneDiagnostic`
+- `duplicateDeclarationsHideSyntheticNames`
+- `failedModuleNoDisplayCellsDoNotPoisonSession`
+- `syntaxErrorsHideWrapperInternals`
+- `diagnosticsHideSyntheticWrapperNames`
+- `functionCallMismatchShowsCandidateSignature`
+- `functionCallMismatchShowsOverloadSignatures`
+
+No production changes were needed. The focused `BytecodeNewCore` REPL run now
+covers 50 tests:
+
+```sh
+ninja bin/ut
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.bin\\.repl\\..*\\.BytecodeNewCore$')
+```
+
+Result: 50 tests run, 0 failed.
+
+The full attempted sweep initially ran 67 `BytecodeNewCore` REPL tests and
+exposed 17 failures. These were investigated and left unpromoted because they
+require broader backend work:
+
+- `moduleLevelVariablesAreVisibleToFunctions` fails on assignment to a
+  module-level variable (`Unsupported assignment in bytecode core`).
+- `importStdExposesPhobosSymbols`, `displaysFiniteRangeResults`, and
+  `displaysFilteredArrayResults` require broader Phobos range/ref-argument
+  support.
+- `displaysAssocArrayResults` and `assocArrayWithStructValuesRendersEntries`
+  need associative-array result reification for display.
+- `displaysEnumValues` currently reifies enum values as their underlying
+  integers, not qualified enum member names.
+- `expressionCtfeErrorsReportDiagnostics` expects the CTFE/Interpreter
+  bounds diagnostic; `BytecodeNewCore` reports the VM bounds diagnostic.
+- `runtimeOnlyCellsUseResidentNativeCalls` and
+  `runtimeOnlyFileOpenReportsNativeBoundary` are Interpreter-native-boundary
+  behaviours; `BytecodeNewCore` still reports missing CTFE/native support in
+  this REPL path.
+- The struct display family (`structValueRendersTypeNameAndFields`,
+  `arrayOfStructsRendersEachElement`, `nullFunctionPointerFieldIsOmitted`,
+  `nullDelegateFieldIsOmitted`, `nullClassFieldRendersAsNull`,
+  `nullPointerFieldRendersAsNull`, `nestedStructOmitsSyntheticContextField`)
+  needs richer struct result metadata/reification before the display renderer
+  can produce field-level output.
+
 The existing `repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`
 backend-matrix family now includes `BytecodeNewCore`. This was the adjacent
 stale scalar-display promotion from old `Bytecode`; no production changes were
@@ -3839,6 +3898,22 @@ Focused verification was run with:
 ninja bin/ut
 test_name=ut.bin.repl.repl.backend.\
 wholeFloatingScalarDisplayKeepsDecimalPoint.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid`
+backend-matrix family now includes `BytecodeNewCore`. This was the next narrow
+REPL test-command promotion after no-display cells; no production changes were
+needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+runLoadedTestsWithNothingLoadedReturnsVoid.BytecodeNewCore
 bin/ut "$test_name"
 ```
 
