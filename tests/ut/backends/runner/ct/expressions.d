@@ -1296,6 +1296,26 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("struct.defaultInitPreservesExplicitFieldInitializers." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Header {
+                ubyte tag = 7;
+                int code = 42;
+            }
+
+            unittest {
+                auto header = Header.init;
+
+                assert(header.tag == 7);
+                assert(header.code == 42);
+            }
+        });
+    }
+}
+
 // Resizing a dynamic-array field through a struct pointer
 // (`_data.arr.length = n`) must rebuild the array with default-initialised
 // elements; the lvalue is a field access, not a plain local.  cerealed's

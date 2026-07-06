@@ -10,57 +10,179 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     in ubyte[] bytes,
     in imported!"quickbite.backends.bytecode.core.program".ResultType type,
     in ubyte[] data,
+    in ubyte[][] heap,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program: ResultType;
     import quickbite.lang: Value;
 
+    if (type.isUndisplayable)
+        return Value.undisplayable;
+
     if (type.isString) {
         const offset = scalar!uint(bytes);
         const length = scalar!uint(bytes[uint.sizeof .. $]);
-        return Value.stringValue(cast(const(char)[]) data[offset .. offset + length]);
+        return reifyString(data[offset .. offset + length], type.elementType);
     }
 
-    if (type.isArray || type.isStaticArray)
-        return reifyArray(bytes, type, data);
+    if (type.isArray)
+        return reifyArray(bytes, type, data, heap);
 
     return reifyScalar(bytes, type.scalar);
 }
 
 private imported!"quickbite.lang".Value reifyArray(
     in ubyte[] bytes,
-    imported!"quickbite.backends.bytecode.core.program".ResultType type,
+    in imported!"quickbite.backends.bytecode.core.program".ResultType type,
     in ubyte[] data,
+    in ubyte[][] heap,
 ) @safe pure {
+    import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
     import quickbite.lang: Value;
 
-    Value[] elements;
     const length = type.isStaticArray
         ? type.arrayLength
         : scalar!size_t(bytes[size_t.sizeof .. $]);
+    auto block = type.isStaticArray
+        ? bytes
+        : heapBlock(scalar!size_t(bytes), heap);
+    if (!type.arrayElementsAreArrays && isCharacter(type.elementType))
+        return reifyCharacterArray(block, length, type.elementType);
+
+    Value[] elements;
     foreach (index; 0 .. length) {
-        const elementBytes = type.isStaticArray
-            ? bytes[
-                index * type.arrayElementSize
-                .. (index + 1) * type.arrayElementSize
-            ]
-            : dynamicArrayElementBytes(bytes, index, type.arrayElementSize);
-        if (type.arrayElementIsString) {
-            const offset = scalar!uint(elementBytes);
-            const stringLength = scalar!uint(elementBytes[uint.sizeof .. $]);
-            elements ~= Value.stringValue(
-                cast(const(char)[]) data[offset .. offset + stringLength],
+        const offset = index * (type.arrayElementsAreArrays ||
+            type.arrayElementsAreStrings
+            ? sliceDescriptorSize
+            : size(type.elementType));
+        if (type.arrayElementsAreStrings) {
+            elements ~= reifyStringDescriptor(
+                block[offset .. offset + sliceDescriptorSize],
+                type.elementType,
+                data,
+                index,
+                length,
             );
-        } else if (type.arrayElementIsArray) {
-            auto innerType = type;
-            innerType.isStaticArray = false;
-            innerType.isArray = true;
-            innerType.arrayElementSize = scalarSize(type.elementType);
-            innerType.arrayElementIsArray = false;
-            elements ~= reifyArray(elementBytes, innerType, data);
-        } else
-            elements ~= reifyScalar(elementBytes, type.elementType);
+        } else {
+            elements ~= type.arrayElementsAreArrays
+                ? reifyArray(
+                    block[offset .. offset + sliceDescriptorSize],
+                    type.withScalarArrayElements,
+                    data,
+                    heap,
+                )
+                : reifyScalar(
+                    block[offset .. offset + size(type.elementType)],
+                    type.elementType,
+                );
+        }
     }
     return Value.arrayValue(elements);
+}
+
+private imported!"quickbite.backends.bytecode.core.program".ResultType
+withScalarArrayElements(
+    in imported!"quickbite.backends.bytecode.core.program".ResultType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program:
+        ResultType, ScalarType;
+
+    return ResultType(
+        ScalarType.void_, false, true, type.elementType, false,
+    );
+}
+
+private imported!"quickbite.lang".Value reifyString(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+    import quickbite.lang: Value;
+
+    const chars = cast(const(char)[]) bytes;
+    final switch (type) with (ScalarType) {
+        case char_:
+            return Value.stringValue(chars);
+        case wchar_:
+            wchar[] values;
+            foreach (dchar value; chars)
+                values ~= cast(wchar) value;
+            return Value.stringValue(values);
+        case dchar_:
+            dchar[] values;
+            foreach (dchar value; chars)
+                values ~= value;
+            return Value.stringValue(values);
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, float_, double_, real_:
+            return Value.stringValue(chars);
+    }
+}
+
+private imported!"quickbite.lang".Value reifyStringDescriptor(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+    in ubyte[] data,
+    in size_t index,
+    in size_t arrayLength,
+) @safe pure {
+    const offset = scalar!uint(bytes);
+    const length = scalar!uint(bytes[uint.sizeof .. $]);
+    if ((offset + length > data.length || length == 0) &&
+        data.length == arrayLength)
+    {
+        return reifyString(data[index .. index + 1], type);
+    }
+    return reifyString(data[offset .. offset + length], type);
+}
+
+private imported!"quickbite.lang".Value reifyCharacterArray(
+    in ubyte[] bytes,
+    in size_t length,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+    import quickbite.lang: Value;
+
+    final switch (type) with (ScalarType) {
+        case char_:
+            char[] values;
+            foreach (index; 0 .. length)
+                values ~= scalar!char(bytes[index .. index + char.sizeof]);
+            return Value.stringValue(values);
+        case wchar_:
+            wchar[] values;
+            foreach (index; 0 .. length) {
+                const offset = index * wchar.sizeof;
+                values ~= scalar!wchar(bytes[offset .. offset + wchar.sizeof]);
+            }
+            return Value.stringValue(values);
+        case dchar_:
+            dchar[] values;
+            foreach (index; 0 .. length) {
+                const offset = index * dchar.sizeof;
+                values ~= scalar!dchar(bytes[offset .. offset + dchar.sizeof]);
+            }
+            return Value.stringValue(values);
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, float_, double_, real_:
+            return Value.arrayValue([]);
+    }
+}
+
+private bool isCharacter(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case char_:
+        case wchar_:
+        case dchar_:
+            return true;
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, float_, double_, real_:
+            return false;
+    }
 }
 
 private imported!"quickbite.lang".Value reifyScalar(
@@ -106,38 +228,20 @@ private imported!"quickbite.lang".Value reifyScalar(
     }
 }
 
-private uint scalarSize(
-    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: ScalarType;
-
-    final switch (type) with (ScalarType) {
-        case void_:
-            return 0;
-        case bool_, byte_, ubyte_, char_:
-            return 1;
-        case short_, ushort_, wchar_:
-            return 2;
-        case int_, uint_, dchar_, float_:
-            return 4;
-        case long_, ulong_, double_:
-            return 8;
-        case real_:
-            return real.sizeof;
-    }
+private const(ubyte)[] heapBlock(
+    in size_t pointer,
+    in ubyte[][] heap,
+) @safe pure {
+    foreach (block; heap)
+        if (blockPointer(block) == pointer)
+            return block;
+    return null;
 }
 
-// Dynamic-array descriptors store a native heap pointer. The machine roots the
-// pointed-to block for the session, and reification only reads the element bytes
-// while producing the display value.
-private const(ubyte)[] dynamicArrayElementBytes(
-    in ubyte[] descriptor,
-    in size_t index,
-    in uint elementSize,
-) @trusted pure {
-    const pointer = scalar!size_t(descriptor);
-    const bytes = cast(ubyte*) pointer;
-    return bytes[index * elementSize .. (index + 1) * elementSize];
+// Heap descriptors store native block pointers; comparing them requires taking
+// the slice address, while all dereferencing stays through the rooted slice.
+private size_t blockPointer(in ubyte[] block) @trusted pure {
+    return cast(size_t) block.ptr;
 }
 
 private T scalar(T)(in ubyte[] bytes) @safe pure {

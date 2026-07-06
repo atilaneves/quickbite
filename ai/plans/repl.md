@@ -422,7 +422,18 @@ Dependencies are noted; order within independent slices is flexible.
    `__quickbiteFormat('a')` renders `"'a'"`,
    `__quickbiteFormat("quickbite")` renders `"\"quickbite\""`, and
    `__quickbiteFormat(3.0)` renders `"3.0"`. Verified with
-   `ninja bin/ut` and `bin/ut --random` (latest seed `2822468755`).
+   `ninja bin/ut` and `bin/ut --random` (latest seed `2822468755`) — but
+   those runs pin only the formatter's own unit tests. **Not wired as of
+   2026-07-06**: nothing in `source/` imports `repl_prelude`, expression
+   cells are still synthesized as `return <expr>;`, and every backend's
+   display still goes through the interim `displayString`/`Value.toString`
+   path. Remaining, in order: extend the formatter to structs/enums/AAs
+   (today a `text(value)` catch-all that breaks the round-trip spec for
+   exactly the aggregate cases the formatter exists for); import the
+   prelude into the synthesized module and synthesize expression cells as
+   `__quickbiteFormat(expr)`, gated per backend (value.md decision 4:
+   only views consumed by backends that can execute it); only then retire
+   `displayString` per backend (value.md remaining-work item 2).
 9. **Native REPL session** (depends on 5, 7, 8, and a working
    codegen-and-load path from the dmd-backend work): delta modules,
    lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on

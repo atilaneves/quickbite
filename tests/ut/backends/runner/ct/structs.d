@@ -51,6 +51,51 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("struct.tupleofForeachRefReadsAndWritesFields." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Record {
+                int number;
+                bool enabled;
+                char marker;
+            }
+
+            unittest {
+                int seed = 40;
+                seed += 2;
+                char marker = 'a';
+
+                auto record = Record(seed, false, marker);
+                int visited;
+
+                foreach (ref field; record.tupleof) {
+                    ++visited;
+
+                    static if (is(typeof(field) == int)) {
+                        assert(field == seed);
+                        field += 1;
+                    } else static if (is(typeof(field) == bool)) {
+                        assert(!field);
+                        field = true;
+                    } else static if (is(typeof(field) == char)) {
+                        assert(field == marker);
+                        field = 'z';
+                    } else {
+                        static assert(false);
+                    }
+                }
+
+                assert(visited == 3);
+                assert(record.number == seed + 1);
+                assert(record.enabled);
+                assert(record.marker == 'z');
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("struct.scalarFieldsDefaultToZero." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -599,6 +644,33 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
                 assert(box.values.length == input.length);
                 assert(box.values[0] == first);
                 assert(box.values[1] == second);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("struct.templatedConstructorPreservesDynamicArrayField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reader {
+                ubyte[] bytes;
+
+                this(T)(T[] input) {
+                    bytes = input;
+                }
+            }
+
+            unittest {
+                ubyte seed = 40;
+                seed += 2;
+
+                auto reader = Reader([seed]);
+
+                assert(reader.bytes.length == 1);
+                assert(reader.bytes[0] == seed);
             }
         });
     }

@@ -1,5 +1,10 @@
 # DMD Compiled Fixture Sentinel
 
+**Parked (2026-07-06 note).** Unstarted design, referenced only by
+coverage.md. Not blocked and not urgent — hand-pinned diagnostic strings work
+today; pick this up when a migrated fixture actually needs computed expected
+messages.
+
 ## Summary
 
 Make compiled DMD the sentinel for migrated backend fixtures. Negative

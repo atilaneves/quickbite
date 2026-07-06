@@ -283,3 +283,10 @@
   code against the host's LDC druntime and segfault (extern(D) ABI, ai/spikes/
   ldc-eh/FINDINGS.md) — an uncatchable crash that the surrounding `try/catch`
   cannot turn into a graceful skip. Don't construct a backend you cannot run.
+
+- In status/research reports, don't hedge what you can verify: no "worth
+  checking" without checking, no vague verdicts like "essentially complete" —
+  state what is done and what is not. When a plan defers work to another plan,
+  read and report that plan too instead of leaving the pointer. Don't scope a
+  report by session memory (machine-local, may be stale); git history and
+  `ai/plans` are the authoritative record.

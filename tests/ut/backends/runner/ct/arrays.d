@@ -269,6 +269,26 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.localConcatenationAssignment." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] values = [cast(ubyte) 1];
+                ubyte[] chunk = [cast(ubyte) 7, cast(ubyte) 42];
+
+                values ~= chunk;
+
+                assert(values.length == 3);
+                assert(values[0] == 1);
+                assert(values[1] == 7);
+                assert(values[2] == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("dynamicArray.elementConcatenatesWithArray." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -293,6 +313,29 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
                 assert(rightElement.length == 2);
                 assert(rightElement[0] == 11);
                 assert(rightElement[1] == 10);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.fieldConcatenationAssignment." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Writer {
+                ubyte[] bytes;
+            }
+
+            unittest {
+                Writer writer;
+                ubyte[] chunk = [cast(ubyte) 7, cast(ubyte) 42];
+
+                writer.bytes ~= chunk;
+
+                assert(writer.bytes.length == 2);
+                assert(writer.bytes[0] == 7);
+                assert(writer.bytes[1] == 42);
             }
         });
     }
@@ -1361,6 +1404,35 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
                 assert(values.ptr is &values[0]);
                 assert(*values.ptr == 10);
                 assert(values.ptr[2] == 12);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.indexAssignmentWritesArrayStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Buffer {
+                char* data;
+
+                this(char[] storage) {
+                    data = storage.ptr;
+                }
+
+                void put(size_t index, char value) {
+                    data[index] = value;
+                }
+            }
+
+            unittest {
+                char[2] storage;
+                auto buffer = Buffer(storage[]);
+
+                buffer.put(1, 'x');
+
+                assert(storage[1] == 'x');
             }
         });
     }

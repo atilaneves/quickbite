@@ -16,6 +16,10 @@ fix (Step 4), and ELF normalizer writeups are the load-bearing history. Original
 goal was a POC viability gate; that was met at Step 1/3 and the goal has since
 moved to full-matrix + benchmark parity.
 
+Not yet a `SystemLinker` peer: the LDC-built bench cannot run it, and two
+`rt/` matrix blocks exclude it. Live plan: see "SystemLinker-peer parity
+plan (2026-07-06)" at the end of this file.
+
 ## Scope
 
 A second native backend that **reuses SystemLinker's object production
@@ -470,7 +474,10 @@ uncharacterized (above), so high-risk for the whole backend family; (b) **wait
 on an upstream JITLink fix** — not actionable on our timeline, and unconfirmed
 as a bug; (c) **normalize the object in our loader** before `AddObjectFile` —
 contained to `LLVMJit`, deterministic, reversible. We picked (c) as the bridge
-and should still file the upstream repro for (b). Revisit (a) only if the
+and should still file the upstream repro for (b) — **this plan's one open
+item (2026-07-06): build a minimal two-duplicate-UND-symbol object repro and
+file it against JITLink; unowned until a session picks it up**. Revisit (a)
+only if the
 normalizer proves insufficient or the uncharacterized emitter starts producing
 other malformations.
 
@@ -573,3 +580,180 @@ bin/ut @LLVMJit                     # the new backend's matrix blocks
 - `tests/ut/backends/package.d` — `newBackend`, backend exports
 - `ai/plans/dmd-backend.md` — Scope stage 3 (load in parent) and the
   `DmdCodegenRam` druntime-registration warning (the central risk here)
+
+# SystemLinker-peer parity plan (2026-07-06)
+
+Everything above is the outcome log of the original POC-to-matrix plan. This
+section is a live plan: make `LLVMJit` a full `SystemLinker` peer. Today it is
+not one in two ways:
+
+1. **The LDC-built bench cannot run it at all.** `benchmarks/backends.d:74`
+   skips constructing the runner under `version (LDC)` (the constructor
+   `dlopen`s DMD-compiled dependency images whose module ctors would execute
+   DMD-codegen'd code against the LDC host's druntime), and
+   `benchmarks/cli.d:800–822` filters it from the defaults / rejects an
+   explicit `-b llvmjit`. `bench.md` records this as "Phase 2′'s LLVMJit
+   clause is intentionally not met". Since `bin/bench.sh` builds the host
+   with LDC (commit `84650dbe`), the standard benchmark path cannot measure
+   the backend whose whole point is latency.
+2. **Two `rt/` matrix gaps.** `tests/ut/backends/runner/rt/cstdlib.d:158`
+   (`malloc.pointerRoundTrip`) runs `AliasSeq!(Interpreter, SystemLinker)`
+   without `LLVMJit` and without a comment justifying the exclusion; the
+   inline-asm rejection pin in `rt/inline_asm.d` covers only `SystemLinker`
+   even though the rejecting pre-check lives in the shared
+   `codegen.d`/`emitObjectFilesForLink` path.
+
+## Design: extend the executor model, don't fight it
+
+The `bench-exec` process boundary exists because DMD-codegen'd code cannot
+execute in an LDC host (ABI/EH). `SystemLinker` crosses it by handing a `.so`
+to the DMD-built `bench-exec`. `LLVMJit` has no `.so` — so hand over the
+*object files* and let `bench-exec` do the ORC link in-process.
+
+This works because the frontend/frontend-free split inside `llvm_jit.d` is
+already clean. Frontend-dependent stages: codegen
+(`emitObjectFilesForLink`, `codegen.d`) and unittest discovery + mangling
+(`foreachUnitTestDeclaration`, `dmd.mangle.mangleExact`) — both of which the
+LDC host already performs for `SystemLinker`'s executor path
+(`system_linker.d:229–269`). Frontend-free stages: X86 target init, LLJIT
+creation, process-symbol + static-library generators, ELF duplicate-`UND`
+normalization (`elf.d`), host-symbol interposition (`defineHostSymbols`,
+`llvm_jit.d:405–482`), object addition, symbol lookup, execution, and result
+encoding — all operate on file paths, C strings, and addresses only.
+
+So: extract the frontend-free half into a loader that `bench-exec` (DMD-built,
+no dmd-frontend imports, matching druntime) can compile, extend the
+`run_wire.d` request with an ORC mode, and un-gate the bench CLI. A fresh
+`bench-exec` process per `runTests` preserves the PR #243 isolation property
+(JIT-resident metadata dies with the process) by construction.
+
+Timing semantics stay honest: the `llvmjit` LDC row measures codegen + exec of
+`bench-exec` + dep-image `dlopen` + in-process ORC link + run; the
+`system-linker` row already pays the same executor spawn and image `dlopen`
+plus the `dmd -shared` spawn/link. The cross-backend delta therefore still
+isolates link strategy, which is the quantity of interest. The DMD-host bench
+config keeps the pure in-process number. `testResultsMismatch`
+(`benchmarks/cli.d:373–402`) is backend-agnostic and covers `llvmjit`
+automatically once the runner is constructed.
+
+## Slices
+
+### Slice 1: `bin/ut` matrix parity (pre-approved promotions)
+
+- Add `LLVMJit` to the `malloc.pointerRoundTrip` AliasSeq
+  (`rt/cstdlib.d:158`). Oracle-backed promotion → pre-approved. If it goes
+  red, that is a backend bug to fix (expected green: `malloc`/`free` resolve
+  via the process-symbol generator like the rest of libc).
+- Add `LLVMJit` to the inline-asm rejection pin (`rt/inline_asm.d`): the
+  pre-check throws in shared codegen, so the message should be identical. If
+  the expected message needs to change shape per backend, stop for approval.
+- Verify: `ninja bin/ut`, `bin/ut --random`, `bin/ut @LLVMJit`.
+
+### Slice 2: extract the frontend-free ORC loader (pure refactor)
+
+- New top-level `orc/` source directory (module namespace `orc.*`), following
+  the `bench-exec/run_wire.d` shared-module precedent:
+  - `orc/bindings.d` — moved from `backends/native/llvm_orc.d` (extern(C)
+    decls only, already frontend-free).
+  - `orc/elf.d` — moved from `backends/native/elf.d`.
+  - `orc/loader.d` — new: create LLJIT + generators, normalize + interpose +
+    add objects, look up mangled names, run, catch `Throwable`, return plain
+    results. Input is plain data: object paths, archive paths, mangled test
+    symbols (dep images are the caller's job to `dlopen`).
+- `llvm_jit.d` keeps codegen, discovery/mangling, fork/pipe, and calls the
+  loader. No `dmd.*` import may appear under `orc/`.
+- Build wiring: add `orc` to `sourcePaths`/`importPaths` of the configs that
+  compile the native package (unittest, benchmark, qb — they already link
+  `libs "LLVM"`).
+- The focused ELF normalizer tests change imports only, not behaviour. No new
+  tests.
+- Verify: `ninja bin/ut`, `bin/ut @LLVMJit` (422/0 unchanged),
+  `bin/ut --random` + historical seeds `2828407573`, `3516581215`.
+
+### Slice 3: `bench-exec` ORC mode + un-gate the LDC bench
+
+- `bench-exec/run_wire.d`: `RunRequest` gains a `kind`
+  (`sharedLibrary` | `orcObjects`), `objectFiles` (string[]) and `archives`
+  (string[]) fields. Both ends build from the same source in the same repo
+  state; no wire compatibility shims.
+- `bench-exec` subPackage: add `sourcePaths`/`importPaths` `"orc"` and
+  `libs "LLVM" platform="linux"` (`dub.sdl:22–32`); `main.d` dispatches on
+  `kind` — `orcObjects` = `dlopen` dep images `RTLD_NOW | RTLD_GLOBAL`
+  (existing code), then `orc.loader` link-and-run instead of
+  `Runtime.loadLibrary` + `dlsym`.
+- `llvm_jit.d` under `version (LDC)`:
+  - constructor stores dependency-image paths instead of `dlopen`ing them
+    (`llvm_jit.d:42`, `:62`) — this is what unblocks removing the
+    `backends.d:74` construction skip;
+  - `runTests` mirrors `runTestsViaExecutor` (`system_linker.d:229–269`):
+    emit objects in the host, split `linkFiles` into `.so` dep images vs
+    archives (as `sharedLibrariesOf` does), collect mangled symbols, write
+    the request, spawn, decode. Hoist `runExecutor`/`executorPath` from
+    `system_linker.d:271–312` into a shared native-package module
+    (intra-package imports are fine; the backend-to-backend import ban is
+    about *different* backends).
+  - Object temp-dir lifetime: today `jitForObjects` deletes the emit dir
+    once buffers are read in-process (`llvm_jit.d:319`); the executor path
+    must keep it alive until results are read, like `SystemLinker`'s request
+    dir.
+  - `eval` throws under `version (LDC)` with the same wording pattern as
+    `system_linker.d:110–111` (in-process execution is exactly the unsound
+    thing).
+- Un-gate: delete the `backends.d:74` skip; reduce
+  `withoutUnavailableBackends` (`cli.d:800–822`) to the identity so
+  `llvmjit` stays in the defaults and `-b llvmjit` is accepted.
+- Verify: `bin/bench.sh` (defaults include llvmjit, self-check green),
+  `bin/bench.sh -b llvmjit`, `bin/bench.sh --dub cerealed -b llvmjit`
+  (archives + dep image over the wire), DMD-host benchmark config unchanged,
+  `ninja bin/ut` + `bin/ut --random` untouched.
+
+### Slice 4: `ci.sh` gate + bookkeeping
+
+- `./ci.sh` end-to-end: llvmjit rows render timed results in corpus and
+  `--dub` modes, restoring the AGENTS.md "benchmarks run properly for every
+  backend" invariant.
+- Update `bench.md`'s "LLVMJit stays unavailable under the LDC build"
+  section and `overview.md`'s parked-status line.
+
+## Risks / watch items
+
+- **EH across the new boundary**: JIT'd DMD code unwinding into the DMD-built
+  `bench-exec` catch is the same `__register_frame` path proven in the
+  `bin/ut` child (Step 1); expected to transfer, verify early in slice 3
+  with a deliberately failing fixture through the self-check path.
+- **GC**: JIT'd code allocating via `bench-exec`'s DMD druntime matches the
+  `bin/ut` child pattern (Step 3 probe: no misbehavior). Per the
+  adopt-on-evidence rule, no speculative GC-stress test — but if the bench
+  self-check ever disagrees only under ORC mode, look here first.
+- **Timing comparability**: both native rows now include executor spawn; note
+  it in `bench.md` when flipping the Phase 2′ clause so nobody reads the LDC
+  rows as pure link cost.
+- **eh_frame Delta32 range** (pre-existing, found during slice 2): a rare
+  `bin/ut --random` flake — JITLink rejects the object with "section
+  .eh_frame: relocation target (DW.ref.__dmd_personality_v0) is out of range
+  of Delta32 fixup" when the interposed host copy of that symbol lands more
+  than 2 GiB from the JIT allocation. Address-space roulette, not
+  order-determinism: seed 660421069 failed once and passed on same-seed
+  re-run; master fails the same way (~1 in 5 runs either side of the slice-2
+  refactor, always `staticArrayCopyRunsPostblitAndDtors.LLVMJit` so far).
+  Likely fix when it graduates from flake to blocker: exclude `DW.ref.*`
+  from host-symbol interposition so the fixup targets the object's own
+  adjacent indirection cell (which itself points at the host personality via
+  a 64-bit relocation).
+
+## Non-goals
+
+- `eval()` return-type coverage: `native/evaluator.d` is shared, so `LLVMJit`
+  already has exact parity with `SystemLinker` (scalars only); widening it is
+  REPL work, not peer parity.
+- Non-x86-64 targets: the DMD codegen both backends share is x86-64-only.
+- The upstream JITLink duplicate-`UND` repro stays the separate open item
+  recorded above.
+
+## Success criteria
+
+- Every `SystemLinker`-oracle matrix block in `ct/` and `rt/` includes
+  `LLVMJit`.
+- LDC bench: `llvmjit` in the default backend set, `-b llvmjit` accepted,
+  timed rows with green self-check in both corpus and `--dub` modes.
+- `./ci.sh` green; `bin/ut --random` green including historical seeds.

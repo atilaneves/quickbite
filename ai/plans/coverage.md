@@ -1,5 +1,32 @@
 # Plan: Backend Semantic Confidence
 
+## Status (2026-07-06)
+
+The starter backlog (appendix) is fully consumed (tiers 1–4; PRs #210,
+#213, #214, #216). None of the three generative mechanisms below has
+been started: no `tests/coverage/mutants.md`, no
+`ai/plans/spec-checklist.md`, no `tests/coverage/dmd-mining.md`. Of the
+definition-of-done gates, only the backlog gate is met.
+
+Scheduling decision:
+
+- **A2 (spec walk) and A3 (dmd test-suite mining) are parked.** The
+  active density generator right now is `ai/plans/interpreter.md`'s
+  empirical gap inventory from real dub packages, which produces
+  oracle-backed fixtures from constructs real code actually uses —
+  higher yield per fixture than a spec walk while the Interpreter still
+  has known gaps. Revisit parking when interpreter.md's per-package
+  inventories stop producing new fixture classes.
+- **A1 (backend mutation) is queued with a named consumer: run it
+  against `BytecodeNewCore` before the bytecode engine-default flip**
+  (`bytecode.md`). The ratchet proves the new core passes what the old
+  core passed; A1's kill criterion asks the different question of
+  whether the matrix actually constrains the new core's behaviour —
+  worth asking before the old core is deleted, given the new core's
+  admitted latent stack-reserve/`&local` issue that the matrix never
+  caught. If the flip proceeds without A1, that waiver belongs in
+  `bytecode.md`'s flip gate, not in silence.
+
 ## Goal
 
 Given that quickbite's tests pass, any D code should behave on every

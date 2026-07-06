@@ -11,7 +11,10 @@ alias utCov = dubBuild!(
 // :dmd-backend-vendor) that the benchmark actually times. bin/bench.sh drives
 // that build into its own directory; the dev build.ninja leaves this `debug`.
 alias bench = dubBuild!(Configuration("benchmark-ldc"));
-alias qb = dubBuild!(Configuration("qb"));
+alias qb = dubBuild!(
+    Configuration("qb"),
+    CompilerFlags("-O -release -boundscheck=off"),
+);
 
 mixin build!(
     ut,

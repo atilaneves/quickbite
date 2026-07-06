@@ -4,11 +4,14 @@ private:
 
 public string __quickbiteFormat(T)(in T value) @safe pure {
     import std.conv: text;
-    import std.traits: isDynamicArray, isStaticArray, Unqual;
+    import std.traits: isAssociativeArray, isDynamicArray, isStaticArray,
+        Unqual;
 
     alias U = Unqual!T;
 
-    static if (is(U == char) || is(U == wchar) || is(U == dchar)) {
+    static if (is(U == enum)) {
+        return text(U.stringof, ".", value);
+    } else static if (is(U == char) || is(U == wchar) || is(U == dchar)) {
         return text("'", value, "'");
     } else static if (is(U == string)) {
         return text(`"`, value, `"`);
@@ -30,6 +33,10 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
         return floatingDisplay(value);
     } else static if (is(U == real)) {
         return text(floatingDisplay(value), "L");
+    } else static if (isAssociativeArray!U) {
+        return assocArrayDisplay(value);
+    } else static if (is(U == struct)) {
+        return structDisplay(value);
     } else {
         return text(value);
     }
@@ -43,6 +50,32 @@ private string arrayDisplay(T)(in T value) @safe pure {
         rendered ~= __quickbiteFormat(element);
     }
     rendered ~= "]";
+    return rendered;
+}
+
+private string assocArrayDisplay(T)(in T value) @safe pure {
+    string rendered = "[";
+    bool first = true;
+    foreach (key, element; value) {
+        if (!first)
+            rendered ~= ", ";
+        first = false;
+        rendered ~= __quickbiteFormat(key) ~ ":" ~ __quickbiteFormat(element);
+    }
+    rendered ~= "]";
+    return rendered;
+}
+
+private string structDisplay(T)(in T value) @safe pure {
+    import std.traits: Unqual;
+
+    string rendered = Unqual!T.stringof ~ "(";
+    foreach (index, field; value.tupleof) {
+        if (index != 0)
+            rendered ~= ", ";
+        rendered ~= __quickbiteFormat(field);
+    }
+    rendered ~= ")";
     return rendered;
 }
 

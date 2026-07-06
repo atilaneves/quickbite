@@ -160,7 +160,8 @@ on `Ctfe`/`Interpreter` rather than `Ctfe` alone.
   trips, nested arrays, associative arrays, pointers, `new`, static arrays,
   input range-style properties, overload resolution, bounds diagnostics, and
   float bit reinterpretation through pointer casts.
-- `bin/repl/package.d`: Persistent multi-cell session state, expression and
+- `tests/ut/bin/repl.d` (the table's row 14; an earlier draft called it
+  `bin/repl/package.d`): Persistent multi-cell session state, expression and
   no-display cells, statements, multi-line declaration buffering, functions,
   templates, structs, enums, mixin expressions, `typeof` and type-alias
   cells, `import std` with Phobos range pipelines (`map`/`filter`/`array`),
@@ -180,4 +181,15 @@ execute any test itself, and it no longer defines a `backends` matrix or
 
 `tests/ut/backends/evaluator/value.d` tests the `Value` type directly with no
 backend parameterization. It is shared infrastructure every backend relies on,
-not a module to promote.
+not a module to promote. (It is also scheduled for deletion together with the
+shared `Value` struct — `value.md` remaining-work item 3.)
+
+## Staleness note (2026-07-06)
+
+Three `ct/` modules postdate the last grading and are absent from the table:
+`archive.d` (static-archive linking; infrastructure more than language
+surface), `pollution.d` (module-isolation/scapegoat-root pollution;
+infrastructure), and `imports.d` (import resolution). Grade or explicitly
+exclude them on the next table update. The grading notes also predate
+`LLVMJit`'s promotion to the matrix (2026-06-15); backend-breadth commentary
+should account for it.

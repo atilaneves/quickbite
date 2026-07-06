@@ -447,21 +447,15 @@ on the new core before the engine default flips.
   UTF-8, marks character array literals through shared DMD type helpers, treats
   array casts as transparent, and lowers DMD conditional expressions with
   branch control flow.
-- The first REPL oracle/promotion batch in `tests/ut/bin/repl.d` now adds
-  `SystemLinker` and `BytecodeNewCore` to eight already-existing old-Bytecode
-  baseline session/display blocks: `localDeclarationsCanRebindNames`,
-  `localRebindingPreservesInterveningReferences`,
-  `evaluatesExpressionCellsUntilQuit`, `skipsCommentOnlyLines`,
-  `evaluatesStandaloneMixinExpression`,
-  `lastValueBindingDisplaysLatestExpressionValue`,
-  `failedExpressionDoesNotAdvanceLastValueBinding`, and
-  `declarationCellsPersistWithoutDisplay`. This batch changed only backend
-  matrix tags; no REPL test behaviour or production code changed.
-  `SystemLinker` passed for the promoted block. `BytecodeNewCore` passes the
-  no-display declaration, comment-only, and standalone-mixin cases, and fails
-  the five expression-result/`it` cases because REPL emits declarations shaped
-  like `alias it = int __quickbite_repl_value_0 = ...;`, which the new core
-  currently rejects as an unsupported declaration.
+- The adjacent REPL string-display family now covers `BytecodeNewCore`:
+  `repl.backend.displaysStaticStringArrayResults`,
+  `repl.backend.displaysNestedEmptyStringValues`,
+  `repl.backend.displaysWideStringValues`, and
+  `repl.backend.displaysWideCharacterArrayValues`. This was implementation
+  work, not stale coverage: the new core now reifies dynamic and static array
+  results with character-array display metadata, preserves wide string result
+  suffixes through result-type element metadata, and handles static string
+  array result bytes.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/runner/ct/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
@@ -846,6 +840,14 @@ switch; `Bytecode` still defaults to the old core):
   promotions at emit time (sign/zero-extension opcodes shared with the cast
   path) and failed equality asserts render both operands from frame bytes
   at the comparison width.
+- `signedUnsignedComparisonIsUnsigned` and `wraparoundAtTypeBoundaries` in
+  `tests/ut/backends/runner/ct/integrals.d` now cover `BytecodeNewCore`.
+  `signedUnsignedComparisonIsUnsigned` was a stale coverage gap: existing
+  integer promotions and unsigned-comparison opcodes already matched the
+  `SystemLinker` oracle. `wraparoundAtTypeBoundaries` exposed missing
+  unsigned 4-byte subtraction lowering; `compileSubtractExpression` now uses
+  the existing 4-byte integer helper so `uint - uint` wraps through
+  `Op.subInt4` and stores a `uint` result.
 - All remaining `tests/ut/backends/evaluator/eval.d` blocks, completing
   `eval.d` (module order 1) on the new core. Earned in four slices:
   (a) compound assignment — `++x` lowers to `x += 1` through the existing
@@ -963,13 +965,96 @@ switch; `Bytecode` still defaults to the old core):
   heap aggregate allocation, class/interface dispatch, `typeid`, delegates,
   complex literals, vector splats, and integer `^^` lowering. CTFE-only
   characterization tests remain CTFE-only.
-- `tests/ut/backends/runner/ct/cerealed.d` (module order 13) now has 21
-  `BytecodeNewCore` promotion candidates passing in the current checkout (see
-  the cerealed analysis section). The two remaining SystemLinker-backed
-  AA-shaped cases, `nestedStructWritesAssociativeArrayChild` and
-  `classSerialisationReadsStaticChildRegistry`, remain unpromoted until the
-  backend supports associative-array literals with struct values, static
+- All SystemLinker-backed `tests/ut/backends/runner/ct/cerealed.d` blocks,
+  completing `cerealed.d` (module order 13) on the new core (23/23 promoted,
+  see the cerealed analysis section). The last two promoted cases were the
+  AA-shaped `nestedStructWritesAssociativeArrayChild` and
+  `classSerialisationReadsStaticChildRegistry` fixtures, which added narrow
+  support for associative-array literals with struct values, static
   associative-array storage, and delegate-valued AA lookup/invocation.
+- `tests/ut/backends/runner/rt/cstdlib.d` (module order 2) is reconciled on
+  the new core as explicit native-runtime deferral. The seven existing
+  Bytecode/IR design-driving no-source diagnostics now include
+  `BytecodeNewCore`: `free.null.voidReturn`,
+  `malloc.pointerReturn.nativeMemory`, `calloc.multiArg.zeroedNativeMemory`,
+  `realloc.null.pointerArgPointerReturn`,
+  `realloc.grow.preservesNativeMemory`, `div.structReturn`, and
+  `ldiv.structReturn.longArgs`. The promotion first failed because the new
+  core reported a generic unsupported-call diagnostic for body-less libc
+  leaves; it now reports the established `` `name` cannot be interpreted at
+  compile time, because it has no available source code `` diagnostic at the
+  `FuncDeclaration.fbody is null` boundary. Real `SystemLinker`-backed libc
+  execution remains deferred until the native-runtime/host-FFI bridge.
+- `repl.backend.localDeclarationsCanRebindNames` and
+  `repl.backend.localRebindingPreservesInterveningReferences` in
+  `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. The focused promotion
+  exposed that REPL expression history inserts the compile-time-only
+  `alias it = __quickbite_repl_value_N;` declaration into eval function
+  bodies. The new core now treats function-body alias declarations like other
+  semantic-only declarations and emits no bytecode for them.
+- `repl.backend.evaluatesExpressionCellsUntilQuit`,
+  `repl.backend.skipsCommentOnlyLines`, and
+  `repl.backend.evaluatesStandaloneMixinExpression` in
+  `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. These were stale coverage
+  gaps: focused promotion runs passed unchanged because the shared REPL loop
+  already skips comment-only lines, classifies standalone mixin expressions,
+  and sends expression cells through the existing new-core `evalRepl` path.
+- `repl.backend.lastValueBindingDisplaysLatestExpressionValue` in
+  `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was a stale
+  coverage gap: the focused promotion run passed unchanged because the shared
+  REPL session history already updates and exposes the `it` binding through
+  the existing new-core eval path.
+- `repl.backend.failedExpressionDoesNotAdvanceLastValueBinding` and
+  `repl.backend.declarationCellsPersistWithoutDisplay` in
+  `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. These were stale
+  coverage gaps: focused promotion runs passed unchanged because failed REPL
+  expression cells already leave the previous `it` binding intact, and
+  declaration cells already persist into later expression cells without
+  producing display output.
+- `repl.backend.expressionSideEffectsPersist` and
+  `repl.backend.statementsExecuteImmediately` in `tests/ut/bin/repl.d` now
+  cover `BytecodeNewCore`. These were stale coverage gaps: focused promotion
+  runs passed unchanged because REPL declaration state already persists across
+  side-effecting expression and statement cells on the new core.
+- The next small REPL function-declaration family in `tests/ut/bin/repl.d`
+  now covers `BytecodeNewCore`: `functionDeclarationsPersistWithoutSemicolon`,
+  `replacesSameSignatureFunctionDeclarations`, `preservesFunctionOverloads`,
+  and `userDefinedFunctionDoesNotCollideWithWrapper`. These were stale
+  coverage gaps: focused promotion runs passed unchanged because queued REPL
+  function declarations, replacement, overload resolution, and wrapper-name
+  separation already work through the existing new-core eval path.
+- The next REPL declaration-buffering family in `tests/ut/bin/repl.d` now
+  covers `BytecodeNewCore`:
+  `templateFunctionDeclarationsPersistWithoutDisplay`,
+  `multilineFunctionDeclarationsBufferUntilComplete`,
+  `multilineStructDeclarationsBufferUntilComplete`,
+  `failedBufferedDeclarationDoesNotPoisonSession`, and
+  `commandsDoNotAbandonPendingInput`. These were stale coverage gaps: focused
+  promotion runs passed unchanged because templated declarations, multiline
+  declaration buffering, failed-buffer recovery, and command rejection while
+  input is pending already work through the existing new-core REPL path.
+- `repl.backend.importDeclarationsPersistWithoutDisplay` in
+  `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was a stale
+  coverage gap: the focused promotion run passed unchanged because REPL import
+  declarations already persist into later expression cells on the new-core
+  eval path. The adjacent display tests were tried next because they still
+  needed non-trivial display/value work: delegate placeholders, nested/static
+  array literal display, wide-string suffix preservation, and wide-character
+  array rendering.
+- `repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals` in
+  `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was not stale:
+  the focused promotion exposed that delegate-valued REPL expression results
+  reached the new-core scalar result-type path and failed as an unsupported
+  type. The new core now has a narrow undisplayable result kind for function
+  and delegate result types, so display-only function literals reify as the
+  established `<undisplayable>` placeholder without adding general delegate
+  execution support.
+- `repl.backend.displaysNestedArrayResults` in `tests/ut/bin/repl.d` now
+  covers `BytecodeNewCore`. This was not stale: the focused promotion exposed
+  that array-literal REPL expression results did not materialise dynamic-array
+  descriptors on the new core, and nested-array results needed heap roots plus
+  array-aware reification at the evaluator boundary. The new core now renders
+  nested scalar dynamic-array results such as `int[][]`.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -978,61 +1063,90 @@ dual-mode model and the `ExecutionMode` enum have been removed
 `SystemLinker` oracle.
 
 ## Current Next Step
-`eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
-(5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), `structs.d` (9),
-`control_flow.d` (10), `exceptions.d` (11), and `expressions.d` (12) are now
-complete on the new core (see Rewrite Coverage State). `cerealed.d` (13) has
-21 passing `BytecodeNewCore` promotions in the current checkout; its two
-remaining SystemLinker-backed AA-shaped cases are documented but not yet
-promoted.
+`eval.d` (module order 1), `rt/cstdlib.d` (2), `integrals.d` (3),
+`logic.d` (4), `results.d` (5), `diagnostics.d` (6), `math.d` (7),
+`arrays.d` (8), `structs.d` (9), `control_flow.d` (10), `exceptions.d` (11),
+`expressions.d` (12), and `cerealed.d` (13) are now complete or explicitly
+reconciled on the new core (see Rewrite Coverage State).
 
-The next concrete module candidate after `cerealed.d`, per
-`ai/plans/backend-test-modules-order.md`, is `tests/ut/bin/repl.d` (module
-order 14). REPL promotion is a `BytecodeNewCore` parity track against the
-existing `Interpreter` REPL behaviour. Do not add `SystemLinker` tags to REPL
-blocks for this track: the REPL tests already encode the interactive contract,
-and the native linker path is not the oracle for these REPL promotions.
+`rt/cstdlib.d` deliberately promotes only the Bytecode/IR no-source
+diagnostic cases. Runtime libc behaviours such as `atoi`, `strtol`,
+`malloc.pointerRoundTrip`, `calloc`, `realloc`, `div`/`ldiv`, `abs`/`labs`,
+`ctype`, `atof`, and `strtod` stay on `Interpreter`, `SystemLinker`, and
+`LLVMJit` until the new core has a real outbound host FFI bridge. Promoting
+those value cases now would assert native-call support that does not exist.
 
-#### REPL continuation (next worker path to BytecodeNewCore)
-
-Completed REPL parity batches now add `BytecodeNewCore` without
-`SystemLinker`. The green promoted coverage includes the baseline expression
-and `it` cases, declaration persistence, side effects and statement cells,
-function declaration/redeclaration/overload/session cases, multiline
-declarations, buffered-input recovery, command handling while input is pending,
-simple import persistence, and character scalar display.
-
-The latest display/import batch is narrowed to a coherent red
-`BytecodeNewCore` target pair: `displaysNestedArrayResults` and
-`displaysStaticStringArrayResults`. Both compare against the existing
-`Interpreter` expectation and fail in the new core around array-literal display
-reification (`[1, 2]` and `["a", "b"]`). The already-green
-`importDeclarationsPersistWithoutDisplay.BytecodeNewCore` and
-`characterScalarDisplayCollapsesToCharLiteral.BytecodeNewCore` remain promoted.
-
-Withheld from this batch because they are separate failure groups:
-`displaysUndisplayablePlaceholderForFunctionLiterals` (delegate display
-placeholder), `displaysNestedEmptyStringValues` (empty-string dynamic array
-display), `displaysWideStringValues` (wide string suffix rendering), and
-`displaysWideCharacterArrayValues` (wide character array display).
-
-Next action is to implement the narrowed array-literal display pair under the
-200 production-line limit, then promote the withheld display groups one small
-coherent group at a time. The explicit end state remains to promote all REPL
-tests in `tests/ut/bin/repl.d` to `BytecodeNewCore` where they compare against
-the existing `Interpreter` REPL behaviour.
-
-Hard PR criterion: do not open a PR that contains a single REPL promotion
-iteration adding more than 200 lines of work; split into smaller PRs and keep
-each REPL-oracle/REPL-new-core tranche under that line budget.
-
-For each batch, capture whether the batch only changes matrix tags before
-adding `BytecodeNewCore` for that batch, and preserve this invariant in the
-plan notes to keep parity provenance auditable.
+The next concrete module candidate per
+`ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
+(module order 14). The first tight REPL rebinding family and the adjacent
+expression-loop basics now cover `BytecodeNewCore`:
+`repl.backend.localDeclarationsCanRebindNames`,
+`repl.backend.localRebindingPreservesInterveningReferences`,
+`repl.backend.evaluatesExpressionCellsUntilQuit`,
+`repl.backend.skipsCommentOnlyLines`,
+`repl.backend.evaluatesStandaloneMixinExpression`, and
+`repl.backend.lastValueBindingDisplaysLatestExpressionValue`,
+`repl.backend.failedExpressionDoesNotAdvanceLastValueBinding`, and
+`repl.backend.declarationCellsPersistWithoutDisplay`,
+`repl.backend.expressionSideEffectsPersist`, and
+`repl.backend.statementsExecuteImmediately`,
+`repl.backend.functionDeclarationsPersistWithoutSemicolon`,
+`repl.backend.replacesSameSignatureFunctionDeclarations`,
+`repl.backend.preservesFunctionOverloads`, and
+`repl.backend.userDefinedFunctionDoesNotCollideWithWrapper`,
+`repl.backend.templateFunctionDeclarationsPersistWithoutDisplay`,
+`repl.backend.multilineFunctionDeclarationsBufferUntilComplete`,
+`repl.backend.multilineStructDeclarationsBufferUntilComplete`,
+`repl.backend.failedBufferedDeclarationDoesNotPoisonSession`, and
+`repl.backend.commandsDoNotAbandonPendingInput`, and
+`repl.backend.importDeclarationsPersistWithoutDisplay`, and
+`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals`, and
+`repl.backend.displaysNestedArrayResults`,
+`repl.backend.displaysStaticStringArrayResults`,
+`repl.backend.displaysNestedEmptyStringValues`,
+`repl.backend.displaysWideStringValues`, and
+`repl.backend.displaysWideCharacterArrayValues`. The string-display family was
+implementation work, not stale coverage: static/string array result
+reification and wide-string suffix preservation needed new-core result metadata
+and reification support. The next current REPL backend blocks that cover old
+`Bytecode` but not `BytecodeNewCore` are the adjacent scalar display tests:
+`repl.backend.characterScalarDisplayCollapsesToCharLiteral` and
+`repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`. No block in
+`tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
+promotion may proceed without adding a `SystemLinker` oracle first; assume the
+existing unit tests are enough to catch discrepancies while the REPL backend
+surface is brought onto `BytecodeNewCore`.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
 slice roadmap.
+
+## rt/cstdlib.d Reconciliation Analysis (BytecodeNewCore)
+
+The module mixes three kinds of coverage: CTFE no-source diagnostics, real
+runtime libc calls (`Interpreter`, `SystemLinker`, `LLVMJit`), and old
+Bytecode/IR design-driving diagnostics for the future host FFI bridge. The
+new core currently has no outbound host FFI bridge, so the honest promotion is
+the third group only.
+
+Seven existing diagnostic tests now include `BytecodeNewCore`:
+`free.null.voidReturn`, `malloc.pointerReturn.nativeMemory`,
+`calloc.multiArg.zeroedNativeMemory`, `realloc.null.pointerArgPointerReturn`,
+`realloc.grow.preservesNativeMemory`, `div.structReturn`, and
+`ldiv.structReturn.longArgs`. The focused red run covered those seven tests
+and failed only on diagnostic text: the new core reported
+`Unsupported call in bytecode core: ...` instead of the established no-source
+message. The implementation fix is deliberately limited to named functions
+with no available body, preserving the runtime deferral while producing the
+same diagnostic shape as the existing design-driving tests.
+
+No real libc value tests were promoted. The deferred set includes scalar calls
+(`atoi`, `abs`, `labs`, `ctype`), pointer and out-parameter calls (`strtol`,
+`strtod`), allocation calls (`malloc`, `calloc`, `realloc`, `free`), and
+struct-return calls (`div`, `ldiv`). These require the native-runtime slice:
+libffi-style outbound calls, pointer identity across VM memory and native
+memory, out-parameter writes, native allocation ownership, and ABI struct
+returns.
 
 ## math.d Promotion Analysis (BytecodeNewCore)
 
@@ -3712,3 +3826,186 @@ Focused command:
 bin/ut $(bin/ut -l | \
     rg '^ut\\.backends\\.runner\\.ct\\.cerealed\\..*\\.BytecodeNewCore$')
 ```
+
+## repl.d Promotion Checkpoint (BytecodeNewCore)
+
+The existing `repl.backend.characterScalarDisplayCollapsesToCharLiteral`
+backend-matrix family now includes `BytecodeNewCore`. This was a stale
+coverage promotion from old `Bytecode`; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+characterScalarDisplayCollapsesToCharLiteral.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+All remaining narrow `tests/ut/bin/repl.d` backend rows were attempted on
+`BytecodeNewCore` in one sweep. The passing promotions retained in the matrix
+are:
+
+- `numericScalarDisplayUsesDLiteralSuffixes`
+- `runLoadedUnittestBlocks`
+- `runLoadedTestsWithNothingLoadedReturnsVoid`
+- `loadedUnittestFailuresReportReplLocation`
+- `laterLoadedUnittestFailuresReportReplLocation`
+- `runLoadedTestsReportsEveryFailedUnittest`
+- `runLoadedFileUnittestBlocks`
+- `loadedSourceDoesNotAdvanceTypedReplLocations`
+- `loadedFileUnittestFailuresReportFileLocation`
+- `loadModuleFileErrorsHideSyntheticNames`
+- `runtimeErrorsReportOneDiagnostic`
+- `duplicateDeclarationsHideSyntheticNames`
+- `failedModuleNoDisplayCellsDoNotPoisonSession`
+- `syntaxErrorsHideWrapperInternals`
+- `diagnosticsHideSyntheticWrapperNames`
+- `functionCallMismatchShowsCandidateSignature`
+- `functionCallMismatchShowsOverloadSignatures`
+
+No production changes were needed. The focused `BytecodeNewCore` REPL run now
+covers 50 tests:
+
+```sh
+ninja bin/ut
+bin/ut $(bin/ut -l | \
+    rg '^ut\\.bin\\.repl\\..*\\.BytecodeNewCore$')
+```
+
+Result: 50 tests run, 0 failed.
+
+The full attempted sweep initially ran 67 `BytecodeNewCore` REPL tests and
+exposed 17 failures. These were investigated and left unpromoted because they
+require broader backend work:
+
+- `moduleLevelVariablesAreVisibleToFunctions` fails on assignment to a
+  module-level variable (`Unsupported assignment in bytecode core`).
+- `importStdExposesPhobosSymbols`, `displaysFiniteRangeResults`, and
+  `displaysFilteredArrayResults` require broader Phobos range/ref-argument
+  support.
+- `displaysAssocArrayResults` and `assocArrayWithStructValuesRendersEntries`
+  need associative-array result reification for display.
+- `displaysEnumValues` currently reifies enum values as their underlying
+  integers, not qualified enum member names.
+- `expressionCtfeErrorsReportDiagnostics` expects the CTFE/Interpreter
+  bounds diagnostic; `BytecodeNewCore` reports the VM bounds diagnostic.
+- `runtimeOnlyCellsUseResidentNativeCalls` and
+  `runtimeOnlyFileOpenReportsNativeBoundary` are Interpreter-native-boundary
+  behaviours; `BytecodeNewCore` still reports missing CTFE/native support in
+  this REPL path.
+- The struct display family (`structValueRendersTypeNameAndFields`,
+  `arrayOfStructsRendersEachElement`, `nullFunctionPointerFieldIsOmitted`,
+  `nullDelegateFieldIsOmitted`, `nullClassFieldRendersAsNull`,
+  `nullPointerFieldRendersAsNull`, `nestedStructOmitsSyntheticContextField`)
+  needs richer struct result metadata/reification before the display renderer
+  can produce field-level output.
+
+The existing `repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`
+backend-matrix family now includes `BytecodeNewCore`. This was the adjacent
+stale scalar-display promotion from old `Bytecode`; no production changes were
+needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+wholeFloatingScalarDisplayKeepsDecimalPoint.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid`
+backend-matrix family now includes `BytecodeNewCore`. This was the next narrow
+REPL test-command promotion after no-display cells; no production changes were
+needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+runLoadedTestsWithNothingLoadedReturnsVoid.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.displaysStringValues` backend-matrix family now
+includes `BytecodeNewCore`. This was the adjacent narrow string-display
+promotion after the scalar display rows; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.displaysStringValues.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.typeofCellsDisplayTypeName` backend-matrix family
+now includes `BytecodeNewCore`. This was the next narrow display-family
+promotion after the string display row; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+typeofCellsDisplayTypeName.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.typeAliasCellsDisplayTypeName` backend-matrix
+family now includes `BytecodeNewCore`. This was the adjacent narrow type-cell
+display promotion after `typeofCellsDisplayTypeName`; no production changes
+were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+typeAliasCellsDisplayTypeName.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.specialTokenValuesHideWrapperInternals`
+backend-matrix family now includes `BytecodeNewCore`. This was the next narrow
+REPL display hygiene promotion after the type-cell display rows; no production
+changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.\
+specialTokenValuesHideWrapperInternals.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.
+
+The existing `repl.backend.noDisplayCellsReturnVoid` backend-matrix family now
+includes `BytecodeNewCore`. This was the next narrow REPL no-display-cell
+promotion after display hygiene; no production changes were needed.
+
+Focused verification was run with:
+
+```sh
+ninja bin/ut
+test_name=ut.bin.repl.repl.backend.noDisplayCellsReturnVoid.BytecodeNewCore
+bin/ut "$test_name"
+```
+
+Result: 1 test run, 0 failed.

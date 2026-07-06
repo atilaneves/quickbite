@@ -81,8 +81,11 @@ to `ffi.md` rather than reimplementing it.
 
 ## 5. The masking bug: CTFE-as-diagnostic (Phase 0, prerequisite)
 
-**Status: prototyped in worktree `ffi-cerealed-realloc`; needs `bin/ut` + an
-approved characterization test before landing.**
+**Status: first assignment target fixed for this PR slice.** The approved red
+test now covers the behaviour the interpreter must support: assigning through a
+`ref`-returning member call mutates the returned lvalue. The green
+implementation handles that ref-return call assignment instead of pinning the
+old unsupported-assignment diagnostic.
 
 The reported failure was:
 
@@ -119,19 +122,23 @@ Since FFI landed, the interpreter calls those leaves at runtime; CTFE is no
 longer the truth (`single-oracle.md`), and harvesting its diagnostic now
 **hides** the interpreter's real, actionable error behind a misleading one.
 
-**Fix.** `eval`'s catch returns the interpreter's own exception message; the
-`interpreterDiagnostic` / `isUnsupportedInterpreterAssignmentDiagnostic`
-indirection and the `quickbite.frontend.dmd.ctfe` use are removed (the module
-becomes dead and should be deleted if no other caller remains). Prefix the
-failing function's source location to the message — it is what made the gap
-inventory in §7 possible.
+**Fix direction.** Do not assert that the interpreter should fail with a generic
+unsupported-assignment diagnostic when compiled D can execute the program. This
+PR fixes the first concrete assignment target exposed by the masking bug:
+assignment through a `ref`-returning member call.
 
 **Caveat.** A characterization test may assert the old CTFE-style wording for
 the interpreter; it must be updated under the approval rule. This is the only
 behaviour change that is a *fix* rather than a *feature*, so it leads.
 
-Until Phase 0 lands, **every** interpreter gap below is invisible — they all
-collapse to the same misleading `realloc`/CTFE line. That is why this is the
+**Phase 0 test status.** The approved test in
+`tests/ut/backends/runner/ct/diagnostics.d` now executes
+`box.slot() = 42` where `slot` returns `ref int`, and asserts the assignment
+updates `box.value`. This removes one real source of the bad generic
+unsupported-assignment failure.
+
+Before Phase 0 landed, **every** interpreter gap below was invisible — they all
+collapsed to the same misleading `realloc`/CTFE line. That is why this was the
 prerequisite.
 
 ## 6. How the gap was measured (reproducible)
@@ -179,6 +186,17 @@ not the frequency count.
 The bottom three (garbage message, `size_t` underflow, pointer-slice over the
 allocated block) smell like **correctness bugs in existing paths**, not unbuilt
 features — they get characterized against the oracle and fixed, not "added".
+
+**Post-Rung-3 measurement blocker.** Re-running
+`bin/bench.sh -b interpreter --dub cerealed` after the Rung 3 slices no longer
+prints the old inventory. Instead, the optimised benchmark process aborts with
+`SIGILL` before it can report failures. GDB shows the trap is the
+`runExpression` `VarExp` path where `var.var.isVarDeclaration` unexpectedly
+returns `null`; the symbol is a DMD `SymbolDeclaration`, and its type is
+`TypeStruct`. This is DMD's struct default-initializer representation
+(`S.init` / `TypeStruct.defaultInit`), not the `__traits(initSymbol, S)`
+`const(void)[]` path. Treat this as the next standalone interpreter gap before
+continuing to the scalar-coercion inventory.
 
 ## 8. Method: one standalone red/green unit test per reason
 
@@ -234,6 +252,11 @@ the 68 `Expected struct` failures as well as the 7 `tuple` ones.
 **Oracle fixture.** A struct with mixed-type fields; `foreach (ref f; s.tupleof)`
 that reads and writes each field; assert the mutated struct.
 
+**Slice status.** The standalone fixture
+`struct.tupleofForeachRefReadsAndWritesFields` now covers DMD-lowered
+`foreach (ref field; record.tupleof)` reads and writeback to mixed scalar
+fields. The interpreter handles the lowered ref local as a struct-field alias.
+
 **In scope.** `TupleExp` evaluation; `.tupleof` as an iterable in the
 DMD-lowered `foreach`; tuple element lvalues for the writeback half.
 **Out of scope.** Arbitrary `AliasSeq` of types, `TypeExp` tuples.
@@ -254,6 +277,12 @@ fields). Triaged from the post-Rung-1 inventory, not guessed now.
 **Oracle fixture.** Per distinct residual root, distilled from the surviving
 `decode.d`/`encode_decode.d` lines. **Done.** `Expected struct` gone from §7.
 
+**Slice status.** The standalone fixture
+`struct.templatedConstructorPreservesDynamicArrayField` now covers templated
+struct constructors that assign a dynamic-array field. The interpreter treats
+the instantiated `this` function as a constructor for receiver seeding and
+returns the initialized `this` value, matching `SystemLinker`.
+
 ### 9.3 Rung 3 — unsupported assignment targets + non-scalar `~=`
 
 **Contract.** The assignment lvalue forms cerealed's buffer code needs:
@@ -271,10 +300,85 @@ index/slice/field assignment through the unsupported base form, and a
 `concatenateElemAssign`. **Out of scope.** Tuple/destructuring lvalues and
 write-through-global-pointer unless cerealed needs them.
 
+**Slice status.** The standalone fixture
+`dynamicArray.fieldConcatenationAssignment` now covers non-scalar dynamic-array
+`concatenateAssign` through a struct field (`writer.bytes ~= chunk`). The
+interpreter routes that DMD AST expression through the existing concatenation
+element logic and writes the result back with `writeLocation`.
+
+**Slice status.** The standalone fixture
+`dynamicArray.localConcatenationAssignment` now covers non-scalar dynamic-array
+`concatenateAssign` through a local variable (`values ~= chunk`). The
+interpreter handles that local `VarExp` target with the existing concatenation
+element logic and writes the result back with `writeLocation`.
+
 **Done.** `Unsupported interpreter assignment target` and `concatenateAssign`
 gone from §7.
 
-### 9.4 Rung 4 — `Expected integer-compatible scalar` (7×)
+### 9.4 Rung 4 — `VarExp(SymbolDeclaration)` struct default init
+
+**Contract.** Evaluate the `VarExp` DMD emits for a struct
+`SymbolDeclaration` when a real program reads a struct default initializer.
+The result must match compiled D, including explicit non-zero field
+initializers; plain field-type zeroing is not enough.
+
+**Oracle fixture.** Pre-approved:
+
+```d
+struct Header {
+    ubyte tag = 7;
+    int code = 42;
+}
+
+unittest {
+    auto header = Header.init;
+
+    assert(header.tag == 7);
+    assert(header.code == 42);
+}
+```
+
+**In scope.** The `runExpression` `VarExp` branch where `var.var` is a
+`SymbolDeclaration` with a `TypeStruct`; preserving DMD default-initializer
+semantics, likely by evaluating the aggregate's default-init literal rather
+than calling the existing zero/default-by-type `defaultValue(Type)` helper.
+**Out of scope.** `__traits(initSymbol, S)` as `const(void)[]`, initializer
+symbol addresses, and non-struct `SymbolDeclaration` cases unless a remeasure
+proves cerealed reaches them.
+
+**Slice status.** The standalone fixture
+`struct.defaultInitPreservesExplicitFieldInitializers` covers `Header.init`
+against `Interpreter` and `SystemLinker`. The interpreter now handles
+`VarExp(SymbolDeclaration)` for struct initializer symbols by evaluating DMD's
+`defaultInitLiteral`, preserving explicit field initializers. In this harness
+the exact fixture was already green before the production change.
+
+**Done.** The fixture is green on `Interpreter` and `SystemLinker`, and
+`bin/bench.sh -b interpreter --dub cerealed` no longer aborts with `SIGILL`.
+Remeasure §7 immediately afterward; then proceed to the next visible class.
+
+**Post-Rung-4 remeasure.** The first remeasure exposed the next concrete
+assignment blocker in `ScopeBuffer.put`: `data[index] = value` where `data` is
+a pointer into D array storage. The standalone fixture
+`pointer.indexAssignmentWritesArrayStorage` now covers that language behaviour
+against `Interpreter` and `SystemLinker`. The interpreter routes non-native
+pointer index assignment through tracked array storage before the associative
+array slot fallback, preserves slice-parameter backing storage, and writes back
+static-array storage only after an actual tracked pointer write.
+
+The required remeasure still skips:
+
+```text
+skipping cerealed interpreter: `realloc` cannot be interpreted at compile time,
+because it has no available source code
+skipping cerealed interpreter: failing fixtures
+```
+
+So cerealed still has at least one hidden failing fixture behind the
+CTFE-style diagnostic path. Re-run §6 with failure listing before choosing the
+next standalone fixture.
+
+### 9.5 Rung 5 — `Expected integer-compatible scalar` (7×)
 
 **Contract.** The scalar-coercion failures in `encode.d`/`encode_decode.d` —
 likely enum/char/width handling where the interpreter expects a plain integer
@@ -283,7 +387,7 @@ likely enum/char/width handling where the interpreter expects a plain integer
 **Oracle fixture.** Distilled from the `encode.d:95`-style sites. **Done.**
 class gone from §7.
 
-### 9.5 Rung 5 — `Unsupported eval call` (3×)
+### 9.6 Rung 6 — `Unsupported eval call` (3×)
 
 **Contract.** The call shapes in `classes.d`/`encode.d` the dispatcher rejects
 (`impl.d` ~1837). Determine per-site whether it is an interpretable source call
@@ -292,7 +396,7 @@ latter is deferred, not built here.
 
 **Done.** Each site either interprets, or is documented as an `ffi.md` rung.
 
-### 9.6 Rung 6 — correctness bugs in existing paths
+### 9.7 Rung 7 — correctness bugs in existing paths
 
 **Contract.** The three low-count, high-suspicion classes: the corrupted
 message (suspected `wchar`/`dchar` or buffer bug), the `size_t` underflow

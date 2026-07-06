@@ -350,6 +350,14 @@ will be timed. Otherwise the checker is debugging an artifact of
 Quickbite's preparation model rather than a behaviour dub itself would
 compile.
 
+(Gate status 2026-07-06: `parseRootModules` landed 2026-06-19, so the
+deferral above no longer applies — this item is unblocked and needs
+re-prioritisation on its own merits. Related but distinct: bench.md
+"Multiple `--dub` Packages Cross-Contaminate Template Instances" shares
+the first-root instance-homing root cause; its decided fix — one forked
+child per `--dub` package — removes the cross-*package* half only. This
+per-fixture item is within a single package and is not resolved by it.)
+
 ## Next, in order
 
 1. Done (2026-06-19). `parseRootModules` implemented and `--dub`

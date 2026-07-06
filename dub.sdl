@@ -37,9 +37,12 @@ configuration "unittest" {
     targetPath "bin"
 
     mainSourceFile "tests/main.d"
-    sourcePaths "tests" "benchmarks"
+    // The frontend-free ORC loader (module namespace orc.*) lives in the
+    // top-level orc/ directory; resolving `import orc.loader` needs the
+    // directory *containing* orc/ — the package root "." — on the import path.
+    sourcePaths "tests" "benchmarks" "orc"
     sourceFiles "benchmarks/cli.d" "benchmarks/harness.d" "benchmarks/backends.d"
-    importPaths "tests" "benchmarks"
+    importPaths "tests" "benchmarks" "."
     versions "unitUnthreaded"
     // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared
     // libraries it builds.
@@ -65,8 +68,9 @@ configuration "unittest-cov" {
     targetPath "bin"
 
     mainSourceFile "tests/main.d"
-    sourcePaths "tests" "tests/coverage"
-    importPaths "tests"
+    // orc/ holds the frontend-free ORC loader; "." resolves orc.* imports.
+    sourcePaths "tests" "tests/coverage" "orc"
+    importPaths "tests" "."
     versions "unitUnthreaded"
     // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared
     // libraries it builds.
@@ -90,8 +94,9 @@ configuration "benchmark" {
     targetPath "bin"
 
     mainSourceFile "benchmarks/main.d"
-    sourcePaths "benchmarks"
-    importPaths "benchmarks"
+    // orc/ holds the frontend-free ORC loader; "." resolves orc.* imports.
+    sourcePaths "benchmarks" "orc"
+    importPaths "benchmarks" "."
     dflags "-defaultlib=libphobos2.so"
     versions "QuickbiteRuntimeLoadLibrary"
     // The native package (linked in via source/) references the ORC JIT, so
@@ -120,11 +125,12 @@ configuration "benchmark-ldc" {
     targetPath "bin"
 
     mainSourceFile "benchmarks/main.d"
-    sourcePaths "benchmarks"
+    // orc/ holds the frontend-free ORC loader; "." resolves orc.* imports.
+    sourcePaths "benchmarks" "orc"
     // The version(LDC) SystemLinker run path hands tests to the DMD-built
     // bench-exec subPackage; both sides share its run_wire module.
     sourceFiles "bench-exec/run_wire.d"
-    importPaths "benchmarks" "bench-exec"
+    importPaths "benchmarks" "bench-exec" "."
     dflags "-link-defaultlib-shared"
     versions "QuickbiteRuntimeLoadLibrary"
     // The native package (linked in via source/) references the ORC JIT, so
@@ -145,8 +151,9 @@ configuration "qb" {
     targetPath "bin"
 
     mainSourceFile "repl/main.d"
-    sourcePaths "source" "repl"
-    importPaths "source" "repl"
+    // orc/ holds the frontend-free ORC loader; "." resolves orc.* imports.
+    sourcePaths "source" "repl" "orc"
+    importPaths "source" "repl" "."
     // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared
     // libraries it builds.
     dflags "-defaultlib=libphobos2.so"

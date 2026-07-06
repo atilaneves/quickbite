@@ -613,7 +613,9 @@ private struct Compiler {
 
         if (_currentReturnType.isArray) {
             result = arrayDescriptorOffset(
-                _currentReturnType.elementType, return_.exp,
+                _currentReturnType.elementType,
+                return_.exp,
+                _currentReturnType.arrayElementsAreArrays,
             );
             hasResult = true;
         } else if (_currentReturnType.isStruct) {
@@ -626,6 +628,7 @@ private struct Compiler {
                 result = structOperandOffset(return_.exp);
             hasResult = true;
         } else if (return_.exp !is null &&
+            !_currentReturnType.isUndisplayable &&
             (_currentReturnType.isString ||
                 _currentReturnType.scalar != ScalarType.void_)) {
             result = compileExpression(return_.exp).offset;
@@ -1453,6 +1456,9 @@ private struct Compiler {
         if (auto string_ = expression.isStringExp)
             return compileStringLiteral(string_);
 
+        if (auto array = expression.isArrayLiteralExp)
+            return compileArrayLiteralExpression(array);
+
         if (auto typeid_ = expression.isTypeidExp)
             return compileTypeidExpression(typeid_);
 
@@ -1601,6 +1607,8 @@ private struct Compiler {
                 return Operand.init;
             if (declaration.declaration.isStorageClassDeclaration !is null &&
                 expressionChars(expression).startsWith("static struct "))
+                return Operand.init;
+            if (declaration.declaration.isAliasDeclaration !is null)
                 return Operand.init;
 
             // A static nested function declaration (`static int f() { ... }`
@@ -1967,7 +1975,7 @@ private struct Compiler {
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileDynamicArrayInto(
                 offset, elementType, literal,
-                dynamicArrayElementIsArray(literal.type),
+                arrayElementIsArray(literal.type),
             );
             return Operand(offset, ScalarType.void_);
         }
@@ -2927,6 +2935,11 @@ private struct Compiler {
                 *sourceOffset,
                 cast(ushort) totalSize,
             );
+            return;
+        }
+
+        if (auto literal = arrayLiteralOf(source)) {
+            compileStaticArrayLiteral(offset, variable.type, literal);
             return;
         }
 
@@ -4000,7 +4013,7 @@ private struct Compiler {
     // descriptor.
     private void compileDynamicArrayDeclaration(VarDeclaration variable) {
         const elementType = dynamicArrayElementType(variable.type);
-        const elementIsArray = dynamicArrayElementIsArray(variable.type);
+        const elementIsArray = arrayElementIsArray(variable.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _dynamicArrayLocals[variable] =
             DynamicArrayLocal(offset, elementType, elementIsArray);
@@ -4187,7 +4200,7 @@ private struct Compiler {
             ));
 
         const count = literal.elements is null ? 0 : literal.elements.length;
-        const literalElementIsArray = dynamicArrayElementIsArray(source.type);
+        const literalElementIsArray = arrayElementIsArray(source.type);
 
         // An array-of-arrays literal (`[[..], [..]]`): each element is itself an
         // array, stored as a 16-byte descriptor. Build each inner array into a
@@ -4497,12 +4510,13 @@ private struct Compiler {
     private ushort arrayDescriptorOffset(
         in ScalarType elementType,
         Expression source,
+        in bool elementIsArray = false,
     ) {
         if (auto descriptor = dynamicArrayDescriptorOrNull(source))
             return descriptor.offset;
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileDynamicArrayInto(offset, elementType, source);
+        compileDynamicArrayInto(offset, elementType, source, elementIsArray);
         return offset;
     }
 
@@ -5584,12 +5598,12 @@ private struct Compiler {
             scalarType(subtract.type) == lhs.type)
             return emitBinary(Op.subInt8, lhs, rhs, lhs.type);
 
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             subtract,
             lhs,
             rhs,
             Op.subInt4,
-            ScalarType.int_,
+            scalarType(subtract.type),
             "Unsupported subtraction in bytecode core: ",
         );
     }
@@ -6729,8 +6743,7 @@ private struct Compiler {
     }
 
     // Compile an array literal directly into an inline static-array slot,
-    // writing each element into its `index * elementSize` offset. Only a
-    // one-dimensional literal of scalar elements is needed today.
+    // writing each element into its `index * elementSize` offset.
     private void compileStaticArrayLiteral(
         in ushort offset,
         Type arrayType,
@@ -6738,24 +6751,40 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
-        auto elementType = arrayType.toBasetype.nextOf;
-        const elementIsString = isStringType(elementType);
-        const elementScalar =
-            elementIsString ? ScalarType.void_ : scalarType(elementType);
-        const elementSize = elementIsString
-            ? stringSliceSize
-            : cast(uint) size(elementScalar);
-        const elementStride = cast(uint) staticArraySize(elementType);
-
         if (literal.elements is null)
             throw new Exception(text(
                 "Unsupported static array literal in bytecode core: ",
                 expressionChars(literal),
             ));
 
+        auto elementType = arrayType.toBasetype.nextOf;
+        if (isStringType(elementType)) {
+            const elementSize = cast(uint) staticArraySize(elementType);
+            foreach (elementIndex; 0 .. literal.elements.length) {
+                auto string_ = stringLiteralOf((*literal.elements)[elementIndex]);
+                if (string_ is null)
+                    throw new Exception(text(
+                        "Unsupported static array literal element in bytecode core: ",
+                        expressionChars(literal),
+                    ));
+
+                const value = compileStringLiteral(string_);
+                _code ~= Instruction(
+                    Op.copy,
+                    cast(ushort) (offset + elementIndex * elementSize),
+                    value.offset,
+                    cast(ushort) stringSliceSize,
+                );
+            }
+            return;
+        }
+
+        const elementScalar = scalarType(elementType);
+        const elementSize = cast(uint) size(elementScalar);
+
         foreach (elementIndex; 0 .. literal.elements.length) {
             const value = compileExpression((*literal.elements)[elementIndex]);
-            if (!elementIsString && value.type != elementScalar)
+            if (value.type != elementScalar)
                 throw new Exception(text(
                     "Unsupported static array literal element in bytecode core: ",
                     expressionChars(literal),
@@ -6763,7 +6792,7 @@ private struct Compiler {
 
             _code ~= Instruction(
                 Op.copy,
-                cast(ushort) (offset + elementIndex * elementStride),
+                cast(ushort) (offset + elementIndex * elementSize),
                 value.offset,
                 cast(ushort) elementSize,
             );
@@ -7070,8 +7099,12 @@ private struct Compiler {
         const layout = parameterLayout(function_);
         if (function_.fbody is null && !layout.hasClassThis)
             throw new Exception(text(
-                "Unsupported call in bytecode core: ",
-                expressionChars(call),
+                "`",
+                function_.ident is null
+                    ? expressionChars(call)
+                    : function_.ident.toString,
+                "` cannot be interpreted at compile time, ",
+                "because it has no available source code",
             ));
 
         const index = registerFunction(function_);
@@ -9031,7 +9064,9 @@ private struct Compiler {
         import dmd.astenums: TY;
 
         if (isStringType(type))
-            return ResultType(ScalarType.void_, true);
+            return ResultType(
+                ScalarType.void_, true, false, dynamicArrayElementType(type),
+            );
 
         // A non-string dynamic array `T[]` result is a 16-byte slice
         // descriptor; `elementType` gives the element size for indexing the
@@ -9042,17 +9077,19 @@ private struct Compiler {
                 false,
                 true,
                 dynamicArrayElementType(type),
+                arrayElementIsArray(type),
                 false,
                 0,
                 false,
+                false,
                 0,
-                dynamicArrayElementSize(
-                    type,
-                    dynamicArrayElementType(type),
-                    dynamicArrayElementIsArray(type),
-                ),
-                isStringType(type.toBasetype.nextOf),
-                dynamicArrayElementIsArray(type),
+            );
+
+        if (type.toBasetype.ty == TY.Tsarray && arrayElementIsString(type))
+            return ResultType(
+                ScalarType.void_, false, true, dynamicArrayElementType(type),
+                arrayElementIsArray(type), false, cast(uint) staticArraySize(type),
+                false, true, staticArrayLength(type), arrayElementIsString(type),
             );
 
         if (type.toBasetype.ty == TY.Tsarray) {
@@ -9060,13 +9097,7 @@ private struct Compiler {
             const elementSize = cast(uint) staticArraySize(elementType);
             return ResultType(
                 ScalarType.void_, false, false, ScalarType.void_,
-                true, cast(uint) staticArraySize(type),
-                true,
-                cast(uint) (staticArraySize(type) / elementSize),
-                elementSize,
-                isStringType(elementType),
-                elementType.toBasetype.ty == TY.Tarray &&
-                    !isStringType(elementType),
+                false, true, cast(uint) staticArraySize(type),
             );
         }
 
@@ -9076,7 +9107,13 @@ private struct Compiler {
         if (type.toBasetype.ty == TY.Tstruct)
             return ResultType(
                 ScalarType.void_, false, false, ScalarType.void_,
-                true, cast(uint) staticArraySize(type),
+                false, true, cast(uint) staticArraySize(type),
+            );
+
+        if (isUndisplayableType(type))
+            return ResultType(
+                ScalarType.void_, false, false, ScalarType.void_,
+                false, false, 0, true,
             );
 
         if (isPointerType(type))
@@ -9104,12 +9141,23 @@ private struct Compiler {
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tarray)
             return scalarType(element.toBasetype.nextOf);
+        if (element.toBasetype.ty == TY.Tsarray)
+            return dynamicArrayElementType(element);
         if (element.toBasetype.ty == TY.Tpointer)
             return ScalarType.ulong_;
         if (element.toBasetype.ty == TY.Tstruct ||
             element.toBasetype.ty == TY.Tsarray)
             return ScalarType.void_;
         return scalarType(element);
+    }
+
+    private Operand compileArrayLiteralExpression(ArrayLiteralExp array) {
+        const elementType = dynamicArrayElementType(array.type);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileDynamicArrayInto(
+            offset, elementType, array, arrayElementIsArray(array.type),
+        );
+        return Operand(offset, ScalarType.void_, false, false, elementType);
     }
 
     private uint dynamicArrayElementSize(
@@ -9129,12 +9177,17 @@ private struct Compiler {
         return size(elementType);
     }
 
-    // True when a dynamic array's element is itself a dynamic array (`int[][]`):
-    // each element is a 16-byte slice descriptor rather than a scalar.
-    private bool dynamicArrayElementIsArray(Type type) {
+    // True when an array's element is itself an array (`int[][]` or
+    // `string[2]`): each element is a slice descriptor rather than a scalar.
+    private bool arrayElementIsArray(Type type) {
         import dmd.astenums: TY;
 
-        return type.toBasetype.nextOf.toBasetype.ty == TY.Tarray;
+        auto element = type.toBasetype.nextOf.toBasetype;
+        return element.ty == TY.Tarray || element.ty == TY.Tsarray;
+    }
+
+    private bool arrayElementIsString(Type type) {
+        return isStringType(type.toBasetype.nextOf);
     }
 
     // Materialise a compile-time-constant `size_t` index into a frame slot, for
@@ -10065,6 +10118,20 @@ private bool isDynamicArrayArgument(
         !isStringType(argument.type);
 }
 
+private bool isUndisplayableType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+
+    switch (type.toBasetype.ty) with (TY) {
+        case Tdelegate, Tfunction:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // True when `type` is a raw pointer `T*` (not a function pointer or delegate);
 // these flow through frame slots as a `size_t` address into VM-owned heap.
 private bool isPointerType(imported!"dmd.mtype".Type type) {
@@ -10364,6 +10431,10 @@ private uint staticArrayAlign(imported!"dmd.mtype".Type type) {
     return type.toBasetype.alignsize;
 }
 
+private uint staticArrayLength(imported!"dmd.mtype".Type type) {
+    return cast(uint) type.toBasetype.isTypeSArray.dim.toInteger;
+}
+
 // The string literal an expression denotes (through any casts), or null.
 private imported!"dmd.expression".StringExp stringLiteralOf(
     imported!"dmd.expression".Expression expression,
@@ -10372,6 +10443,15 @@ private imported!"dmd.expression".StringExp stringLiteralOf(
         return stringLiteralOf(cast_.e1);
 
     return expression.isStringExp;
+}
+
+private imported!"dmd.expression".ArrayLiteralExp arrayLiteralOf(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (auto cast_ = expression.isCastExp)
+        return arrayLiteralOf(cast_.e1);
+
+    return expression.isArrayLiteralExp;
 }
 
 private bool isDollarExpression(
