@@ -995,6 +995,43 @@ switch; `Bytecode` still defaults to the old core):
   coverage gap: the focused promotion run passed unchanged because the shared
   REPL session history already updates and exposes the `it` binding through
   the existing new-core eval path.
+- `repl.backend.failedExpressionDoesNotAdvanceLastValueBinding` and
+  `repl.backend.declarationCellsPersistWithoutDisplay` in
+  `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. These were stale
+  coverage gaps: focused promotion runs passed unchanged because failed REPL
+  expression cells already leave the previous `it` binding intact, and
+  declaration cells already persist into later expression cells without
+  producing display output.
+- `repl.backend.expressionSideEffectsPersist` and
+  `repl.backend.statementsExecuteImmediately` in `tests/ut/bin/repl.d` now
+  cover `BytecodeNewCore`. These were stale coverage gaps: focused promotion
+  runs passed unchanged because REPL declaration state already persists across
+  side-effecting expression and statement cells on the new core.
+- The next small REPL function-declaration family in `tests/ut/bin/repl.d`
+  now covers `BytecodeNewCore`: `functionDeclarationsPersistWithoutSemicolon`,
+  `replacesSameSignatureFunctionDeclarations`, `preservesFunctionOverloads`,
+  and `userDefinedFunctionDoesNotCollideWithWrapper`. These were stale
+  coverage gaps: focused promotion runs passed unchanged because queued REPL
+  function declarations, replacement, overload resolution, and wrapper-name
+  separation already work through the existing new-core eval path.
+- The next REPL declaration-buffering family in `tests/ut/bin/repl.d` now
+  covers `BytecodeNewCore`:
+  `templateFunctionDeclarationsPersistWithoutDisplay`,
+  `multilineFunctionDeclarationsBufferUntilComplete`,
+  `multilineStructDeclarationsBufferUntilComplete`,
+  `failedBufferedDeclarationDoesNotPoisonSession`, and
+  `commandsDoNotAbandonPendingInput`. These were stale coverage gaps: focused
+  promotion runs passed unchanged because templated declarations, multiline
+  declaration buffering, failed-buffer recovery, and command rejection while
+  input is pending already work through the existing new-core REPL path.
+- `repl.backend.importDeclarationsPersistWithoutDisplay` in
+  `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was a stale
+  coverage gap: the focused promotion run passed unchanged because REPL import
+  declarations already persist into later expression cells on the new-core
+  eval path. The adjacent display tests were tried and left unpromoted because
+  they still need non-trivial display/value work: delegate placeholders,
+  nested/static array literal display, wide-string suffix preservation, and
+  wide-character array rendering.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -1025,11 +1062,33 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.evaluatesExpressionCellsUntilQuit`,
 `repl.backend.skipsCommentOnlyLines`,
 `repl.backend.evaluatesStandaloneMixinExpression`, and
-`repl.backend.lastValueBindingDisplaysLatestExpressionValue`. The next
-current REPL backend block that covers old `Bytecode` but not
-`BytecodeNewCore` is
-`repl.backend.failedExpressionDoesNotAdvanceLastValueBinding`; its matrix is
-`AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block in
+`repl.backend.lastValueBindingDisplaysLatestExpressionValue`,
+`repl.backend.failedExpressionDoesNotAdvanceLastValueBinding`, and
+`repl.backend.declarationCellsPersistWithoutDisplay`,
+`repl.backend.expressionSideEffectsPersist`, and
+`repl.backend.statementsExecuteImmediately`,
+`repl.backend.functionDeclarationsPersistWithoutSemicolon`,
+`repl.backend.replacesSameSignatureFunctionDeclarations`,
+`repl.backend.preservesFunctionOverloads`, and
+`repl.backend.userDefinedFunctionDoesNotCollideWithWrapper`,
+`repl.backend.templateFunctionDeclarationsPersistWithoutDisplay`,
+`repl.backend.multilineFunctionDeclarationsBufferUntilComplete`,
+`repl.backend.multilineStructDeclarationsBufferUntilComplete`,
+`repl.backend.failedBufferedDeclarationDoesNotPoisonSession`, and
+`repl.backend.commandsDoNotAbandonPendingInput`, and
+`repl.backend.importDeclarationsPersistWithoutDisplay`. The next current REPL
+backend blocks that cover old `Bytecode` but not `BytecodeNewCore` are the
+adjacent display tests:
+`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals`,
+`repl.backend.displaysNestedArrayResults`,
+`repl.backend.displaysStaticStringArrayResults`,
+`repl.backend.displaysNestedEmptyStringValues`,
+`repl.backend.displaysWideStringValues`, and
+`repl.backend.displaysWideCharacterArrayValues`. A focused promotion attempt
+showed these require production work beyond this small import slice: delegate
+display falls through to an unsupported type, nested/static array display can
+hit unsupported array literals, some array-display cases currently produce no
+output, and wide-string display drops the `w`/`d` suffixes. No block in
 `tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
 promotion may proceed without adding a `SystemLinker` oracle first; assume the
 existing unit tests are enough to catch discrepancies while the REPL backend
