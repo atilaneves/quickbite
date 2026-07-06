@@ -12,6 +12,11 @@ public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
 
     public alias eval = Evaluator.eval;
 
+    public override bool supportsReplPreludeFormatter() const
+    @safe @nogc nothrow pure {
+        return true;
+    }
+
     public override EvalResult eval(FuncDeclaration function_) {
         string diagnostic;
         auto interpreted = interpretCtfeWithDiagnostic(

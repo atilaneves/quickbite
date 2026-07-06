@@ -200,6 +200,16 @@ of remaining-work item 1; the wiring half is untouched and every REPL
 display still runs through the interim `displayString`/`Value.toString`
 scaffolding.
 
+Progress 2026-07-06: selected expression cells now synthesize
+`__quickbiteFormat(expr)` instead of displaying the backend `Value`
+directly. `Ctfe` and `Interpreter` opt in through a backend capability; the
+frontend imports `quickbite.repl_prelude`, rewrites struct expression cells
+that need 64-bit integer suffixes, and unwraps the formatter's returned string
+at the evaluator boundary. The gate is intentionally narrow so existing range,
+delegate, null-field, function-diagnostic, enum, and scalar displays keep their
+current contracts while the `long`/`ulong` struct-field fallback moves out of
+`Value.toString`.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

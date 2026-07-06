@@ -1326,7 +1326,7 @@ public struct Value {
             (const(Array) array) {
                 auto elements = array.elements.dup;
                 elements ~= element;
-                return Value.arrayValue(elements);
+                return Value(Array(elements, array.display));
             },
             (_) {
                 throw new Exception("Expected array.");

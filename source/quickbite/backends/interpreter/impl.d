@@ -21,6 +21,11 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         loadDependencyImages(dependencyImages);
     }
 
+    public override bool supportsReplPreludeFormatter() const
+    @safe @nogc nothrow pure {
+        return true;
+    }
+
     public override EvalResult eval(FuncDeclaration function_) {
         try {
             Walker walker;
@@ -137,6 +142,9 @@ private struct Walker {
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null)
+            return;
+
+        if (statement.isSwitchErrorStatement !is null)
             return;
 
         if (returned || loopControl != LoopControl.none)
@@ -1010,6 +1018,14 @@ private struct Walker {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
                 assert(0, "concatenateElemAssign expression was not a BinExp");
+
+            return runArrayAppendAssignExpression(assign);
+        }
+
+        if (expression.op == EXP.concatenateDcharAssign) {
+            auto assign = cast(imported!"dmd.expression".BinExp) expression;
+            if (assign is null)
+                assert(0, "concatenateDcharAssign expression was not a BinExp");
 
             return runArrayAppendAssignExpression(assign);
         }
@@ -5093,11 +5109,21 @@ private struct Walker {
 
             auto current = variable in locals;
             const oldValue = current is null ? defaultValue(variable) : *current;
+            if (oldValue.isPointer) {
+                writeLocation(post.e1, oldValue.pointerOffsetBy(delta.asLong));
+                return oldValue;
+            }
             writeLocation(post.e1, oldValue + delta);
             return oldValue;
         }
 
         if (post.e1.isDotVarExp !is null) {
+            const oldValue = runExpression(post.e1);
+            writeLocation(post.e1, oldValue + delta);
+            return oldValue;
+        }
+
+        if (post.e1.isIndexExp !is null) {
             const oldValue = runExpression(post.e1);
             writeLocation(post.e1, oldValue + delta);
             return oldValue;

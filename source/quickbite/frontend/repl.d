@@ -21,8 +21,11 @@ public struct ReplCell {
 public struct ReplSession {
     private imported!"quickbite.frontend.cell".EvalSession evalSession;
 
-    public this(in string[] importPaths) {
-        evalSession = typeof(evalSession)(importPaths);
+    public this(
+        in string[] importPaths,
+        in bool formatExpressionCells = false,
+    ) {
+        evalSession = typeof(evalSession)(importPaths, formatExpressionCells);
     }
 
     public ReplCell submit(in string input) {
