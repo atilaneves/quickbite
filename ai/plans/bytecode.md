@@ -948,12 +948,12 @@ switch; `Bytecode` still defaults to the old core):
   heap aggregate allocation, class/interface dispatch, `typeid`, delegates,
   complex literals, vector splats, and integer `^^` lowering. CTFE-only
   characterization tests remain CTFE-only.
-- `tests/ut/backends/runner/ct/cerealed.d` (module order 13) now has 21
-  `BytecodeNewCore` promotion candidates passing in the current checkout (see
-  the cerealed analysis section). The two remaining SystemLinker-backed
-  AA-shaped cases, `nestedStructWritesAssociativeArrayChild` and
-  `classSerialisationReadsStaticChildRegistry`, remain unpromoted until the
-  backend supports associative-array literals with struct values, static
+- All SystemLinker-backed `tests/ut/backends/runner/ct/cerealed.d` blocks,
+  completing `cerealed.d` (module order 13) on the new core (23/23 promoted,
+  see the cerealed analysis section). The last two promoted cases were the
+  AA-shaped `nestedStructWritesAssociativeArrayChild` and
+  `classSerialisationReadsStaticChildRegistry` fixtures, which added narrow
+  support for associative-array literals with struct values, static
   associative-array storage, and delegate-valued AA lookup/invocation.
 
 The engine switch is an internal constructor parameter on `Bytecode`
@@ -965,26 +965,31 @@ dual-mode model and the `ExecutionMode` enum have been removed
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
 (5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), `structs.d` (9),
-`control_flow.d` (10), `exceptions.d` (11), and `expressions.d` (12) are now
-complete on the new core (see Rewrite Coverage State). `cerealed.d` (13) has
-21 passing `BytecodeNewCore` promotions in the current checkout; its two
-remaining SystemLinker-backed AA-shaped cases are documented but not yet
-promoted.
+`control_flow.d` (10), `exceptions.d` (11), `expressions.d` (12), and
+`cerealed.d` (13) are now complete on the new core (see Rewrite Coverage
+State).
 
-The next concrete module candidate after `cerealed.d`, per
-`ai/plans/backend-test-modules-order.md`, is `tests/ut/bin/repl.d` (module
+`tests/ut/backends/runner/rt/cstdlib.d` (module order 2) was not
+intentionally skipped. It remains an earlier outstanding module and should be
+reconciled before the rewrite is considered complete. Its current coverage is
+mixed: `Interpreter` and `SystemLinker` execute real libc behaviour for
+`atoi`, `strtol`, and `malloc.pointerRoundTrip`; `Ctfe` pins no-source
+diagnostics for libc calls; old `Bytecode` and `IR` currently cover only the
+design-driving no-source diagnostics for a future host FFI bridge. The next
+worker should decide which existing `SystemLinker`-backed runtime cases can be
+honestly promoted to `BytecodeNewCore` now, and which cases must stay deferred
+until the new core has a host FFI bridge.
+
+After `rt/cstdlib.d` is reconciled, the next concrete module candidate per
+`ai/plans/backend-test-modules-order.md` is `tests/ut/bin/repl.d` (module
 order 14). The first current REPL backend block that covers old `Bytecode`
 but not `BytecodeNewCore` is
 `repl.backend.localDeclarationsCanRebindNames`; its matrix is
-`AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`.
-No block in `tests/ut/bin/repl.d` currently includes `SystemLinker`, so REPL
-promotion is not oracle-backed under `ai/plans/single-oracle.md`.
-
-Do not promote REPL tests to `BytecodeNewCore` until the project makes an
-explicit oracle decision for REPL. The next worker assignment is to decide how
-REPL behaviours should be oracle-backed: either add/promote equivalent
-`SystemLinker` REPL coverage first, or document why the REPL surface needs a
-separate oracle policy before new-core promotion.
+`AliasSeq!(Ctfe, Interpreter, Bytecode)`, with no `SystemLinker`. No block in
+`tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
+promotion may proceed without adding a `SystemLinker` oracle first; assume the
+existing unit tests are enough to catch discrepancies while the REPL backend
+surface is brought onto `BytecodeNewCore`.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
