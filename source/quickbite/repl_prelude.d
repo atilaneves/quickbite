@@ -12,7 +12,7 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
     alias U = Unqual!T;
 
     static if (is(U == enum)) {
-        return text(U.stringof, ".", value);
+        return enumDisplay(value);
     } else static if (is(U == char) || is(U == wchar) || is(U == dchar)) {
         return characterDisplay(value);
     } else static if (is(U == string) || is(U == wstring) ||
@@ -43,6 +43,22 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
     } else {
         return text(value);
     }
+}
+
+private string enumDisplay(T)(in T value) @safe pure {
+    import std.conv: text;
+    import std.traits: Unqual;
+
+    alias U = Unqual!T;
+
+    static foreach (member; __traits(allMembers, U)) {
+        mixin(
+            "if (value == U." ~ member ~ ") " ~
+            "return \"" ~ U.stringof ~ "." ~ member ~ "\";",
+        );
+    }
+
+    return text(U.stringof, ".", value);
 }
 
 private string arrayDisplay(T)(in T value) @safe pure {

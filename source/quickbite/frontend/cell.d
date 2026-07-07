@@ -346,14 +346,36 @@ private bool expressionReturnNeedsPreludeFormat(
     if (functionType is null || functionType.next is null)
         return false;
 
-    auto returnType = functionType.next.toBasetype;
+    auto returnType = functionType.next;
     if (returnType is null)
         return false;
 
-    auto structType = returnType.isTypeStruct;
-    if (structType is null)
-        return false;
+    return typeNeedsPreludeFormat(returnType);
+}
 
+private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (type.ty == TY.Tenum)
+        return true;
+
+    auto baseType = type.toBasetype;
+    with (TY) switch (baseType.ty) {
+        case Taarray:
+            return true;
+        case Tarray, Tsarray:
+            return arrayElementNeedsPreludeFormat(baseType);
+        case Tstruct:
+            return structNeedsPreludeFormat(baseType);
+        default:
+            return false;
+    }
+}
+
+private bool structNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    auto structType = type.isTypeStruct;
     foreach (field; structType.sym.fields)
         if (field !is null && field.type !is null) {
             if (field.type.ty == TY.Tenum)
