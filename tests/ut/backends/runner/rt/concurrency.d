@@ -1,0 +1,43 @@
+module ut.backends.runner.rt.concurrency;
+
+
+import ut.backends;
+import std.algorithm.searching: canFind;
+
+
+// fearless's ut.concurrency tests evaluate thisTid (phobos
+// std.concurrency), which executes `thisInfo.ident = Tid(new MessageBox)`.
+// MessageBox is a private phobos class in a non-root module, so dmd never
+// ran semantic3 on its constructor; its fbody is a raw parse tree with
+// null expression types (ai/plans/bench-dub-corpus.md, fearless).
+enum thisTidSource = q{
+    unittest {
+        import std.concurrency: thisTid;
+
+        auto tid = thisTid;
+    }
+};
+
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+    @("concurrency.thisTid." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(thisTidSource);
+    }
+}
+
+// The interpreter must either match the oracle or raise its structured
+// unsupported diagnostic — never die: a backend crash kills the whole
+// bench process and its buffered output.
+@("concurrency.thisTid.Interpreter")
+@Tags(Interpreter.stringof)
+unittest {
+    try
+        runBackendSourceFixtureTests!Interpreter(thisTidSource);
+    catch (Exception exception) {
+        const structured =
+            exception.msg.canFind("Unsupported") ||
+            exception.msg.canFind("no available source");
+        assert(structured, exception.msg);
+    }
+}

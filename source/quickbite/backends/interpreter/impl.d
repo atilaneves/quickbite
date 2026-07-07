@@ -4960,6 +4960,14 @@ private struct Walker {
             if (hasNoAvailableSource(new_.member))
                 return runNewStructNativeConstructor(new_, targetType, structVal);
 
+            // A non-root-module constructor may still be a raw parse tree;
+            // resolve its body before walking it.
+            {
+                import dmd.funcsem: functionSemantic3;
+                if (!functionSemantic3(new_.member))
+                    throw new Exception(text("Unsupported eval expression: ", new_.op));
+            }
+
             // User-defined constructor: run it and capture the resulting this.
             Value[] arguments;
             if (new_.arguments !is null)
@@ -5058,6 +5066,14 @@ private struct Walker {
 
         if (isThrowableConstructor(new_.member))
             return applyThrowableConstructor(object, arguments);
+
+        // A non-root-module constructor (e.g. a private phobos class) may
+        // still be a raw parse tree; resolve its body before walking it.
+        {
+            import dmd.funcsem: functionSemantic3;
+            if (!functionSemantic3(new_.member))
+                throw new Exception(text("Unsupported eval expression: ", new_.op));
+        }
 
         Walker child;
         child.runningCalledFunction = true;
