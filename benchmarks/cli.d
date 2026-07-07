@@ -546,8 +546,13 @@ public string renderPreparationSection(in PreparationRecord[] records) {
 DubInfo resolveDubPkg(in string name) {
     import quickbite.dub:
         buildDubDependencyImage, dubBuild, dubCompilerArguments, dubDescribe;
+    import std.path: baseName, expandTilde;
 
     const pkgDir = findPkgDir(name);
+    // A path argument (local checkout) names the package by its directory;
+    // for registry names baseName is a no-op. The bare name goes into build
+    // messages and the dependency image filename, which cannot hold slashes.
+    const packageName = name.expandTilde.baseName;
 
     // Everything below is asked of dub and forwarded to the frontend verbatim:
     // the import paths, the source files dub compiles for the unittest config,
@@ -557,7 +562,7 @@ DubInfo resolveDubPkg(in string name) {
     const sourceFiles = dubDescribe(pkgDir, "source-files");
 
     // Build so the dependency archives exist on disk for the dependency image.
-    dubBuild(name, pkgDir);
+    dubBuild(packageName, pkgDir);
     auto dependencyArchives = dubDescribe(pkgDir, "linker-files");
 
     // dub's own external link inputs for the package: `libs` are system C
@@ -568,7 +573,7 @@ DubInfo resolveDubPkg(in string name) {
     const linkerFlags = dubDescribe(pkgDir, "lflags");
 
     return dubInfoFromDescribeData(
-        name,
+        packageName,
         pkgDir,
         importPaths,
         dependencyArchives,
