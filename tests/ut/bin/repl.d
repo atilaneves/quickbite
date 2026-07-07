@@ -1437,6 +1437,25 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 // Bytecode and BytecodeNewCore do not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.stringFieldsRenderWithLiteralSuffixes." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Person { string name; wstring label; }",
+                `Person("Bob", "wide"w)`,
+                ":q",
+            ],
+        );
+
+        output.should == [`Person("Bob", "wide"w)`];
+    }
+}
+
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.nullPointerFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -1474,6 +1493,25 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         );
 
         output.should == ["Inner(3)"];
+    }
+}
+
+// Bytecode and BytecodeNewCore do not yet reify struct results for display.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.assocArrayFieldsRenderElementSuffixes." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Lookup { long[string] values; }",
+                `Lookup(["answer": 42L])`,
+                ":q",
+            ],
+        );
+
+        output.should == [`Lookup(["answer":42L])`];
     }
 }
 
