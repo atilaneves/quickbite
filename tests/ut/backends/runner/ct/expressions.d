@@ -1270,6 +1270,77 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+// `&call()` of a ref-returning function is AddrExp(CallExp); the interpreter
+// must run the call and yield the address of the returned lvalue, aliasing
+// the caller's argument so writes through the pointer stick.  automem's
+// vector tests hit this on every `theAllocator` fetch.
+enum addressOfRefReturningCallSource = q{
+    ref int self(ref int x) { return x; }
+
+    unittest {
+        int i = 1;
+        int* p = &self(i);
+        *p = 42;
+        assert(i == 42);
+        assert(*p == 42);
+    }
+};
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.addressOfRefReturningCallAliasesArgument." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(addressOfRefReturningCallSource);
+    }
+}
+
+// BytecodeNewCore cannot take the address of a ref-returning call yet; pin
+// its structured diagnostic rather than dropping it from the matrix.
+static foreach (backend; AliasSeq!(BytecodeNewCore)) {
+    @("pointer.addressOfRefReturningCallAliasesArgument." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(addressOfRefReturningCallSource)
+            .shouldThrowWithMessage("Unsupported expression in bytecode core: &self(i)");
+    }
+}
+
+// A ref-returning ternary lowers to `*(cond ? &a : &fallback(b))`, so even
+// reading the call as an rvalue evaluates AddrExp(CallExp).  phobos'
+// `theAllocator` (`!p.isNull() ? p : setupThreadAllocator()`) is this shape.
+enum refTernaryReturnSource = q{
+    ref int fallback(ref int b) { return b; }
+    ref int pick(bool first, ref int a, ref int b) {
+        return first ? a : fallback(b);
+    }
+
+    unittest {
+        int x = 1;
+        int y = 2;
+        assert(pick(false, x, y) == 2);
+        assert(pick(true, x, y) == 1);
+    }
+};
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.refTernaryReturnLowersToAddressOfCall." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(refTernaryReturnSource);
+    }
+}
+
+// BytecodeNewCore cannot take the address of a ref-returning call yet; pin
+// its structured diagnostic rather than dropping it from the matrix.
+static foreach (backend; AliasSeq!(BytecodeNewCore)) {
+    @("pointer.refTernaryReturnLowersToAddressOfCall." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(refTernaryReturnSource)
+            .shouldThrowWithMessage("Unsupported expression in bytecode core: &fallback(b)");
+    }
+}
+
 // `new S` of a struct with a dynamic-array field passes the field's `null`
 // default initialiser as a positional argument; the interpreter must store it
 // as an empty array so a null array's `.length` is 0 (compiled D:
