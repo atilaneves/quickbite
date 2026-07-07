@@ -1542,6 +1542,8 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _staticArrayLocals)
                     return Operand(*existing, ScalarType.void_);
+            if (auto descriptor = dynamicArrayDescriptorOrNull(expression))
+                return Operand(descriptor.offset, ScalarType.void_);
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _withDerefBases) {
                     const offset =
@@ -1624,6 +1626,8 @@ private struct Compiler {
                 expressionChars(expression).startsWith("static struct "))
                 return Operand.init;
             if (declaration.declaration.isAliasDeclaration !is null)
+                return Operand.init;
+            if (declaration.declaration.isTemplateDeclaration !is null)
                 return Operand.init;
 
             // A static nested function declaration (`static int f() { ... }`
@@ -2161,6 +2165,30 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto descriptor = declaration in _dynamicArrayLocals)
                     return descriptor;
+
+        if (_hasNestedContext)
+            if (auto variable = expression.isVarExp)
+                if (auto declaration = variable.var.isVarDeclaration)
+                    if (auto captured = declaration in _capturedOffsets)
+                        if (declaration.type.toBasetype.ty == TY.Tarray &&
+                            !isStringType(declaration.type))
+                        {
+                            const offset = allocateBytes(
+                                sliceDescriptorSize, size_t.sizeof,
+                            );
+                            _code ~= Instruction(
+                                Op.frameLoad,
+                                offset,
+                                capturedFrameIndex(*captured),
+                                cast(ushort) sliceDescriptorSize,
+                            );
+                            auto result = new DynamicArrayLocal;
+                            *result = DynamicArrayLocal(
+                                offset,
+                                dynamicArrayElementType(declaration.type),
+                            );
+                            return result;
+                        }
 
         if (auto staticArray = staticArrayOffsetOf(expression)) {
             const elementType = dynamicArrayElementType(expression.type);
@@ -3451,9 +3479,17 @@ private struct Compiler {
         if (!resolved)
             return null;
 
+        const nestedThisFieldOffset =
+            (dot.e1.isThisExp !is null || dot.e1.isSuperExp !is null) &&
+                _hasThis &&
+                _thisLocal.declaration !is null &&
+                _thisLocal.declaration.isNested
+            ? size_t.sizeof
+            : 0;
         auto result = new StructField;
         *result = StructField(
-            cast(ushort) (base + field.offset), field.type,
+            cast(ushort) (base + nestedThisFieldOffset + field.offset),
+            field.type,
         );
         return result;
     }
@@ -4005,6 +4041,7 @@ private struct Compiler {
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _dynamicArrayLocals[variable] =
             DynamicArrayLocal(offset, elementType, elementIsArray);
+        _capturedOffsets[variable] = offset;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -6041,6 +6078,18 @@ private struct Compiler {
                 return Operand(value.offset, scalarType(field.type));
             }
 
+        if (isDynamicArrayArgument(assign.e1))
+            if (auto descriptor = dynamicArrayDescriptorOrNull(assign.e1)) {
+                compileDynamicArrayInto(
+                    descriptor.offset,
+                    descriptor.elementType,
+                    assign.e2,
+                    descriptor.elementIsArray,
+                );
+                writeBackDynamicArrayDescriptor(*descriptor);
+                return Operand(descriptor.offset, ScalarType.void_);
+            }
+
         auto variable = assign.e1.isVarExp;
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
@@ -7122,11 +7171,23 @@ private struct Compiler {
             if (auto emplaced = compileEmplace(call))
                 return *emplaced;
 
+        if (function_ !is null && function_.ident !is null &&
+            function_.ident.toString == "emplaceRef")
+            if (auto emplaced = compileEmplaceRef(call))
+                return *emplaced;
+
+        if (function_ !is null && function_.ident !is null &&
+            function_.ident.toString == "emplaceInitializer")
+            return Operand.init;
+
         // `_d_arraybounds*` is the bounds-failure helper in DMD's `m[k]`
         // lowering (`slot ? slot : (_d_arraybounds(...), null)`); reaching it
         // means the key was absent, so raise the plain "Range violation".
         if (function_ !is null && isArrayBoundsCall(function_))
             return compileRangeViolation;
+
+        if (function_ !is null && isNewArrayRuntimeCall(function_))
+            return compileNewArrayRuntimeCall(call);
 
         if (function_ !is null)
             if (auto builtin = compileBuiltinCall(call, function_))
@@ -7517,6 +7578,43 @@ private struct Compiler {
         auto result = new Operand;
         *result = destination;
         return result;
+    }
+
+    private Operand* compileEmplaceRef(CallExp call) {
+        if (call.arguments is null || call.arguments.length < 2)
+            return null;
+
+        auto index = (*call.arguments)[0].isIndexExp;
+        if (index is null)
+            return null;
+
+        if (auto stored =
+                tryDynamicArrayElementAssign(index, (*call.arguments)[1]))
+            return stored;
+
+        return null;
+    }
+
+    private Operand compileNewArrayRuntimeCall(CallExp call) {
+        import std.conv: text;
+
+        if (call.arguments is null || call.arguments.length == 0 ||
+            !isDynamicArrayArgument(call))
+            throw new Exception(text(
+                "Unsupported new array runtime call in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const length = compileExpression((*call.arguments)[0]);
+        const elementType = dynamicArrayElementType(call.type);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.allocArrayDynamic,
+            offset,
+            packedFill(elementType),
+            length.offset,
+        );
+        return Operand(offset, ScalarType.void_);
     }
 
     private Expression immediateLambdaReturn(CallExp call) {
@@ -10211,6 +10309,15 @@ private bool isArrayBoundsCall(
 
     return function_.ident !is null &&
         function_.ident.toString.startsWith("_d_arraybounds");
+}
+
+private bool isNewArrayRuntimeCall(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    return function_.ident !is null &&
+        (function_.ident.toString == "_d_newarrayU" ||
+            function_.ident.toString == "arrayAllocImpl" ||
+            function_.ident.toString == "uninitializedArray");
 }
 
 // True for the druntime `core.internal.array.operations.arrayOp` template
