@@ -16,10 +16,15 @@ package(quickbite.backends.bytecode) struct RunResult {
     ubyte[][] heap;
 }
 
+package(quickbite.backends.bytecode) struct GlobalStorage {
+    ubyte[][const(void)*] blocks;
+}
+
 // Executes the program's entry function and returns the raw bytes of its
 // result (empty for void), plus heap roots for result descriptors.
 package(quickbite.backends.bytecode) RunResult run(
     ref imported!"quickbite.backends.bytecode.core.program".Program program,
+    ref GlobalStorage globalStorage,
     scope CompileFunction compileFunction,
 ) {
     import quickbite.backends.bytecode.core.program:
@@ -386,6 +391,26 @@ package(quickbite.backends.bytecode) RunResult run(
                     ];
                 ++ip;
                 break;
+
+            case globalLoad: {
+                const global =
+                    globalBlock(program, globalStorage, instruction.b);
+                stack[
+                    base + instruction.a .. base + instruction.a + instruction.c
+                ] = global[0 .. instruction.c];
+                ++ip;
+                break;
+            }
+
+            case globalStore: {
+                auto global =
+                    globalBlock(program, globalStorage, instruction.b);
+                global[0 .. instruction.c] = stack[
+                    base + instruction.a .. base + instruction.a + instruction.c
+                ];
+                ++ip;
+                break;
+            }
 
             case frameBaseIndex:
                 writeScalar!size_t(stack, base + instruction.a, base);
@@ -1611,6 +1636,23 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
         }
     }
+}
+
+private ubyte[] globalBlock(
+    ref imported!"quickbite.backends.bytecode.core.program".Program program,
+    ref GlobalStorage globalStorage,
+    in ushort index,
+) @safe {
+    const slot = program.globals[index];
+    if (auto existing = slot.key in globalStorage.blocks)
+        return *existing;
+
+    auto block = new ubyte[](slot.size);
+    block[] = program.data[
+        slot.initialOffset .. slot.initialOffset + slot.size
+    ];
+    globalStorage.blocks[slot.key] = block;
+    return block;
 }
 
 private void writeBackUnwoundFrames(

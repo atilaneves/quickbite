@@ -315,6 +315,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     greaterThanUnsigned8,
     greaterOrEqualUnsigned8,
     copy, // a: destination frame offset, b: source frame offset, c: size
+    // Copy `c` bytes between a frame slot and a persistent module-level
+    // variable slot: a is the frame offset, b is the Program.globals index.
+    globalLoad,
+    globalStore,
     // Write the absolute stack index of the current frame's base (`base`) as a
     // raw `size_t` word into frame offset a. Backs a nested struct's hidden
     // context pointer (`vthis`), which records the enclosing function's frame so
@@ -586,11 +590,18 @@ package(quickbite.backends.bytecode) struct CatchClause {
     ushort handlerIp;
 }
 
+package(quickbite.backends.bytecode) struct GlobalSlot {
+    const(void)* key;
+    uint initialOffset;
+    ushort size;
+}
+
 package(quickbite.backends.bytecode) struct Program {
     CompiledFunction[] functions; // index 0 is the entry function
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
     ubyte[real.sizeof][] realConstants; // raw bytes for 16-byte real literals
     ubyte[] data; // read-only segment holding string-literal bytes
+    GlobalSlot[] globals;
     AssertDiagnostic[] assertDiagnostics;
     ClassInfo[] classes;
     CatchClause[] catchClauses;

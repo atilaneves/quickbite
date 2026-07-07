@@ -32,7 +32,7 @@ private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
-        Instruction, Op, Program,
+        GlobalSlot, Instruction, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
         VirtualFunction, isSigned,
         noCatchObjectField, noExceptionClass, size, sliceDescriptorSize,
@@ -64,6 +64,7 @@ private struct Compiler {
     // frame space (and any `_frameOffset` rewind) never under-size the frame.
     private uint _peakFrameOffset;
     private ushort[VarDeclaration] _locals;
+    private ushort[VarDeclaration] _globals;
     private bool[VarDeclaration] _stringLocals; // locals holding a string slice
     // Locals whose slot is a static array `T[N]` stored inline in the frame;
     // the value records the slot offset for indexing and block copies.
@@ -1539,6 +1540,9 @@ private struct Compiler {
                     return Operand(*existing, scalarType(declaration.type));
                 }
             if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration.isDataseg)
+                    return compileGlobalLoad(declaration);
+            if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _staticArrayLocals)
                     return Operand(*existing, ScalarType.void_);
             if (auto declaration = variable.var.isVarDeclaration)
@@ -2447,6 +2451,11 @@ private struct Compiler {
             return;
         }
 
+        if (variable.isDataseg) {
+            registerGlobal(variable);
+            return;
+        }
+
         // A static array `T[N]` is a value type stored inline in the frame at
         // its DMD-computed size and alignment; no heap, no slice descriptor.
         if (variable.type.toBasetype.ty == TY.Tsarray) {
@@ -2563,6 +2572,79 @@ private struct Compiler {
             operand.offset,
             cast(ushort) slotSize,
         );
+    }
+
+    private Operand compileGlobalLoad(VarDeclaration variable) {
+        const type = scalarType(variable.type);
+        const offset = allocate(type);
+        _code ~= Instruction(
+            Op.globalLoad,
+            offset,
+            registerGlobal(variable),
+            cast(ushort) size(type),
+        );
+        return Operand(offset, type);
+    }
+
+    private Operand compileGlobalAssign(
+        VarDeclaration variable,
+        AssignExp assign,
+    ) {
+        import std.conv: text;
+
+        const type = scalarType(variable.type);
+        const rhs = compileExpression(assign.e2);
+        if (rhs.type != type)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(assign),
+            ));
+
+        _code ~= Instruction(
+            Op.globalStore,
+            rhs.offset,
+            registerGlobal(variable),
+            cast(ushort) size(type),
+        );
+        return Operand(rhs.offset, type);
+    }
+
+    private ushort registerGlobal(VarDeclaration variable) {
+        if (auto existing = variable in _globals)
+            return *existing;
+
+        const type = scalarType(variable.type);
+        const byteCount = size(type);
+        const initialOffset = _program.data.length;
+        appendGlobalInitialBytes(variable, byteCount);
+
+        const index = _program.globals.length;
+        _program.globals ~= GlobalSlot(
+            cast(const(void)*) variable,
+            cast(uint) initialOffset,
+            cast(ushort) byteCount,
+        );
+        _globals[variable] = cast(ushort) index;
+        return cast(ushort) index;
+    }
+
+    private void appendGlobalInitialBytes(
+        VarDeclaration variable,
+        in uint byteCount,
+    ) {
+        auto bytes = new ubyte[](byteCount);
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer !is null)
+            if (auto integer =
+                    initializerExpression(initializer.exp).isIntegerExp) {
+                const bits = integer.toInteger;
+                foreach (index; 0 .. byteCount)
+                    bytes[index] = cast(ubyte) (bits >> (index * 8));
+            }
+
+        _program.data ~= bytes;
     }
 
     private bool compileRefLocalDeclaration(VarDeclaration variable) {
@@ -6034,6 +6116,8 @@ private struct Compiler {
         if (slot is null && _hasNestedContext && declaration !is null)
             if (auto captured = declaration in _capturedOffsets)
                 return compileCapturedAssign(declaration, *captured, assign);
+        if (slot is null && declaration !is null && declaration.isDataseg)
+            return compileGlobalAssign(declaration, assign);
         if (slot !is null)
             if (auto element = declaration in _refLocalPointers)
                 return storeThroughPointer(

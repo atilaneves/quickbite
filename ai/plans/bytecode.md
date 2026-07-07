@@ -1254,6 +1254,24 @@ execution). The current backlog for this track, in order:
    blocks that fail on `Unsupported ref argument` / `Unsupported type`),
    and associative-array execution through the druntime template lowerings
    (slice 7).
+
+   Investigation 2026-07-07: promoting
+   `repl.backend.moduleLevelVariablesAreVisibleToFunctions` to
+   `BytecodeNewCore` reaches the `counter = 5` REPL cell and fails with
+   `Unsupported assignment in bytecode core`. The missing bytecode behaviour
+   is storing through an assignment expression into a persisted module-level
+   variable, so a separately declared REPL function can later read the updated
+   module storage.
+
+   Implementation 2026-07-07: `BytecodeNewCore` now lowers scalar
+   module-level storage to backend-session-owned byte slots keyed by the DMD
+   data-segment symbol, with `globalLoad`/`globalStore` opcodes for reads and
+   assignments. This is deliberately scalar-only and does not extend display
+   scaffolding.
+   Verification passed with `ninja bin/ut`, the focused
+   `moduleLevelVariablesAreVisibleToFunctions.BytecodeNewCore` test, and
+   `bin/ut --random` (seed `1233199987`, `2873 test(s) run, 0 failed, 6/6
+   failing as expected`).
 2. Slice 8, native runtime: the outbound host FFI bridge — which also
    unblocks the deferred `rt/cstdlib.d` runtime rows above.
 3. Slice 9, classes.

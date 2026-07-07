@@ -5,10 +5,12 @@ private:
 public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
     import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
+    import quickbite.backends.bytecode.core.machine: GlobalStorage;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
     private immutable Engine _engine;
+    private GlobalStorage _globalStorage;
 
     public alias eval = Evaluator.eval;
 
@@ -47,7 +49,11 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
         return displayEvalResult(() {
             auto compilation = compile(function_);
             auto result =
-                run(*compilation.program, compilation.compileFunction);
+                run(
+                    *compilation.program,
+                    _globalStorage,
+                    compilation.compileFunction,
+                );
             return reify(
                 result.bytes,
                 compilation.program.functions[0].returnType,
