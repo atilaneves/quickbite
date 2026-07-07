@@ -3885,6 +3885,25 @@ bin/ut "$test_name"
 
 Result: 1 test run, 0 failed.
 
+The adjacent nullable-field struct-display REPL family now includes
+`BytecodeNewCore`:
+
+- `nullFunctionPointerFieldRendersAsNull`
+- `nullDelegateFieldRendersAsNull`
+- `nullClassFieldRendersAsNull`
+- `nullPointerFieldRendersAsNull`
+- `nestedStructOmitsSyntheticContextField`
+
+This was not stale coverage. The promotion exposed that struct display metadata
+treated every non-scalar field as making the whole struct undisplayable, and
+that null delegate fields in struct literals still fell through to unsupported
+scalar lowering. `BytecodeNewCore` now records scalar fields, nullable one-word
+fields (raw pointers, function pointers, and class references), and nullable
+delegate fields separately. Reification renders only all-zero nullable fields
+as `null`; non-null nullable fields remain `<undisplayable>` until pointer,
+class, function-pointer, and delegate value display is implemented. DMD's
+synthetic nested-struct context field is omitted from display metadata.
+
 Review follow-up for PR #343: replace the new enum-reification `ResultType`
 literals with named factories on `ResultType`, and generate the scalar enum
 lookup switch arms from D type names with string mixins. This keeps the
