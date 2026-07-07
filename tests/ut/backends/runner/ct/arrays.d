@@ -1438,6 +1438,71 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// A slice assignment through a D pointer must write the pointed-at array
+// storage, not sever the aliasing (ai/plans/bench-dub-corpus.md, cerealed
+// mode 2: the silently lost write).
+enum pointerSliceAssignSource = q{
+    unittest {
+        char[8] tmp;
+        auto p = tmp.ptr;
+
+        p[2 .. 5] = "abc";
+
+        assert(tmp[3] == 'b');
+    }
+};
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.sliceAssignmentWritesArrayStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(pointerSliceAssignSource);
+    }
+}
+
+// BytecodeNewCore cannot take the address of a static array yet; pin its
+// structured diagnostic rather than dropping it from the matrix.
+static foreach (backend; AliasSeq!(BytecodeNewCore)) {
+    @("pointer.sliceAssignmentWritesArrayStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(pointerSliceAssignSource)
+            .shouldThrowWithMessage("Unsupported expression in bytecode core: & tmp");
+    }
+}
+
+// An indexed write through a local pointer into a `= void` static array
+// (ai/plans/bench-dub-corpus.md, cerealed mode 3 sibling finding).
+enum pointerIndexAssignVoidInitSource = q{
+    unittest {
+        char[8] tmp = void;
+        auto p = tmp.ptr;
+
+        p[0] = 'x';
+
+        assert(tmp[0] == 'x');
+    }
+};
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.indexAssignmentWritesVoidInitialisedArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(pointerIndexAssignVoidInitSource);
+    }
+}
+
+// BytecodeNewCore cannot run `= void` initializers yet; pin its structured
+// diagnostic rather than dropping it from the matrix.
+static foreach (backend; AliasSeq!(BytecodeNewCore)) {
+    @("pointer.indexAssignmentWritesVoidInitialisedArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(pointerIndexAssignVoidInitSource)
+            .shouldThrowWithMessage("Unsupported initializer in bytecode core: tmp");
+    }
+}
+
 // Bytecode ("Unsupported expression `rows.length`"), BytecodeNewCore
 // ("Unsupported type in bytecode core: int[][]"), and IR (unsupported nested
 // array literal) cannot run jagged arrays.

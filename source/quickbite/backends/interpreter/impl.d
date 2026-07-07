@@ -1473,6 +1473,12 @@ private struct Walker {
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
         if (isStaticArrayType(variable.type)) {
+            // Taking the address of a still-void static array materialises
+            // its storage (as aggregate reads do) so writes through the
+            // pointer have somewhere to land.
+            if (variable in uninitializedLocals && variable !in locals)
+                locals[variable] = defaultValue(variable);
+
             if (auto current = variable in locals) {
                 import dmd.typesem: size;
 
@@ -4026,7 +4032,11 @@ private struct Walker {
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
+        import quickbite.frontend.dmd.types: isPointerType;
         import std.conv: text;
+
+        if (isPointerType(slice.e1.type))
+            return runPointerSliceAssignExpression(slice, rhs);
 
         auto var = slice.e1.isVarExp;
         if (var is null) {
@@ -4071,6 +4081,59 @@ private struct Walker {
         locals[variable] = Value.arrayValue(elements);
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    // A slice assignment through a pointer (`p[i .. j] = source`) writes
+    // element by element through the pointer — native memory via the FFI
+    // store, D array storage via the tracked pointer — and never converts
+    // the lvalue to a detached Array, which would silently sever aliasing.
+    private Value runPointerSliceAssignExpression(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import std.conv: text;
+
+        const pointer = runExpression(slice.e1);
+        if (slice.lwr is null || slice.upr is null)
+            throw new Exception(text(
+                "Unsupported interpreter assignment target: slice of ",
+                slice.e1.op,
+            ));
+
+        const lower = cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = cast(size_t) runExpression(slice.upr).asLong;
+
+        const block = isBlockSliceAssignment(slice, rhs);
+        const value = runExpression(rhs);
+
+        Value elementAt(in size_t index) {
+            return block ? copyArrayValue(value) : value[index];
+        }
+
+        if (pointer.isNativePointer) {
+            foreach (index; 0 .. upper - lower)
+                storeNativePointerElement(
+                    slice.e1.type,
+                    pointer,
+                    lower + index,
+                    elementAt(index),
+                );
+            return value;
+        }
+
+        if (canWriteThroughArrayPointer(pointer)) {
+            foreach (index; 0 .. upper - lower)
+                writeThroughArrayPointer(
+                    pointer.pointerOffsetBy(cast(long) (lower + index)),
+                    elementAt(index),
+                );
+            return value;
+        }
+
+        throw new Exception(text(
+            "Unsupported interpreter assignment target: slice of ",
+            slice.e1.op,
+        ));
     }
 
     private void rejectOverlappingSliceAssignment(
