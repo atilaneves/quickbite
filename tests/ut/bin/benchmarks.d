@@ -386,36 +386,66 @@ unittest {
     ) !is null);
 }
 
-@("results.RejectsDisagreeingBackends")
+@("results.DisagreeingUnitIsSkippedNotFatal")
 unittest {
     Runner[string] runners;
-    runners["good"] = new FixedVerdictRunner(null);
-    runners["bad"] = new FixedVerdictRunner("1 != 2");
+    runners["good"] = new IndexedFailureRunner(99);
+    runners["bad"] = new IndexedFailureRunner(0);
 
-    checkRunnerResults(
+    const checkedResults = checkRunnerResults(
         runners,
         ["good", "bad"],
-        [standaloneUnit("fixture", testModule)],
-    )
-        .shouldThrow;
+        [
+            standaloneUnit("disagreeing", testModule),
+            standaloneUnit("agreeing", testModule),
+        ],
+    );
+
+    // The disagreeing unit is skipped (not timed on any backend) instead of
+    // aborting the whole bench...
+    assert(pairKey("disagreeing", "good") !in checkedResults);
+    assert(pairKey("disagreeing", "bad") !in checkedResults);
+
+    // ...and later units still run and record their results.
+    checkedResults[pairKey("agreeing", "good")][0].passed.should == true;
+    checkedResults[pairKey("agreeing", "bad")][0].passed.should == true;
 }
 
-@("results.MultiBackendReportsErroredBackendNotFakeCount")
+@("results.ErroredBackendSkipsUnitNotFatal")
 unittest {
     Runner[string] runners;
     runners["good"]   = new FixedVerdictRunner(null);
     runners["crashy"] = new ThrowingRunner("JIT child died (signal 11)");
 
-    // A backend that crashed never ran the benchmark, so it must be reported as
-    // errored, not as a fabricated one-result "disagreement" (the old "N vs 1").
-    checkRunnerResults(
+    const checkedResults = checkRunnerResults(
         runners,
         ["good", "crashy"],
         [standaloneUnit("fixture", testModule)],
-    )
-        .shouldThrowWithMessage(
-            "backend crashy errored on fixture: JIT child died (signal 11)",
-        );
+    );
+
+    // A backend that errored never ran the benchmark: the unit is reported
+    // and skipped for every backend instead of killing the whole bench.
+    assert(pairKey("fixture", "good") !in checkedResults);
+    assert(pairKey("fixture", "crashy") !in checkedResults);
+}
+
+@("testResultsMismatches.listsEveryMismatch")
+unittest {
+    const expected = [
+        TestResult(true, "t0", "loc", null),
+        TestResult(true, "t1", "loc", null),
+        TestResult(true, "t2", "loc", null),
+    ];
+    const actual = [
+        TestResult(false, "t0", "loc", "1 != 2"),
+        TestResult(true, "t1", "loc", null),
+        TestResult(false, "t2", "loc", "3 != 4"),
+    ];
+
+    testResultsMismatches(expected, actual).should == [
+        "test t0 passes vs fails: 1 != 2",
+        "test t2 passes vs fails: 3 != 4",
+    ];
 }
 
 @("results.SingleBackendSelfCheckRecordsFailure")
