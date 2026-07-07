@@ -444,7 +444,7 @@ final class Compiler {
                 filePath.readText,
             );
             if (result.diagnostics.hasErrors)
-                throw new Exception(diagnosticMessage);
+                throw new Exception(diagnosticMessageWithLocations);
             modules ~= result.module_;
         }
 
@@ -459,7 +459,7 @@ final class Compiler {
         foreach (m; modules) m.semantic3(null);
         runDeferredSemantic3;
         if (global.errors != 0)
-            throw new Exception(diagnosticMessage);
+            throw new Exception(diagnosticMessageWithLocations);
 
         captured.replay;
 
@@ -944,6 +944,33 @@ public string diagnosticMessage() {
     const messages = diagnostics
         .filter!(diagnostic => diagnostic.kind == ErrorKind.error)
         .map!(diagnostic => diagnostic.message)
+        .array;
+
+    if (messages.length == 0)
+        return "DMD reported an error without a diagnostic message.";
+
+    return messages.join("\n");
+}
+
+// Like diagnosticMessage, but each message keeps its dmd-style source
+// location ("file(line,column): ..."). Used where the message identifies a
+// place in real package source (the dub bench preparation note) rather than
+// a throwaway snippet.
+public string diagnosticMessageWithLocations() {
+    import dmd.errors: diagnostics, ErrorKind;
+    import std.algorithm.iteration: filter, map;
+    import std.array: array, join;
+    import std.conv: text;
+
+    const messages = diagnostics
+        .filter!(diagnostic => diagnostic.kind == ErrorKind.error)
+        .map!(diagnostic => diagnostic.loc.filename.length == 0
+            ? diagnostic.message
+            : text(
+                diagnostic.loc.filename,
+                "(", diagnostic.loc.line, ",", diagnostic.loc.column, "): ",
+                diagnostic.message,
+            ))
         .array;
 
     if (messages.length == 0)

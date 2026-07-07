@@ -25,6 +25,20 @@ public class NativeCallException: Exception {
 // a buffer sized to the matching ffi_type; `readResult`/`writeOutParameter`
 // reify the return and out-parameter bytes into backend-owned state.
 public interface NativeMarshaller {
+    // Which way a value crosses the boundary: toNative marshals a backend
+    // value into ABI bytes (arguments, receivers, out-cell inputs); fromNative
+    // reifies ABI bytes into a backend value (returns, out-cell writebacks).
+    enum Direction {
+        toNative,
+        fromNative,
+    }
+
+    // Whether the backend can cross `type` in the given direction. The
+    // marshaller owns representability (ffi.md §35.8): the core consults this
+    // before ffi_prep_cif so type-mapper/marshaller drift degrades to the
+    // graceful no-available-source diagnostic instead of a post-call assert.
+    bool canRepresent(imported!"dmd.mtype".Type type, in Direction direction);
+
     void fillArgument(
         ubyte[] buffer,
         imported!"dmd.mtype".Type type,
@@ -48,6 +62,19 @@ public interface NativeMarshaller {
         in size_t index,
         imported!"dmd.mtype".Type pointedToType,
         in ubyte[] cell,
+    );
+
+    // Marshal the argument's current pointed-to value into a freshly allocated
+    // out-parameter cell before the call (ffi.md §35.6): an in-out scalar or a
+    // read-through pointer input must see the caller's value, not zeroes. The
+    // `&local` disambiguation governs only writeback, never input suppression.
+    void fillOutParameterCell(
+        ubyte[] cell,
+        imported!"dmd.mtype".Type pointedToType,
+        in size_t index,
+        in bool stableString,
+        ref const(char)*[] keepAlive,
+        ref ubyte[][] keepAliveBuffers,
     );
 
     // The receiver object pointer for a class member call: the class reference
@@ -109,6 +136,34 @@ public bool callNativeMember(
     );
 }
 
+// Call a native delegate reified from a native return value (ffi.md §35.8):
+// the inverse of the §34.16 closure trampoline. The funcptr is invoked with
+// the context pointer leading and the extern(D) explicit arguments reversed;
+// there is no symbol resolution, the pair already names the code to run.
+public bool callNativeDelegate(
+    imported!"dmd.mtype".TypeFunction type,
+    const void* funcptr,
+    const void* context,
+    NativeMarshaller marshaller,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+) {
+    import dmd.astenums: LINK;
+
+    if (type is null || funcptr is null)
+        return false;
+
+    return callViaLibffi(
+        LINK.d,
+        type,
+        funcptr,
+        NativeThis.fromRawContext(context),
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+    );
+}
+
 // A member call on a native class reference (ffi.md §34.12). The receiver is an
 // opaque object pointer rather than marshalled struct bytes, and a virtual
 // method dispatches through the object's vtable (see callNativeImpl).
@@ -135,6 +190,20 @@ private struct NativeThis {
     private imported!"dmd.mtype".TypeStruct structType;
     private bool enabled;
     private imported!"dmd.mtype".TypeClass classType;
+    // A native delegate call's context pointer (ffi.md §35.8), passed raw as
+    // the hidden leading argument with no marshalling and no type mapping.
+    private const(void)* rawContext;
+    private bool isRawContext;
+
+    private static NativeThis fromRawContext(
+        const(void)* context,
+    ) @safe @nogc nothrow pure {
+        NativeThis result;
+        result.enabled = true;
+        result.rawContext = context;
+        result.isRawContext = true;
+        return result;
+    }
 
     private bool isClass() const @safe @nogc nothrow pure {
         return classType !is null;
@@ -298,7 +367,21 @@ private bool callViaLibffi(
         if (argumentFfiTypes[index] is null)
             return false;
     }
-    if (receiver.enabled && ffiTypeFor(receiver.type) is null)
+    if (receiver.enabled && !receiver.isRawContext &&
+        ffiTypeFor(receiver.type) is null)
+        return false;
+
+    // The marshaller owns representability (ffi.md §35.8): refuse before prep
+    // any shape the type mapper claims but the backend cannot convert, so
+    // mapper/marshaller drift degrades to the caller's no-available-source
+    // diagnostic instead of a post-call assert.
+    if (!canRepresentCall(
+        marshaller,
+        returnType,
+        parameterTypes,
+        receiver,
+        addressOfLocalArguments,
+    ))
         return false;
     const hiddenNargs = receiver.enabled ? 1 : 0;
     const totalNargs = hiddenNargs + nargs;
@@ -339,13 +422,16 @@ private bool callViaLibffi(
         return false;
 
     // libffi fills in struct ffi_type sizes during prep; cross-check against
-    // DMD's computed layout (ffi.md §24.3).
+    // DMD's computed layout (ffi.md §24.3). ffiTypeFor only claims layouts
+    // libffi reproduces exactly (ffi.md §35.7), so a mismatch is a mapper bug.
     if (returnType.ty == TY.Tstruct)
-        assert(returnFfi.size == cast(size_t) size(returnType));
+        assert(returnFfi.size == cast(size_t) size(returnType),
+            "libffi/DMD return struct layout mismatch (ffi.md §24.3)");
     foreach (index; 0 .. nargs)
         if (parameterTypes[index].ty == TY.Tstruct)
             assert(argumentFfiTypes[index].size ==
-                cast(size_t) size(parameterTypes[index]));
+                cast(size_t) size(parameterTypes[index]),
+                "libffi/DMD argument struct layout mismatch (ffi.md §24.3)");
 
     // Native buffers marshalled for pointer/slice arguments, kept alive across
     // the call below so the GC cannot reclaim them mid-call.
@@ -355,7 +441,12 @@ private bool callViaLibffi(
     ubyte[] receiverPointerBuffer;
     if (receiver.enabled) {
         receiverPointerBuffer = new ubyte[](ffi_type_pointer.size);
-        if (receiver.isClass) {
+        if (receiver.isRawContext) {
+            // A native delegate's context pointer crosses raw as the hidden
+            // leading argument (ffi.md §35.8).
+            *cast(const(void)**) receiverPointerBuffer.ptr =
+                receiver.rawContext;
+        } else if (receiver.isClass) {
             // A class reference is already a pointer to the object; pass it
             // straight through as hidden `this`, no struct-byte marshalling
             // (ffi.md §34.12).
@@ -406,11 +497,20 @@ private bool callViaLibffi(
                 closureContexts,
             );
         } else if (isOutParameter(parameterTypes[index], addressOfLocal)) {
-            // Allocate a host cell sized to the pointed-to type, pass its
-            // address as the out parameter, and reify the written value through
-            // writeOutParameter after the call.
+            // Allocate a host cell sized to the pointed-to type, marshal the
+            // argument's current value into it (ffi.md §35.6), pass its
+            // address as the out parameter, and reify the written value
+            // through writeOutParameter after the call.
             auto pointedTo = parameterTypes[index].nextOf.toBasetype;
             outParameterCells[index] = new ubyte[](cast(size_t) size(pointedTo));
+            marshaller.fillOutParameterCell(
+                outParameterCells[index],
+                pointedTo,
+                index,
+                hasOutPointer,
+                keepAlive,
+                keepAliveBuffers,
+            );
             *cast(void**) argumentBuffers[index].ptr =
                 outParameterCells[index].ptr;
         } else {
@@ -469,6 +569,47 @@ private bool callViaLibffi(
     }
 
     marshaller.readResult(returnType, returnBuffer);
+    return true;
+}
+
+// Ask the marshaller whether every value crossing the call is representable
+// in its direction (ffi.md §35.8): the return reifies fromNative; an argument
+// marshals toNative, except an out slot, whose pointed-to value crosses both
+// ways (input fill, writeback), and a delegate argument, which crosses through
+// the §34.16 closure bridge rather than the marshalling switches. A class
+// receiver and a raw delegate context cross as opaque pointers, unmarshalled.
+private bool canRepresentCall(
+    NativeMarshaller marshaller,
+    imported!"dmd.mtype".Type returnType,
+    imported!"dmd.mtype".Type[] parameterTypes,
+    NativeThis receiver,
+    in bool[] addressOfLocalArguments,
+) {
+    with (NativeMarshaller.Direction) {
+        if (!marshaller.canRepresent(returnType, fromNative))
+            return false;
+
+        foreach (index, parameter; parameterTypes) {
+            if (isDelegateParameter(parameter))
+                continue;
+
+            const addressOfLocal =
+                index < addressOfLocalArguments.length &&
+                addressOfLocalArguments[index];
+            if (isOutParameter(parameter, addressOfLocal)) {
+                auto pointedTo = parameter.nextOf.toBasetype;
+                if (!marshaller.canRepresent(pointedTo, toNative) ||
+                    !marshaller.canRepresent(pointedTo, fromNative))
+                    return false;
+            } else if (!marshaller.canRepresent(parameter, toNative))
+                return false;
+        }
+
+        if (receiver.enabled && !receiver.isRawContext && !receiver.isClass &&
+            !marshaller.canRepresent(receiver.type, toNative))
+            return false;
+    }
+
     return true;
 }
 
@@ -680,23 +821,101 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiDelegateType() {
 }
 
 // Synthesize a STRUCT ffi_type by walking the struct's fields; libffi computes
-// the laid-out size and alignment during ffi_prep_cif.
+// the laid-out size and alignment during ffi_prep_cif. A union is modelled
+// separately (ffiUnionType); a layout libffi's sequential natural walk cannot
+// reproduce (packed or over-aligned `align`, anonymous unions) returns null so
+// the caller takes the graceful no-available-source path (ffi.md §35.7).
 private imported!"quickbite.ffi.libffi".ffi_type* ffiStructType(
+    imported!"dmd.mtype".TypeStruct type,
+) {
+    import quickbite.ffi.libffi: ffi_type, FFI_TYPE_STRUCT;
+    import dmd.typesem: size;
+
+    auto sym = type.sym;
+    if (sym.isUnionDeclaration !is null)
+        return ffiUnionType(type);
+
+    auto elements = new ffi_type*[](sym.fields.length + 1);
+    size_t naturalOffset;
+    uint naturalAlignment = 1;
+    foreach (index; 0 .. sym.fields.length) {
+        auto field = sym.fields[index];
+        auto fieldType = field.type.toBasetype;
+        elements[index] = ffiTypeFor(fieldType);
+        if (elements[index] is null)
+            return null;
+
+        // libffi places each field sequentially at its natural alignment; a
+        // DMD offset that disagrees is a layout the element walk misdescribes.
+        const fieldAlignment = fieldType.alignsize;
+        naturalOffset = alignUp(naturalOffset, fieldAlignment);
+        if (naturalOffset != field.offset)
+            return null;
+        naturalOffset += cast(size_t) size(fieldType);
+        if (fieldAlignment > naturalAlignment)
+            naturalAlignment = fieldAlignment;
+    }
+    elements[$ - 1] = null;
+
+    // Explicit `align` can change the struct's alignment or total size without
+    // moving any field; both must match the natural layout libffi computes.
+    if (sym.fields.length != 0 &&
+        (sym.alignsize != naturalAlignment ||
+         alignUp(naturalOffset, naturalAlignment) != sym.structsize))
+        return null;
+
+    auto result = new ffi_type;
+    result.type = FFI_TYPE_STRUCT;
+    result.elements = elements.ptr;
+    return result;
+}
+
+private size_t alignUp(
+    in size_t offset,
+    in uint alignment,
+) @safe @nogc nothrow pure {
+    return (offset + alignment - 1) & ~(cast(size_t) alignment - 1);
+}
+
+// libffi cannot express overlapped members (ffi.md §35.7); the accepted
+// convention is a struct containing only the most-aligned member, with size
+// and alignment forced to DMD's layout — ffi_prep_cif leaves them alone
+// because it only initializes aggregates whose size is still 0. Members must
+// map to fixed-size ffi types (scalars, pointers) so ABI classification never
+// walks an unprepped aggregate; anything else returns null for the graceful
+// no-available-source path.
+private imported!"quickbite.ffi.libffi".ffi_type* ffiUnionType(
     imported!"dmd.mtype".TypeStruct type,
 ) {
     import quickbite.ffi.libffi: ffi_type, FFI_TYPE_STRUCT;
 
     auto sym = type.sym;
-    auto elements = new ffi_type*[](sym.fields.length + 1);
-    foreach (index; 0 .. sym.fields.length) {
-        elements[index] = ffiTypeFor(sym.fields[index].type.toBasetype);
-        if (elements[index] is null)
+    if (sym.fields.length == 0)
+        return null;
+
+    ffi_type* dominant;
+    uint dominantAlignment;
+    foreach (field; sym.fields) {
+        auto fieldType = field.type.toBasetype;
+        auto fieldFfi = ffiTypeFor(fieldType);
+        if (fieldFfi is null || fieldFfi.size == 0)
             return null;
+
+        const fieldAlignment = fieldType.alignsize;
+        if (dominant is null || fieldAlignment > dominantAlignment) {
+            dominant = fieldFfi;
+            dominantAlignment = fieldAlignment;
+        }
     }
-    elements[$ - 1] = null;
+
+    auto elements = new ffi_type*[](2);
+    elements[0] = dominant;
+    elements[1] = null;
 
     auto result = new ffi_type;
     result.type = FFI_TYPE_STRUCT;
+    result.size = sym.structsize;
+    result.alignment = cast(ushort) sym.alignsize;
     result.elements = elements.ptr;
     return result;
 }

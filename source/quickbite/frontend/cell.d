@@ -367,14 +367,12 @@ private bool expressionReturnNeedsPreludeFormat(
                     return true;
                 case Tdelegate:
                     return true;
+                case Taarray:
+                    return true;
                 case Tarray, Tsarray:
                     return arrayElementNeedsPreludeFormat(fieldType);
                 case Tpointer:
-                    auto pointee = fieldType.nextOf;
-                    if (
-                        pointee !is null &&
-                        pointee.toBasetype.ty == Tfunction
-                    )
+                    if (field.isThisDeclaration is null)
                         return true;
                     break;
                 default:
@@ -396,6 +394,8 @@ private bool arrayElementNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
         return true;
 
     with (TY) switch (elementType.toBasetype.ty) {
+        case Tchar, Twchar, Tdchar:
+            return true;
         case Tint64, Tuns64:
             return true;
         default:

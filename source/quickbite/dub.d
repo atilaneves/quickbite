@@ -164,10 +164,19 @@ public string findPkgDir(in string name) {
     import std.algorithm.iteration: filter, map;
     import std.algorithm.sorting: sort;
     import std.array: array;
-    import std.file: dirEntries, exists, SpanMode;
+    import std.file: dirEntries, exists, isDir, SpanMode;
     import std.path: baseName, buildPath, expandTilde;
     import std.process: execute;
     import std.string: startsWith;
+
+    // A name that is an existing directory with a dub recipe is a local
+    // checkout (e.g. `--dub ~/coding/d/tardy`): bench the same instance
+    // `dub test` runs in, skipping the registry cache entirely.
+    const localDir = name.expandTilde;
+    if (localDir.exists && localDir.isDir)
+        foreach (recipe; ["dub.sdl", "dub.json"])
+            if (buildPath(localDir, recipe).exists)
+                return localDir;
 
     const cache = expandTilde("~/.dub/packages");
 

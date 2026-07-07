@@ -114,6 +114,7 @@ private struct Walker {
     private bool hasPendingFinallyBodyException;
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
+    private bool addressOfRefReturn;
     private Statement pendingGotoTarget;
     private Statement pendingSwitchTarget;
     private LoopControl loopControl;
@@ -273,7 +274,9 @@ private struct Walker {
 
         if (auto return_ = statement.isReturnStatement) {
             if (return_.exp !is null)
-                result = runExpression(return_.exp);
+                result = addressOfRefReturn
+                    ? refReturnAddress(return_.exp)
+                    : runExpression(return_.exp);
             returned = true;
             return;
         }
@@ -1384,9 +1387,16 @@ private struct Walker {
     private Value runAddressExpression(
         imported!"dmd.expression".AddrExp address,
     ) {
+        return addressOfExpression(address.e1, address.op);
+    }
+
+    private Value addressOfExpression(
+        imported!"dmd.expression".Expression e1,
+        in imported!"dmd.tokens".EXP op,
+    ) {
         import std.conv: text;
 
-        if (auto symbol = address.e1.isSymOffExp) {
+        if (auto symbol = e1.isSymOffExp) {
             if (auto variable = symbol.var.isVarDeclaration)
                 return symbolOffsetLocalValue(symbol, variable);
             if (auto function_ = symbol.var.isFuncDeclaration)
@@ -1395,31 +1405,147 @@ private struct Walker {
 
         // `&val` of a `ref` parameter is emitted as AddrExp(VarExp), not the
         // SymOffExp produced for a plain local; point at the parameter's slot
-        if (auto var = address.e1.isVarExp)
+        if (auto var = e1.isVarExp)
             if (auto variable = var.var.isVarDeclaration)
                 return localPointerValue(variable);
 
-        if (auto delegate_ = address.e1.isDelegateExp)
+        if (auto delegate_ = e1.isDelegateExp)
             return runDelegateExpression(delegate_);
 
         // `&field` (also `field.ptr`) of a struct's static-array member: a
         // pointer to the field's first element, exactly what arrayPointer
         // builds for `&field[0]`.
-        if (auto dot = address.e1.isDotVarExp) {
+        if (auto dot = e1.isDotVarExp) {
             import quickbite.frontend.dmd.types: isStaticArrayType;
 
             if (isStaticArrayType(dot.type))
-                return arrayPointer(dot, 0, address.op);
+                return arrayPointer(dot, 0, op);
         }
 
-        auto index = address.e1.isIndexExp;
+        // `&call()` of a ref-returning function: run the call and yield the
+        // returned lvalue's address.
+        if (auto call = e1.isCallExp)
+            return refReturningCallAddress(call, op);
+
+        auto index = e1.isIndexExp;
         if (index is null)
             throw new Exception(
-                text("Unsupported eval expression: ", address.op, " of ", address.e1.op),
+                text("Unsupported eval expression: ", op, " of ", e1.op),
             );
 
         const offset = runExpression(index.e2).asLong;
-        return arrayPointer(index.e1, offset, address.op);
+        return arrayPointer(index.e1, offset, op);
+    }
+
+    // The address of a ref return's lvalue, evaluated in the returning
+    // function's own frame (`addressOfRefReturn` mode).
+    private Value refReturnAddress(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        // DMD lowers a ref-returning ternary to `return *(cond ? &a : &b())`;
+        // the address of that dereference is the pointer expression itself.
+        if (auto pointer = expression.isPtrExp)
+            return runExpression(pointer.e1);
+
+        return addressOfExpression(expression, EXP.address);
+    }
+
+    private Value refReturningCallAddress(
+        imported!"dmd.expression".CallExp call,
+        in imported!"dmd.tokens".EXP op,
+    ) {
+        import dmd.expression: Expression;
+        import dmd.funcsem: functionSemantic3;
+        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import std.conv: text;
+
+        const unsupported =
+            text("Unsupported eval expression: ", op, " of ", call.op);
+
+        if (call.f is null || !returnsRef(call.f))
+            throw new Exception(unsupported);
+
+        functionSemantic3(call.f);
+        if (hasNoAvailableSource(call.f) || call.f.needThis)
+            throw new Exception(unsupported);
+
+        Value[] arguments;
+        Expression[] argumentExpressions;
+        if (call.arguments !is null)
+            foreach (argument; *call.arguments) {
+                arguments ~= runExpression(argument);
+                argumentExpressions ~= argument;
+            }
+
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = call.f;
+        child.addressOfRefReturn = true;
+        child.result = Value(false);
+        child.locals = call.f.isNested ? locals.dup : datasegLocals;
+        child.localPointers = localPointers.dup;
+        child.localPointerIds = localPointerIds.dup;
+        child.nextLocalPointerId = nextLocalPointerId;
+        child.functionPointers = functionPointers.dup;
+        child.functionPointerIds = functionPointerIds.dup;
+        child.nextFunctionPointerId = nextFunctionPointerId;
+        child.delegates = delegates.dup;
+        child.sliceAliases = sliceAliases.dup;
+        child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
+        child.allocationCount = allocationCount;
+        seedPointerTargetLocals(child);
+        child.bindFunctionParameters(call.f, arguments, argumentExpressions);
+
+        try {
+            child.runStatement(call.f.fbody);
+        } catch (InterpretedException exception) {
+            writeBackFunctionState(call.f, argumentExpressions, child);
+            throw exception;
+        }
+        writeBackFunctionState(call.f, argumentExpressions, child);
+
+        return returnedLvalueAddress(call.f, argumentExpressions, child);
+    }
+
+    // The child's returned address points into its own frame: a pointer to a
+    // `ref` parameter's slot must become the caller's argument lvalue so
+    // writes through it reach the argument; any other variable's pointer id
+    // is registered here so this frame can resolve it.
+    private Value returnedLvalueAddress(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (!child.result.isLocalPointer)
+            return child.result;
+
+        auto variable = child.result.localPointerId in child.localPointers;
+        if (variable is null)
+            return child.result;
+
+        if (function_.parameters !is null)
+            foreach (index, parameter; *function_.parameters) {
+                if (parameter !is *variable || !parameter.isReference)
+                    continue;
+
+                if (index >= argumentExpressions.length)
+                    break;
+
+                return addressOfExpression(
+                    argumentExpressions[index],
+                    EXP.address,
+                );
+            }
+
+        localPointers[child.result.localPointerId] = *variable;
+        localPointerIds[*variable] = child.result.localPointerId;
+        return child.result;
     }
 
     private Value arrayPointer(
@@ -1473,6 +1599,12 @@ private struct Walker {
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
         if (isStaticArrayType(variable.type)) {
+            // Taking the address of a still-void static array materialises
+            // its storage (as aggregate reads do) so writes through the
+            // pointer have somewhere to land.
+            if (variable in uninitializedLocals && variable !in locals)
+                locals[variable] = defaultValue(variable);
+
             if (auto current = variable in locals) {
                 import dmd.typesem: size;
 
@@ -1929,6 +2061,7 @@ private struct Walker {
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
+                            nativeOutParameterInputValues(argumentExpressions),
                             &invokeNativeCallback,
                             result,
                             writebacks,
@@ -1982,6 +2115,14 @@ private struct Walker {
         }
 
         const callee = runExpression(call.e1);
+        if (callee.isNativeDelegate)
+            return runNativeDelegateCall(
+                callee,
+                call,
+                arguments,
+                argumentExpressions,
+            );
+
         if (callee.isFunctionPointer && callee.functionPointerId in delegates)
             return runDelegateCall(callee, arguments, argumentExpressions);
 
@@ -2027,6 +2168,48 @@ private struct Walker {
             );
 
         return runFunction(runtime.function_, arguments, argumentExpressions);
+    }
+
+    // Call a native delegate the interpreter holds as an opaque
+    // {context, funcptr} value reified from a native return (ffi.md §35.8),
+    // the inverse of the §34.16 callback bridge.
+    private Value runNativeDelegateCall(
+        in Value callee,
+        imported!"dmd.expression".CallExp call,
+        in Value[] arguments,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        import quickbite.backends.interpreter.ffi_marshal:
+            NativeCallException, tryCallNativeDelegate;
+        import dmd.mtype: TypeFunction;
+
+        auto delegateType = call.e1.type.toBasetype;
+        auto functionType = delegateType.nextOf is null
+            ? null
+            : cast(TypeFunction) delegateType.nextOf;
+
+        Value result;
+        Value[] writebacks;
+        try {
+            if (tryCallNativeDelegate(
+                functionType,
+                callee,
+                arguments,
+                nativeArgumentTypes(argumentExpressions),
+                nativeAddressOfLocalArguments(argumentExpressions),
+                nativeOutParameterInputValues(argumentExpressions),
+                &invokeNativeCallback,
+                result,
+                writebacks,
+            )) {
+                applyNativeWritebacks(writebacks, argumentExpressions);
+                return result;
+            }
+        } catch (NativeCallException exception) {
+            throwNativeException(exception);
+        }
+
+        throw new Exception("Unsupported eval call.");
     }
 
     private Value delegateReceiver(in RuntimeDelegate runtime) {
@@ -3975,7 +4158,11 @@ private struct Walker {
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
+        import quickbite.frontend.dmd.types: isPointerType;
         import std.conv: text;
+
+        if (isPointerType(slice.e1.type))
+            return runPointerSliceAssignExpression(slice, rhs);
 
         auto var = slice.e1.isVarExp;
         if (var is null) {
@@ -4020,6 +4207,59 @@ private struct Walker {
         locals[variable] = Value.arrayValue(elements);
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    // A slice assignment through a pointer (`p[i .. j] = source`) writes
+    // element by element through the pointer — native memory via the FFI
+    // store, D array storage via the tracked pointer — and never converts
+    // the lvalue to a detached Array, which would silently sever aliasing.
+    private Value runPointerSliceAssignExpression(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import std.conv: text;
+
+        const pointer = runExpression(slice.e1);
+        if (slice.lwr is null || slice.upr is null)
+            throw new Exception(text(
+                "Unsupported interpreter assignment target: slice of ",
+                slice.e1.op,
+            ));
+
+        const lower = cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = cast(size_t) runExpression(slice.upr).asLong;
+
+        const block = isBlockSliceAssignment(slice, rhs);
+        const value = runExpression(rhs);
+
+        Value elementAt(in size_t index) {
+            return block ? copyArrayValue(value) : value[index];
+        }
+
+        if (pointer.isNativePointer) {
+            foreach (index; 0 .. upper - lower)
+                storeNativePointerElement(
+                    slice.e1.type,
+                    pointer,
+                    lower + index,
+                    elementAt(index),
+                );
+            return value;
+        }
+
+        if (canWriteThroughArrayPointer(pointer)) {
+            foreach (index; 0 .. upper - lower)
+                writeThroughArrayPointer(
+                    pointer.pointerOffsetBy(cast(long) (lower + index)),
+                    elementAt(index),
+                );
+            return value;
+        }
+
+        throw new Exception(text(
+            "Unsupported interpreter assignment target: slice of ",
+            slice.e1.op,
+        ));
     }
 
     private void rejectOverlappingSliceAssignment(
@@ -4398,8 +4638,10 @@ private struct Walker {
     ) {
         Value[] values;
         if (array.elements !is null)
+            // DMD's sparse form: a null element means the value is in `basis`
+            // (see ArrayLiteralExp.getElement).
             foreach (element; *array.elements)
-                values ~= runExpression(element);
+                values ~= runExpression(element is null ? array.basis : element);
 
         return Value.arrayValue(values);
     }
@@ -4666,6 +4908,31 @@ private struct Walker {
         return null;
     }
 
+    // The current value behind each `&local` argument (Value.void_ elsewhere):
+    // the FFI core marshals it into the out-parameter cell so an in-out callee
+    // reads the caller's value instead of a zeroed cell (ffi.md §35.6). A
+    // void-initialized local marshals its default value, matching the zeroed
+    // cell compiled code cannot improve on deterministically.
+    private Value[] nativeOutParameterInputValues(
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        auto values = new Value[](argumentExpressions.length);
+        foreach (index, argument; argumentExpressions) {
+            if (!isNativeAddressOfLocal(argument))
+                continue;
+
+            auto variable = nativeOutParameterVariable(argument);
+            if (variable is null)
+                continue;
+
+            if (variable in uninitializedLocals)
+                values[index] = defaultValue(variable);
+            else if (auto current = variable in locals)
+                values[index] = *current;
+        }
+        return values;
+    }
+
     private Value runIndexExpression(
         imported!"dmd.expression".IndexExp index,
         out size_t arrayIndex,
@@ -4882,6 +5149,14 @@ private struct Walker {
             if (hasNoAvailableSource(new_.member))
                 return runNewStructNativeConstructor(new_, targetType, structVal);
 
+            // A non-root-module constructor may still be a raw parse tree;
+            // resolve its body before walking it.
+            {
+                import dmd.funcsem: functionSemantic3;
+                if (!functionSemantic3(new_.member))
+                    throw new Exception(text("Unsupported eval expression: ", new_.op));
+            }
+
             // User-defined constructor: run it and capture the resulting this.
             Value[] arguments;
             if (new_.arguments !is null)
@@ -4980,6 +5255,14 @@ private struct Walker {
 
         if (isThrowableConstructor(new_.member))
             return applyThrowableConstructor(object, arguments);
+
+        // A non-root-module constructor (e.g. a private phobos class) may
+        // still be a raw parse tree; resolve its body before walking it.
+        {
+            import dmd.funcsem: functionSemantic3;
+            if (!functionSemantic3(new_.member))
+                throw new Exception(text("Unsupported eval expression: ", new_.op));
+        }
 
         Walker child;
         child.runningCalledFunction = true;

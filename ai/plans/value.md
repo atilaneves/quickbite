@@ -237,6 +237,19 @@ members render as qualified D expressions there (`Box(E.b)`,
 `Box([E.a, E.b])`), unlike the interim `Value.toString` scaffolding's bare
 member names.
 
+Progress 2026-07-07: the formatter gate now covers struct expression cells
+with character-array fields (`string`/`wstring`/`dstring`) and associative
+array fields. CTFE and Interpreter therefore render string-width suffixes and
+AA element suffixes through the prelude path (`Person("Bob", "wide"w)`,
+`Lookup(["answer":42L])`) instead of relying on the interim
+`Value.toString` scaffolding.
+
+Progress 2026-07-07: the formatter gate now covers struct expression cells
+with ordinary pointer fields. Null pointer fields (`Link(4, null)`) therefore
+use the prelude path for CTFE and Interpreter, matching the existing callable,
+delegate, and class-reference null-field cases without relying on the interim
+`Value.toString` scaffolding.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
