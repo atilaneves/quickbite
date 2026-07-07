@@ -1279,6 +1279,24 @@ addressable as a VM-owned module slot, so direct module-level scalar assignment
 falls through to the unsupported-assignment diagnostic before `get()` can read
 the updated value.
 
+Second-rung investigation, 2026-07-07:
+`repl.backend.importStdExposesPhobosSymbols` now includes `BytecodeNewCore`
+and fails red while evaluating `[1, 2, 3].map!(a => a * 2).array` with
+`Unsupported ref argument in bytecode core: result[cnt]`. The missing
+production behaviour is passing a mutable array element lvalue as a `ref`
+argument through Phobos range materialisation: the new core reaches
+`std.array.array`'s result-buffer write path, but cannot lower an indexed
+array element target into the addressable storage required by a `ref`
+parameter.
+
+Second-rung implementation, 2026-07-07:
+`BytecodeNewCore` now lowers the Phobos `emplaceRef(result[cnt], e)` path to
+a dynamic-array element store, with the narrow array-allocation and descriptor
+materialisation support needed by `std.array.array`. This is not a general
+`ref` argument ABI. Verification passed with `ninja bin/ut`, the focused
+`importStdExposesPhobosSymbols.BytecodeNewCore` test, and `bin/ut --random`
+(seed `3117469833`, `2874 test(s) run, 0 failed, 6/6 failing as expected`).
+
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
 slice roadmap.
