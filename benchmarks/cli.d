@@ -75,7 +75,7 @@ private struct BenchmarkGroup {
 
 public void run(string[] args) {
     import quickbite.backends.native: DubPackage;
-    import std.stdio: stderr, write, writefln, writeln;
+    import std.stdio: stderr, stdout, write, writefln, writeln;
 
     const opts = parseOptions(args);
     if (opts.helpWanted)
@@ -175,6 +175,10 @@ public void run(string[] args) {
 
     if (preparation.length > 0)
         write(renderPreparationSection(preparation));
+        // A later backend crash must not eat the already-buffered preparation
+        // report (ai/plans/bench-dub-corpus.md: crash containment proper rides
+        // on bench.md's fork-per-package item).
+        stdout.flush;
 
     // Flattened view for the per-unit sections (frontend rows, skip reporting);
     // the check and timing loops below use each group's own runners.
@@ -335,26 +339,50 @@ public TestResult[][string] checkRunnerResults(
             }
         }
 
+        import std.stdio: stderr;
+
         // A backend that threw never ran the benchmark, so it cannot have
         // "disagreed" with one that did: its fabricated single result would
-        // misreport the crash as "N tests vs 1". Report the error itself. Only
-        // for multi-backend runs: a single backend that errors is recorded as a
-        // failing self-check and skipped, not aborted (see run()).
-        if (resultNames.length > 1)
+        // misreport the crash as "N tests vs 1". Report the error itself,
+        // skip the unit's timing on every backend, and keep going: one
+        // casualty must not kill the whole bench. Only for multi-backend
+        // runs: a single backend that errors is recorded as a failing
+        // self-check and skipped, not aborted (see run()).
+        if (resultNames.length > 1) {
+            bool anyErrored;
             foreach (i, name; resultNames)
-                if (errored[i])
-                    throw new Exception(text(
-                        "backend ", name, " errored on ", unit.displayName,
-                        ": ", allResults[i][0].message,
-                    ));
+                if (errored[i]) {
+                    anyErrored = true;
+                    stderr.writefln(
+                        "backend %s errored on %s: %s",
+                        name, unit.displayName, allResults[i][0].message,
+                    );
+                }
+            if (anyErrored) {
+                stderr.writefln("skipping %s: backend errors", unit.displayName);
+                continue;
+            }
+        }
 
+        // Report every per-test disagreement for the unit (the full listing
+        // interpreter.md §6 wants), not just the first casualty, then skip
+        // the unit's timing and continue with the other units.
+        bool disagreed;
         foreach (i; 1 .. allResults.length) {
-            const mismatch = testResultsMismatch(allResults[0], allResults[i]);
-            if (mismatch !is null)
-                throw new Exception(text(
-                    "backends ", resultNames[0], " and ", resultNames[i],
-                    " disagree on ", unit.displayName, ": ", mismatch,
-                ));
+            const mismatches = testResultsMismatches(allResults[0], allResults[i]);
+            if (mismatches.length == 0)
+                continue;
+            disagreed = true;
+            stderr.writefln(
+                "backends %s and %s disagree on %s:",
+                resultNames[0], resultNames[i], unit.displayName,
+            );
+            foreach (mismatch; mismatches)
+                stderr.writefln("  %s", mismatch);
+        }
+        if (disagreed) {
+            stderr.writefln("skipping %s: backends disagree", unit.displayName);
+            continue;
         }
 
         foreach (i, name; resultNames)
@@ -374,20 +402,34 @@ public string testResultsMismatch(
     in TestResult[] lhs,
     in TestResult[] rhs,
 ) {
+    const mismatches = testResultsMismatches(lhs, rhs);
+    return mismatches.length == 0 ? null : mismatches[0];
+}
+
+// Every per-test disagreement between two backends' results, one line each —
+// the full listing interpreter.md §6 wants for gap-closing work, not just the
+// first casualty.
+public string[] testResultsMismatches(
+    in TestResult[] lhs,
+    in TestResult[] rhs,
+) {
     import std.conv: text;
 
     if (lhs.length != rhs.length)
-        return text(lhs.length, " tests vs ", rhs.length);
+        return [text(lhs.length, " tests vs ", rhs.length)];
 
+    string[] mismatches;
     foreach (i, left; lhs) {
         const right = rhs[i];
-        if (left.name != right.name)
-            return text("test ", left.name, " vs ", right.name);
+        if (left.name != right.name) {
+            mismatches ~= text("test ", left.name, " vs ", right.name);
+            continue;
+        }
         if (left.passed != right.passed) {
             // Exactly one side failed; surface its diagnostic so a disagreement
             // reports *why* the failing backend diverged, not just that it did.
             const failure = left.passed ? right : left;
-            return text(
+            mismatches ~= text(
                 "test ", left.name, " ",
                 left.passed ? "passes" : "fails", " vs ",
                 right.passed ? "passes" : "fails",
@@ -398,7 +440,7 @@ public string testResultsMismatch(
         }
     }
 
-    return null;
+    return mismatches;
 }
 
 string firstFailureMessage(in TestResult[] results) {
