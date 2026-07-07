@@ -44,14 +44,18 @@ private struct Compiler {
         Op,
         Program;
     import quickbite.backends.casts: CastTarget;
-    import quickbite.frontend.dmd.values: defaultValue, integerValue, realValue;
+    import quickbite.frontend.dmd.values:
+        castIntegerValue,
+        defaultValue,
+        integerValue,
+        realValue;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import dmd.expression:
         AddAssignExp, ArrayLiteralExp, AssertExp, AssignExp, BinExp, CallExp,
         CastExp, CmpExp, CondExp, DotVarExp, Expression, IdentityExp,
-        LogicalExp, PostExp, PreExp, TypeidExp;
+        LogicalExp, PostExp, PreExp, StructLiteralExp, TypeidExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -173,7 +177,7 @@ private struct Compiler {
         if (auto integer = expression.isIntegerExp) {
             program.instructions ~= Instruction(
                 Op.literal,
-                integerValue(integer),
+                compileIntegerLiteral(integer),
             );
             return;
         }
@@ -285,6 +289,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto struct_ = expression.isStructLiteralExp) {
+            compileStructLiteral(struct_);
+            return;
+        }
+
         if (auto add = expression.isAddExp) {
             compileBinaryExpression(add, Op.add);
             return;
@@ -368,6 +377,76 @@ private struct Compiler {
             Value(arrayElementsAreCharacters(array)),
             array.elements is null ? 0 : array.elements.length,
         );
+    }
+
+    private void compileStructLiteral(StructLiteralExp literal) {
+        Value value;
+        if (tryStructLiteralValue(literal, value)) {
+            program.instructions ~= Instruction(Op.literal, value);
+            return;
+        }
+
+        import std.string: fromStringz;
+
+        throw new Exception(
+            "Unsupported expression `" ~ literal.toChars.fromStringz.idup ~ "`",
+        );
+    }
+
+    private bool tryStructLiteralValue(
+        StructLiteralExp literal,
+        out Value value,
+    ) {
+        Value[] fields;
+        if (literal.elements !is null)
+            foreach (index, element; *literal.elements) {
+                auto field = structLiteralField(literal, index);
+                if (element is null) {
+                    fields ~= field is null ? Value.void_ : defaultValue(field);
+                    continue;
+                }
+
+                Value fieldValue;
+                if (!tryStructLiteralFieldValue(field, element, fieldValue))
+                    return false;
+                fields ~= fieldValue;
+            }
+
+        value = Value.structDisplayValue(structLiteralName(literal), fields);
+        return true;
+    }
+
+    private bool tryStructLiteralFieldValue(
+        VarDeclaration field,
+        Expression expression,
+        out Value value,
+    ) {
+        if (field !is null)
+            if (auto integer = expression.isIntegerExp) {
+                value = compileIntegerFieldLiteral(field, integer);
+                return true;
+            }
+
+        if (field !is null)
+            if (auto cast_ = expression.isCastExp)
+                if (auto integer = cast_.e1.isIntegerExp) {
+                    value = compileIntegerFieldLiteral(field, integer);
+                    return true;
+                }
+
+        if (auto real_ = expression.isRealExp) {
+            value = realValue(real_);
+            return true;
+        }
+
+        if (auto string_ = expression.isStringExp) {
+            import quickbite.frontend.dmd.string_literals: stringValue;
+
+            value = stringValue(string_);
+            return true;
+        }
+
+        return false;
     }
 
     private bool arrayElementsAreCharacters(ArrayLiteralExp array) {
@@ -814,6 +893,95 @@ private struct Compiler {
             return "null";
 
         return variable.var.ident.toString.idup;
+    }
+
+    private Value compileIntegerLiteral(imported!"dmd.expression".IntegerExp integer) {
+        if (const name = enumMemberName(integer))
+            return Value.enumValue(name, cast(long) integer.getInteger);
+
+        return integerValue(integer);
+    }
+
+    private Value compileIntegerFieldLiteral(
+        VarDeclaration field,
+        imported!"dmd.expression".IntegerExp integer,
+    ) {
+        auto type = field.type is null ? null : field.type.toBasetype;
+        if (type is null)
+            return compileIntegerLiteral(integer);
+
+        if (const name = enumMemberName(field, integer))
+            return Value.enumValue(name, cast(long) integer.getInteger);
+
+        import dmd.astenums: TY;
+
+        if (type.ty == TY.Tenum)
+            return compileIntegerLiteral(integer);
+
+        return castIntegerValue(integer, type.ty);
+    }
+
+    private string enumMemberName(imported!"dmd.expression".IntegerExp integer) {
+        auto enumType = integer.type is null ? null : integer.type.isTypeEnum;
+        return enumMemberName(enumType, integer);
+    }
+
+    private string enumMemberName(
+        VarDeclaration field,
+        imported!"dmd.expression".IntegerExp integer,
+    ) {
+        auto enumType = field.type is null ? null : field.type.isTypeEnum;
+        return enumMemberName(enumType, integer);
+    }
+
+    private string enumMemberName(
+        imported!"dmd.mtype".TypeEnum enumType,
+        imported!"dmd.expression".IntegerExp integer,
+    ) {
+        import std.conv: text;
+
+        if (enumType is null || enumType.sym is null || enumType.sym.members is null)
+            return null;
+
+        const value = integer.getInteger;
+        foreach (symbol; *enumType.sym.members) {
+            auto member = symbol.isEnumMember;
+            if (member is null || member.value.toInteger != value)
+                continue;
+
+            return text(
+                enumType.sym.ident.toString,
+                ".",
+                member.ident.toString,
+            );
+        }
+
+        return null;
+    }
+
+    private string structLiteralName(StructLiteralExp literal) {
+        auto declaration = structLiteralDeclaration(literal);
+        return declaration is null ? "" : declaration.ident.toString.idup;
+    }
+
+    private VarDeclaration structLiteralField(
+        StructLiteralExp literal,
+        in size_t index,
+    ) {
+        auto declaration = structLiteralDeclaration(literal);
+        if (declaration is null || index >= declaration.fields.length)
+            return null;
+        return declaration.fields[index];
+    }
+
+    private imported!"dmd.dstruct".StructDeclaration structLiteralDeclaration(
+        StructLiteralExp literal,
+    ) {
+        if (literal.sd !is null)
+            return literal.sd;
+
+        auto type = literal.type is null ? null : literal.type.toBasetype.isTypeStruct;
+        return type is null ? null : type.sym;
     }
 
     private void compileBuiltinCall(CallExp call) {

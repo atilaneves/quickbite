@@ -453,7 +453,22 @@ on the new core before the engine default flips.
   `tests/ut/bin/repl.d` now covers `Bytecode`. The promotion exposed
   delegate literals reaching bytecode as synthetic function-literal symbols, so
   bytecode now emits `Value.undisplayable` literals for DMD function/delegate
-  literal expressions without adding a VM opcode.
+  symbols and literal expressions without adding a VM opcode.
+- Handoff, 2026-07-07: `bytecode-repl-continue` contains an uncommitted
+  REPL scalar/type/no-display `Bytecode` promotion block in
+  `tests/ut/bin/repl.d`, plus a partial narrow legacy bytecode fix. The
+  original red failures were
+  `repl.backend.displaysEnumValues.Bytecode` displaying enum values as
+  integers, and `repl.backend.expressionCellsUsePreludeFormatter.Bytecode`
+  rejecting `Point(1, 2L)` as an unsupported struct literal expression. The
+  partial implementation preserves enum member display identity for
+  enum-typed integer expressions and emits simple literal struct display values
+  directly, without adding legacy VM opcodes. Focused runs passed for
+  `displaysEnumValues.Bytecode`,
+  `expressionCellsUsePreludeFormatter.Bytecode`, and
+  `numericScalarDisplayUsesDLiteralSuffixes.Bytecode`. The production diff is
+  intentionally kept under the 200-line PR cap by leaving non-literal struct
+  construction and direct field reads unsupported in legacy `Bytecode`.
 - `tests/ut/bin/repl.d` is now complete for `Bytecode`. Six stale
   REPL coverage gaps were promoted without production changes:
   `userDefinedFunctionDoesNotCollideWithWrapper`,
