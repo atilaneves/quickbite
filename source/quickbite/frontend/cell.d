@@ -372,13 +372,7 @@ private bool expressionReturnNeedsPreludeFormat(
                 case Tarray, Tsarray:
                     return arrayElementNeedsPreludeFormat(fieldType);
                 case Tpointer:
-                    auto pointee = fieldType.nextOf;
-                    if (
-                        pointee !is null &&
-                        pointee.toBasetype.ty == Tfunction
-                    )
-                        return true;
-                    break;
+                    return true;
                 default:
                     break;
             }

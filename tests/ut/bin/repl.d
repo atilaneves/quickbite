@@ -166,6 +166,20 @@ unittest {
     "__quickbiteFormat".should.be in cell.source;
 }
 
+@("repl.frontend.pointerFieldStructExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        "({ struct Link { int id; int* next; } " ~
+        "return Link(4, null); })()",
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
 @("repl.frontend.enumFieldStructExpressionUsesPreludeFormatter")
 unittest {
     import quickbite.frontend.cell: EvalSession;
