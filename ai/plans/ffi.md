@@ -3134,6 +3134,16 @@ behaviour (the returned delegate is callable and yields 42).
 
 ### 35.9 Native ref returns are misread as values (found 2026-07-07)
 
+**Status: fixed 2026-07-07.** The core now treats a `TypeFunction.isRef`
+return as pointer ABI: libffi prepares a pointer return, rvalue reads
+dereference that address and reify through the declared return type, and
+assignment targets marshal the RHS back through the returned address. The
+Interpreter wires body-less free-function ref-return assignment through
+`tryAssignNativeRefReturn`, while source-available ref-return assignment
+continues to use the existing `assignToRefReturn` execution mode. The exposing
+fixture is `dependencyImage.externDRefReturn`: a dependency-image `ref int`
+accessor over module state is read, assigned through, and read again.
+
 Post-dates the 2026-07-06 critique; discovered during the two-backend dub
 corpus work (evidence trail: `interpreter.md` §7, the 2026-07-07
 assignment-target-call ledger entry).

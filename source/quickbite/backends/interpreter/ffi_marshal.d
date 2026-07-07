@@ -57,6 +57,24 @@ public bool tryCallNative(
     return true;
 }
 
+public bool tryAssignNativeRefReturn(
+    imported!"dmd.func".FuncDeclaration function_,
+    in imported!"quickbite.lang".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+    in imported!"quickbite.lang".Value value,
+) {
+    import quickbite.ffi: assignNativeRefReturn;
+
+    auto marshaller = new InterpreterNativeMarshaller(arguments, value);
+    return assignNativeRefReturn(
+        function_,
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+    );
+}
+
 public bool tryCallNativeMember(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
@@ -222,6 +240,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     // read the caller's value rather than zeroes (ffi.md §35.6).
     private const(Value)[] _outParameterInputs;
     private Value _receiver;
+    private Value _refResultValue;
     private Value _result;
     private Value[] _writebacks;
     // The receiver's ABI buffer, retained so the (possibly mutated) bytes can
@@ -265,6 +284,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     public this(in Value[] arguments, in Value receiver) {
         _arguments = arguments;
         _receiver = receiver;
+        _refResultValue = receiver;
     }
 
     public Value result() const {
@@ -394,6 +414,25 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
 
     public override void readResult(Type type, in ubyte[] buffer) {
         _result = unmarshalValue(type, buffer);
+    }
+
+    public override void writeRefResult(
+        Type type,
+        void* address,
+        in bool stableString,
+        ref const(char)*[] keepAlive,
+        ref ubyte[][] keepAliveBuffers,
+    ) {
+        import dmd.typesem: size;
+
+        marshalArgument(
+            mutableNativeBytes(address, cast(size_t) size(type)),
+            type,
+            _refResultValue,
+            stableString,
+            keepAlive,
+            keepAliveBuffers,
+        );
     }
 
     public override const(void)* receiverObjectPointer() {

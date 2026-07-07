@@ -3897,7 +3897,7 @@ private struct Walker {
         import quickbite.frontend.dmd.functions: hasNoAvailableSource;
 
         functionSemantic3(call.f);
-        if (hasNoAvailableSource(call.f) || call.f.needThis)
+        if (call.f.needThis)
             return false;
 
         Value[] arguments;
@@ -3907,6 +3907,23 @@ private struct Walker {
                 arguments ~= runExpression(argument);
                 argumentExpressions ~= argument;
             }
+
+        if (hasNoAvailableSource(call.f)) {
+            import quickbite.backends.interpreter.ffi_marshal:
+                NativeCallException, tryAssignNativeRefReturn;
+
+            try {
+                return tryAssignNativeRefReturn(
+                    call.f,
+                    arguments,
+                    nativeArgumentTypes(argumentExpressions),
+                    nativeAddressOfLocalArguments(argumentExpressions),
+                    value,
+                );
+            } catch (NativeCallException exception) {
+                throwNativeException(exception);
+            }
+        }
 
         Walker child;
         child.runningCalledFunction = true;

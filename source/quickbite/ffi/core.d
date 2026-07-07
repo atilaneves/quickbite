@@ -58,6 +58,14 @@ public interface NativeMarshaller {
 
     void readResult(imported!"dmd.mtype".Type type, in ubyte[] buffer);
 
+    void writeRefResult(
+        imported!"dmd.mtype".Type type,
+        void* address,
+        in bool stableString,
+        ref const(char)*[] keepAlive,
+        ref ubyte[][] keepAliveBuffers,
+    );
+
     void writeOutParameter(
         in size_t index,
         imported!"dmd.mtype".Type pointedToType,
@@ -117,6 +125,22 @@ public bool callNative(
     );
 }
 
+public bool assignNativeRefReturn(
+    imported!"dmd.func".FuncDeclaration function_,
+    NativeMarshaller marshaller,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+) {
+    return callNativeImpl(
+        function_,
+        NativeThis.init,
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+        RefReturnMode.write,
+    );
+}
+
 public bool callNativeMember(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
@@ -161,6 +185,7 @@ public bool callNativeDelegate(
         marshaller,
         argumentTypes,
         addressOfLocalArguments,
+        RefReturnMode.read,
     );
 }
 
@@ -184,6 +209,11 @@ public bool callNativeClassMember(
         argumentTypes,
         addressOfLocalArguments,
     );
+}
+
+private enum RefReturnMode {
+    read,
+    write,
 }
 
 private struct NativeThis {
@@ -226,6 +256,7 @@ private bool callNativeImpl(
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
+    in RefReturnMode refReturnMode = RefReturnMode.read,
 ) {
     import dmd.astenums: LINK, VarArg;
     import dmd.mangle: mangleExact;
@@ -264,6 +295,7 @@ private bool callNativeImpl(
         marshaller,
         argumentTypes,
         addressOfLocalArguments,
+        refReturnMode,
     );
 }
 
@@ -335,6 +367,7 @@ private bool callViaLibffi(
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
+    in RefReturnMode refReturnMode,
 ) {
     import quickbite.ffi.libffi:
         ffi_cif, ffi_type, ffi_type_pointer, ffi_status, ffi_prep_cif,
@@ -351,7 +384,10 @@ private bool callViaLibffi(
 
     // Mutable Type: ffiTypeFor and dmd.typesem.size both need a non-const Type.
     auto returnType = type.next.toBasetype;
-    auto returnFfi = ffiTypeFor(returnType);
+    const returnsRef = type.isRef;
+    if (refReturnMode == RefReturnMode.write && !returnsRef)
+        return false;
+    auto returnFfi = returnsRef ? &ffi_type_pointer : ffiTypeFor(returnType);
     if (returnFfi is null)
         return false;
 
@@ -381,6 +417,7 @@ private bool callViaLibffi(
         parameterTypes,
         receiver,
         addressOfLocalArguments,
+        refReturnMode,
     ))
         return false;
     const hiddenNargs = receiver.enabled ? 1 : 0;
@@ -424,7 +461,7 @@ private bool callViaLibffi(
     // libffi fills in struct ffi_type sizes during prep; cross-check against
     // DMD's computed layout (ffi.md §24.3). ffiTypeFor only claims layouts
     // libffi reproduces exactly (ffi.md §35.7), so a mismatch is a mapper bug.
-    if (returnType.ty == TY.Tstruct)
+    if (!returnsRef && returnType.ty == TY.Tstruct)
         assert(returnFfi.size == cast(size_t) size(returnType),
             "libffi/DMD return struct layout mismatch (ffi.md §24.3)");
     foreach (index; 0 .. nargs)
@@ -568,8 +605,35 @@ private bool callViaLibffi(
         );
     }
 
-    marshaller.readResult(returnType, returnBuffer);
+    if (returnsRef) {
+        auto resultAddress = *cast(void**) returnBuffer.ptr;
+        if (resultAddress is null)
+            throw new Exception("Native ref return has null address.");
+        if (refReturnMode == RefReturnMode.write) {
+            marshaller.writeRefResult(
+                returnType,
+                resultAddress,
+                hasOutPointer,
+                keepAlive,
+                keepAliveBuffers,
+            );
+        } else {
+            marshaller.readResult(
+                returnType,
+                nativeBytes(resultAddress, cast(size_t) size(returnType)),
+            );
+        }
+    } else {
+        marshaller.readResult(returnType, returnBuffer);
+    }
     return true;
+}
+
+private const(ubyte)[] nativeBytes(
+    in void* address,
+    in size_t length,
+) @trusted {
+    return (cast(const(ubyte)*) address)[0 .. length];
 }
 
 // Ask the marshaller whether every value crossing the call is representable
@@ -584,9 +648,13 @@ private bool canRepresentCall(
     imported!"dmd.mtype".Type[] parameterTypes,
     NativeThis receiver,
     in bool[] addressOfLocalArguments,
+    in RefReturnMode refReturnMode,
 ) {
     with (NativeMarshaller.Direction) {
-        if (!marshaller.canRepresent(returnType, fromNative))
+        const returnDirection = refReturnMode == RefReturnMode.write
+            ? toNative
+            : fromNative;
+        if (!marshaller.canRepresent(returnType, returnDirection))
             return false;
 
         foreach (index, parameter; parameterTypes) {
