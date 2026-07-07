@@ -191,6 +191,32 @@ unittest {
     "__quickbiteFormat".should.be in cell.source;
 }
 
+@("repl.frontend.structExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        "({ struct Point { int x; int y; } return Point(1, 2); })()",
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
+@("repl.frontend.structArrayExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        "({ struct Point { int x; int y; } return [Point(1, 2)]; })()",
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
 @("repl.frontend.classFieldStructExpressionUsesPreludeFormatter")
 unittest {
     import quickbite.frontend.cell: EvalSession;

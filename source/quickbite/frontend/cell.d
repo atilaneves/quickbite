@@ -370,7 +370,7 @@ private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
         case Tarray, Tsarray:
             return arrayElementNeedsPreludeFormat(baseType);
         case Tstruct:
-            return structNeedsPreludeFormat(baseType);
+            return true;
         default:
             return false;
     }
@@ -423,6 +423,8 @@ private bool arrayElementNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
         case Tchar, Twchar, Tdchar:
             return true;
         case Tint64, Tuns64:
+            return true;
+        case Tstruct:
             return true;
         default:
             return false;
