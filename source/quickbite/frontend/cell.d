@@ -356,6 +356,9 @@ private bool expressionReturnNeedsPreludeFormat(
 
     foreach (field; structType.sym.fields)
         if (field !is null && field.type !is null) {
+            if (field.type.ty == TY.Tenum)
+                return true;
+
             auto fieldType = field.type.toBasetype;
             with (TY) switch (fieldType.ty) {
                 case Tint64, Tuns64:
@@ -388,6 +391,9 @@ private bool arrayElementNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
     auto elementType = type.nextOf;
     if (elementType is null)
         return false;
+
+    if (elementType.ty == TY.Tenum)
+        return true;
 
     with (TY) switch (elementType.toBasetype.ty) {
         case Tint64, Tuns64:
