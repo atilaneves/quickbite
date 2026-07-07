@@ -110,6 +110,54 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
+@("repl.frontend.enumExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        "({ enum E { a, b } return E.b; })()",
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
+@("repl.frontend.enumArrayExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        "({ enum E { a, b } return [E.a, E.b]; })()",
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
+@("repl.frontend.longArrayExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit("[1L, 2L]");
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
+@("repl.frontend.assocArrayExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(`["answer": 42L]`);
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
 @("repl.frontend.classFieldStructExpressionUsesPreludeFormatter")
 unittest {
     import quickbite.frontend.cell: EvalSession;
