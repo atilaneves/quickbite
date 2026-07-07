@@ -2172,10 +2172,11 @@ Inc  Contract                                          Track  Status   Ref
 ```
 
 `done*` = landed with residuals tracked in the rung's own still-todo text
-(18: GC-rooted class handles, §34.12; 19: native class construction and
-source-available postblit/dtor, §34.13; 22: throwing/escaping/method
-callbacks, §34.16). `B*` = boxed-interpreter marshalling, native-layout
-obviates. The done rungs
+(18: native class construction, §34.13 — the GC-rooted-handles residual was
+closed 2026-07-07 as not a boxed-interpreter defect, §34.12; 19: native class
+construction and source-available postblit/dtor, §34.13; 22:
+throwing/escaping/method callbacks, §34.16). `B*` = boxed-interpreter
+marshalling, native-layout obviates. The done rungs
 10–12 are as-built history; 10/11 were boxed-slice marshalling (Track B's
 concern going forward), 12 was genuine ABI ordering (Track A). The pure-A rungs
 (13, 20, 21, 23) are independent of the representation and are the spine of the
@@ -2576,26 +2577,31 @@ an instance field, so a wrong `this` would not return the field-derived value �
 pinning that the adjustment is correct.
 
 **Still todo for this rung** (each its own approved fixture): constructing native
-classes in the Interpreter (§34.13); and the GC-visibility hole, now tracked
-below.
+classes in the Interpreter (§34.13). The GC-visibility hole once tracked here
+was disproven for the boxed Interpreter — see below.
 
-**GC-rooted class handles (approved 2026-07-06; next FFI work).** Today the
-returned handle is not GC-scanned: a collection between the factory call and a
-method call can reclaim the object, so every landed class/interface fixture is
-use-after-free-racy under collection pressure. Decision: do not wait for the
-native-layout handle table — root the handles now. `GC.addRoot` each
-class/interface handle at unmarshal into a per-session table,
-`GC.removeRoot` all entries on session teardown: sound immediately, leaks
-bounded by session lifetime. Exposing fixture (needs the usual approval before
-adding): dependency-image leaves `Object makeThing()` (GC-allocates a class
-instance), `void collectNow()` (`GC.collect`), and `bool isLive(void* p)`
-(`GC.addrOf(p) !is null`); test body
-`auto h = makeThing(); collectNow(); assert(isLive(h));` — green on
-`SystemLinker` (the reference is stack-scanned in compiled code), red on
-`Interpreter` until rooting lands, deterministic without relying on
-use-after-free UB. The long-term fix remains the native-layout handle table,
-which belongs to the interpreter-representation track (`ai/plans/value.md`),
-not this bridge plan; the rooting table is deleted when that lands.
+**GC-rooted class handles (approved 2026-07-06; closed 2026-07-07: not a
+boxed-interpreter defect).** The 2026-07-06 critique claimed the returned
+handle is not GC-scanned, so a collection between the factory call and a
+method call could reclaim the object, and approved rooting each handle via a
+per-session `GC.addRoot` table. The exposing fixture disproved the premise:
+`dependencyImage.externDClassHandleSurvivesCollection` (dependency-image
+leaves `Object makeThing()`, `void collectNow()` = `GC.collect`,
+`bool isLive(Object)` = `GC.addrOf !is null`; body
+`Object thing = makeThing; collectNow; assert(isLive(thing));`) is
+deterministically green on `SystemLinker` **and** `Interpreter` with no
+production change, and is landed as a characterization pin. Why: a class
+handle reifies into a `Value` whose `NativePointer` holds a plain `void*`
+field, and every place the interpreter keeps Values — the `locals` AA, the
+host stack, struct/array Values — is GC-scanned memory, so the conservative
+(and even the precise, via the union's pointer bitmap) collector sees the
+handle. A control probe confirmed sensitivity: the same object referenced
+only from NO_SCAN memory (`new ubyte[]`) *is* reclaimed by the same
+`GC.collect`. So the hole exists only where a handle's sole reference lives
+in NO_SCAN memory — exactly the native-layout backend's raw byte frames,
+i.e. the handle-table work already owned by the interpreter-representation
+track (`ai/plans/value.md`) and the bytecode native-runtime slice. No rooting
+table was added; one here would never be exercised and would only leak roots.
 
 ### 34.13 Increment 19 — constructors, destructors, postblits
 
