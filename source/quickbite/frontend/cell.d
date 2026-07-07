@@ -370,10 +370,14 @@ private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
         case Tarray, Tsarray:
             return arrayElementNeedsPreludeFormat(baseType);
         case Tstruct:
-            return structNeedsPreludeFormat(baseType);
+            return structTypeNeedsPreludeFormat(baseType);
         default:
             return false;
     }
+}
+
+private bool structTypeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
+    return structNeedsPreludeFormat(type) || ordinaryStructNeedsPreludeFormat(type);
 }
 
 private bool structNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
@@ -409,6 +413,18 @@ private bool structNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
     return false;
 }
 
+private bool ordinaryStructNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
+    auto structType = type.isTypeStruct;
+    if (structType is null || structType.sym.isInstantiated !is null)
+        return false;
+
+    foreach (field; structType.sym.fields)
+        if (field !is null && field.isThisDeclaration !is null)
+            return false;
+
+    return true;
+}
+
 private bool arrayElementNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
@@ -419,11 +435,14 @@ private bool arrayElementNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
     if (elementType.ty == TY.Tenum)
         return true;
 
-    with (TY) switch (elementType.toBasetype.ty) {
+    auto baseType = elementType.toBasetype;
+    with (TY) switch (baseType.ty) {
         case Tchar, Twchar, Tdchar:
             return true;
         case Tint64, Tuns64:
             return true;
+        case Tstruct:
+            return structTypeNeedsPreludeFormat(baseType);
         default:
             return false;
     }

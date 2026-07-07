@@ -270,6 +270,14 @@ formatter's scalar conversion path, and the prelude now appends scalar suffixes
 without binary string concatenation. Bytecode engines remain on their frozen
 display rows for slice-11 re-earn; no bytecode files were touched.
 
+Progress 2026-07-07: the formatter gate now covers direct expression cells
+whose return type is an ordinary non-template struct with no synthetic context
+field, plus dynamic/static arrays of those structs. Plain struct values
+(`Point(1, 2)`) and struct arrays (`[Point(1, 2)]`) therefore synthesize
+`__quickbiteFormat(expr)` for CTFE and Interpreter instead of relying on the
+interim `Value.toString` scaffolding, while nested-context structs and Phobos
+range structs stay on their existing display path.
+
 Decision 2026-07-07: ownership split with the bytecode rewrite
 (`ai/plans/bytecode.md`), so the two tracks can run in parallel without one
 building what the other deletes.
