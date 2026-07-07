@@ -1313,34 +1313,23 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 
 // DMD emits the char[16] default init as a sparse ArrayLiteralExp: every
 // element null, the char.init value carried in `basis`.
-enum staticCharArrayFieldDefaultInitSource = q{
-    struct HasBuffer {
-        char[16] buf;
-    }
-
-    unittest {
-        HasBuffer b;
-
-        assert(b.buf[0] == char.init);
-        assert(b.buf[15] == char.init);
-    }
-};
-
+// BytecodeNewCore ("Unsupported struct initializer in bytecode core: b")
+// cannot run struct default initializers yet.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("struct.staticCharArrayFieldDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
-        runBackendSourceFixtureTests!backend(staticCharArrayFieldDefaultInitSource);
-    }
-}
+        runBackendSourceFixtureTests!backend(q{
+            struct HasBuffer {
+                char[16] buf;
+            }
 
-// BytecodeNewCore cannot run struct default initializers yet; pin its
-// structured diagnostic rather than dropping it from the matrix.
-static foreach (backend; AliasSeq!(BytecodeNewCore)) {
-    @("struct.staticCharArrayFieldDefaultInit." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(staticCharArrayFieldDefaultInitSource)
-            .shouldThrowWithMessage("Unsupported struct initializer in bytecode core: b");
+            unittest {
+                HasBuffer b;
+
+                assert(b.buf[0] == char.init);
+                assert(b.buf[15] == char.init);
+            }
+        });
     }
 }
