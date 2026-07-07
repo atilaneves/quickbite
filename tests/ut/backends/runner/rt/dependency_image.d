@@ -2198,3 +2198,89 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// Characterization pin for native class-handle GC visibility (ffi.md §34.12):
+// a returned class reference reifies as an opaque NativePointer whose raw
+// `void*` field lives inside a boxed Value, and every place the interpreter
+// keeps Values (the locals AA, the host stack) is GC-scanned memory — so a
+// collection between the factory call and a later use keeps the object alive,
+// with no explicit rooting. The plan's feared hole exists only where a
+// handle's sole reference lives in NO_SCAN memory (the native-layout
+// backend's raw byte frames); that is the value.md handle-table work, not a
+// boxed-interpreter defect.
+@("dependencyImage.externDClassHandleSurvivesCollection.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_gc_root_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_gc_root_fixture;
+
+            class Thing {
+                int payload;
+
+                this(int payload) {
+                    this.payload = payload;
+                }
+            }
+
+            Object makeThing() {
+                return new Thing(42);
+            }
+
+            void collectNow() {
+                import core.memory: GC;
+                GC.collect;
+            }
+
+            bool isLive(Object o) {
+                import core.memory: GC;
+                return GC.addrOf(cast(void*) o) !is null;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_gc_root_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_gc_root_fixture;
+
+            Object makeThing();
+            void collectNow();
+            bool isLive(Object o);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_gc_root_fixture;
+
+                unittest {
+                    Object thing = makeThing;
+                    collectNow;
+                    assert(isLive(thing));
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
