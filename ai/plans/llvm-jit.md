@@ -8,17 +8,21 @@ Archive link files are split by shape: shared images are still `dlopen`'d into
 the process, while static archives are attached to the ORC object layer with
 `LLVMOrcCreateStaticLibrarySearchGeneratorForPath` and lazily searched for
 referenced members. The duplicate-`UND`-symbol → zero-GOT-stub defect is fixed
-by the ELF normalizer. `bin/ut @LLVMJit` is 422/0.
-The full `bin/ut --random` is 2462/0.
+by the ELF normalizer. `bin/ut @LLVMJit` and the full `bin/ut --random` are
+green (0 failed is the invariant; totals rot and are deliberately not
+recorded in this file).
 
 Everything below is kept as an outcome log; the interposition (Step 1), fork
 fix (Step 4), and ELF normalizer writeups are the load-bearing history. Original
 goal was a POC viability gate; that was met at Step 1/3 and the goal has since
 moved to full-matrix + benchmark parity.
 
-Not yet a `SystemLinker` peer: the LDC-built bench cannot run it, and two
-`rt/` matrix blocks exclude it. Live plan: see "SystemLinker-peer parity
-plan (2026-07-06)" at the end of this file.
+**Agent entry point.** Work the "Critique execution plan (2026-07-07)" at the
+end of this file: slices A→F, in order, one branch/PR per slice. After F, the
+remaining work is slices 3–4 of the "SystemLinker-peer parity plan
+(2026-07-06)" (also below; until then the LDC-built bench cannot run this
+backend). Parity slices 1–2 are ✅ done. The only other open item is the
+upstream JITLink duplicate-`UND` minimal repro (see the normalizer section).
 
 ## Scope
 
@@ -494,7 +498,8 @@ read-oriented here and has no relocation symbol-index setter. A C++ shim is
 worth revisiting only if Quickbite grows first-class C++ build support or the
 ELF helper expands beyond this narrow normalization job.
 
-Fixed in the loader, not with a GC-symbol list. `native/elf.d` parses the
+Fixed in the loader, not with a GC-symbol list. `orc/elf.d` (originally
+`native/elf.d`; moved by parity slice 2) parses the
 Quickbite-supported object shape (little-endian ELF64 `ET_REL`, one
 `SHT_SYMTAB`, `SHT_RELA` relocation sections), coalesces duplicate
 `UND GLOBAL` symbol-table entries by name, and rewrites relocation `r_info`
@@ -530,8 +535,8 @@ symbol tables and relocations rather than hardcoded runtime symbol names.
 ### Reproduction
 
 ```sh
-bin/ut @LLVMJit                 # 421/0 — full promoted LLVMJit matrix
-bin/ut                          # 2459/0 — full suite green
+bin/ut @LLVMJit                 # full promoted LLVMJit matrix — 0 failed
+bin/ut                          # full suite — 0 failed
 bin/ut --random
 bin/ut --random --seed 2828407573
 bin/ut --random --seed 3516581215
@@ -587,21 +592,20 @@ Everything above is the outcome log of the original POC-to-matrix plan. This
 section is a live plan: make `LLVMJit` a full `SystemLinker` peer. Today it is
 not one in two ways:
 
-1. **The LDC-built bench cannot run it at all.** `benchmarks/backends.d:74`
-   skips constructing the runner under `version (LDC)` (the constructor
-   `dlopen`s DMD-compiled dependency images whose module ctors would execute
-   DMD-codegen'd code against the LDC host's druntime), and
-   `benchmarks/cli.d:800–822` filters it from the defaults / rejects an
+1. **The LDC-built bench cannot run it at all.** `makeRunners` in
+   `benchmarks/backends.d` skips constructing the runner under
+   `version (LDC)` (the constructor `dlopen`s DMD-compiled dependency images
+   whose module ctors would execute DMD-codegen'd code against the LDC host's
+   druntime), and `withoutUnavailableBackends` in `benchmarks/cli.d` filters
+   it from the defaults / rejects an
    explicit `-b llvmjit`. `bench.md` records this as "Phase 2′'s LLVMJit
    clause is intentionally not met". Since `bin/bench.sh` builds the host
    with LDC (commit `84650dbe`), the standard benchmark path cannot measure
    the backend whose whole point is latency.
-2. **Two `rt/` matrix gaps.** `tests/ut/backends/runner/rt/cstdlib.d:158`
-   (`malloc.pointerRoundTrip`) runs `AliasSeq!(Interpreter, SystemLinker)`
-   without `LLVMJit` and without a comment justifying the exclusion; the
-   inline-asm rejection pin in `rt/inline_asm.d` covers only `SystemLinker`
-   even though the rejecting pre-check lives in the shared
-   `codegen.d`/`emitObjectFilesForLink` path.
+2. **Two `rt/` matrix gaps.** ✅ RESOLVED by slice 1: `malloc.pointerRoundTrip`
+   (`rt/cstdlib.d`) and the inline-asm rejection pin (`rt/inline_asm.d`) both
+   run `LLVMJit` now. (Broader matrix gaps found later are slice E of the
+   critique execution plan.)
 
 ## Design: extend the executor model, don't fight it
 
@@ -615,11 +619,12 @@ already clean. Frontend-dependent stages: codegen
 (`emitObjectFilesForLink`, `codegen.d`) and unittest discovery + mangling
 (`foreachUnitTestDeclaration`, `dmd.mangle.mangleExact`) — both of which the
 LDC host already performs for `SystemLinker`'s executor path
-(`system_linker.d:229–269`). Frontend-free stages: X86 target init, LLJIT
-creation, process-symbol + static-library generators, ELF duplicate-`UND`
-normalization (`elf.d`), host-symbol interposition (`defineHostSymbols`,
-`llvm_jit.d:405–482`), object addition, symbol lookup, execution, and result
-encoding — all operate on file paths, C strings, and addresses only.
+(`runTestsViaExecutor` in `system_linker.d`). Frontend-free stages: X86
+target init, LLJIT creation, process-symbol + static-library generators, ELF
+duplicate-`UND` normalization (`orc/elf.d`), host-symbol interposition
+(`defineHostSymbols`, `orc/loader.d`), object addition, symbol lookup,
+execution, and result encoding — all operate on file paths, C strings, and
+addresses only (slice 2 completed this extraction into `orc/`).
 
 So: extract the frontend-free half into a loader that `bench-exec` (DMD-built,
 no dmd-frontend imports, matching druntime) can compile, extend the
@@ -633,23 +638,25 @@ Timing semantics stay honest: the `llvmjit` LDC row measures codegen + exec of
 plus the `dmd -shared` spawn/link. The cross-backend delta therefore still
 isolates link strategy, which is the quantity of interest. The DMD-host bench
 config keeps the pure in-process number. `testResultsMismatch`
-(`benchmarks/cli.d:373–402`) is backend-agnostic and covers `llvmjit`
+(`benchmarks/cli.d`) is backend-agnostic and covers `llvmjit`
 automatically once the runner is constructed.
 
 ## Slices
 
-### Slice 1: `bin/ut` matrix parity (pre-approved promotions)
+### Slice 1: `bin/ut` matrix parity (pre-approved promotions) ✅ DONE
 
-- Add `LLVMJit` to the `malloc.pointerRoundTrip` AliasSeq
-  (`rt/cstdlib.d:158`). Oracle-backed promotion → pre-approved. If it goes
-  red, that is a backend bug to fix (expected green: `malloc`/`free` resolve
-  via the process-symbol generator like the rest of libc).
-- Add `LLVMJit` to the inline-asm rejection pin (`rt/inline_asm.d`): the
-  pre-check throws in shared codegen, so the message should be identical. If
-  the expected message needs to change shape per backend, stop for approval.
-- Verify: `ninja bin/ut`, `bin/ut --random`, `bin/ut @LLVMJit`.
+Both promotions are in the tree: `malloc.pointerRoundTrip` (`rt/cstdlib.d`)
+runs `AliasSeq!(Interpreter, SystemLinker, LLVMJit)` and the inline-asm
+rejection pin (`rt/inline_asm.d`) runs `AliasSeq!(SystemLinker, LLVMJit)`
+with the shared-codegen comment.
 
-### Slice 2: extract the frontend-free ORC loader (pure refactor)
+### Slice 2: extract the frontend-free ORC loader (pure refactor) ✅ DONE
+
+Landed as commit `65f4a82e`: `orc/bindings.d`, `orc/elf.d`, `orc/loader.d`
+exist as designed below; `bin/ut @LLVMJit` unchanged, `--random` + historical
+seeds green.
+
+Original design (kept for reference):
 
 - New top-level `orc/` source directory (module namespace `orc.*`), following
   the `bench-exec/run_wire.d` shared-module precedent:
@@ -667,7 +674,7 @@ automatically once the runner is constructed.
   `libs "LLVM"`).
 - The focused ELF normalizer tests change imports only, not behaviour. No new
   tests.
-- Verify: `ninja bin/ut`, `bin/ut @LLVMJit` (422/0 unchanged),
+- Verify: `ninja bin/ut`, `bin/ut @LLVMJit` (0 failed, unchanged),
   `bin/ut --random` + historical seeds `2828407573`, `3516581215`.
 
 ### Slice 3: `bench-exec` ORC mode + un-gate the LDC bench
@@ -677,30 +684,31 @@ automatically once the runner is constructed.
   (string[]) fields. Both ends build from the same source in the same repo
   state; no wire compatibility shims.
 - `bench-exec` subPackage: add `sourcePaths`/`importPaths` `"orc"` and
-  `libs "LLVM" platform="linux"` (`dub.sdl:22–32`); `main.d` dispatches on
+  `libs "LLVM" platform="linux"` (the subPackage block in `dub.sdl`);
+  `main.d` dispatches on
   `kind` — `orcObjects` = `dlopen` dep images `RTLD_NOW | RTLD_GLOBAL`
   (existing code), then `orc.loader` link-and-run instead of
   `Runtime.loadLibrary` + `dlsym`.
 - `llvm_jit.d` under `version (LDC)`:
-  - constructor stores dependency-image paths instead of `dlopen`ing them
-    (`llvm_jit.d:42`, `:62`) — this is what unblocks removing the
-    `backends.d:74` construction skip;
-  - `runTests` mirrors `runTestsViaExecutor` (`system_linker.d:229–269`):
+  - the non-default constructors store dependency-image paths instead of
+    `dlopen`ing them (`loadDependencyImages`) — this is what unblocks
+    removing the `makeRunners` construction skip;
+  - `runTests` mirrors `runTestsViaExecutor` (`system_linker.d`):
     emit objects in the host, split `linkFiles` into `.so` dep images vs
     archives (as `sharedLibrariesOf` does), collect mangled symbols, write
     the request, spawn, decode. Hoist `runExecutor`/`executorPath` from
-    `system_linker.d:271–312` into a shared native-package module
+    `system_linker.d` into a shared native-package module
     (intra-package imports are fine; the backend-to-backend import ban is
     about *different* backends).
   - Object temp-dir lifetime: today `jitForObjects` deletes the emit dir
-    once buffers are read in-process (`llvm_jit.d:319`); the executor path
+    once buffers are read in-process; the executor path
     must keep it alive until results are read, like `SystemLinker`'s request
     dir.
   - `eval` throws under `version (LDC)` with the same wording pattern as
-    `system_linker.d:110–111` (in-process execution is exactly the unsound
-    thing).
-- Un-gate: delete the `backends.d:74` skip; reduce
-  `withoutUnavailableBackends` (`cli.d:800–822`) to the identity so
+    `SystemLinker.eval`'s LDC guard (in-process execution is exactly the
+    unsound thing).
+- Un-gate: delete the `makeRunners` `version (LDC)` skip; reduce
+  `withoutUnavailableBackends` (`benchmarks/cli.d`) to the identity so
   `llvmjit` stays in the defaults and `-b llvmjit` is accepted.
 - Verify: `bin/bench.sh` (defaults include llvmjit, self-check green),
   `bin/bench.sh -b llvmjit`, `bin/bench.sh --dub cerealed -b llvmjit`
@@ -739,13 +747,16 @@ automatically once the runner is constructed.
   Likely fix when it graduates from flake to blocker: exclude `DW.ref.*`
   from host-symbol interposition so the fixup targets the object's own
   adjacent indirection cell (which itself points at the host personality via
-  a 64-bit relocation).
+  a 64-bit relocation). **Superseded (2026-07-07): at ~1-in-5 it already is a
+  blocker — slice A of the critique execution plan below implements exactly
+  this fix, with a deterministic policy-level test.**
 
 ## Non-goals
 
 - `eval()` return-type coverage: `native/evaluator.d` is shared, so `LLVMJit`
   already has exact parity with `SystemLinker` (scalars only); widening it is
-  REPL work, not peer parity.
+  REPL work, not peer parity. **Caveat (2026-07-07):** parity holds for return
+  types only, not lifecycle — see slice C of the critique execution plan below.
 - Non-x86-64 targets: the DMD codegen both backends share is x86-64-only.
 - The upstream JITLink duplicate-`UND` repro stays the separate open item
   recorded above.
@@ -757,3 +768,543 @@ automatically once the runner is constructed.
 - LDC bench: `llvmjit` in the default backend set, `-b llvmjit` accepted,
   timed rows with green self-check in both corpus and `--dub` modes.
 - `./ci.sh` green; `bin/ut --random` green including historical seeds.
+
+# Critique execution plan (2026-07-07)
+
+A spec + implementation critique session (2026-07-07) produced eight
+findings; this section converts them into an ordered, decision-complete plan.
+Where a design decision was open, it is now made and marked **Decision**;
+points where the agent must stop and ask are marked **STOP**. The tests
+specified here are approved to add as written; a test that needs a different
+shape than specified is a STOP.
+
+## How to work this plan
+
+- One slice per branch/PR, in order A → F. Each slice is independently
+  verifiable and leaves the suite green. Do not batch slices.
+- Gate for every slice: `ninja bin/ut`; `bin/ut`; `bin/ut --random`;
+  `bin/ut --random --seed 2828407573`; `bin/ut --random --seed 3516581215`;
+  `bin/ut @LLVMJit`; `./ci.sh` before the PR. Report "0 failed" — never
+  record test totals in this file or in PR text; totals rot silently.
+- New tests land in the same PR as the change that turns them green; a test
+  written to expose a defect must be observed red before the fix (note the
+  red output in the PR description).
+- `AGENTS.md` rules apply throughout (tests run serially; no per-test process
+  spawning beyond the existing forks; oracle-backed matrix promotions are
+  pre-approved).
+- After slice F, resume the "SystemLinker-peer parity plan" above at slice 3
+  (bench-exec ORC mode). The upstream JITLink duplicate-`UND` repro remains a
+  separate open item.
+
+## Slice A — interposition policy: extract the predicate, exclude `DW.ref.*`, kill the Delta32 flake
+
+**Why first:** every later slice's gate includes `bin/ut --random`, and the
+eh_frame Delta32 flake (see the watch item above) fails it roughly 1 run in
+5 on master — every subsequent gate is untrustworthy until this lands.
+
+**Context.** `defineHostSymbols` (`orc/loader.d`) interposes every object
+symbol the host also exports, with no exclusion policy. That is correct for
+its purpose (degenerate weak COMDAT bodies whose real copies live in
+libphobos2.so) but wrong for `DW.ref.__dmd_personality_v0`: an
+unwind-machinery indirection cell that `.eh_frame` references via a
+PC-relative 32-bit (Delta32) fixup. The object's own copy is by construction
+within range; interposing it swaps in an arbitrary host address and creates
+the >2 GiB exposure. The flake is not address-space bad luck; it is a policy
+hole, and the policy is deterministic and testable even though the flake is
+not.
+
+**Decision.** Extract the interposition predicate as a pure function and
+exclude `DW.ref.*` — the one category with an observed failure. The other
+category concerns from the critique (hardcoded `callable` flag on data
+symbols, TLS symbols, `UND` interposition pre-empting the static-archive
+generator, duplicate pairs in one `AbsoluteSymbols` unit, unmeasured `dlsym`
+sweep cost) are **watch items**, parked per adopt-on-evidence — their
+exposing tests are recorded at the end of this slice for when evidence
+arrives. Do not implement them now.
+
+**Work.**
+
+1. `orc/loader.d`: add `public bool shouldInterpose(in char[] symbolName)
+   @safe @nogc nothrow pure` — false for names starting `DW.ref.`, true
+   otherwise, with a comment carrying the category rationale (the predicate
+   is the single place this knowledge accumulates). `defineHostSymbols`
+   consults it before the `dlsym` probe.
+2. Unit test (new focused module alongside the ELF normalizer tests; `orc/`
+   is frontend-free so no fixture is needed):
+
+```d
+@("interpose.excludesEhFrameIndirectionCells")
+unittest {
+    import orc.loader: shouldInterpose;
+    // .eh_frame references DW.ref.* cells via Delta32; the object's own
+    // adjacent cell must stay the fixup target (it reaches the host
+    // personality through its own 64-bit relocation). Interposing it with a
+    // host address >2 GiB away caused the Delta32 flake.
+    shouldInterpose("DW.ref.__dmd_personality_v0").should == false;
+    // The symbols interposition exists for keep being interposed: degenerate
+    // weak COMDAT stubs whose real bodies live in libphobos2.so (Step 1).
+    shouldInterpose("gc_malloc").should == true;
+    shouldInterpose("_D4core10checkedint__T4muluZQgFNaNbNiNfkkKbZk")
+        .should == true;
+}
+```
+
+3. End-to-end anchor: `staticArrayCopyRunsPostblitAndDtors.LLVMJit` — the
+   fixture that has carried every observed flake occurrence — stays green,
+   and its dtor/postblit unwinding still byte-matches `SystemLinker`. That is
+   the argument for why the exclusion is safe, turned into the regression
+   gate.
+
+**Verify:** the standard gate, with `bin/ut --random` run 5 times — flake
+absence is only demonstrable statistically; the unit test is the
+deterministic pin.
+
+**Watch items (parked; do not implement without evidence).**
+
+- Flags should derive from the object symbol's category instead of the
+  hardcoded `exported|weak|callable`; TLS symbols should not be interposable
+  at all (`dlsym` returns one thread's copy). Exposing test for when this
+  graduates:
+
+```d
+@("interpose.flagsDeriveFromSymbolCategory")
+unittest {
+    import orc.loader: interpositionFlagsFor, shouldInterpose, SymbolCategory;
+    interpositionFlagsFor(SymbolCategory.function_).callable.should == true;
+    interpositionFlagsFor(SymbolCategory.data).callable.should == false;
+    shouldInterpose("any_tls_symbol", SymbolCategory.tls).should == false;
+}
+```
+
+- `UND` interposition pre-empts the static-archive search generator when the
+  host also exports the symbol; under archive-vs-host version skew the
+  backends could diverge. The oracle pin below is **added now** (it asserts
+  backend agreement, not a winner, so it is evidence-gathering rather than a
+  behaviour change — scaffolding per `ct/archive.d`'s archive/dep-image build
+  pattern). **STOP if it is red**: that means the backends already disagree
+  and this watch item graduates to a defect needing its own design.
+
+```d
+@("archiveVsHostSymbolResolutionMatchesSystemLinker")
+unittest {
+    with(immutable Sandbox()) {
+        // build libprobe.a: qbProbe() => 42, qbSibling() => 1
+        // build libdep.so:  qbProbe() => 41
+        // fixture: unittest { assert(qbProbe() + qbSibling() == EXPECTED); }
+        const linkFiles = [
+            inSandboxPath("libdep.so"),
+            inSandboxPath("libprobe.a"),
+        ];
+        const jit    = runResultsWith!LLVMJit(fixture, linkFiles, importPaths);
+        const linker = runResultsWith!SystemLinker(fixture, linkFiles, importPaths);
+        jit.length.should == linker.length;
+        jit[0].passed.should == linker[0].passed;
+        jit[0].message.should == linker[0].message; // byte-for-byte, oracle rule
+    }
+}
+```
+
+- The per-object `dlsym` sweep's share of the ~5–9 ms per-test latency is
+  unmeasured; measure with a bench probe before considering a once-per-child
+  process-export cache.
+
+## Slice B — ELF normalizer: coalesce all undefined duplicates, test the guard
+
+**Context.** The normalizer (see "Duplicate undefined ELF normalizer" above)
+is a defense against an uncharacterized emitter, but it coalesces only
+duplicate `UND GLOBAL` entries: a duplicate `UND WEAK` pair, or a mixed
+`GLOBAL`+`WEAK` pair with the same name, passes through silently and JITLink
+would zero-stub the referenced duplicate exactly as before (`rip = 0x0` in
+the JIT child, at package scale). GNU ld coalesces undefined weaks by name
+just as it does globals. Separately: the wrapper production actually calls
+(`normalizeDuplicateUndefinedGlobalsInFile`) and all rejection paths are
+untested, and a rejection throws inside the JIT child, failing the whole
+`runTests` group — blast radius that deserves pins.
+
+**Decision.** Coalesce duplicate `UND` symbols of *any* binding by name, with
+the canonical entry preferring `GLOBAL` over `WEAK`. Rationale: the
+normalizer's design principle is "replicate what ld tolerates", and rejecting
+instead would turn a plausible emitter variant into a hard backend failure. (A
+legitimately unresolved weak undef resolving to 0 is unaffected:
+name-coalescing only prevents the two-entries-one-zeroed split.)
+
+**Work.**
+
+1. `orc/elf.d`: widen the coalescing loop's binding filter to
+   `global || weak`; when both bindings appear for one name, make the
+   `GLOBAL` entry canonical.
+2. Fix `singleSectionOfType`'s error messages to derive from its `type`
+   parameter (they hardcode "SHT_SYMTAB").
+3. Tests in `rt/elf.d`, reusing its synthetic builder (`writeSymbol(object,
+   index, name, symbolInfo(binding, type), sectionIndex)`; binding 1 =
+   GLOBAL, 2 = WEAK). The first two must be observed red before the fix:
+
+```d
+@("elf.duplicateUndefinedWeakRelocationsUseFirstSymbol")
+unittest {
+    // Same shape as the GLOBAL-duplicate test, weak binding: ld coalesces
+    // undefined weaks by name too, so the normalizer must as well or the
+    // zero-GOT-stub defect recurs under a weak-emitting variant of the
+    // uncharacterized emitter.
+    auto object = emptyObject;
+    writeSymbol(object, 1, 1, symbolInfo(2, 0), 0); // UND WEAK "dup"
+    writeSymbol(object, 2, 1, symbolInfo(2, 0), 0); // UND WEAK "dup" again
+    writeSymbol(object, 3, 5, symbolInfo(1, 0), 0); // UND GLOBAL "other"
+    writeRelocation(object, 0, 2, 42);
+    writeRelocation(object, 1, 3, 17);
+
+    normalizeDuplicateUndefinedGlobals(object).should == true;
+    relocationSymbolIndex(object, 0).should == 1;
+    relocationSymbolIndex(object, 1).should == 3;
+}
+
+@("elf.mixedBindingDuplicateCoalescesToGlobal")
+unittest {
+    auto object = emptyObject;
+    writeSymbol(object, 1, 1, symbolInfo(1, 0), 0); // UND GLOBAL "dup"
+    writeSymbol(object, 2, 1, symbolInfo(2, 0), 0); // UND WEAK   "dup"
+    writeRelocation(object, 0, 2, 42);
+
+    normalizeDuplicateUndefinedGlobals(object).should == true;
+    relocationSymbolIndex(object, 0).should == 1;   // canonical: the GLOBAL
+}
+
+@("elf.normalizeInFileRewritesAndReportsChange")
+unittest {
+    with(immutable Sandbox()) {
+        writeFile("dup.o", cast(const(char)[]) duplicateUndefinedGlobalObject);
+        normalizeDuplicateUndefinedGlobalsInFile(inSandboxPath("dup.o"))
+            .should == true;
+        // second pass: already canonical, must be a no-op
+        normalizeDuplicateUndefinedGlobalsInFile(inSandboxPath("dup.o"))
+            .should == false;
+    }
+}
+
+@("elf.unsupportedShapesAreRejectedLoudly")
+unittest {
+    static ubyte[] withByte(size_t offset, ubyte value) {
+        auto object = uniqueUndefinedGlobalObject;
+        object[offset] = value;
+        return object;
+    }
+    normalizeDuplicateUndefinedGlobals(new ubyte[](8))
+        .shouldThrowWithMessage("ELF object is too small");
+    normalizeDuplicateUndefinedGlobals(withByte(5, 2))       // big-endian
+        .shouldThrowWithMessage("ELF object is not little-endian");
+    normalizeDuplicateUndefinedGlobals(withByte(16, 2))      // ET_EXEC
+        .shouldThrowWithMessage("ELF object is not relocatable");
+}
+```
+
+**Verify:** standard gate, plus `bin/bench.sh --dub cerealed -b llvmjit`
+(the package-scale surface that exposed the original defect).
+
+## Slice C — `eval` isolation: fork-and-report
+
+**Context.** `LLVMJit.eval` (`llvm_jit.d`) stands up an LLJIT via
+`jitForObjects` *in the long-lived parent* and executes the JIT'd function
+there, and nothing ever calls `LLVMOrcDisposeLLJIT` — the exact configuration
+Step 4's "Rejected alternatives" names ("never disposing the LLJIT in the
+long-lived parent — leaks unbounded and still risks a mid-run collect"). Each
+`eval` permanently leaks a full LLJIT. Reachable surfaces: the REPL
+(`qb --backend llvmjit`; `bin/qb` is DMD-built, so this runs today — one
+leaked LLJIT per evaluated line) and `bin/ut`'s `LLVMJit` eval block in
+`tests/ut/backends/evaluator/eval.d`. The Step-4 crash does not recur only
+*because* nothing is unmapped.
+
+**Decision.** Run `eval` through the same fork-and-report pattern as
+`runTests`. The alternative (accept and document the leak) contradicts the
+backend's own Step-4 rationale and leaves the REPL leaking per line.
+
+**Work.**
+
+1. `llvm_jit.d`: `eval` forks; the child JITs, calls the function via the
+   shared evaluator, writes the result over the pipe, and `_exit`s without
+   disposing (same reasoning as `runTestsInChild`). Extend the frame protocol
+   with an eval frame kind alongside the existing results/error kinds, and
+   encode `EvalResult`'s fields the way `TestResult`'s are encoded
+   (length-prefixed strings, same-process endianness). **STOP** if
+   `EvalResult` turns out not to be plain marshallable data.
+2. Leak test in `tests/ut/backends/evaluator/eval.d` — red today, green
+   after:
+
+```d
+@("eval.doesNotLeakJitMappings.LLVMJit")
+@Tags("LLVMJit")
+unittest {
+    static size_t anonymousExecutableMappings() {
+        import std.algorithm.iteration: filter;
+        import std.algorithm.searching: canFind;
+        import std.file: readText;
+        import std.range: walkLength;
+        import std.string: lineSplitter;
+        return "/proc/self/maps"
+            .readText
+            .lineSplitter
+            .filter!(line => line.canFind("r-xp") && !line.canFind("/"))
+            .walkLength;
+    }
+
+    auto backend = newBackend!LLVMJit;
+    backend.eval("1 + 2").should == "3"; // first eval pays one-time setup
+    const before = anonymousExecutableMappings;
+    foreach (i; 0 .. 8)
+        backend.eval("1 + 2").should == "3";
+    const after = anonymousExecutableMappings;
+    // Un-forked, undisposed evals grow this by >= 1 mapping each; the
+    // fork-and-report implementation adds none in the parent.
+    (after - before).should.be < 8;
+}
+```
+
+3. GC-invisibility probe — **evidence probe, not fixed by this slice**: JIT
+   `.data`/`.bss` is never GC-registered (no DSO registry, Step 1), so a GC
+   pointer whose only reference lives in a JIT-resident `__gshared` is
+   invisible to the collector — inside the fork child too, for `runTests`
+   fixtures as much as for `eval`. Add the test; `SystemLinker` is the oracle
+   (its `.so` data segment is a registered GC range). **STOP if the `LLVMJit`
+   row is red**: that is a deeper shared gap (GC-range registration for JIT'd
+   data) needing its own design — record the failure here, do not attempt
+   `GC.addRange` plumbing inside this slice. A pass is weak evidence only
+   (reclaim-and-reuse is not guaranteed), which is acceptable for a parked
+   hazard.
+
+```d
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+    @("gcSeesJitResidentGlobals." ~ backend.stringof)
+    unittest {
+        enum expression = q{
+            () {
+                import core.memory: GC;
+                // JIT .bss: the only reference to the array after clobber().
+                __gshared int[] cache;
+                static void clobber(int depth) {
+                    int[64] junk = void;
+                    junk[] = 0x7fff_fff0;
+                    if (depth) clobber(depth - 1);
+                }
+                cache = new int[](1024);
+                cache[0] = 42;
+                cache[$ - 1] = 43;
+                clobber(16);       // overwrite stale stack copies of the pointer
+                GC.collect;        // host GC: cannot see JIT-resident `cache`
+                auto probe = new int[](1024); // encourage reuse of a freed block
+                probe[] = -1;
+                return cache[0] + cache[$ - 1]; // 85 iff `cache` survived
+            }()
+        };
+        newBackend!backend.eval(expression).should == "85";
+    }
+}
+```
+
+**Verify:** standard gate, plus a manual `bin/qb --backend llvmjit` smoke —
+a few evals including one that throws, confirming message parity with
+`--backend system-linker`.
+
+## Slice D — `--dub` object-production parity (`DubPackage` mirroring)
+
+**Context.** In `--dub` bench mode the environment carries `DubPackage.yes`
+(`benchmarks/cli.d`). `makeSystemLinker` forwards it and `SystemLinker`
+dispatches on it (`emitObjectFilesForDubPackage` vs `emitObjectFilesForLink`);
+`makeLLVMJit` cannot — `LLVMJit` has no `DubPackage` parameter and
+`jitForObjects` hardwires `emitObjectFilesForLink`. So `--dub` codegens the
+same package two different ways, which (a) falsifies this plan's "reuses
+object production verbatim" claim and the "identical object bytes, only the
+loader differs" diagnostic axiom exactly where the backends are compared,
+(b) means the bench's cross-backend delta is not pure link strategy in
+`--dub` mode, and (c) runs the snippet apparatus (rod/prune/adoption) against
+dub-parsed roots — the regime `emitObjectFilesForDubPackage` exists to avoid.
+Cerealed passing shows the mismatch is survivable, not sound.
+
+**Decision.** Mirror the flag and hoist the dispatch so "verbatim" is true by
+construction.
+
+**Work.**
+
+1. `LLVMJitInputs` gains a `dubPackage` field; `LLVMJit` gains the
+   constructor shape matching `SystemLinker`'s (`linkFiles, importPaths,
+   packageRoot, frontendFlags, dubPackage`); `makeLLVMJit` forwards
+   `env.dubPackage`.
+2. Hoist the two-way dispatch (`dubPackage ? emitObjectFilesForDubPackage :
+   emitObjectFilesForLink`) into `native/codegen.d` as the single entry point
+   both backends call.
+3. Construction pin in `ut.bin.benchmarks` (fails to compile today):
+
+```d
+@("makeRunners.llvmjitReceivesDubPackage")
+unittest {
+    import quickbite.backends.native: DubPackage, LLVMJit;
+    import quickbite.frontend.compiler: FrontendFlags;
+
+    static assert(__traits(compiles,
+        new LLVMJit(
+            cast(const string[]) [],
+            cast(const string[]) [],
+            "",
+            FrontendFlags.init,
+            DubPackage.yes,
+        )));
+}
+```
+
+4. Object-production parity test — the diagnostic axiom pinned. Compare
+   defined-global symbol sets per object rather than raw bytes (robust
+   against benign emission nondeterminism); `definedGlobalSymbolNames` is a
+   small helper over `orc.elf`'s symtab parsing. Red before the fix (extra
+   rod object / prune-adopted symbols on the LLVMJit side); after the fix,
+   drive `LLVMJit`'s build half with `DubPackage.yes` inputs instead of the
+   raw `emitObjectFilesForLink` call so the test pins the backend plumbing,
+   not just the codegen functions:
+
+```d
+@("dubPackage.objectProductionMatchesSystemLinker")
+unittest {
+    import quickbite.backends.native.codegen:
+        CodegenInputs, emitObjectFilesForDubPackage, emitObjectFilesForLink;
+    import quickbite.frontend.compiler: parseRootModules, withCompilerLock;
+    import std.algorithm.iteration: map;
+    import std.array: array;
+
+    with(immutable Sandbox()) {
+        writeFile("pkg/mod.d", q{
+            module pkg.mod;
+            uint hashed(int x) { return hashOf(&x); } // homes a druntime
+            unittest { assert(hashed(3) == hashed(3)); } // instance on the root
+        });
+        auto modules = parseRootModules(
+            [inSandboxPath("pkg/mod.d")],
+            [inSandboxPath("pkg")],
+        ).map!(result => result.module_).array;
+
+        string[] linkerObjs, jitObjs;
+        withCompilerLock(() {
+            linkerObjs = emitObjectFilesForDubPackage(
+                modules, inSandboxPath("linker"), CodegenInputs.init);
+            jitObjs = emitObjectFilesForLink(
+                modules, inSandboxPath("jit"), CodegenInputs.init);
+        });
+
+        jitObjs.length.should == linkerObjs.length;
+        foreach (i, jitObj; jitObjs)
+            definedGlobalSymbolNames(jitObj)
+                .should == definedGlobalSymbolNames(linkerObjs[i]);
+    }
+}
+```
+
+**Verify:** standard gate, plus `bin/bench.sh --dub cerealed -b llvmjit` and
+`bin/bench.sh --dub cerealed -b system-linker`.
+
+## Slice E — matrix promotions
+
+**Context.** Step 4's "every SystemLinker-oracle block" claim has uncommented
+gaps, and `rt/dependency_image.d` — the one file exercising extern-D/extern-C
+calls into a prebuilt dependency image — has no `LLVMJit` coverage at all,
+despite `LLVMJit` shipping dedicated dep-image machinery
+(`loadDependencyImages`, the shared/static `linkFiles` split) with
+JIT-specific semantics: an `RTLD_GLOBAL` dep image's symbols participate in
+weak interposition over the JIT objects, a binding regime `SystemLinker`'s
+link never goes through.
+
+**Work** (all oracle-backed, pre-approved per `AGENTS.md`):
+
+1. Add `LLVMJit` to the uncommented SystemLinker-bearing blocks:
+   `ct/structs.d` (`tupleofForeachRefReadsAndWritesFields`,
+   `templatedConstructorPreservesDynamicArrayField`,
+   `voidInitialisedFieldSliceAssignment`), `ct/arrays.d`
+   (`pointer.indexAssignmentWritesArrayStorage`), `ct/expressions.d`
+   (`struct.defaultInitPreservesExplicitFieldInitializers`), `rt/cstdlib.d`
+   (`strlen.localBuffer`), `rt/file.d` (the whole
+   `AliasSeq!(Interpreter, SystemLinker)` block), and the four consecutive
+   "Oops" diagnostic blocks in `ct/diagnostics.d` that omit it while the
+   adjacent `refParameterOops` block includes it:
+
+```d
+// ct/diagnostics.d — match the adjacent refParameterOops block:
+static foreach (backend; AliasSeq!(
+    Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit,
+)) {
+```
+
+2. Promote `rt/dependency_image.d`'s fixtures:
+
+```d
+// every extern-D/extern-C fixture also runs through the JIT's dep-image +
+// interposition regime; the SystemLinker-oracle expected values already
+// computed in this file stay the oracle:
+static foreach (backend; AliasSeq!(Interpreter, LLVMJit)) {
+```
+
+3. **STOP per red promotion**: a red is a backend bug found — report the
+   failing fixture and the message diff against the oracle before attempting
+   a fix; do not exclude-and-comment to get green without approval. Any block
+   that turns out to be *deliberately* excluded gets a one-line comment
+   pointing here (`ct/math.d`'s pow block shows the convention).
+
+**Verify:** standard gate.
+
+## Slice F — diagnostics and hygiene
+
+**Work.**
+
+1. **Pipe error reporting** (`llvm_jit.d`): make `writeAll` report failure
+   (throw) instead of silently returning on non-EINTR errors, so the child
+   `_exit`s nonzero and the parent's "JIT child died" path carries the real
+   errno instead of decoding a truncated frame; make the parent's read loop
+   throw on non-EINTR errors instead of decoding partial data; in
+   `runChildAndReport`'s catch-all, send `throwable.toString` (matching the
+   codegen fork) with the existing guarded fallback to `msg` if `toString`
+   itself throws. Test:
+
+```d
+@("jitPipe.writeFailureIsReportedNotSwallowed")
+unittest {
+    import core.sys.posix.signal: SIG_IGN, SIGPIPE, signal;
+    import core.sys.posix.unistd: close, pipe;
+
+    int[2] fds;
+    pipe(fds).should == 0;
+    close(fds[0]);                 // reader gone: writes fail with EPIPE
+    signal(SIGPIPE, SIG_IGN);      // surface EPIPE instead of dying
+
+    writeResults(fds[1], [TestResult(true, "t", "loc", "")])
+        .shouldThrowWithMessage("write to result pipe failed");
+}
+```
+
+2. **Deduplicate the diverged helpers**: `archiveImportPathsUnder` exists in
+   both `system_linker.d` and `llvm_jit.d` and the copies already disagree
+   (LLVMJit's early-returns `[]` for empty `packageRoot`; SystemLinker's
+   normalizes `""` to the cwd). `isSharedLibraryPath` is duplicated too.
+   Hoist both into one package-private native module; the empty-root
+   semantics is LLVMJit's (no package root ⇒ no "under the package"
+   distinction ⇒ nothing archive-backed). Pin:
+
+```d
+@("archiveImportPathsUnder.emptyPackageRootClassifiesNothing")
+unittest {
+    // Pinned so the two backends cannot diverge again: one shared helper,
+    // not parallel maintenance.
+    archiveImportPathsUnder(["/somewhere/else/src"], "").should == [];
+}
+```
+
+3. **Consistency and comments** (no tests; comment/deletion fixes):
+   - `orc/bindings.d`: mark `LLVMOrcDisposeLLJIT` "intentionally unused —
+     the JIT child `_exit`s instead of disposing; re-adding a dispose call in
+     the child recreates the Step-4 munmap-then-collect crash". Delete
+     `LLVMOrcReleaseSymbolStringPoolEntry` (never called, no such guard
+     value). Fix the `LLVMInitializeX86*` comment ("each returns nonzero on
+     failure" — they are `void`).
+   - Serial contract: `runTestsInChild` forks and then takes
+     `withCompilerLock` *inside the child*; only the suite's serial execution
+     (`AGENTS.md`) prevents inheriting a locked mutex and deadlocking. Say so
+     in a comment at the fork site, and make `_nativeTargetInitialised`
+     (`orc/loader.d`) and `_jitCounter` (`llvm_jit.d`) consistent with that
+     contract (plain `__gshared` for both; the atomic implies a concurrency
+     support that does not exist).
+   - `codegen.d`'s header comment still says "the *future* LLVMJit".
+
+**Verify:** standard gate.
