@@ -264,6 +264,45 @@ all. Needs its own rung: ffi ref-return support (return the pointer,
 deref for rvalue reads, write through it for assignment), rt/ exposing
 fixtures against a body-less `ref`-returning libc accessor.
 
+**2026-07-07 (bench-dub-corpus close-out).** `ai/plans/bench-dub-corpus.md`
+is folded into its owning plans and deleted; the "item 3" / "follow-on"
+citations above refer to that document's work items (PRs #352–#356 plus
+the two rungs above), now git history. Its surviving content lands here,
+in `ffi.md` §35.9 (the native ref-return defect above, now a tracked FFI
+work item), in `bench.md` (tardy run-executor crash; `bin/bench` build
+misconfiguration; crash-containment motivation for fork-per-package),
+and in `ai/plans/link-set-pollution.md` (the template-instance pollution
+flake). The freshest two-backend corpus measurement
+(`-b interpreter -b system-linker`, merged master, 2026-07-07):
+
+```text
+automem   prepares 14/14; mismatches: pthread_mutexattr_init FFI (no
+          available source), `cannot read uninitialized variable
+          .trustedMoveImpl.result`, `Unsupported eval expression: cast_`,
+          and the ffi ref-return class (ffi.md §35.9)
+fearless  prepares 7/7; `Unsupported eval expression: address of
+          dotVariable` (`__unittest_L33_C7`) — NEW class, not yet in the
+          inventory above (fearless is the first non-cerealed driver to
+          hit it); needs triage and a standalone fixture per §8
+cerealed  prepares 32/32, past `Expected array.`; L302 now fails deeper:
+          `[ , a] != "xa"`, the ScopeBuffer realloc/memcpy family
+          (Rung 7)
+tardy     by path: prepares 22/22, interpreter leg times the frontend;
+          the system-linker leg's run-executor crash is bench.md's item,
+          not an interpreter gap. By registry name: correctly
+          unpreparable (`ut/polymorphic.d(24,12): scope variable ...`)
+```
+
+**The goal is support, not pinned refusal** (user directive, 2026-07-07).
+The `rt/concurrency.d` `thisTid` fixture currently lets the Interpreter
+leg pass on *either* oracle agreement *or* a structured unsupported
+diagnostic. That acceptance was crash-scoped triage (the item's target
+was "never dies"), not the end state: the goal is that the interpreter
+**runs** these constructs and agrees with `SystemLinker` — here and for
+the surviving disagreements above. Do not add further tests that pin an
+unsupported diagnostic as acceptable interpreter behaviour; distil each
+gap into a red/green fixture per §8 and fix the root.
+
 The original masked-era inventory (68× `Expected struct` on top) is in git
 history; it is no longer meaningful — Phase 0's full closure and §9.8 both
 reshaped it.
@@ -305,6 +344,15 @@ BytecodeNewCore, SystemLinker, LLVMJit))` matrix wrapping
 `runBackendSourceFixtureTests!backend(q{ ... })` (see
 `tests/ut/backends/runner/ct/cerealed.d` for the style — that file is itself
 standalone distilled snippets, not a cerealed import).
+
+**Matrix width and refusals (user guidance, 2026-07-07).** Each fixture runs
+on the widest backend matrix it can express. A backend for which the fixture
+stays red after the rung's fix is *omitted* from the fixture's backend
+list — the omission is the documentation. Do **not** pin a structured
+unsupported diagnostic with `shouldThrowWithMessage`, especially for
+backends still in development (`BytecodeNewCore`): such pins turn every
+feature landing into a test-update chore, and per §7's
+support-not-refusal directive a pinned refusal is never the end state.
 
 ## 9. The rungs (ordered by leverage)
 
