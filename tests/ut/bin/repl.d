@@ -152,6 +152,20 @@ unittest {
     "__quickbiteFormat".should.be in cell.source;
 }
 
+@("repl.frontend.assocArrayFieldStructExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        `({ struct Lookup { long[string] values; } ` ~
+        `return Lookup(["answer": 42L]); })()`,
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
 @("repl.frontend.enumFieldStructExpressionUsesPreludeFormatter")
 unittest {
     import quickbite.frontend.cell: EvalSession;

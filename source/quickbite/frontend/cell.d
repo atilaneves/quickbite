@@ -367,6 +367,8 @@ private bool expressionReturnNeedsPreludeFormat(
                     return true;
                 case Tdelegate:
                     return true;
+                case Taarray:
+                    return true;
                 case Tarray, Tsarray:
                     return arrayElementNeedsPreludeFormat(fieldType);
                 case Tpointer:
