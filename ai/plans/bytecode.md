@@ -1266,6 +1266,19 @@ Remaining non-display `repl.d` behaviours stay promotable to
 `tests/ut/bin/repl.d` currently includes `SystemLinker`, and none is added
 as part of this plan.
 
+First-rung investigation, 2026-07-07:
+`repl.backend.moduleLevelVariablesAreVisibleToFunctions` now includes
+`BytecodeNewCore` and fails red at `counter = 5` with `Unsupported assignment
+in bytecode core: counter = 5`. The missing production behaviour is module
+data-segment storage for mutable module-level `VarDeclaration`s: the new-core
+assignment path only stores to frame locals, captured locals, fields, array
+elements, pointers, and AA elements, while the `VarExp` read path similarly
+resolves only local/captured storage or immutable initializers. A module
+variable such as `counter` is neither registered as frame-local state nor
+addressable as a VM-owned module slot, so direct module-level scalar assignment
+falls through to the unsupported-assignment diagnostic before `get()` can read
+the updated value.
+
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
 slice roadmap.
@@ -4228,3 +4241,11 @@ extending `ResultType`/`reify.d` display metadata. The non-display failures
 from the sweep (`moduleLevelVariablesAreVisibleToFunctions`, Phobos
 import/range/`ref`-argument execution) are this track's language-feature
 backlog — see "Current Next Step".
+
+Module-level scalar assignment first rung, 2026-07-07: the new core now
+allocates VM-owned mutable module data for scalar `VarDeclaration`s, emits
+module load/store bytecode for direct reads and writes, and keeps non-scalar
+module storage unsupported. The promoted
+`repl.backend.moduleLevelVariablesAreVisibleToFunctions.BytecodeNewCore`
+row is green, as are `ninja bin/ut` and `bin/ut --random` with seed
+`2143207206`.

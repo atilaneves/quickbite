@@ -386,7 +386,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter)) {
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore)) {
     @("repl.backend.moduleLevelVariablesAreVisibleToFunctions." ~
         backend.stringof)
     unittest {
