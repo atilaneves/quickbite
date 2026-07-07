@@ -168,6 +168,36 @@ package bool tryInterpreterBuiltin(
     return false;
 }
 
+package bool isStdConvText(imported!"dmd.func".FuncDeclaration function_) {
+    if (function_ is null || function_.ident is null)
+        return false;
+
+    auto module_ = function_.getModule;
+    if (module_ is null || module_.md is null)
+        return false;
+
+    const declaration = module_.md;
+    return
+        function_.ident.toString == "text" &&
+        declaration.id !is null &&
+        declaration.id.toString == "conv" &&
+        declaration.packages.length == 1 &&
+        declaration.packages[0] !is null &&
+        declaration.packages[0].toString == "std";
+}
+
+package imported!"quickbite.lang".Value stdConvTextCall(
+    in imported!"quickbite.lang".Value[] arguments,
+) @safe pure {
+    import quickbite.lang: Value;
+
+    string rendered;
+    foreach (ref argument; arguments)
+        rendered ~= argument.dText;
+
+    return Value(rendered);
+}
+
 package size_t interpreterBuiltinArgumentCount(
     in InterpreterBuiltin builtin,
 ) @safe pure nothrow @nogc {

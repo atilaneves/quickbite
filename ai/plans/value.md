@@ -260,6 +260,16 @@ prelude enum formatter now returns named members through generated literal
 strings so the Interpreter can execute the direct enum path without falling
 through `std.conv.text`'s enum formatting.
 
+Progress 2026-07-07: the formatter gate now covers direct expression cells
+whose return type is suffix/width-sensitive scalar display (`uint`, `long`,
+`ulong`, `char`/`wchar`/`dchar`, `float`, `double`, `real`). CTFE and
+Interpreter therefore render those direct scalar cells through
+`__quickbiteFormat` instead of the interim `Value.toString` display path. The
+Interpreter also gained the small `std.conv.text` builtin needed to execute the
+formatter's scalar conversion path, and the prelude now appends scalar suffixes
+without binary string concatenation. Bytecode engines remain on their frozen
+display rows for slice-11 re-earn; no bytecode files were touched.
+
 Decision 2026-07-07: ownership split with the bytecode rewrite
 (`ai/plans/bytecode.md`), so the two tracks can run in parallel without one
 building what the other deletes.
@@ -517,6 +527,9 @@ are done; what is still pending, in order:
    backend (decision 4: only views consumed by backends that can execute it)
    until the display spec is no longer enforced by the path scheduled for
    deletion. Items 2 and 3 below are blocked until this wiring lands.
+   The interpreter's `std.conv.text` hook is temporary formatter scaffolding,
+   not a general Phobos builtin: remove it once the formatter no longer needs
+   that escape hatch to execute direct scalar display cells.
 2. Delete the private reify → `Value` → `toString` scaffolding per
    backend (decision 4) as each gains the formatter.
 3. Remove the *shared* `quickbite.lang.Value` (decision 2026-06-17):

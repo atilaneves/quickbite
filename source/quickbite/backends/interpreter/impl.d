@@ -1917,6 +1917,14 @@ private struct Walker {
             }
         }
 
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.builtins:
+                isStdConvText, stdConvTextCall;
+
+            if (isStdConvText(call.f))
+                return stdConvTextCall(arguments);
+        }
+
         if (auto dot = call.e1.isDotVarExp) {
             const receiver = runExpression(dot.e1);
             if (receiver == Value.null_)

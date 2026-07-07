@@ -136,6 +136,39 @@ unittest {
     "__quickbiteFormat".should.be in cell.source;
 }
 
+@("repl.frontend.scalarExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit("cast(uint) 42");
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
+@("repl.frontend.characterExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit("cast(wchar) 'a'");
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
+@("repl.frontend.wholeFloatingExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit("3.0");
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
 @("repl.frontend.longArrayExpressionUsesPreludeFormatter")
 unittest {
     import quickbite.frontend.cell: EvalSession;

@@ -361,6 +361,10 @@ private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
 
     auto baseType = type.toBasetype;
     with (TY) switch (baseType.ty) {
+        case Tchar, Twchar, Tdchar,
+             Tuns32, Tint64, Tuns64,
+             Tfloat32, Tfloat64, Tfloat80:
+            return true;
         case Taarray:
             return true;
         case Tarray, Tsarray:
