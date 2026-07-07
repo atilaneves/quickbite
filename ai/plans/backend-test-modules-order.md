@@ -172,6 +172,15 @@ on `Ctfe`/`Interpreter` rather than `Ctfe` alone.
   diagnostics. The full module is the largest surface in the suite even
   though its session-state slice is small.
 
+  Split 2026-07-07 for the bytecode engines: the module's non-display
+  behaviours (session state, buffering, imports, commands, loaded
+  unittests, diagnostics hygiene) remain promotable to `BytecodeNewCore`;
+  its display-format tests are frozen for `Bytecode`/`BytecodeNewCore`
+  until `bytecode.md` slice 11 (prelude formatter execution) re-earns them
+  by executing `__quickbiteFormat` (`value.md` decision 2026-07-07). Do not
+  treat a frozen display row as the "next smallest candidate" for those
+  backends.
+
 ## Not Behavior Targets
 
 `tests/ut/backends/package.d` is promotion plumbing, not a behavior target: it

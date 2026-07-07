@@ -260,6 +260,29 @@ prelude enum formatter now returns named members through generated literal
 strings so the Interpreter can execute the direct enum path without falling
 through `std.conv.text`'s enum formatting.
 
+Decision 2026-07-07: ownership split with the bytecode rewrite
+(`ai/plans/bytecode.md`), so the two tracks can run in parallel without one
+building what the other deletes.
+
+- This plan's formatter track owns the frontend gate (`frontend/cell.d`),
+  the prelude (`source/quickbite/repl_prelude.d`), and the opted-in
+  backends (`Ctfe`, `Interpreter`) including their interim-scaffolding
+  deletion. It does not touch `backends/bytecode/**`.
+- The bytecode backends opt in through their own plan's slice 11 ("Prelude
+  formatter execution", `bytecode.md`): the new core earns display by
+  executing `__quickbiteFormat`, then deletes its display scaffolding (the
+  deletion inventory in `bytecode.md`). Until then, `repl.d` display-string
+  tests are frozen for `Bytecode`/`BytecodeNewCore`.
+- Matrix rule: new or changed display tests are parameterized over
+  formatter-capable backends only (today `Ctfe`, `Interpreter`);
+  `Bytecode`/`BytecodeNewCore` join a display test's `AliasSeq` when they
+  opt in. If a formatter change alters an expected display string that an
+  existing test row pins on a bytecode engine through the interim
+  `Value.toString` path, drop that engine from the block's `AliasSeq` and
+  record it as a pending slice-11 re-earn — do not implement matching
+  `Value` scaffolding on the bytecode side. (This is the existing
+  omit-don't-pin fixture convention applied to display rows.)
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -562,3 +585,8 @@ before; it dies with the legacy executors.
 - Do not use failed evaluation as REPL control flow.
 - Keep backend-specific DMD conversion inside backend adapters while the
   interim scaffolding lives.
+- Formatter-track changes must not touch `backends/bytecode/**`; bytecode
+  display parity goes through `bytecode.md` slice 11 (decision 2026-07-07).
+  When a display change collides with a bytecode-pinned row, apply the
+  matrix rule (drop the engine from that block, record the pending re-earn)
+  rather than extending bytecode display scaffolding.

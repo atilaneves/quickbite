@@ -93,6 +93,16 @@ This does not change the architecture target below: pure backends may still use
 snapshot replay, and future native/persistent sessions still need
 backend-owned state.
 
+Ownership note (2026-07-07): REPL *display* work is split across plans to
+keep parallel agents off each other's deletion targets. The prelude
+formatter (`__quickbiteFormat`) and its frontend gate belong to
+`ai/plans/value.md` (Ctfe/Interpreter opt-in, interim-scaffolding
+deletion); the bytecode engines earn display by *executing* the formatter
+in `ai/plans/bytecode.md` slice 11, and their `repl.d` display rows are
+frozen until then. New or changed display tests are matrixed over
+formatter-capable backends only. An agent working from this plan should not
+add display rendering to `backends/bytecode/**`.
+
 ## Constraints
 
 - **dmd glue lowers modules and functions only.** There is no

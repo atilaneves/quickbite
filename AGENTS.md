@@ -19,6 +19,14 @@ dmd-as-a-library.
 
 Consult `ai/plans` for implementation plans.
 
+When parallel work tracks are running (e.g. the bytecode rewrite, the
+value/formatter track, the interpreter FFI track), append progress and
+ledger notes only to the plan that owns your track — bytecode work to
+`ai/plans/bytecode.md`, formatter/display work to `ai/plans/value.md`,
+FFI work to `ai/plans/ffi.md`. A cross-track observation goes in your
+own plan with a reference to the other, not as an edit to the other
+plan. This keeps concurrent PRs from conflicting in the plan ledgers.
+
 # Coding Guidelines
 
 ## Git worktrees

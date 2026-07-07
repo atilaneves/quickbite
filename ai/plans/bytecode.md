@@ -139,6 +139,32 @@ visibility of the global.
   once this core can execute the in-program formatter prelude — expected,
   since the core is headed for full D.
 
+### Deletion inventory (do not extend; added 2026-07-07)
+The interim display scaffolding below is scheduled for deletion when the
+prelude formatter lands on this backend (`ai/plans/value.md` decisions 3/4;
+slice 11 in the roadmap). Do not add cases, types, or metadata to any of it.
+If a test can only pass by extending one of these, the test waits for
+slice 11.
+
+- `source/quickbite/backends/evaluator.d`: the shared
+  `displayString(Value, ...)` interim renderer — deleted with the formatter
+  wiring (`value.md` remaining-work item 2).
+- `source/quickbite/backends/bytecode/compiler.d` (legacy core): enum
+  member-name detection emitting `Value.enumValue`, and struct-literal
+  display via `Value.structDisplayValue`.
+- `source/quickbite/backends/bytecode/core/compiler.d`:
+  `structDisplayField` display metadata (nullable pointer / delegate /
+  class-reference field kinds) and the `ResultType` enum value-name maps.
+- `source/quickbite/backends/bytecode/core/reify.d`: display-only `Value`
+  construction — `Value.structDisplayValue`, `Value.enumValue`, the
+  `Value.stringValue` width variants, and nullable-field `Value.null_` /
+  `Value.undisplayable` rendering.
+
+Reification itself — reading frame bytes at a static type at the
+`Evaluator` boundary — is not deprecated; it is the slice-1 debugging
+instrument. What is deprecated is growing its *display* vocabulary: any
+rendering knowledge beyond "these bytes at this type".
+
 ### Bytecode format
 - Fixed-width instructions: opcode plus up to three 16-bit operands (frame
   byte offsets, constant-pool indices, function ids, jump targets). Frames
@@ -258,30 +284,51 @@ keeps the full suite green.
   the new core. When the entire matrix passes on the new core, flip the
   default and delete the old core in the same change.
 
-### REPL parity continuation
+### REPL parity continuation (re-scoped 2026-07-07)
 REPL promotion is parity work against the existing `Interpreter` behaviour,
 not `SystemLinker` enablement. Do not add `SystemLinker` to
 `tests/ut/bin/repl.d` as part of this plan. The REPL still uses template code
 emission paths that are separate from the bytecode backend parity work; proving
 or fixing those paths belongs in a later plan.
 
-Continue promoting `tests/ut/bin/repl.d` to `BytecodeNewCore` in coherent
-blocks. If a promoted block fails, stop the promotion worker there. Use one
-subagent to investigate and record the concrete missing bytecode behaviour,
-then a separate subagent to implement the minimal production fix.
+Decision 2026-07-07: `repl.d` promotion is split into two kinds of behaviour
+with different rules, so this track and the `ai/plans/value.md` formatter
+track can proceed in parallel without one building what the other deletes.
+
+- **Display-string tests are frozen for both bytecode engines.** Any
+  `repl.d` test whose assertion is a rendered value display (`displays*`,
+  literal suffixes, struct/enum/AA/range rendering) is not promoted further
+  to `Bytecode` or `BytecodeNewCore`, and no new display metadata is added
+  to serve one (see "Deletion inventory" under Core Architecture). These
+  tests are re-earned in one deliberate slice — "Prelude formatter
+  execution" (slice 11) — by executing `__quickbiteFormat` for real, not by
+  extending `Value` reification. Already-green display rows stay green (they
+  are part of the ratchet) but are maintained, not extended.
+- **Non-display behaviours remain promotable, to `BytecodeNewCore` only:**
+  session state, rebinding, buffering, imports, commands, loaded-unittest
+  execution, and diagnostics hygiene. If a promoted block fails, stop the
+  promotion worker there. Use one subagent to investigate and record the
+  concrete missing bytecode behaviour, then a separate subagent to implement
+  the minimal production fix. If the missing behaviour turns out to be
+  display formatting, the block is frozen per the rule above, not fixed.
+- **The legacy `Bytecode` engine is frozen** except for regressions in
+  already-green behaviour. It is deleted wholesale at the default flip;
+  teaching it new display behaviour is written off twice — once at the
+  flip, and again when `value.md` deletes the `Value` display path.
 
 Every non-refactor PR that changes production bytecode code must include a
 visible behavioural test delta in the same PR. A plan update is not a test
 delta. If merging or rebasing against `master` removes the test diff because
 equivalent promotions landed elsewhere, the PR is no longer valid as-is:
-either add or promote another relevant REPL parity test in that PR, or drop
-the production change.
+either add or promote another relevant test from this track's backlog in
+that PR, or drop the production change.
 
 Before creating or handing off a PR, check the PR diff against `master`.
 Production bytecode changes must be paired with relevant `tests/` changes,
 and the production-code diff should stay below 200 changed lines. If the diff
-is too small and still under that limit, continue with another REPL promotion
-block instead of opening a tiny PR.
+is too small and still under that limit, continue with another block from
+this track's backlog (see "Current Next Step") — not with `repl.d` display
+promotion — instead of opening a tiny PR.
 
 ### Slice roadmap
 Earn the design back test-first, in this order. Each slice follows the
@@ -326,8 +373,28 @@ the new core), minimal implementation, green suite, benchmark checkpoint.
    trampoline mechanism slice 8 established.
 10. REPL session state. (`Value` reification does not live here; it starts
     in slice 1 and grows per slice.)
+11. Prelude formatter execution (added 2026-07-07): the new core runs
+    `string __quickbiteFormat(T)(T value)` (`quickbite.repl_prelude`) as an
+    ordinary interpreted template — `static if` introspection, string
+    building, and whatever Phobos surface the formatter's body demands.
+    Entry criteria (sharpened 2026-07-07): at minimum, associative arrays
+    (slice 7) and the Phobos string-building surface the formatter's body
+    uses must execute on the new core — i.e. Current Next Step backlog
+    item 1 is closed. Starting before items 2-3 (FFI bridge, classes) is a
+    judgment call on what the formatter body actually demands; starting
+    before item 1 is not. Exit criteria: `BytecodeNewCore` overrides
+    `supportsReplPreludeFormatter()` to `true`, the frozen `repl.d` display
+    rows are re-earned through the formatter, and the deletion inventory
+    (Core Architecture) is deleted in the same slice. This is the only
+    sanctioned path to further `repl.d` display coverage, and it is
+    `value.md` decision 4's per-backend scaffolding deletion applied to
+    this backend. Until this slice, the `value.md` formatter track owns
+    `frontend/`, `repl_prelude.d`, and the opted-in `Ctfe`/`Interpreter`
+    backends and does not touch `backends/bytecode/**`; this track does not
+    touch the formatter gate. The two proceed in parallel with disjoint
+    files.
 
-### Discipline (unchanged from the first generation)
+### Discipline (from the first generation unless dated)
 - Start each slice with the smallest behaviour that can honestly fail. If a
   slice needs unittest blocks, literals, equality, calls, returns, and
   assert handling all at once, it is too broad; pick a smaller test.
@@ -339,6 +406,12 @@ the new core), minimal implementation, green suite, benchmark checkpoint.
   behaviour or test family. A worker should not spend a slice on another
   type-width variant of an already-passing behaviour unless it is expected
   to expose a different missing VM feature.
+- Rungs within this track are serial (added 2026-07-07): run one production
+  worker at a time in `backends/bytecode/core/**`. Adjacent backlog items
+  (e.g. module-level state and `ref` arguments) land in the same
+  compiler/machine modules and will conflict. Cross-track parallelism (the
+  `value.md` formatter track, the interpreter FFI track) is file-disjoint
+  and safe; within-track parallelism is not.
 - Before promoting a named test mentioned by this plan or a review note,
   verify in the current checkout that its enclosing backend matrix still
   excludes the target; treat stale notes as a trigger for current-test
@@ -454,7 +527,11 @@ on the new core before the engine default flips.
   delegate literals reaching bytecode as synthetic function-literal symbols, so
   bytecode now emits `Value.undisplayable` literals for DMD function/delegate
   symbols and literal expressions without adding a VM opcode.
-- Handoff, 2026-07-07: `bytecode-repl-continue` contains an uncommitted
+- Handoff, 2026-07-07 (abandoned later the same day — do not pick this up):
+  the legacy `Bytecode` engine is frozen per the re-scoped "REPL parity
+  continuation" section, and display promotion waits for slice 11. The
+  branch's display block is written off. Historical record follows.
+  `bytecode-repl-continue` contains an uncommitted
   REPL scalar/type/no-display `Bytecode` promotion block in
   `tests/ut/bin/repl.d`, plus a partial narrow legacy bytecode fix. The
   original red failures were
@@ -1165,14 +1242,29 @@ passed:
 
 The random run used seed `992721697` and reported `2783 test(s) run,
 0 failed, 6/6 failing as expected`.
-The next current REPL backend blocks that cover old `Bytecode` but not
-`BytecodeNewCore` are the adjacent scalar display tests:
-`repl.backend.characterScalarDisplayCollapsesToCharLiteral` and
-`repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint`. No block in
-`tests/ut/bin/repl.d` currently includes `SystemLinker`. For now, REPL
-promotion may proceed without adding a `SystemLinker` oracle first; assume the
-existing unit tests are enough to catch discrepancies while the REPL backend
-surface is brought onto `BytecodeNewCore`.
+
+Re-scoped 2026-07-07 (see "REPL parity continuation"): `repl.d`
+display-string promotion is frozen pending slice 11 (prelude formatter
+execution). The current backlog for this track, in order:
+
+1. Remaining language-feature gaps exposed by the `repl.d` sweep that are
+   not display formatting: module-level variable assignment
+   (`moduleLevelVariablesAreVisibleToFunctions`), Phobos range and
+   `ref`-argument execution (`importStdExposesPhobosSymbols` and the range
+   blocks that fail on `Unsupported ref argument` / `Unsupported type`),
+   and associative-array execution through the druntime template lowerings
+   (slice 7).
+2. Slice 8, native runtime: the outbound host FFI bridge — which also
+   unblocks the deferred `rt/cstdlib.d` runtime rows above.
+3. Slice 9, classes.
+4. Slice 11, prelude formatter execution — which re-earns the frozen
+   `repl.d` display rows and deletes the interim display scaffolding
+   (deletion inventory, Core Architecture).
+
+Remaining non-display `repl.d` behaviours stay promotable to
+`BytecodeNewCore` per the re-scoped REPL parity section. No block in
+`tests/ut/bin/repl.d` currently includes `SystemLinker`, and none is added
+as part of this plan.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
@@ -4125,3 +4217,14 @@ bin/ut "$test_name"
 ```
 
 Result: 1 test run, 0 failed.
+
+Checkpoint close-out, 2026-07-07: display-row promotion in this checkpoint
+is paused per the re-scoped "REPL parity continuation" section. The rows
+promoted above stay green as part of the ratchet, but the unpromoted
+display rows (`displaysFiniteRangeResults`, `displaysFilteredArrayResults`,
+`displaysAssocArrayResults`, and the remaining struct/enum display gaps)
+are re-earned in slice 11 by executing the prelude formatter, not by
+extending `ResultType`/`reify.d` display metadata. The non-display failures
+from the sweep (`moduleLevelVariablesAreVisibleToFunctions`, Phobos
+import/range/`ref`-argument execution) are this track's language-feature
+backlog — see "Current Next Step".
