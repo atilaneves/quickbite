@@ -278,6 +278,10 @@ field, plus dynamic/static arrays of those structs. Plain struct values
 interim `Value.toString` scaffolding, while nested-context structs and Phobos
 range structs stay on their existing display path.
 
+Progress 2026-07-07: the formatter-gate test debt is cleaned up. Tests no
+longer assert that expression cells contain `__quickbiteFormat`; the surviving
+coverage now runs formatter-capable backends and asserts user-visible display.
+
 Decision 2026-07-07: ownership split with the bytecode rewrite
 (`ai/plans/bytecode.md`), so the two tracks can run in parallel without one
 building what the other deletes.
