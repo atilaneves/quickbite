@@ -21,17 +21,17 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
     } else static if (isDynamicArray!U || isStaticArray!U) {
         return arrayDisplay(value);
     } else static if (is(U == uint)) {
-        return text(value) ~ "u";
+        return textWithSuffix(value, "u");
     } else static if (is(U == long)) {
-        return text(value) ~ "L";
+        return textWithSuffix(value, "L");
     } else static if (is(U == ulong)) {
-        return text(value) ~ "UL";
+        return textWithSuffix(value, "UL");
     } else static if (is(U == float)) {
-        return floatingDisplay(value) ~ "f";
+        return floatingWithSuffix(value, "f");
     } else static if (is(U == double)) {
         return floatingDisplay(value);
     } else static if (is(U == real)) {
-        return floatingDisplay(value) ~ "L";
+        return floatingWithSuffix(value, "L");
     } else static if (isFunctionPointer!U || isDelegate!U) {
         return callableDisplay(value);
     } else static if (isPointer!U) {
@@ -43,6 +43,20 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
     } else {
         return text(value);
     }
+}
+
+private string textWithSuffix(T)(in T value, in string suffix) @safe pure {
+    import std.conv: text;
+
+    auto rendered = text(value);
+    rendered ~= suffix;
+    return rendered;
+}
+
+private string floatingWithSuffix(T)(in T value, in string suffix) @safe pure {
+    auto rendered = floatingDisplay(value);
+    rendered ~= suffix;
+    return rendered;
 }
 
 private string enumDisplay(T)(in T value) @safe pure {
@@ -141,12 +155,13 @@ private string structDisplay(T)(in T value) @safe pure {
 }
 
 private string floatingDisplay(T)(in T value) @safe pure {
-    import std.algorithm.searching: canFind;
     import std.conv: text;
 
-    const rendered = text(value);
-    if (rendered.canFind(".") || rendered.canFind("e") ||
-        rendered.canFind("E"))
-        return rendered;
-    return text(rendered, ".0");
+    auto rendered = text(value);
+    foreach (character; rendered)
+        if (character == '.' || character == 'e' || character == 'E')
+            return rendered;
+
+    rendered ~= ".0";
+    return rendered;
 }
