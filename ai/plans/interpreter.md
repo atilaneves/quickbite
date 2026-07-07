@@ -196,6 +196,21 @@ unbuilt features — they get characterized against the oracle and fixed, not
 "added". The silent mismatch and the corrupted message are the most urgent:
 they are wrong answers rather than honest refusals.
 
+**2026-07-07 (bench-dub-corpus item 3).** The `2× Expected array.` triage
+line is root-caused and fixed: slice assignment through pointers rebuilt
+the lvalue as a detached `Array` — throwing for native pointers (mode 1),
+silently severing aliasing for D pointers (mode 2, Rung 7 family), plus
+the `= void` sibling where taking `.ptr` of a still-void static array
+degraded to an untracked local pointer (mode 3, one of Rung 3's 5×
+`Unsupported interpreter assignment target`). Standalone fixtures:
+`realloc.sliceAssignWritesNativeMemory` (rt/cstdlib),
+`pointer.sliceAssignmentWritesArrayStorage` and
+`pointer.indexAssignmentWritesVoidInitialisedArray` (ct/arrays). Audit
+note: `writeBackSliceElements` (the array-op `+=` lowering's splice copy)
+still rebuilds a pointer-typed slice base as a detached local `Array` —
+same latent silent-lost-write class, needs its own exposing fixture.
+Re-measure (§6) pending.
+
 The original masked-era inventory (68× `Expected struct` on top) is in git
 history; it is no longer meaningful — Phase 0's full closure and §9.8 both
 reshaped it.

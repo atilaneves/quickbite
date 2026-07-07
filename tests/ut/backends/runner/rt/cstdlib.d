@@ -358,6 +358,35 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 }
 
 
+// cerealed's ScopeBuffer.put grows via realloc and slice-assigns through the
+// char* field (ai/plans/bench-dub-corpus.md, cerealed mode 1).
+enum reallocSliceAssignSource = q{
+    unittest {
+        import core.stdc.stdlib: realloc, free;
+
+        auto buf = cast(char*) realloc(null, 8);
+        scope(exit) free(buf);
+
+        assert(buf !is null);
+
+        buf[0 .. 3] = "abc";
+
+        assert(buf[0] == 'a');
+        assert(buf[1] == 'b');
+        assert(buf[2] == 'c');
+    }
+};
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+
+    @("realloc.sliceAssignWritesNativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(reallocSliceAssignSource);
+    }
+}
+
+
 static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
 
     @("div.structReturn." ~ backend.stringof)
