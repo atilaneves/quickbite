@@ -236,6 +236,34 @@ skips the callee body, the same shortcut this fix retired for
 address-of; rebuild it on `addressOfRefReturn` mode when that rung is
 worked.
 
+**2026-07-07 (assignment-target-call rung).** The interpreted side of
+the sibling class is fixed: `writeRefReturningCallLocation` is rebuilt
+on `assignToRefReturn` mode (the assignment counterpart of
+`addressOfRefReturn`) — run the callee for real, and at the executed
+return statement write the assigned value through the returned lvalue
+via `writeLocation`, whose PtrExp branch already handles the
+`*(cond ? &a : &b)` ternary lowering. This retires both defects of the
+old shortcut: free functions refused outright (`Unsupported interpreter
+assignment target: call`), and member calls wrote to the *textually
+first* return expression without executing the body — pre-return side
+effects silently skipped. `refReturnExpression` is gone. Standalone
+fixtures: `refCall.assignmentToRefReturningCallWritesArgument`,
+`refCall.assignmentToRefTernaryReturnWritesChosenBranch`,
+`refCall.assignmentToMemberRefReturnRunsCalleeBody` (ct/expressions;
+BytecodeNewCore stays red and is omitted). automem re-measure: the 10×
+`assignment target: call` mismatches **remain** — located diagnostics
+show all ten are `fakePureErrno() = errnosave` (druntime
+core/memory.d:1062/:1070), a **native** ref-returning body-less
+function, i.e. a different root cause: `callViaLibffi`
+(source/quickbite/ffi/core.d:353) marshals the return as
+`type.next.toBasetype` and never consults `isref`, so a native ref
+return's ABI pointer is read as if it were the value — the read at
+memory.d:1060 yields the low bits of the errno address (a latent
+silent-wrong-answer for pure reads), and assignment has no path at
+all. Needs its own rung: ffi ref-return support (return the pointer,
+deref for rvalue reads, write through it for assignment), rt/ exposing
+fixtures against a body-less `ref`-returning libc accessor.
+
 The original masked-era inventory (68× `Expected struct` on top) is in git
 history; it is no longer meaningful — Phase 0's full closure and §9.8 both
 reshaped it.

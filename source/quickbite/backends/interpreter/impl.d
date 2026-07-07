@@ -115,6 +115,8 @@ private struct Walker {
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
     private bool addressOfRefReturn;
+    private bool assignToRefReturn;
+    private Value refReturnAssignedValue;
     private Statement pendingGotoTarget;
     private Statement pendingSwitchTarget;
     private LoopControl loopControl;
@@ -273,10 +275,14 @@ private struct Walker {
         }
 
         if (auto return_ = statement.isReturnStatement) {
-            if (return_.exp !is null)
-                result = addressOfRefReturn
-                    ? refReturnAddress(return_.exp)
-                    : runExpression(return_.exp);
+            if (return_.exp !is null) {
+                if (assignToRefReturn)
+                    writeLocation(return_.exp, refReturnAssignedValue);
+                else
+                    result = addressOfRefReturn
+                        ? refReturnAddress(return_.exp)
+                        : runExpression(return_.exp);
+            }
             returned = true;
             return;
         }
@@ -3796,20 +3802,33 @@ private struct Walker {
         );
     }
 
+    // Assignment through a ref-returning call (`f(i) = v`, `obj.slot() = v`):
+    // run the callee for real — pre-return side effects happen exactly once —
+    // and at the executed return statement write the value through the
+    // returned lvalue (`assignToRefReturn` mode, the assignment counterpart
+    // of `addressOfRefReturn`).
     private bool writeRefReturningCallLocation(
         imported!"dmd.expression".CallExp call,
         in Value value,
     ) {
+        import dmd.funcsem: functionSemantic3;
+        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+
         if (call.f is null || !returnsRef(call.f))
             return false;
 
         auto dot = call.e1.isDotVarExp;
         if (dot is null)
-            return false;
+            return writeFreeRefReturningCallLocation(call, value);
 
         const receiver = runExpression(dot.e1);
         if (receiver == Value.null_)
             throw new Exception("function call through null class reference `null`");
+
+        auto function_ = resolveMemberFunction(call.f, receiver);
+        functionSemantic3(function_);
+        if (hasNoAvailableSource(function_))
+            return false;
 
         Value[] arguments;
         imported!"dmd.expression".Expression[] argumentExpressions;
@@ -3819,14 +3838,11 @@ private struct Walker {
                 argumentExpressions ~= argument;
             }
 
-        auto function_ = resolveMemberFunction(call.f, receiver);
-        auto returned = refReturnExpression(function_.fbody);
-        if (returned is null)
-            return false;
-
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
+        child.assignToRefReturn = true;
+        child.refReturnAssignedValue = value;
         child.result = Value(false);
         child.locals = locals.dup;
         child.localPointers = localPointers.dup;
@@ -3844,13 +3860,75 @@ private struct Walker {
         child.thisValue = receiver;
         child.hasThis = true;
         child.bindFunctionParameters(function_, arguments, argumentExpressions);
-        child.writeLocation(returned, value);
+
+        try {
+            child.runStatement(function_.fbody);
+        } catch (InterpretedException exception) {
+            writeBackMemberFunctionState(
+                function_,
+                dot.e1,
+                argumentExpressions,
+                child,
+            );
+            throw exception;
+        }
         writeBackMemberFunctionState(
             function_,
             dot.e1,
             argumentExpressions,
             child,
         );
+        return true;
+    }
+
+    private bool writeFreeRefReturningCallLocation(
+        imported!"dmd.expression".CallExp call,
+        in Value value,
+    ) {
+        import dmd.funcsem: functionSemantic3;
+        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+
+        functionSemantic3(call.f);
+        if (hasNoAvailableSource(call.f) || call.f.needThis)
+            return false;
+
+        Value[] arguments;
+        imported!"dmd.expression".Expression[] argumentExpressions;
+        if (call.arguments !is null)
+            foreach (argument; *call.arguments) {
+                arguments ~= runExpression(argument);
+                argumentExpressions ~= argument;
+            }
+
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = call.f;
+        child.assignToRefReturn = true;
+        child.refReturnAssignedValue = value;
+        child.result = Value(false);
+        child.locals = call.f.isNested ? locals.dup : datasegLocals;
+        child.localPointers = localPointers.dup;
+        child.localPointerIds = localPointerIds.dup;
+        child.nextLocalPointerId = nextLocalPointerId;
+        child.functionPointers = functionPointers.dup;
+        child.functionPointerIds = functionPointerIds.dup;
+        child.nextFunctionPointerId = nextFunctionPointerId;
+        child.delegates = delegates.dup;
+        child.sliceAliases = sliceAliases.dup;
+        child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
+        child.allocationCount = allocationCount;
+        seedPointerTargetLocals(child);
+        child.bindFunctionParameters(call.f, arguments, argumentExpressions);
+
+        try {
+            child.runStatement(call.f.fbody);
+        } catch (InterpretedException exception) {
+            writeBackFunctionState(call.f, argumentExpressions, child);
+            throw exception;
+        }
+        writeBackFunctionState(call.f, argumentExpressions, child);
         return true;
     }
 
@@ -5795,40 +5873,6 @@ private imported!"dmd.mtype".TypeClass receiverClassType(
 private bool returnsRef(imported!"dmd.func".FuncDeclaration function_) {
     auto type = function_.type is null ? null : function_.type.isTypeFunction;
     return type !is null && type.isRef;
-}
-
-
-private imported!"dmd.expression".Expression refReturnExpression(
-    imported!"dmd.statement".Statement statement,
-) {
-    if (statement is null)
-        return null;
-
-    if (auto return_ = statement.isReturnStatement)
-        return return_.exp;
-
-    if (auto scope_ = statement.isScopeStatement)
-        return refReturnExpression(scope_.statement);
-
-    if (auto compound = statement.isCompoundStatement) {
-        if (compound.statements is null)
-            return null;
-
-        foreach (child; *compound.statements)
-            if (auto expression = refReturnExpression(child))
-                return expression;
-    }
-
-    if (auto compound = statement.isCompoundDeclarationStatement) {
-        if (compound.statements is null)
-            return null;
-
-        foreach (child; *compound.statements)
-            if (auto expression = refReturnExpression(child))
-                return expression;
-    }
-
-    return null;
 }
 
 
