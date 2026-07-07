@@ -224,6 +224,13 @@ onto the prelude path for CTFE and Interpreter. The display text is unchanged;
 the frontend now proves these expressions synthesize `__quickbiteFormat(expr)`
 instead of falling back to the interim `Value.toString` scaffolding.
 
+Progress 2026-07-06: the formatter gate now covers struct expression cells
+with `long[]`/`ulong[]` fields, moving array element suffix rendering
+(`Bag([1L, 2L])`) onto the prelude path for CTFE and Interpreter. The gate is
+still narrower than all array fields: Phobos range structs with plain `int[]`
+state keep the existing `Value.toString` display contract until range displays
+are deliberately moved.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

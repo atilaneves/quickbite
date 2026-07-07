@@ -124,6 +124,20 @@ unittest {
     "__quickbiteFormat".should.be in cell.source;
 }
 
+@("repl.frontend.arrayFieldStructExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        "({ struct Bag { long[] values; } " ~
+        "return Bag([1L, 2L]); })()",
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
     @("repl.backend.localDeclarationsCanRebindNames." ~ backend.stringof)
     unittest {
