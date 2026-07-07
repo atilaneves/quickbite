@@ -32,6 +32,7 @@ package(quickbite.backends.bytecode) RunResult run(
     // intervening calls that grow the stack.
     auto stack = new ubyte[](program.functions[0].frameSize);
     stack.reserve(stackCapacity);
+    auto moduleData = program.moduleData.dup;
     // VM-owned writable heap blocks backing dynamic arrays. Holding the GC
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.
@@ -383,6 +384,23 @@ package(quickbite.backends.bytecode) RunResult run(
                     ] = stack[
                         base + instruction.b
                         .. base + instruction.b + instruction.c
+                    ];
+                ++ip;
+                break;
+
+            case loadModule:
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + instruction.c
+                ] = moduleData[instruction.b .. instruction.b + instruction.c];
+                ++ip;
+                break;
+
+            case storeModule:
+                moduleData[instruction.b .. instruction.b + instruction.c] =
+                    stack[
+                        base + instruction.a
+                        .. base + instruction.a + instruction.c
                     ];
                 ++ip;
                 break;

@@ -315,6 +315,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     greaterThanUnsigned8,
     greaterOrEqualUnsigned8,
     copy, // a: destination frame offset, b: source frame offset, c: size
+    // Copy `c` bytes from the mutable module-data segment at offset b into
+    // frame offset a. Backs reads of scalar module-level variables.
+    loadModule,
+    // Copy `c` bytes from frame offset a into the mutable module-data segment
+    // at offset b. Backs writes to scalar module-level variables.
+    storeModule,
     // Write the absolute stack index of the current frame's base (`base`) as a
     // raw `size_t` word into frame offset a. Backs a nested struct's hidden
     // context pointer (`vthis`), which records the enclosing function's frame so
@@ -591,6 +597,7 @@ package(quickbite.backends.bytecode) struct Program {
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
     ubyte[real.sizeof][] realConstants; // raw bytes for 16-byte real literals
     ubyte[] data; // read-only segment holding string-literal bytes
+    ubyte[] moduleData; // mutable VM-owned storage for module-level variables
     AssertDiagnostic[] assertDiagnostics;
     ClassInfo[] classes;
     CatchClause[] catchClauses;

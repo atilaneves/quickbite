@@ -147,6 +147,7 @@ private struct Compiler {
     private ushort _pendingFinallyExceptionClassIndex = noExceptionClass;
     private ushort _activeDollarLength = ushort.max;
     private size_t[ulong] _constantIndices;
+    private ModuleScalarVariable[VarDeclaration] _moduleScalarVariables;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
     // enclosing local through the struct's context pointer, which records the
@@ -1550,6 +1551,19 @@ private struct Compiler {
                         offset, ScalarType.ulong_, false, true,
                         ScalarType.void_,
                     );
+                }
+
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleScalarVariableOrNull(declaration)) {
+                    const offset = allocate(moduleVariable.type);
+                    _code ~= Instruction(
+                        Op.loadModule,
+                        offset,
+                        moduleVariable.offset,
+                        cast(ushort) size(moduleVariable.type),
+                    );
+                    return Operand(offset, moduleVariable.type);
                 }
 
             // A captured enclosing local read inside a nested struct's method
@@ -6051,6 +6065,24 @@ private struct Compiler {
             ? ScalarType.void_
             : scalarType(declaration.type);
         const rhs = compileExpression(assign.e2);
+        if (slot is null)
+            if (auto moduleVariable =
+                    moduleScalarVariableOrNull(declaration)) {
+                if (rhs.type != moduleVariable.type)
+                    throw new Exception(text(
+                        "Unsupported assignment in bytecode core: ",
+                        expressionChars(assign),
+                    ));
+
+                _code ~= Instruction(
+                    Op.storeModule,
+                    rhs.offset,
+                    moduleVariable.offset,
+                    cast(ushort) size(moduleVariable.type),
+                );
+                return rhs;
+            }
+
         if (slot is null || rhs.type != type)
             throw new Exception(text(
                 "Unsupported assignment in bytecode core: ",
@@ -6121,6 +6153,56 @@ private struct Compiler {
 
         storeCapturedLocal(declaration, capturedOffset, rhs);
         return loadCapturedLocal(declaration, capturedOffset);
+    }
+
+    private ModuleScalarVariable* moduleScalarVariableOrNull(
+        VarDeclaration declaration,
+    ) {
+        if (declaration is null || !declaration.isDataseg ||
+            declaration.isImmutable)
+        {
+            return null;
+        }
+
+        import dmd.astenums: TY;
+
+        if (declaration.type.toBasetype.ty == TY.Tarray ||
+            declaration.type.toBasetype.ty == TY.Tsarray ||
+            declaration.type.toBasetype.ty == TY.Taarray ||
+            declaration.type.toBasetype.ty == TY.Tstruct ||
+            declaration.type.toBasetype.ty == TY.Tclass ||
+            declaration.type.toBasetype.ty == TY.Tdelegate ||
+            isPointerType(declaration.type) ||
+            isComplexDoubleType(declaration.type))
+        {
+            return null;
+        }
+
+        if (auto existing = declaration in _moduleScalarVariables)
+            return existing;
+
+        const type = scalarType(declaration.type);
+        const offset = allocateModuleBytes(size(type), size(type));
+        _moduleScalarVariables[declaration] = ModuleScalarVariable(offset, type);
+        return declaration in _moduleScalarVariables;
+    }
+
+    private ushort allocateModuleBytes(in uint bytes, in uint alignmentArgument)
+        @safe pure
+    {
+        const alignment = alignmentArgument == 0 ? 1 : alignmentArgument;
+        auto offset =
+            cast(uint) ((_program.moduleData.length + alignment - 1) &
+                ~(alignment - 1));
+        if (offset > ushort.max)
+            throw new Exception("Bytecode module data exceeds 16-bit offsets");
+
+        const end = offset + bytes;
+        if (end > ushort.max)
+            throw new Exception("Bytecode module data exceeds 16-bit offsets");
+
+        _program.moduleData.length = end;
+        return cast(ushort) offset;
     }
 
     // `base.field = rhs`: write into a struct field at its inline frame offset.
@@ -9471,6 +9553,11 @@ private struct ExceptionObjectLocal {
     ushort objectOffset = ushort.max;
     ushort messageOffset;
     ushort nextMessageOffset;
+}
+
+private struct ModuleScalarVariable {
+    ushort offset;
+    imported!"quickbite.backends.bytecode.core.program".ScalarType type;
 }
 
 private struct ExceptionStringField {
