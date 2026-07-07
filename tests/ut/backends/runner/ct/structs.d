@@ -1310,3 +1310,26 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
         });
     }
 }
+
+// DMD emits the char[16] default init as a sparse ArrayLiteralExp: every
+// element null, the char.init value carried in `basis`.
+// BytecodeNewCore ("Unsupported struct initializer in bytecode core: b")
+// cannot run struct default initializers yet.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.staticCharArrayFieldDefaultInit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct HasBuffer {
+                char[16] buf;
+            }
+
+            unittest {
+                HasBuffer b;
+
+                assert(b.buf[0] == char.init);
+                assert(b.buf[15] == char.init);
+            }
+        });
+    }
+}

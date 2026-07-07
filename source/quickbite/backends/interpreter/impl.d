@@ -4449,8 +4449,10 @@ private struct Walker {
     ) {
         Value[] values;
         if (array.elements !is null)
+            // DMD's sparse form: a null element means the value is in `basis`
+            // (see ArrayLiteralExp.getElement).
             foreach (element; *array.elements)
-                values ~= runExpression(element);
+                values ~= runExpression(element is null ? array.basis : element);
 
         return Value.arrayValue(values);
     }
