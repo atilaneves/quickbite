@@ -114,6 +114,7 @@ private struct Walker {
     private bool hasPendingFinallyBodyException;
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
+    private bool addressOfRefReturn;
     private Statement pendingGotoTarget;
     private Statement pendingSwitchTarget;
     private LoopControl loopControl;
@@ -273,7 +274,9 @@ private struct Walker {
 
         if (auto return_ = statement.isReturnStatement) {
             if (return_.exp !is null)
-                result = runExpression(return_.exp);
+                result = addressOfRefReturn
+                    ? refReturnAddress(return_.exp)
+                    : runExpression(return_.exp);
             returned = true;
             return;
         }
@@ -1384,9 +1387,16 @@ private struct Walker {
     private Value runAddressExpression(
         imported!"dmd.expression".AddrExp address,
     ) {
+        return addressOfExpression(address.e1, address.op);
+    }
+
+    private Value addressOfExpression(
+        imported!"dmd.expression".Expression e1,
+        in imported!"dmd.tokens".EXP op,
+    ) {
         import std.conv: text;
 
-        if (auto symbol = address.e1.isSymOffExp) {
+        if (auto symbol = e1.isSymOffExp) {
             if (auto variable = symbol.var.isVarDeclaration)
                 return symbolOffsetLocalValue(symbol, variable);
             if (auto function_ = symbol.var.isFuncDeclaration)
@@ -1395,31 +1405,147 @@ private struct Walker {
 
         // `&val` of a `ref` parameter is emitted as AddrExp(VarExp), not the
         // SymOffExp produced for a plain local; point at the parameter's slot
-        if (auto var = address.e1.isVarExp)
+        if (auto var = e1.isVarExp)
             if (auto variable = var.var.isVarDeclaration)
                 return localPointerValue(variable);
 
-        if (auto delegate_ = address.e1.isDelegateExp)
+        if (auto delegate_ = e1.isDelegateExp)
             return runDelegateExpression(delegate_);
 
         // `&field` (also `field.ptr`) of a struct's static-array member: a
         // pointer to the field's first element, exactly what arrayPointer
         // builds for `&field[0]`.
-        if (auto dot = address.e1.isDotVarExp) {
+        if (auto dot = e1.isDotVarExp) {
             import quickbite.frontend.dmd.types: isStaticArrayType;
 
             if (isStaticArrayType(dot.type))
-                return arrayPointer(dot, 0, address.op);
+                return arrayPointer(dot, 0, op);
         }
 
-        auto index = address.e1.isIndexExp;
+        // `&call()` of a ref-returning function: run the call and yield the
+        // returned lvalue's address.
+        if (auto call = e1.isCallExp)
+            return refReturningCallAddress(call, op);
+
+        auto index = e1.isIndexExp;
         if (index is null)
             throw new Exception(
-                text("Unsupported eval expression: ", address.op, " of ", address.e1.op),
+                text("Unsupported eval expression: ", op, " of ", e1.op),
             );
 
         const offset = runExpression(index.e2).asLong;
-        return arrayPointer(index.e1, offset, address.op);
+        return arrayPointer(index.e1, offset, op);
+    }
+
+    // The address of a ref return's lvalue, evaluated in the returning
+    // function's own frame (`addressOfRefReturn` mode).
+    private Value refReturnAddress(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        // DMD lowers a ref-returning ternary to `return *(cond ? &a : &b())`;
+        // the address of that dereference is the pointer expression itself.
+        if (auto pointer = expression.isPtrExp)
+            return runExpression(pointer.e1);
+
+        return addressOfExpression(expression, EXP.address);
+    }
+
+    private Value refReturningCallAddress(
+        imported!"dmd.expression".CallExp call,
+        in imported!"dmd.tokens".EXP op,
+    ) {
+        import dmd.expression: Expression;
+        import dmd.funcsem: functionSemantic3;
+        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import std.conv: text;
+
+        const unsupported =
+            text("Unsupported eval expression: ", op, " of ", call.op);
+
+        if (call.f is null || !returnsRef(call.f))
+            throw new Exception(unsupported);
+
+        functionSemantic3(call.f);
+        if (hasNoAvailableSource(call.f) || call.f.needThis)
+            throw new Exception(unsupported);
+
+        Value[] arguments;
+        Expression[] argumentExpressions;
+        if (call.arguments !is null)
+            foreach (argument; *call.arguments) {
+                arguments ~= runExpression(argument);
+                argumentExpressions ~= argument;
+            }
+
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = call.f;
+        child.addressOfRefReturn = true;
+        child.result = Value(false);
+        child.locals = call.f.isNested ? locals.dup : datasegLocals;
+        child.localPointers = localPointers.dup;
+        child.localPointerIds = localPointerIds.dup;
+        child.nextLocalPointerId = nextLocalPointerId;
+        child.functionPointers = functionPointers.dup;
+        child.functionPointerIds = functionPointerIds.dup;
+        child.nextFunctionPointerId = nextFunctionPointerId;
+        child.delegates = delegates.dup;
+        child.sliceAliases = sliceAliases.dup;
+        child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
+        child.allocationCount = allocationCount;
+        seedPointerTargetLocals(child);
+        child.bindFunctionParameters(call.f, arguments, argumentExpressions);
+
+        try {
+            child.runStatement(call.f.fbody);
+        } catch (InterpretedException exception) {
+            writeBackFunctionState(call.f, argumentExpressions, child);
+            throw exception;
+        }
+        writeBackFunctionState(call.f, argumentExpressions, child);
+
+        return returnedLvalueAddress(call.f, argumentExpressions, child);
+    }
+
+    // The child's returned address points into its own frame: a pointer to a
+    // `ref` parameter's slot must become the caller's argument lvalue so
+    // writes through it reach the argument; any other variable's pointer id
+    // is registered here so this frame can resolve it.
+    private Value returnedLvalueAddress(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (!child.result.isLocalPointer)
+            return child.result;
+
+        auto variable = child.result.localPointerId in child.localPointers;
+        if (variable is null)
+            return child.result;
+
+        if (function_.parameters !is null)
+            foreach (index, parameter; *function_.parameters) {
+                if (parameter !is *variable || !parameter.isReference)
+                    continue;
+
+                if (index >= argumentExpressions.length)
+                    break;
+
+                return addressOfExpression(
+                    argumentExpressions[index],
+                    EXP.address,
+                );
+            }
+
+        localPointers[child.result.localPointerId] = *variable;
+        localPointerIds[*variable] = child.result.localPointerId;
+        return child.result;
     }
 
     private Value arrayPointer(

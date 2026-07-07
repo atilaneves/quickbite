@@ -344,10 +344,12 @@ the oracle):
   on every backend with runtime-environment support — today
   `Interpreter`, `SystemLinker`, `LLVMJit` — again with SystemLinker as
   oracle.
-- A backend for which the fixture stays red after the item's fix keeps
-  its red documented (structured unsupported-diagnostic expectation, as
-  the existing `ct/`/`rt/` conventions do), rather than being dropped
-  from the matrix.
+- A backend for which the fixture stays red after the item's fix is
+  omitted from the fixture's backend list — the omission is the
+  documentation. Superseded guidance (user, 2026-07-07): do NOT pin the
+  structured unsupported diagnostic with `shouldThrowWithMessage`,
+  especially for backends still in development (BytecodeNewCore); such
+  pins turn every feature landing into a test-update chore.
 
 The minimal repros above were all confirmed against the live
 disagree-checker on 2026-07-06; sources preserved in the session
@@ -392,6 +394,15 @@ here, and for the surviving disagreements above (`address of call`,
 tests that pin an unsupported diagnostic as acceptable interpreter
 behaviour; distil each gap into a red/green fixture per `interpreter.md`
 §8 and fix the root, folding results into the §7 ledger.
+
+**2026-07-07 update:** the `address of call` class is fixed (address of
+a ref-returning call; fixtures
+`pointer.addressOfRefReturningCallAliasesArgument` and
+`pointer.refTernaryReturnLowersToAddressOfCall` in ct/expressions).
+automem and fearless now run `theAllocator`'s real initialization and
+stop honestly at the next rungs (`pthread_mutexattr_init` FFI,
+`trustedMoveImpl` uninitialized reads, `assignment target: call`,
+`cast_`); details in the §7 ledger entry of the same date.
 
 ### Infra/template/linker issues discovered (need their own plan)
 

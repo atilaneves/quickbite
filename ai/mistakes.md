@@ -290,3 +290,8 @@
   read and report that plan too instead of leaving the pointer. Don't scope a
   report by session memory (machine-local, may be stale); git history and
   `ai/plans` are the authoritative record.
+
+- This repo sets `push.default = matching`, so a bare `git push` from a
+  worktree also publishes every other matching local branch — including the
+  user's unpushed local `master`. Always push explicitly:
+  `git push origin <branch>` (with `--force-with-lease` after a rebase).

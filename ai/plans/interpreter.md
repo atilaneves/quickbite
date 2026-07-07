@@ -211,6 +211,31 @@ still rebuilds a pointer-typed slice base as a detached local `Array` —
 same latent silent-lost-write class, needs its own exposing fixture.
 Re-measure (§6) pending.
 
+**2026-07-07 (bench-dub-corpus follow-on).** The automem
+`Unsupported eval expression: address of call` class (the largest
+surviving two-backend disagreement) is root-caused and fixed:
+`runAddressExpression` had no branch for AddrExp(CallExp), i.e. the
+address of a ref-returning call. phobos' `theAllocator` is this shape on
+every fetch — its ref-returning ternary lowers to
+`return *(cond ? &p : &setupThreadAllocator())` — so every automem
+vector test refused. The fix runs the callee in `addressOfRefReturn`
+mode (the return statement evaluates its expression as an lvalue
+address, so pre-return side effects run exactly once) and remaps a
+returned ref-parameter address onto the caller's argument lvalue so
+writes through the pointer stick. Standalone fixtures:
+`pointer.addressOfRefReturningCallAliasesArgument` and
+`pointer.refTernaryReturnLowersToAddressOfCall` (ct/expressions).
+automem re-measure: 0× address of call (was 35×); the vector tests now
+run `setupThreadAllocator` for real and stop honestly at the next
+rungs — `pthread_mutexattr_init` FFI (no available source) and
+`cannot read uninitialized variable .trustedMoveImpl.result`. The
+sibling `Unsupported interpreter assignment target: call` class
+(ref-returning call as assignment target; 10× automem) is still open —
+`writeRefReturningCallLocation` only handles DotVarExp receivers and
+skips the callee body, the same shortcut this fix retired for
+address-of; rebuild it on `addressOfRefReturn` mode when that rung is
+worked.
+
 The original masked-era inventory (68× `Expected struct` on top) is in git
 history; it is no longer meaningful — Phase 0's full closure and §9.8 both
 reshaped it.
