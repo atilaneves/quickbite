@@ -3143,6 +3143,7 @@ private struct Compiler {
         StructLiteralExp literal,
     ) {
         import dmd.astenums: TY;
+        import std.conv: text;
 
         if (literal.elements is null)
             return;
@@ -3180,8 +3181,18 @@ private struct Compiler {
                 continue;
             }
 
+            if (fieldType.toBasetype.ty == TY.Tdelegate) {
+                if (isNullLiteral(element))
+                    continue;
+
+                throw new Exception(text(
+                    "Unsupported non-null delegate struct field in bytecode core: ",
+                    expressionChars(element),
+                ));
+            }
+
             if (isPointerType(fieldType)) {
-                if (element.isNullExp !is null)
+                if (isNullLiteral(element))
                     continue;
 
                 const value = compileExpression(element);
@@ -9100,14 +9111,13 @@ private struct Compiler {
 
         StructDisplayField[] fields;
         foreach (field; declaration.fields) {
-            ScalarType fieldType;
-            if (!scalarStructDisplayType(field.type, fieldType))
+            if (field.isThisDeclaration !is null)
+                continue;
+
+            StructDisplayField displayField;
+            if (!structDisplayField(field, displayField))
                 return;
-            fields ~= StructDisplayField(
-                cast(uint) field.offset,
-                fieldType,
-                enumMembersByValue(field.type),
-            );
+            fields ~= displayField;
         }
 
         result.structName = typeChars(type);
@@ -9136,6 +9146,44 @@ private struct Compiler {
         result.elementStructSize = elementResult.structSize;
         result.elementStructName = elementResult.structName;
         result.elementStructFields = elementResult.structFields;
+    }
+
+    private bool structDisplayField(
+        VarDeclaration field,
+        out StructDisplayField displayField,
+    ) {
+        import dmd.astenums: TY;
+
+        ScalarType scalar;
+        if (scalarStructDisplayType(field.type, scalar)) {
+            displayField = StructDisplayField(
+                cast(uint) field.offset,
+                StructDisplayField.Kind.scalarField,
+                scalar,
+                enumMembersByValue(field.type),
+            );
+            return true;
+        }
+
+        switch (field.type.toBasetype.ty) with (TY) {
+            case Tpointer:
+            case Tclass:
+                displayField = StructDisplayField(
+                    cast(uint) field.offset,
+                    StructDisplayField.Kind.nullableWord,
+                    ScalarType.void_,
+                );
+                return true;
+            case Tdelegate:
+                displayField = StructDisplayField(
+                    cast(uint) field.offset,
+                    StructDisplayField.Kind.nullableDelegate,
+                    ScalarType.void_,
+                );
+                return true;
+            default:
+                return false;
+        }
     }
 
     private bool scalarStructDisplayType(Type type, out ScalarType scalar) {
@@ -10183,6 +10231,16 @@ private bool isPointerType(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
     return type !is null && type.toBasetype.ty == TY.Tpointer;
+}
+
+private bool isNullLiteral(imported!"dmd.expression".Expression expression) {
+    if (expression.isNullExp !is null)
+        return true;
+
+    if (auto cast_ = expression.isCastExp)
+        return isNullLiteral(cast_.e1);
+
+    return false;
 }
 
 // The struct declaration a pointer `S*` points at, or null if `type` is not a

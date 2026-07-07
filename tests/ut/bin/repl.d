@@ -1368,7 +1368,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     }
 }
 
-// Bytecode and BytecodeNewCore do not yet reify struct results for display.
+// Bytecode does not yet reify struct results for display.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.arrayOfStructsRendersEachElement." ~ backend.stringof)
     unittest {
@@ -1389,8 +1389,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     }
 }
 
-// BytecodeNewCore does not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+// Red BytecodeNewCore promotion: struct fields with function pointers still
+// render as <undisplayable>.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.nullFunctionPointerFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -1409,8 +1410,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// BytecodeNewCore does not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+// Red BytecodeNewCore promotion: delegate fields are not yet supported by the
+// bytecode display metadata path.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.nullDelegateFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -1429,8 +1431,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode and BytecodeNewCore do not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+// Red BytecodeNewCore promotion: struct fields with class references still
+// render as <undisplayable>. Bytecode also lacks this display support.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.nullClassFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -1468,8 +1471,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode and BytecodeNewCore do not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+// Red BytecodeNewCore promotion: struct fields with pointers still render as
+// <undisplayable>. Bytecode also lacks this display support.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.nullPointerFieldRendersAsNull." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -1488,8 +1492,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-// Bytecode and BytecodeNewCore do not yet reify struct results for display.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+// Red BytecodeNewCore promotion: nested structs with synthetic context fields
+// still render as <undisplayable>. Bytecode also lacks this display support.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     @("repl.backend.nestedStructOmitsSyntheticContextField." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

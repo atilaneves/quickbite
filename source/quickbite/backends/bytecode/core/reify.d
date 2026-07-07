@@ -44,12 +44,7 @@ private imported!"quickbite.lang".Value reifyStruct(
 
     Value[] fields;
     foreach (field; type.structFields) {
-        const offset = field.offset;
-        fields ~= reifyScalar(
-            bytes[offset .. offset + size(field.type)],
-            field.type,
-            field.enumMembers,
-        );
+        fields ~= reifyStructField(bytes, field);
     }
     return Value.structDisplayValue(type.structName, fields);
 }
@@ -137,14 +132,38 @@ private imported!"quickbite.lang".Value reifyArrayStructElement(
 
     Value[] fields;
     foreach (field; type.elementStructFields) {
-        const offset = field.offset;
-        fields ~= reifyScalar(
-            bytes[offset .. offset + size(field.type)],
-            field.type,
-            field.enumMembers,
-        );
+        fields ~= reifyStructField(bytes, field);
     }
     return Value.structDisplayValue(type.elementStructName, fields);
+}
+
+private imported!"quickbite.lang".Value reifyStructField(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".StructDisplayField field,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: StructDisplayField, size;
+    import quickbite.lang: Value;
+
+    const offset = field.offset;
+    final switch (field.kind) with (StructDisplayField.Kind) {
+        case scalarField:
+            return reifyScalar(
+                bytes[offset .. offset + size(field.type)],
+                field.type,
+                field.enumMembers,
+            );
+        case nullableWord:
+            return scalar!size_t(bytes[offset .. offset + size_t.sizeof]) == 0
+                ? Value.null_
+                : Value.undisplayable;
+        case nullableDelegate:
+            return scalar!size_t(bytes[offset .. offset + size_t.sizeof]) == 0 &&
+                scalar!size_t(
+                    bytes[offset + size_t.sizeof .. offset + 2 * size_t.sizeof],
+                ) == 0
+                ? Value.null_
+                : Value.undisplayable;
+    }
 }
 
 private imported!"quickbite.lang".Value reifyString(

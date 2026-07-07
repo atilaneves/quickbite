@@ -43,7 +43,14 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
 }
 
 package(quickbite.backends.bytecode) struct StructDisplayField {
+    enum Kind: ubyte {
+        scalarField,
+        nullableWord,
+        nullableDelegate,
+    }
+
     uint offset;
+    Kind kind;
     ScalarType type;
     string[ulong] enumMembers;
 }
