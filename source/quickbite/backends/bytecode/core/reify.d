@@ -69,7 +69,8 @@ private imported!"quickbite.lang".Value reifyArray(
     auto block = type.isStaticArray
         ? bytes
         : heapBlock(scalar!size_t(bytes), heap);
-    if (!type.arrayElementsAreArrays && type.elementEnumMembers.length == 0 &&
+    if (!type.arrayElementsAreArrays && !type.arrayElementsAreStructs &&
+        type.elementEnumMembers.length == 0 &&
         isCharacter(type.elementType))
         return reifyCharacterArray(block, length, type.elementType);
 
@@ -78,6 +79,8 @@ private imported!"quickbite.lang".Value reifyArray(
         const offset = index * (type.arrayElementsAreArrays ||
             type.arrayElementsAreStrings
             ? sliceDescriptorSize
+            : type.arrayElementsAreStructs
+            ? type.elementStructSize
             : size(type.elementType));
         if (type.arrayElementsAreStrings) {
             elements ~= reifyStringDescriptor(
@@ -94,6 +97,11 @@ private imported!"quickbite.lang".Value reifyArray(
                     type.withScalarArrayElements,
                     data,
                     heap,
+                )
+                : type.arrayElementsAreStructs
+                ? reifyArrayStructElement(
+                    block[offset .. offset + type.elementStructSize],
+                    type,
                 )
                 : reifyScalar(
                     block[offset .. offset + size(type.elementType)],
@@ -115,6 +123,28 @@ withScalarArrayElements(
         type.elementType,
         type.elementEnumMembers.dup,
     );
+}
+
+private imported!"quickbite.lang".Value reifyArrayStructElement(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ResultType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: size;
+    import quickbite.lang: Value;
+
+    if (type.elementStructName is null)
+        return Value.undisplayable;
+
+    Value[] fields;
+    foreach (field; type.elementStructFields) {
+        const offset = field.offset;
+        fields ~= reifyScalar(
+            bytes[offset .. offset + size(field.type)],
+            field.type,
+            field.enumMembers,
+        );
+    }
+    return Value.structDisplayValue(type.elementStructName, fields);
 }
 
 private imported!"quickbite.lang".Value reifyString(
