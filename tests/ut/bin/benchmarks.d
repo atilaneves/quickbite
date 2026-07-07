@@ -176,6 +176,15 @@ unittest {
     }
 }
 
+@("dubPathArgumentResolvesToLocalPackageDir")
+unittest {
+    with(immutable Sandbox()) {
+        writeFile("dub.sdl", `name "sandboxpkg"`);
+
+        findPkgDir(sandboxPath).should == sandboxPath;
+    }
+}
+
 @("moduleDeclarationFixtureIsNotSkipped")
 unittest {
     with(immutable Sandbox()) {
