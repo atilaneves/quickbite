@@ -1172,6 +1172,13 @@ switch; `Bytecode` still defaults to the old core):
   descriptors on the new core, and nested-array results needed heap roots plus
   array-aware reification at the evaluator boundary. The new core now renders
   nested scalar dynamic-array results such as `int[][]`.
+- `repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState` in
+  `tests/ut/bin/repl.d` now covers `BytecodeNewCore`. This was a stale
+  coverage gap: the focused promotion run passed unchanged because the
+  new-core REPL path already reports the no-available-source `malloc`
+  diagnostic and leaves earlier REPL state usable. This is diagnostic/session
+  preservation only; resident libc calls remain deferred to the native-runtime
+  slice.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -1222,19 +1229,22 @@ expression-loop basics now cover `BytecodeNewCore`:
 `repl.backend.displaysStaticStringArrayResults`,
 `repl.backend.displaysNestedEmptyStringValues`,
 `repl.backend.displaysWideStringValues`, and
-`repl.backend.displaysWideCharacterArrayValues`. The string-display family was
-implementation work, not stale coverage: static/string array result
-reification and wide-string suffix preservation needed new-core result metadata
-and reification support. `repl.backend.displaysEnumValues` now also covers
-`BytecodeNewCore`. The promotion exposed a display-only metadata gap: bytecode
-already executed enum values as their base scalar slots, so `E.a`, `[E.a,
-E.b]`, and `cast(int) E.a` all computed the right bits, but reification only
-saw `int` storage and rendered `"7"` / `"[7, 8]"`. `ResultType` now carries
-enum value-name maps for scalar results and scalar array elements; the compiler
-builds those maps from DMD `EnumDeclaration.members`, and `reify.d` converts
-matching scalar bytes back to `Value.enumValue`. Cast results keep their cast
-type, so `cast(int) E.a` still renders `"7"`. Verification for this promotion
-passed:
+`repl.backend.displaysWideCharacterArrayValues`, and
+`repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState`. The
+runtime-only cell promotion is no-source diagnostic/session preservation only;
+it does not promote resident libc calls to `BytecodeNewCore`. The
+string-display family was implementation work, not stale coverage:
+static/string array result reification and wide-string suffix preservation
+needed new-core result metadata and reification support.
+`repl.backend.displaysEnumValues` now also covers `BytecodeNewCore`. The
+promotion exposed a display-only metadata gap: bytecode already executed enum
+values as their base scalar slots, so `E.a`, `[E.a, E.b]`, and `cast(int) E.a`
+all computed the right bits, but reification only saw `int` storage and
+rendered `"7"` / `"[7, 8]"`. `ResultType` now carries enum value-name maps for
+scalar results and scalar array elements; the compiler builds those maps from
+DMD `EnumDeclaration.members`, and `reify.d` converts matching scalar bytes
+back to `Value.enumValue`. Cast results keep their cast type, so
+`cast(int) E.a` still renders `"7"`. Verification for this promotion passed:
 
 - `ninja bin/ut`
 - `bin/ut ut.bin.repl.repl.backend.displaysEnumValues.BytecodeNewCore`
