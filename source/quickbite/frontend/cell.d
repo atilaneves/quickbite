@@ -372,7 +372,9 @@ private bool expressionReturnNeedsPreludeFormat(
                 case Tarray, Tsarray:
                     return arrayElementNeedsPreludeFormat(fieldType);
                 case Tpointer:
-                    return true;
+                    if (field.isThisDeclaration is null)
+                        return true;
+                    break;
                 default:
                     break;
             }
