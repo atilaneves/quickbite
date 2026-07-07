@@ -1315,6 +1315,80 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// A ref-returning call as the *assignment target* (`f(i) = v`) must run the
+// callee and write through the returned lvalue, aliasing the caller's
+// argument.  automem's vector tests hit this shape 10× as
+// `Unsupported interpreter assignment target: call`.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("refCall.assignmentToRefReturningCallWritesArgument." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ref int self(ref int x) { return x; }
+
+            unittest {
+                int i = 1;
+                self(i) = 42;
+                assert(i == 42);
+            }
+        });
+    }
+}
+
+// A ref-returning ternary as assignment target: the return lowers to
+// `*(cond ? &a : &fallback(b))`, so the write must land on whichever branch
+// actually ran — phobos' `theAllocator = x` family is this shape.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("refCall.assignmentToRefTernaryReturnWritesChosenBranch." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ref int fallback(ref int b) { return b; }
+            ref int pick(bool first, ref int a, ref int b) {
+                return first ? a : fallback(b);
+            }
+
+            unittest {
+                int x = 1;
+                int y = 2;
+
+                pick(false, x, y) = 42;
+                assert(x == 1);
+                assert(y == 42);
+
+                pick(true, x, y) = 7;
+                assert(x == 7);
+                assert(y == 42);
+            }
+        });
+    }
+}
+
+// Assigning through a member ref-return must run the callee's body — not
+// just locate its return expression — so pre-return side effects happen
+// exactly once and the executed return (not the textually first) picks the
+// lvalue.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("refCall.assignmentToMemberRefReturnRunsCalleeBody." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+                int calls;
+                ref int slot() { ++calls; return value; }
+            }
+
+            unittest {
+                Counter counter;
+                counter.slot() = 42;
+                assert(counter.value == 42);
+                assert(counter.calls == 1);
+            }
+        });
+    }
+}
+
 // `new S` of a struct with a dynamic-array field passes the field's `null`
 // default initialiser as a positional argument; the interpreter must store it
 // as an empty array so a null array's `.length` is 0 (compiled D:
