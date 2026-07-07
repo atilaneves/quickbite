@@ -404,6 +404,18 @@ stop honestly at the next rungs (`pthread_mutexattr_init` FFI,
 `trustedMoveImpl` uninitialized reads, `assignment target: call`,
 `cast_`); details in the §7 ledger entry of the same date.
 
+**2026-07-07 update 2:** the *interpreted* side of
+`assignment target: call` is fixed (`assignToRefReturn` mode; three
+`refCall.*` fixtures in ct/expressions — the free-function refusal, the
+ternary lowering, and the member shortcut that silently skipped the
+callee body). automem re-measure: its ten occurrences all turn out to
+be `fakePureErrno() = errnosave` (druntime core/memory.d), a **native**
+ref-returning body-less function — a distinct root cause in the ffi
+layer (`callViaLibffi` ignores `isref`, so a native ref return's ABI
+pointer is misread as the value; reads get pointer bits, assignment has
+no path). That is the next rung; evidence in the §7 ledger entry of the
+same date.
+
 ### Infra/template/linker issues discovered (need their own plan)
 
 Found while implementing; none are fixed by this plan's items. Another
