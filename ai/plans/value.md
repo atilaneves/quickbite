@@ -250,6 +250,16 @@ use the prelude path for CTFE and Interpreter, matching the existing callable,
 delegate, and class-reference null-field cases without relying on the interim
 `Value.toString` scaffolding.
 
+Progress 2026-07-07: the formatter gate now covers direct expression cells
+whose return type is an enum, selected dynamic/static arrays, or an
+associative array. Direct enum expressions and enum arrays therefore use the
+prelude's qualified member rendering (`E.b`, `[E.a, E.b]`), and direct
+suffix-sensitive arrays/AAs use element-wise literal rendering (`[1L, 2L]`,
+`["answer":42L]`) instead of the interim `Value.toString` scaffolding. The
+prelude enum formatter now returns named members through generated literal
+strings so the Interpreter can execute the direct enum path without falling
+through `std.conv.text`'s enum formatting.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -476,17 +486,14 @@ are done; what is still pending, in order:
    (decision 3): the formatter surface is done as of 2026-07-06 — structs,
    enums, and AAs now render per the round-trip spec (see Progress above)
    and the `text(value)` catch-all covers only the rule-7 no-contract
-   values. What remains is the substantive open step — the
-   wiring: as of 2026-07-06 nothing in `source/` imports `repl_prelude`
-   and expression cells are still synthesized as `return <expr>;`, so the
-   formatter has never executed in the REPL. Synthesize expression cells
-   as `__quickbiteFormat(expr)` with the prelude imported into the
-   synthesized module, gated per backend (decision 4: only views consumed
-   by backends that can execute it). Every display today runs through the
-   interim `displayString`/`Value.toString` scaffolding — including the
-   wide-string round-trip tests, so the display spec is currently
-   enforced by the path scheduled for deletion. Items 2 and 3 below are
-   blocked until this wiring lands.
+   values. What remains is completing the incremental wiring: expression
+   cells are now synthesized as `__quickbiteFormat(expr)` for selected
+   return types when the backend opts into the prelude formatter, but many
+   expression displays still run through the interim
+   `displayString`/`Value.toString` scaffolding. Keep expanding the gate per
+   backend (decision 4: only views consumed by backends that can execute it)
+   until the display spec is no longer enforced by the path scheduled for
+   deletion. Items 2 and 3 below are blocked until this wiring lands.
 2. Delete the private reify → `Value` → `toString` scaffolding per
    backend (decision 4) as each gains the formatter.
 3. Remove the *shared* `quickbite.lang.Value` (decision 2026-06-17):
