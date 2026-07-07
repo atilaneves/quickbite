@@ -1929,6 +1929,7 @@ private struct Walker {
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
+                            nativeOutParameterInputValues(argumentExpressions),
                             &invokeNativeCallback,
                             result,
                             writebacks,
@@ -1982,6 +1983,14 @@ private struct Walker {
         }
 
         const callee = runExpression(call.e1);
+        if (callee.isNativeDelegate)
+            return runNativeDelegateCall(
+                callee,
+                call,
+                arguments,
+                argumentExpressions,
+            );
+
         if (callee.isFunctionPointer && callee.functionPointerId in delegates)
             return runDelegateCall(callee, arguments, argumentExpressions);
 
@@ -2027,6 +2036,48 @@ private struct Walker {
             );
 
         return runFunction(runtime.function_, arguments, argumentExpressions);
+    }
+
+    // Call a native delegate the interpreter holds as an opaque
+    // {context, funcptr} value reified from a native return (ffi.md §35.8),
+    // the inverse of the §34.16 callback bridge.
+    private Value runNativeDelegateCall(
+        in Value callee,
+        imported!"dmd.expression".CallExp call,
+        in Value[] arguments,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        import quickbite.backends.interpreter.ffi_marshal:
+            NativeCallException, tryCallNativeDelegate;
+        import dmd.mtype: TypeFunction;
+
+        auto delegateType = call.e1.type.toBasetype;
+        auto functionType = delegateType.nextOf is null
+            ? null
+            : cast(TypeFunction) delegateType.nextOf;
+
+        Value result;
+        Value[] writebacks;
+        try {
+            if (tryCallNativeDelegate(
+                functionType,
+                callee,
+                arguments,
+                nativeArgumentTypes(argumentExpressions),
+                nativeAddressOfLocalArguments(argumentExpressions),
+                nativeOutParameterInputValues(argumentExpressions),
+                &invokeNativeCallback,
+                result,
+                writebacks,
+            )) {
+                applyNativeWritebacks(writebacks, argumentExpressions);
+                return result;
+            }
+        } catch (NativeCallException exception) {
+            throwNativeException(exception);
+        }
+
+        throw new Exception("Unsupported eval call.");
     }
 
     private Value delegateReceiver(in RuntimeDelegate runtime) {
@@ -4664,6 +4715,31 @@ private struct Walker {
             return var.var.isVarDeclaration;
 
         return null;
+    }
+
+    // The current value behind each `&local` argument (Value.void_ elsewhere):
+    // the FFI core marshals it into the out-parameter cell so an in-out callee
+    // reads the caller's value instead of a zeroed cell (ffi.md §35.6). A
+    // void-initialized local marshals its default value, matching the zeroed
+    // cell compiled code cannot improve on deterministically.
+    private Value[] nativeOutParameterInputValues(
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        auto values = new Value[](argumentExpressions.length);
+        foreach (index, argument; argumentExpressions) {
+            if (!isNativeAddressOfLocal(argument))
+                continue;
+
+            auto variable = nativeOutParameterVariable(argument);
+            if (variable is null)
+                continue;
+
+            if (variable in uninitializedLocals)
+                values[index] = defaultValue(variable);
+            else if (auto current = variable in locals)
+                values[index] = *current;
+        }
+        return values;
     }
 
     private Value runIndexExpression(
