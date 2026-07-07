@@ -138,6 +138,20 @@ unittest {
     "__quickbiteFormat".should.be in cell.source;
 }
 
+@("repl.frontend.stringFieldStructExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.cell: EvalSession;
+
+    auto session = EvalSession([], true);
+    auto cell = session.submit(
+        `({ struct Person { string name; wstring label; } ` ~
+        `return Person("Bob", "wide"w); })()`,
+    );
+
+    cell.displayIsFormatted.should == true;
+    "__quickbiteFormat".should.be in cell.source;
+}
+
 @("repl.frontend.enumFieldStructExpressionUsesPreludeFormatter")
 unittest {
     import quickbite.frontend.cell: EvalSession;
