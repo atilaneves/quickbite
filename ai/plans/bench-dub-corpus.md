@@ -344,10 +344,12 @@ the oracle):
   on every backend with runtime-environment support — today
   `Interpreter`, `SystemLinker`, `LLVMJit` — again with SystemLinker as
   oracle.
-- A backend for which the fixture stays red after the item's fix keeps
-  its red documented (structured unsupported-diagnostic expectation, as
-  the existing `ct/`/`rt/` conventions do), rather than being dropped
-  from the matrix.
+- A backend for which the fixture stays red after the item's fix is
+  omitted from the fixture's backend list — the omission is the
+  documentation. Superseded guidance (user, 2026-07-07): do NOT pin the
+  structured unsupported diagnostic with `shouldThrowWithMessage`,
+  especially for backends still in development (BytecodeNewCore); such
+  pins turn every feature landing into a test-update chore.
 
 The minimal repros above were all confirmed against the live
 disagree-checker on 2026-07-06; sources preserved in the session
