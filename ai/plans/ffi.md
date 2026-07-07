@@ -2835,7 +2835,8 @@ Those get their own plans when scheduled; they are out of this section's scope.
 
 A 2026-07-06 critique of this plan against the as-built code found gaps in
 both the ladder's "done" claim and the seam's readiness for the bytecode
-backend; they are enumerated as work items in §35.
+backend; they are enumerated as work items in §35, which also accretes
+later-found holes in the "done" claim (§35.9, native ref returns).
 
 ## 35. 2026-07-06 critique: plan vs code vs the bytecode backend
 
@@ -3130,6 +3131,58 @@ struct with a delegate field — passes the gate, calls, then dies in
 SystemLinker oracle): `dependencyImage.externDDelegateReturn` in
 `tests/ut/backends/runner/rt/dependency_image.d`. It pins the terminal
 behaviour (the returned delegate is callable and yields 42).
+
+### 35.9 Native ref returns are misread as values (found 2026-07-07)
+
+Post-dates the 2026-07-06 critique; discovered during the two-backend dub
+corpus work (evidence trail: `interpreter.md` §7, the 2026-07-07
+assignment-target-call ledger entry).
+
+**Claim.** §34.3: every ladder rung is done. §11.2 named "ref returns" as
+needing the §13 borrow/pin/writeback contract, but the ladder built only
+the writeback *family* — scalar out-params (§34.8), mutating receivers
+(§34.9), mutable slices (§34.10) — and no rung for ref returns was ever
+climbed. The plan foresaw the category and silently never scheduled it.
+
+**Reality** (`callViaLibffi`, `source/quickbite/ffi/core.d:353`). The
+return is marshalled as `type.next.toBasetype`; `TypeFunction.isref` is
+never consulted. The ABI of a `ref T` return is a `T*`, so the core reads
+the returned pointer's bytes as if they were the `T` value.
+
+**Consequence.** Two failure modes, the worse one silent:
+
+```text
+a. rvalue read of a native ref-returning function yields the low bits of
+   the returned ADDRESS — a silent wrong answer, not a refusal. Ranks
+   above every graceful diagnostic by this plan's own ordering.
+b. assignment through the call has no path at all: the interpreted-side
+   `assignToRefReturn` mode (interpreter.md §7) covers only callees with
+   available source; a body-less native callee falls through.
+```
+
+Real-world driver: all ten of automem's surviving
+`assignment target: call` mismatches are `fakePureErrno() = errnosave`
+(druntime `core/memory.d:1062/:1070`), a native ref-returning body-less
+function; the paired read at `memory.d:1060` is mode (a).
+
+**Work (Track A).** When the resolved callee's `TypeFunction` has
+`isref`: prepare the CIF with a pointer return type; for rvalue reads,
+unmarshal the pointed-to value (one deref, then the existing
+`unmarshalValue` path); for assignment targets, marshal the RHS and write
+it through the returned pointer — the ABI-level counterpart of the
+interpreter's `assignToRefReturn` mode. `canRepresent` (§35.8) gates the
+pointed-to type in both directions.
+
+**Exposing fixtures** (rt/, SystemLinker oracle, need the usual
+`AGENTS.md` approval — the bench-dub-corpus pre-approval does not cover
+them): a dependency-image `ref`-returning accessor over module state
+(`dependency_image.d` style), asserting (a) the read yields the stored
+value, not pointer bits, and (b) assignment through the call sticks and
+is visible to a subsequent native read.
+
+**Done when:** both fixtures green on Interpreter; automem's ten
+`assignment target: call` mismatches gone from the two-backend
+disagreement list; every existing rt/ fixture stays green.
 
 **Work.** Make refusal single-sourced and pre-call: the marshaller (the
 seam's owner of representability) should expose "can I cross this type in

@@ -1357,6 +1357,15 @@ DMD's process-global symbol table and set-once `importedFrom` die with each
 child, so neither package can pin shared dependency modules or home instances
 onto the other by construction — no fixpoint sequencing to reason about.
 
+Second motivation (2026-07-07, two-backend dub corpus work): the fork also
+contains backend crashes for free. Before PR #356 a single backend SIGSEGV
+killed the whole bench and lost the already-buffered stdout (automem and
+fearless printed nothing, not even the preparation section that had
+succeeded); with per-package children a dead child becomes a reported
+per-package failure instead of a dead bench. Until the fork lands, the
+interim mitigation from PR #356 holds: stdout is flushed after the
+preparation section so a later crash cannot eat it.
+
 Why fork, not the alternatives previously listed here:
 
 - Parse-to-fixpoint ordering (parse + codegen + link each package fully
@@ -1384,3 +1393,24 @@ Cross-reference: `dub-deps.md` "Open: per-fixture completeness" shares the
 root cause (first-root instance homing in a persistent process) but is
 *within* a single package, so this fork does not resolve it; that item is
 independently unblocked and needs its own re-prioritisation.
+
+## tardy Crashes The System-Linker Run Executor (2026-07-07, undiagnosed)
+
+`bin/bench.sh -b system-linker --dub ~/coding/d/tardy` — a configuration
+reachable only since path-accepting `--dub` landed (PR #355) — prepares
+22/22 units and links the dependency image, then the run executor exits
+with status -11. First-ever run of this configuration, so a discovery,
+not a regression. The interpreter leg of the same package runs and times
+the frontend, so the package itself is preparable; the crash is on the
+system-linker execution side. Needs its own diagnosis and an exposing
+unit test per `AGENTS.md` before any fix.
+
+## The Bare-`ninja` `bin/bench` Target Is Misconfigured
+
+`ninja bin/bench` passes the LDC-only flag `-link-defaultlib-shared` to
+`/usr/sbin/dmd` and fails to build; `bin/bench.sh` (the supported entry
+point) is unaffected, as are the required gates (`ninja bin/ut`,
+`bin/ut --random`, `ci.sh`). Pre-existing reggae build-config quirk,
+noted 2026-07-07 during the two-backend dub corpus work; the LDC build
+story in "Building the driver with LDC" above is where the flag
+configuration lives.
