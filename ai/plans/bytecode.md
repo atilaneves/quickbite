@@ -4267,3 +4267,14 @@ module storage unsupported. The promoted
 `repl.backend.moduleLevelVariablesAreVisibleToFunctions.BytecodeNewCore`
 row is green, as are `ninja bin/ut` and `bin/ut --random` with seed
 `2143207206`.
+
+Diagnostics-hygiene probe, 2026-07-07:
+`repl.backend.expressionCtfeErrorsReportDiagnostics` now covers
+`BytecodeNewCore` with compiled-style array bounds text. The prior probe
+showed the existing `Ctfe`/`Interpreter` row expects `array index 99 is out of
+bounds` with `[0..3]`, while `BytecodeNewCore` reports `index [99] is out of
+bounds for array of length 3`. That wording matches the
+`SystemLinker`/compiled-D array diagnostic style already pinned in
+`tests/ut/backends/runner/ct/arrays.d`, so the CTFE wording stays as a
+CTFE/tree-walker characterization and the new-core row uses the compiled
+oracle text. No production change was needed.

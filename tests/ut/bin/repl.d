@@ -1348,6 +1348,23 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
+static foreach (backend; AliasSeq!(BytecodeNewCore)) {
+
+    @("repl.backend.expressionCtfeErrorsReportDiagnostics." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("auto arr = [1,2,3];").should == "";
+        void outOfBoundsIndex() {
+            repl.submit("arr[99]");
+        }
+        outOfBoundsIndex.shouldThrow.msg.should ==
+            "index [99] is out of bounds for array of length 3";
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
 
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
