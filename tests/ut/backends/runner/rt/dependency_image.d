@@ -3154,3 +3154,70 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+
+// Pins that native globals of different scalar widths (64-bit int, double,
+// unsigned byte, bool) reify correctly through the data-symbol read path
+// (ffi.md §35.2).
+@("dependencyImage.scalarWidthGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_scalar_width_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_scalar_width_fixture;
+
+            __gshared long   bigCount    = 5_000_000_000;
+            __gshared double ratio       = 1.5;
+            __gshared ubyte  flagByte    = 200;
+            __gshared bool   enabledFlag = true;
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_scalar_width_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_scalar_width_fixture;
+
+            extern __gshared long   bigCount;
+            extern __gshared double ratio;
+            extern __gshared ubyte  flagByte;
+            extern __gshared bool   enabledFlag;
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_scalar_width_fixture;
+
+                unittest {
+                    assert(bigCount == 5_000_000_000); // 64-bit, exceeds int
+                    assert(ratio == 1.5);              // double
+                    assert(flagByte == 200);           // unsigned byte
+                    assert(enabledFlag == true);       // bool
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

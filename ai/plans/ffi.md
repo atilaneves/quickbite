@@ -2303,6 +2303,11 @@ with no production change — slice-global writeback already works via the gener
 marshaller, so it is no longer deferred. The remaining §35.2 work is
 ctor-ORDERING guarantees across images (and struct-global whole-value rebind
 writeback).
+DONE: §35.2 scalar-width global reads — dependencyImage.scalarWidthGlobalRead
+pins that native `__gshared` globals of a 64-bit `long`, a `double`, an unsigned
+`ubyte`, and a `bool` each reify at their correct width through the data-symbol
+read path, exercising `unmarshalValue`'s distinct per-scalar-kind cases beyond
+the `int` already covered. Green-as-pin with no production change.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
@@ -3107,7 +3112,11 @@ mangled name via `mangleToBuffer` and `dlsym(RTLD_DEFAULT, …)`; the
 Interpreter's `VarExp` branch reifies the bytes through the existing
 `unmarshalNative(type, address)`. A null address (symbol not loaded) falls
 through to the default zero-init, so the change is strictly additive and
-cannot regress an extern global that isn't loaded.
+cannot regress an extern global that isn't loaded. Scalar-width coverage
+(64-bit `long`, `double`, unsigned `ubyte`, `bool`) is pinned by
+`dependencyImage.scalarWidthGlobalRead`, exercising `unmarshalValue`'s distinct
+per-scalar-kind reification cases beyond the `int` already covered.
+Green-as-pin with no production change.
 
 **Status: write rung LANDED (§35.2).** `dependencyImage.externGsharedGlobalWrite`
 drives it: the Interpreter's `writeLocation` `VarExp` branch tests the same
