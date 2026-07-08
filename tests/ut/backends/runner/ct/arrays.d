@@ -453,7 +453,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("dynamicArray.overlappingSliceAssignmentIsRejectedAtCtfe." ~
         backend.stringof)
     unittest {
@@ -483,7 +483,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 // Compiled overlapping slice assignment raises druntime's plain
 // "Range violation"; the slice-range text is CTFE-only.
-static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("dynamicArray.overlappingSliceAssignmentDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

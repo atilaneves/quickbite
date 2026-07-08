@@ -711,6 +711,34 @@ no diagnostic. These are likely bugs in already-supported paths.
 that the interpreter currently gets wrong. **Done.** All three classes gone;
 fixtures pin the corrected behaviour.
 
+**2026-07-08 follow-up: ScopeBuffer pointer snapshots.** `cerealed`
+re-measure after the closed Rung 1/Rung 3/Rung 9 work exposed the next
+interpreter-owned red as ScopeBuffer wrong answers (`[\0, a] != "xa"`,
+then `"hellobettyeven more"`). No approved standalone fixture existed, so the
+real-package bench remained the red signal. `memcpy` now copies scalar elements
+into native destinations from the typed source pointer behind `void*` casts,
+and pointer index/slice assignment falls back to updating the pointer target
+snapshot when the allocation id is known but the owner local has gone out of
+scope. The ScopeBuffer mismatches are gone;
+`bin/bench.sh -b interpreter --dub cerealed` now advances to `gc_getArrayUsed`
+with no source, the GC array-growth frontier in §11.
+
+The concrete trigger was `cerealed` `ScopeBuffer.resize`: it explicitly imports
+`core.stdc.string : memcpy` and calls `memcpy(newBuf, buf, used * T.sizeof)`.
+The interpreter treats this as a narrow primitive-memory bridge because
+`memcpy` erases the element type behind `void*`, while interpreter-owned storage
+is still typed `Value`s plus tracked pointer snapshots. The generic native-call
+path cannot correctly copy between interpreter-owned storage and native/realloc
+memory. This is not an open-ended libc special case; future cleanup can fold it
+into a small `memset`/array-copy-like memory-intrinsics layer.
+
+**2026-07-08 follow-up: overlapping slice assignment diagnostic.** The
+existing `dynamicArray.overlappingSliceAssignmentDiagnostic` oracle fixture now
+includes `Interpreter` instead of pinning it to CTFE's detailed overlap text.
+The interpreter's local dynamic-array slice assignment path now reports
+compiled D's `Range violation`, matching `SystemLinker` for this already
+rejected overlapping write.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
