@@ -591,13 +591,13 @@ public struct Value {
 
     public long asLong() const @safe pure {
         import std.sumtype: match;
-        import std.traits: Unqual, isIntegral;
+        import std.traits: Unqual, isIntegral, isSomeChar;
 
         return data.match!(
             (value) {
                 alias T = Unqual!(typeof(value));
 
-                static if (isIntegral!T || is(T == bool)) {
+                static if (isIntegral!T || isSomeChar!T || is(T == bool)) {
                     return cast(long) value;
                 } else static if (is(T == EnumValue)) {
                     return value.value;
@@ -611,13 +611,18 @@ public struct Value {
 
     public bool isIntegerCompatibleScalar() const @safe pure nothrow {
         import std.sumtype: match;
-        import std.traits: Unqual, isIntegral;
+        import std.traits: Unqual, isIntegral, isSomeChar;
 
         return data.match!(
             (value) {
                 alias T = Unqual!(typeof(value));
 
-                static if (isIntegral!T || is(T == bool) || is(T == EnumValue)) {
+                static if (
+                    isIntegral!T ||
+                    isSomeChar!T ||
+                    is(T == bool) ||
+                    is(T == EnumValue)
+                ) {
                     return true;
                 } else {
                     return false;

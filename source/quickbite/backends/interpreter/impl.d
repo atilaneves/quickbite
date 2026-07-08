@@ -1803,9 +1803,41 @@ private struct Walker {
             throw new Exception("Unsupported interpreter pointer target.");
 
         if (auto current = (*variable) in locals)
-            return *current;
+            return reinterpretLocalPointerLoad(
+                *current,
+                (*variable).type,
+                pointer.e1.type,
+            );
 
-        return defaultValue(*variable);
+        return reinterpretLocalPointerLoad(
+            defaultValue(*variable),
+            (*variable).type,
+            pointer.e1.type,
+        );
+    }
+
+    private Value reinterpretLocalPointerLoad(
+        in Value value,
+        imported!"dmd.mtype".Type sourceType,
+        imported!"dmd.mtype".Type pointerType,
+    ) {
+        import dmd.astenums: TY;
+
+        auto source = sourceType is null ? null : sourceType.toBasetype;
+        auto pointer = pointerType is null ? null : pointerType.toBasetype;
+        auto target = pointer is null || pointer.nextOf is null
+            ? null
+            : pointer.nextOf.toBasetype;
+        if (source is null || target is null)
+            return value;
+
+        if (source.ty == TY.Tfloat32 && target.ty == TY.Tuns32)
+            return Value(floatBits(cast(float) value.asReal));
+
+        if (source.ty == TY.Tfloat64 && target.ty == TY.Tuns64)
+            return Value(doubleBits(cast(double) value.asReal));
+
+        return value;
     }
 
     private Value staticArrayPointerView(
@@ -6744,6 +6776,22 @@ private imported!"dmd.dstruct".StructDeclaration constructorStructDeclaration(
     // returns an existing declaration reference.
     imported!"dmd.aggregate".AggregateDeclaration aggregate = function_.isThis;
     return aggregate is null ? null : aggregate.isStructDeclaration;
+}
+
+
+private ulong floatBits(in float value) @trusted pure nothrow {
+    // @trusted: reads the bytes of a local float as a same-sized uint for a
+    // single immediate reinterpret load; the pointer never escapes.
+    static assert(float.sizeof == uint.sizeof);
+    return *cast(uint*) &value;
+}
+
+
+private ulong doubleBits(in double value) @trusted pure nothrow {
+    // @trusted: reads the bytes of a local double as a same-sized ulong for a
+    // single immediate reinterpret load; the pointer never escapes.
+    static assert(double.sizeof == ulong.sizeof);
+    return *cast(ulong*) &value;
 }
 
 

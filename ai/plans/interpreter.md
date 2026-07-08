@@ -936,6 +936,39 @@ The full mismatch list also shows deeper classes now exposed, including
 `Unsupported cast to bool from Array` and existing property/underflow
 families; the first single-backend frontier is the scalar-compatibility class.
 
+**2026-07-08 follow-up: integer-compatible char and reinterpret loads.** The
+`Expected integer-compatible scalar.` frontier is root-caused and advanced. No
+new standalone fixture was added because this worker had no approval for one;
+the existing cerealed bench remained the red signal. A two-backend bench probe
+identified the scalar class at cerealed `tests/encode.d` and
+`tests/encode_decode.d`: `encode.float`, `encode.double`, `encode.chars`, and
+related encode/decode sites passed under `SystemLinker` and failed under
+`Interpreter`.
+
+The first root was that `Value.asLong` and
+`Value.isIntegerCompatibleScalar` treated integral values and enums as
+integer-compatible, but not D character scalars. The second root was
+cerealed's `grainReinterpret`: it encodes floating-point values through
+`*cast(uint*)(&floatValue)` and `*cast(ulong*)(&doubleValue)`. The interpreter's
+local-pointer dereference returned the original `float`/`double` local even
+after the pointer cast, so the downstream shift/mask path saw a floating
+`Value` where D compiled code reads integer bits.
+
+The interpreter now treats `char`/`wchar`/`dchar` as integer-compatible
+scalars, and local-pointer loads through same-size floating-to-unsigned pointer
+casts return the raw IEEE bits. Re-measure:
+
+```text
+bin/bench.sh -b interpreter --dub cerealed
+skipping cerealed interpreter: Expression threw
+```
+
+A two-backend re-measure confirms the scalar class is gone. The next visible
+interpreter blocker is `Expression threw` at the first remaining cerealed site,
+`tests/encode.d:109` (`encode.chars`); deeper mismatches include existing
+byte-encoding wrong answers, pointer/underflow families, and
+`Unsupported cast to bool from Array`.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
