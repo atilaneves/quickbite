@@ -135,6 +135,18 @@ Consequences:
   and makes the backend representation **swappable behind a stable interface**
   so it can be measured rather than guessed.
 
+**Status 2026-07-08: carved.** The old `backends/ffi.d` chokepoint has been
+split: `quickbite.ffi.core` owns symbol resolution, ABI descriptors, CIF prep,
+`ffi_call`, ABI argument ordering, receiver/ref-return mechanics, callback
+closures, and native-exception capture without naming `Value`; the interpreter
+injects `InterpreterNativeMarshaller` from
+`source/quickbite/backends/interpreter/ffi_marshal.d`. The core-facing seam is
+buffer-shaped (`NativeMarshaller.fillArgument` / `fillReceiver` /
+`fillOutParameterCell`, `readResult` / `writeOutParameter` /
+`writeRefResult`, plus callback and native-receiver hooks) so future
+native-layout backends can implement identity materialize/reify without
+importing interpreter code.
+
 ## 6. Package layout and the parallel-agent partition
 
 `quickbite.ffi` is now a **package** (promoted 2026-06-23 from the single

@@ -567,11 +567,13 @@ are done; what is still pending, in order:
 
 Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
 
-4. Carve the seam: move the boxed `Value <-> ABI bytes` marshalling out of the
-   FFI core (`backends/ffi.d`) and into the interpreter as its
-   `materialize`/`reify` implementation, behind the `ffi.md` §5 interface.
-   Mechanical and behaviour-preserving — the existing `rt/` FFI suite stays
-   green. This is the prerequisite that unblocks the two parallel tracks.
+4. Done 2026-07-08: carve the seam. The boxed `Value <-> ABI bytes`
+   marshalling now lives in
+   `source/quickbite/backends/interpreter/ffi_marshal.d` as the interpreter's
+   `materialize`/`reify` implementation behind the `ffi.md` §5
+   `NativeMarshaller` interface. The backend-neutral bridge core lives under
+   `source/quickbite/ffi/` and never names `Value`. This unblocks the two
+   parallel tracks; future Track B work stays behind the same seam.
 5. Own the `ffi.md` §34.3 `B*` rungs (boxed-slice/struct/nested/writeback
    marshalling) as the interpreter's `materialize`/`reify`, keeping FFI working
    so real dub tests can run.
