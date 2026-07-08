@@ -4423,3 +4423,28 @@ focused `ctype.toupperTolower.BytecodeNewCore` green, with
 `abs.scalar`/`labs.widerScalar`/`atoi.value` `.BytecodeNewCore` still green;
 `bin/ut --random` with seed `3779664640` reported the invariant `0 failed,
 6/6 failing as expected`.
+
+Slice 8 native atof double-return call, 2026-07-08: promoted `rt/cstdlib.d`'s
+existing SystemLinker-backed `atof.floatReturn` row (`double atof(const char*)`
+on `atof("3.5".ptr)`, asserting `value == 3.5`) to `BytecodeNewCore`. The RED
+diagnostic was `` `atof` cannot be interpreted at compile time, because it has
+no available source code `` — the native chokepoint's return-type gate accepted
+only `Tint32`/`Tint64`, so a `Tfloat64` return fell through to the no-source
+throw. This is the first floating-point return through the native bridge; the
+argument is the existing `char*`-string-literal shape, so no arg-side work was
+needed. The production change adds `Tfloat64` to that return-type gate in
+`tryCompileNativeCall` (`source/quickbite/backends/bytecode/core/compiler.d`);
+`scalarType(Tfloat64)` already maps to the 8-byte `double_` scalar that
+`emitNativeCall` uses for the destination slot and result `Operand`. In the
+`BytecodeNativeMarshaller`
+(`source/quickbite/backends/bytecode/core/machine.d`), `canRepresent` also
+accepts `Tfloat64` and `nativeResultSize` returns `double.sizeof` for it. No
+libffi-float subtlety: `ffiTypeFor` already maps `Tfloat64` to
+`ffi_type_double`, libffi writes the 8-byte double at the start of the return
+buffer (proven by the Interpreter's own `readResult`), and the marshaller
+copies exactly those 8 bytes, so the bit pattern matches the SystemLinker
+oracle. Verification: `ninja bin/ut`, focused
+`atof.floatReturn.BytecodeNewCore` green, with
+`abs.scalar`/`labs.widerScalar`/`ctype.toupperTolower`/`atoi.value`
+`.BytecodeNewCore` still green; `bin/ut --random` with seed `1023230401`
+reported the invariant `0 failed, 6/6 failing as expected`.

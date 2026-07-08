@@ -2640,7 +2640,8 @@ private final class BytecodeNativeMarshaller:
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
         import dmd.astenums: TY;
         const ty = type.toBasetype.ty;
-        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tpointer;
+        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tfloat64 ||
+            ty == TY.Tpointer;
     }
 
     public void fillArgument(
@@ -2672,6 +2673,8 @@ private final class BytecodeNativeMarshaller:
                 return int.sizeof;
             case Tint64:
                 return long.sizeof;
+            case Tfloat64:
+                return double.sizeof;
             case Tpointer:
                 return (void*).sizeof;
             default:

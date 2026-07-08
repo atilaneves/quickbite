@@ -7324,7 +7324,8 @@ private struct Compiler {
         import std.conv: text;
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
-        if ((returnTy != TY.Tint32 && returnTy != TY.Tint64) ||
+        if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
+             returnTy != TY.Tfloat64) ||
             call.arguments is null ||
             call.arguments.length != 1)
             return null;

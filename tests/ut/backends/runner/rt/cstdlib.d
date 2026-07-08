@@ -560,7 +560,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+)) {
     @("atof.floatReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
