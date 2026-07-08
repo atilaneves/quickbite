@@ -121,6 +121,37 @@ package bool tryAtomicHook(
     return false;
 }
 
+package enum GCArrayHook {
+    getUsed,
+    reserveCapacity,
+    shrinkUsed,
+}
+
+package bool tryGCArrayHook(
+    imported!"dmd.func".FuncDeclaration function_,
+    out GCArrayHook hook,
+) {
+    if (function_ is null || function_.ident is null)
+        return false;
+
+    with (GCArrayHook) switch (function_.ident.toString) {
+        case "gc_getArrayUsed":
+            hook = getUsed;
+            return true;
+
+        case "gc_reserveArrayCapacity":
+            hook = reserveCapacity;
+            return true;
+
+        case "gc_shrinkArrayUsed":
+            hook = shrinkUsed;
+            return true;
+
+        default:
+            return false;
+    }
+}
+
 package enum InterpreterBuiltin: size_t {
     fabs,
     isInfinity,

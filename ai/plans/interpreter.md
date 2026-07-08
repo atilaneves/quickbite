@@ -732,6 +732,31 @@ path cannot correctly copy between interpreter-owned storage and native/realloc
 memory. This is not an open-ended libc special case; future cleanup can fold it
 into a small `memset`/array-copy-like memory-intrinsics layer.
 
+**2026-07-08 follow-up: GC dynamic-array capacity hooks.** The
+`gc_getArrayUsed` blocker from §11 is now past the first runtime hook
+frontier. No approved standalone fixture existed for this package-only
+lowering path, so the red signal was the real-package bench:
+`bin/bench.sh -b interpreter --dub cerealed` skipped with:
+
+```text
+`gc_getArrayUsed` cannot be interpreted at compile time, because it has no
+available source code
+```
+
+The interpreter now recognizes the druntime `gc_getArrayUsed`,
+`gc_reserveArrayCapacity`, and `gc_shrinkArrayUsed` helpers before the generic
+body-less native-call path. `gc_getArrayUsed` reifies the tracked interpreter
+allocation behind the incoming array pointer; locals initialized from the
+druntime `cast(T[]) gc_getArrayUsed(...)` shape preserve that allocation id so
+the subsequent `arr.ptr - curArr.ptr` calculation in
+`core.internal.array.capacity` still sees same-allocation pointers.
+`reserveCapacity` and `shrinkUsed` evaluate their arguments and return the
+scalar result the interpreted capacity code needs.
+
+Re-measure (§6): `gc_getArrayUsed` and the immediate
+`Expected pointers into the same allocation.` follow-up are gone. The package
+now advances to the pre-existing broader `Unsupported eval call.` frontier.
+
 **2026-07-08 follow-up: overlapping slice assignment diagnostic.** The
 existing `dynamicArray.overlappingSliceAssignmentDiagnostic` oracle fixture now
 includes `Interpreter` instead of pinning it to CTFE's detailed overlap text.

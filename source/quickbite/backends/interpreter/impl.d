@@ -101,9 +101,11 @@ private struct Walker {
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
     private StructArrayFieldAliases[VarDeclaration] structArrayFieldAliases;
     private size_t[VarDeclaration] arrayAllocations;
+    private size_t[VarDeclaration] arrayAllocationAliases;
     private VarDeclaration[size_t] arrayAllocationVariables;
     private bool[VarDeclaration] arrayPointerWritebacks;
     private size_t allocationCount;
+    private size_t lastGCArrayUsedAllocation;
     private Value result;
     private bool runningCalledFunction;
     private bool inUnitTest;
@@ -1553,6 +1555,7 @@ private struct Walker {
         child.delegates = delegates.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -1640,9 +1643,10 @@ private struct Walker {
         if (auto alias_ = variable in sliceAliases)
             source = alias_.source;
 
+        const id = variable in arrayAllocationAliases;
         return Value.arrayPointerValue(
             arrayPointerElements(*current),
-            allocationId(source),
+            id is null ? allocationId(source) : *id,
             arrayPointerOffset(*current, offset),
         );
     }
@@ -1919,6 +1923,15 @@ private struct Walker {
 
         if (call.f !is null && functionName(call.f) == "memcpy")
             return runMemcpyCall(call);
+
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.builtins:
+                GCArrayHook, tryGCArrayHook;
+
+            GCArrayHook gcArrayHook;
+            if (tryGCArrayHook(call.f, gcArrayHook))
+                return runGCArrayHookCall(call, gcArrayHook);
+        }
 
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
@@ -2234,6 +2247,57 @@ private struct Walker {
         }
 
         return destination;
+    }
+
+    private Value runGCArrayHookCall(
+        imported!"dmd.expression".CallExp call,
+        in imported!"quickbite.backends.interpreter.builtins".GCArrayHook hook,
+    ) {
+        import quickbite.backends.interpreter.builtins: GCArrayHook;
+
+        if (call.arguments is null)
+            throw new Exception("Unsupported eval call.");
+
+        with (GCArrayHook) final switch (hook) {
+            case getUsed:
+                requireArgumentCount(call, 2);
+                return gcArrayUsed(runExpression((*call.arguments)[0]));
+
+            case reserveCapacity:
+                requireArgumentCount(call, 3);
+                const slice = runExpression((*call.arguments)[0]);
+                const request =
+                    cast(size_t) runExpression((*call.arguments)[1]).asLong;
+                runExpression((*call.arguments)[2]);
+                return Value(request == 0 ? slice.length : request);
+
+            case shrinkUsed:
+                requireArgumentCount(call, 3);
+                runExpression((*call.arguments)[0]);
+                runExpression((*call.arguments)[1]);
+                runExpression((*call.arguments)[2]);
+                return Value(true);
+        }
+    }
+
+    private Value gcArrayUsed(in Value pointer) {
+        lastGCArrayUsedAllocation = 0;
+        if (pointer == Value.null_ || pointer.isNativePointer)
+            return Value.null_;
+
+        if (!pointer.isPointer)
+            throw new Exception("Expected pointer.");
+
+        lastGCArrayUsedAllocation = pointer.pointerAllocation;
+        return Value.arrayValue(pointerArrayElements(pointer));
+    }
+
+    private Value[] pointerArrayElements(in Value pointer) {
+        Value[] elements;
+        foreach (index; 0 .. pointer.pointerLength)
+            elements ~= pointer.pointerIndex(index);
+
+        return elements;
     }
 
     private Value readPointerElement(
@@ -2891,6 +2955,7 @@ private struct Walker {
         child.delegates = delegates.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -2938,6 +3003,7 @@ private struct Walker {
         child.delegates = delegates.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -3006,6 +3072,7 @@ private struct Walker {
         delegates = child.delegates;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
+        arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackNestedLocals(function_, child, captureLocals);
@@ -3030,6 +3097,7 @@ private struct Walker {
         delegates = child.delegates;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
+        arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackGlobals(child);
@@ -3140,6 +3208,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
@@ -3149,6 +3218,7 @@ private struct Walker {
         nextLocalPointerId = child.nextLocalPointerId;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
+        arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -3980,6 +4050,7 @@ private struct Walker {
         child.delegates = delegates.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -4059,6 +4130,7 @@ private struct Walker {
         child.delegates = delegates.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -5762,6 +5834,7 @@ private struct Walker {
                 : runExpression(initializer),
         );
         locals[variable] = value;
+        recordGCArrayUsedAlias(variable, initializer);
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)
             recordArrayElementAlias(variable, indexInitializer, arrayElementAliasIndex);
@@ -5775,6 +5848,42 @@ private struct Walker {
         recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    private void recordGCArrayUsedAlias(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        import quickbite.backends.interpreter.builtins:
+            GCArrayHook, tryGCArrayHook;
+
+        auto call = gcArrayUsedCall(initializer);
+        if (call is null || call.f is null) {
+            arrayAllocationAliases.remove(variable);
+            return;
+        }
+
+        GCArrayHook hook;
+        if (!tryGCArrayHook(call.f, hook) || hook != GCArrayHook.getUsed) {
+            arrayAllocationAliases.remove(variable);
+            return;
+        }
+
+        if (lastGCArrayUsedAllocation == 0) {
+            arrayAllocationAliases.remove(variable);
+            return;
+        }
+
+        arrayAllocationAliases[variable] = lastGCArrayUsedAllocation;
+    }
+
+    private imported!"dmd.expression".CallExp gcArrayUsedCall(
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        if (auto cast_ = initializer.isCastExp)
+            return gcArrayUsedCall(cast_.e1);
+
+        return initializer.isCallExp;
     }
 
     private Value defaultLocalValue(VarDeclaration variable) {
