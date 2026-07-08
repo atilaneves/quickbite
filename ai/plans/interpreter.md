@@ -969,6 +969,38 @@ interpreter blocker is `Expression threw` at the first remaining cerealed site,
 byte-encoding wrong answers, pointer/underflow families, and
 `Unsupported cast to bool from Array`.
 
+**2026-07-08 follow-up: native `RangeError` is an `Error`, not an
+`Exception`.** The generic `Expression threw` frontier is root-caused and
+advanced. No approved standalone fixture existed for this package-only
+exposure, so the existing cerealed bench remained the red signal. A temporary
+two-backend location probe corrected the visible site: the current
+`__unittest_L109_C1` failure is `tests/decode.d:109` (`decode.chars`), not
+`tests/encode.d:109`; the earlier location was stale after intervening
+frontier movement.
+
+Temporary throw/catch probes showed the original exception was the
+interpreter's synthetic `core.exception.RangeError` from
+`cerealed.decerealiser.Decerealiser.grainUByte`
+(`index [0] is out of bounds for array of length 0`). Unit-threaded's outer
+`shouldNotThrow` caught it as `object.Exception` and rethrew the unhelpful
+`UnitTestException("Expression threw")`. That catch is wrong for compiled D:
+`RangeError` derives from `Error`, not `Exception`.
+
+The fallback native-exception type-name synthesis now classifies
+`core.exception.*Error` / `object.*Error` as `Error` hierarchies while keeping
+other native exceptions under `Exception`. Re-measure:
+
+```text
+bin/bench.sh -b interpreter --dub cerealed
+skipping cerealed interpreter: index [0] is out of bounds for array of length 0
+```
+
+The two-backend mismatch list confirms `Expression threw` is gone. The next
+visible interpreter blocker is the now-unmasked `RangeError` at
+`tests/decode.d:109` (`decode.chars`): the expected final
+`value!ubyte.shouldThrow!RangeError` still escapes as an uncaught
+`RangeError`.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

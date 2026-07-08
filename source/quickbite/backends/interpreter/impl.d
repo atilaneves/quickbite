@@ -6576,16 +6576,31 @@ private string[] classTypeNames(imported!"dmd.dclass".ClassDeclaration class_) {
 
 
 private string[] nativeExceptionTypeNames(in string name) @safe pure {
+    const root = nativeExceptionRoot(name);
     return [
         unqualifiedName(name),
         name,
-        "Exception",
+        root,
         "Throwable",
         "Object",
-        "object.Exception",
+        "object." ~ root,
         "object.Throwable",
         "object.Object",
     ];
+}
+
+private string nativeExceptionRoot(in string name) @safe pure {
+    import std.algorithm: endsWith, startsWith;
+
+    return (
+        (
+            name.startsWith("core.exception.") ||
+            name.startsWith("object.")
+        ) &&
+        name.endsWith("Error")
+    )
+        ? "Error"
+        : "Exception";
 }
 
 
