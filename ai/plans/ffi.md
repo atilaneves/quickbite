@@ -2240,8 +2240,9 @@ dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
 sort by consumer need, not table position:
 
 ```text
-1. §35.2: data symbols + dependency-image init — the §35.2a read rung and
-   the write rung are DONE; TLS/ctor-ordering remain
+1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
+   write rung, and the module-ctor-at-dlopen pin are DONE; only the TLS
+   variant remains
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -2255,6 +2256,14 @@ through to the resolved symbol via marshalNative and never caches it in
 `locals`, so native memory stays the single source of truth (a later native
 mutation is not shadowed by a stale local copy). TLS and ctor-ordering stay
 as the remaining §35.2 rungs.
+DONE: §35.2b module-ctor-at-dlopen pin —
+dependencyImage.moduleCtorRanAtDlopen. A dependency image with
+`static this() { seed = 42; }` and an accessor `readSeed` is dlopened
+(RTLD_NOW | RTLD_GLOBAL). Both the SystemLinker oracle and the Interpreter
+observe `readSeed == 42` and a direct `seed == 42` read: the D DSO registry
+runs module ctors at dlopen for both backends, so this is green-as-pin with
+no production change (the Interpreter already dlopens dependency images in
+its constructor). The TLS variant is the remaining §35.2 rung.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
@@ -3070,7 +3079,19 @@ Native memory is the single source of truth: caching in `locals` would let a
 later native mutation be shadowed by a stale local copy, and the read path
 (§35.2a) reifies from native memory on every read. A null address falls through
 to the existing local-assignment behaviour, so the change is strictly additive.
-TLS and ctor-ordering remain later rungs (part b below is untouched).
+The TLS rung remains; part b (module-ctor-at-dlopen) is now pinned below.
+
+**Status: module-ctor-at-dlopen pinned (§35.2b).**
+`dependencyImage.moduleCtorRanAtDlopen` resolves part b's unverified
+assumption. A dependency image with `static this() { seed = 42; }` and an
+accessor `readSeed` is dlopened (RTLD_NOW | RTLD_GLOBAL). Both the
+SystemLinker oracle and the Interpreter observe `readSeed == 42` and a direct
+`seed == 42` read, so the D DSO registry does run module ctors at dlopen for
+both backends. This is a characterization pin (like §34.7 sret / §34.11
+nested-slice): green as-is with no production change, because the Interpreter
+already dlopens dependency images in its constructor and the ctor's write is
+visible through the §35.2a symbol-read path. The TLS variant is the remaining
+§35.2 rung.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 

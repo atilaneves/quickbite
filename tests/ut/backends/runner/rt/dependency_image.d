@@ -2777,3 +2777,73 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+
+// Pins §35.2b: the dependency image's `static this()` runs when the image is
+// dlopened (RTLD_NOW | RTLD_GLOBAL), so `seed` is 42 for both the SystemLinker
+// oracle and the Interpreter. The direct `seed` read also exercises the §35.2a
+// symbol-read path, proving the ctor's write is visible through the resolved
+// symbol.
+@("dependencyImage.moduleCtorRanAtDlopen.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_modulector_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_modulector_fixture;
+
+            __gshared int seed;
+
+            static this() {
+                seed = 42;
+            }
+
+            int readSeed() {
+                return seed;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_modulector_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_modulector_fixture;
+
+            extern __gshared int seed;
+            int readSeed();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_modulector_fixture;
+
+                unittest {
+                    assert(readSeed == 42);
+                    assert(seed == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
