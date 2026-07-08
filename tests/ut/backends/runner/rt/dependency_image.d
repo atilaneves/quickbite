@@ -3427,6 +3427,95 @@ unittest {
     }
 }
 
+// Pins §35.2 cross-image dependency-image initialization ordering: A's module
+// ctor runs before B's because images load in list order under RTLD_GLOBAL, so
+// B's ctor (which reads A's shared `seedBase`) sees A's initialized value.
+// Image B references A's symbol as an undefined extern, resolved at load time
+// through RTLD_GLOBAL. The shared global is `extern(C)` so both images agree on
+// the symbol name `seedBase`; a plain extern(D) global mangles the module name
+// in (`_D21dep_image_ctororder_a...` vs `..._b...`), so B's reference would not
+// resolve to A's definition. First multi-image fixture.
+@("dependencyImage.crossImageCtorOrdering.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+
+        const depAPath =
+            buildPath(importPath, "dep_image_ctororder_a.d");
+        writeFile(depAPath, q{
+            module dep_image_ctororder_a;
+
+            extern(C) __gshared int seedBase;
+
+            static this() {
+                seedBase = 10;
+            }
+        });
+        const imageAPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctororder_a",
+            [depAPath],
+        );
+
+        const depBPath =
+            buildPath(importPath, "dep_image_ctororder_b.d");
+        writeFile(depBPath, q{
+            module dep_image_ctororder_b;
+
+            extern(C) extern __gshared int seedBase;
+            __gshared int seedDerived;
+
+            static this() {
+                seedDerived = seedBase + 5;
+            }
+
+            int readDerived() {
+                return seedDerived;
+            }
+        });
+        const imageBPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctororder_b",
+            [depBPath],
+        );
+
+        writeFile(depBPath, q{
+            module dep_image_ctororder_b;
+
+            int readDerived();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ctororder_b;
+
+                unittest {
+                    assert(readDerived() == 15);  // B's ctor ran after A's:
+                                                  // 10 + 5
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imageAPath, imageBPath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imageAPath, imageBPath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 // Pins §35.2: reading a pointer-typed native global. The data-symbol path routes
 // through `unmarshalValue`'s `Tpointer` case, reifying `anchorPtr` as a non-null
 // native-pointer Value. To exercise the read without interpreted native-pointer

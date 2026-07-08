@@ -2242,9 +2242,11 @@ sort by consumer need, not table position:
 ```text
 1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
    write rung, the module-ctor-at-dlopen pin, the TLS-default rung, the
-   struct-global read+field-write rung, the slice-global read rung, and the
-   slice-global writeback rung are DONE; what remains is ctor-ORDERING
-   guarantees across images (and struct-global whole-value rebind writeback)
+   struct-global read+field-write rung, the slice-global read rung, the
+   slice-global writeback rung, the struct-global whole-value rebind rung, and
+   cross-image module-ctor ORDERING are DONE. What remains is the case where
+   load order is NOT specified by the caller (DT_NEEDED-driven ordering, where
+   the dynamic loader decides) and TLS-in-dependency-image edge cases
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -2348,6 +2350,20 @@ inventory may still extend the fixture list.
 DONE: §35.10 pthread_mutexattr_init (union out-pointer) — fixed 2026-07-08
 (commit `fd95624`), verified 51× → 0× corpus mismatches (automem 48→0,
 fearless 3→0), the former highest-leverage item by count; see §35.10.
+DONE: §35.2 cross-image module-ctor ORDERING —
+dependencyImage.crossImageCtorOrdering, the first multi-image fixture. Two
+dependency images are loaded as `[imageA, imageB]`: B's `static this()` reads a
+shared global that A's `static this()` initialized. `loadDependencyImages`
+(core.d) loads images in list order under RTLD_NOW | RTLD_GLOBAL, so A fully
+loads (its ctors run) before B, and B's ctor sees A's initialized value — B's
+`readDerived` returns 15 (A's 10 + 5) on both the SystemLinker oracle and the
+Interpreter. The shared global is `extern(C)` so both independently-mangled
+images agree on the symbol name (a plain extern(D) global mangles its own module
+name in, so B's reference would not resolve to A's definition). Green-as-pin
+with no production change: the caller specifies load order and the loader
+honours it. What genuinely remains is DT_NEEDED-driven ordering where the caller
+does NOT specify load order (the dynamic loader picks it) and TLS-in-dependency-
+image edge cases.
 ```
 
 An agent asked to "work on ffi.md" starts at the top of this list, not at
@@ -3234,6 +3250,23 @@ Value. To exercise the read without interpreted native-pointer dereference
 (a separate, out-of-scope surface), the interpreter reads the pointer global and
 passes it to native `derefArg(int*)` which dereferences it, returning 77. No
 production change was needed. Green-as-pin, read only.
+
+**Status: cross-image module-ctor ORDERING rung LANDED (§35.2).**
+`dependencyImage.crossImageCtorOrdering` is the first fixture that loads two
+dependency images. Image A's `static this()` initializes a shared global; image
+B's `static this()` reads it and derives a second value, exposed through
+`readDerived`. Passing `[imageA, imageB]` to both the SystemLinker oracle and
+the Interpreter, `loadDependencyImages` (core.d) loads the images in list order
+under RTLD_NOW | RTLD_GLOBAL, so A fully loads — its module ctor runs — before B
+loads, and B's ctor observes A's initialized value: `readDerived` returns 15
+(A's 10 + 5). The shared global is `extern(C)` so both independently-mangled
+images agree on the symbol name; a plain extern(D) global would mangle its
+defining module into the name (`_D21dep_image_ctororder_a...` vs `..._b...`), so
+B's reference would not resolve to A's definition through RTLD_GLOBAL. No
+production change was needed: the caller specifies load order and the loader
+honours it. What genuinely remains for §35.2 is DT_NEEDED-driven ordering where
+the caller does NOT specify load order (the dynamic loader picks it) and
+TLS-in-dependency-image edge cases. Green-as-pin.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
