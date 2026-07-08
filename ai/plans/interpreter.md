@@ -711,6 +711,18 @@ no diagnostic. These are likely bugs in already-supported paths.
 that the interpreter currently gets wrong. **Done.** All three classes gone;
 fixtures pin the corrected behaviour.
 
+**2026-07-08 follow-up: ScopeBuffer pointer snapshots.** `cerealed`
+re-measure after the closed Rung 1/Rung 3/Rung 9 work exposed the next
+interpreter-owned red as ScopeBuffer wrong answers (`[\0, a] != "xa"`,
+then `"hellobettyeven more"`). No approved standalone fixture existed, so the
+real-package bench remained the red signal. `memcpy` now copies scalar elements
+into native destinations from the typed source pointer behind `void*` casts,
+and pointer index/slice assignment falls back to updating the pointer target
+snapshot when the allocation id is known but the owner local has gone out of
+scope. The ScopeBuffer mismatches are gone;
+`bin/bench.sh -b interpreter --dub cerealed` now advances to `gc_getArrayUsed`
+with no source, the GC array-growth frontier in §11.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

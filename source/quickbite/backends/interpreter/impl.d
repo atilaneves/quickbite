@@ -1917,22 +1917,8 @@ private struct Walker {
         if (call.f !is null && isDruntimeArrayOpAddAssign(call.f))
             return runArrayOpAddAssignCall(call);
 
-        if (call.f !is null && functionName(call.f) == "memcpy") {
-            if (call.arguments is null || call.arguments.length < 2)
-                throw new Exception("Unsupported eval call.");
-            const destination = runExpression((*call.arguments)[0]);
-            Value[] source;
-            const sourcePointer = runExpression((*call.arguments)[1]);
-            foreach (index; 0 .. sourcePointer.pointerLength)
-                source ~= sourcePointer.pointerIndex(index);
-
-            if (source.length != 0 && source[0].isStruct) {
-                writePointerElements((*call.arguments)[0], destination, source);
-                return destination;
-            }
-
-            return destination;
-        }
+        if (call.f !is null && functionName(call.f) == "memcpy")
+            return runMemcpyCall(call);
 
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
@@ -2201,6 +2187,85 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    private Value runMemcpyCall(imported!"dmd.expression".CallExp call) {
+        import dmd.typesem: size;
+
+        if (call.arguments is null || call.arguments.length < 2)
+            throw new Exception("Unsupported eval call.");
+
+        auto destinationExpression = (*call.arguments)[0];
+        auto sourceExpression = (*call.arguments)[1];
+        const destination = runExpression(destinationExpression);
+        const sourcePointer = runExpression(sourceExpression);
+        auto sourcePointerType = memcpyElementPointerType(sourceExpression);
+        const elementSize = cast(size_t) size(
+            sourcePointerType.toBasetype.nextOf.toBasetype,
+        );
+        const count = call.arguments.length < 3
+            ? sourcePointer.pointerLength
+            : cast(size_t) runExpression((*call.arguments)[2]).asLong / elementSize;
+
+        if (destination.isNativePointer) {
+            foreach (index; 0 .. count) {
+                const source = readPointerElement(
+                    sourcePointerType,
+                    sourcePointer,
+                    index,
+                );
+                storeNativePointerElement(
+                    sourcePointerType,
+                    destination,
+                    index,
+                    source,
+                );
+            }
+            return destination;
+        }
+
+        Value[] source;
+        foreach (index; 0 .. count)
+            source ~= readPointerElement(sourcePointerType, sourcePointer, index);
+
+        if (source.length != 0 && source[0].isStruct) {
+            writePointerElements(destinationExpression, destination, source);
+            return destination;
+        }
+
+        return destination;
+    }
+
+    private Value readPointerElement(
+        imported!"dmd.mtype".Type pointerType,
+        in Value pointer,
+        in size_t index,
+    ) {
+        if (pointer.isNativePointer)
+            return loadNativePointerElement(pointerType, pointer, index);
+
+        if (auto variable = arrayPointerVariable(pointer)) {
+            if (auto current = *variable in locals)
+                return (*current)[cast(size_t) pointer.pointerElementOffset + index];
+        }
+
+        return pointer.pointerIndex(index);
+    }
+
+    private imported!"dmd.mtype".Type memcpyElementPointerType(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        auto type = expression.type;
+        auto pointed = type.toBasetype.nextOf;
+        if (pointed is null || pointed.toBasetype.ty != TY.Tvoid)
+            return type;
+
+        if (auto cast_ = expression.isCastExp)
+            return memcpyElementPointerType(cast_.e1);
+
+        return type;
     }
 
     // Run an interpreted delegate that native code called back into through the
@@ -4198,10 +4263,17 @@ private struct Walker {
             }
             if (canWriteThroughArrayPointer(pointer)) {
                 const value = runExpression(rhs);
-                writeThroughArrayPointer(
+                if (writeThroughArrayPointer(
                     pointer.pointerOffsetBy(cast(long) arrayIndex),
                     value,
-                );
+                ))
+                    return value;
+
+                const updatedPointer = pointer
+                    .pointerOffsetBy(cast(long) arrayIndex)
+                    .withPointerTarget(value)
+                    .pointerOffsetBy(-cast(long) arrayIndex);
+                writeLocation(index.e1, updatedPointer);
                 return value;
             }
             return runAssocArraySlotAssignExpression(index.e1, rhs);
@@ -4410,11 +4482,27 @@ private struct Walker {
         }
 
         if (canWriteThroughArrayPointer(pointer)) {
-            foreach (index; 0 .. upper - lower)
-                writeThroughArrayPointer(
-                    pointer.pointerOffsetBy(cast(long) (lower + index)),
-                    elementAt(index),
-                );
+            Value updatedPointer = pointer;
+            bool usedPointerFallback;
+            foreach (index; 0 .. upper - lower) {
+                const offset = cast(long) (lower + index);
+                const element = elementAt(index);
+                if (writeThroughArrayPointer(
+                    pointer.pointerOffsetBy(offset),
+                    element,
+                ))
+                    continue;
+
+                updatedPointer = updatedPointer
+                    .pointerOffsetBy(offset)
+                    .withPointerTarget(element)
+                    .pointerOffsetBy(-offset);
+                usedPointerFallback = true;
+            }
+
+            if (usedPointerFallback)
+                writeLocation(slice.e1, updatedPointer);
+
             return value;
         }
 
