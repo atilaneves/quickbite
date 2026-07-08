@@ -2307,6 +2307,12 @@ symbol's struct bytes. The literal `Named("hello", 7)` initializer points the
 field at rodata that survives for the process, so `entry.label == "hello"`,
 `entry.id == 7`, and native `labelLength` all read back. Green-as-pin with no
 production change.
+DONE: §35.2 pointer-typed global read — dependencyImage.pointerGlobalRead. An
+`extern __gshared int* anchorPtr` reifies through the data-symbol path into
+`unmarshalValue`'s `Tpointer` case as a non-null native-pointer Value; the
+interpreter reads the pointer global and passes it to native `derefArg` which
+dereferences it (interpreted native-pointer deref stays out of scope).
+Green-as-pin with no production change.
 DONE: §35.2 dynamic-array (slice) global writeback —
 dependencyImage.sliceGlobalWriteback. An interpreted `payload = [7, 8, 9]`
 assignment into an `extern __gshared int[] payload` global crosses through the
@@ -3219,6 +3225,15 @@ that survives for the process, so `entry.label == "hello"`, `entry.id == 7`, and
 native `labelLength` all read back. No production change was needed: the
 recursive struct read composes the §34.11 nested-slice machinery with the §35.2a
 symbol-read path. Green-as-pin, read only.
+
+**Status: pointer-typed global read rung LANDED (§35.2).**
+`dependencyImage.pointerGlobalRead` pins reading an `extern __gshared int*
+anchorPtr` global: the data-symbol path routes through `unmarshalValue`'s
+`Tpointer` case, reifying the symbol's pointer word as a non-null native-pointer
+Value. To exercise the read without interpreted native-pointer dereference
+(a separate, out-of-scope surface), the interpreter reads the pointer global and
+passes it to native `derefArg(int*)` which dereferences it, returning 77. No
+production change was needed. Green-as-pin, read only.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 

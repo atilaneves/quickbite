@@ -3426,3 +3426,73 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// Pins §35.2: reading a pointer-typed native global. The data-symbol path routes
+// through `unmarshalValue`'s `Tpointer` case, reifying `anchorPtr` as a non-null
+// native-pointer Value. To exercise the read without interpreted native-pointer
+// deref (out of scope, §35.2), the interpreter reads the pointer global and
+// passes it to a native callee that dereferences it.
+@("dependencyImage.pointerGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_pointer_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_pointer_global_fixture;
+
+            __gshared int anchor = 77;
+            __gshared int* anchorPtr = &anchor;
+
+            int derefArg(int* p) { return *p; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_pointer_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_pointer_global_fixture;
+
+            extern __gshared int anchor;
+            extern __gshared int* anchorPtr;
+            int derefArg(int* p);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_pointer_global_fixture;
+
+                unittest {
+                    assert(anchorPtr !is null);          // pointer global reified
+                                                         // as a non-null native
+                                                         // pointer
+                    assert(derefArg(anchorPtr) == 77);   // interpreter reads the
+                                                         // pointer global, passes
+                                                         // it to native which
+                                                         // derefs it
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
