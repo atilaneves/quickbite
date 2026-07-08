@@ -4302,3 +4302,23 @@ display rows stay frozen until slice 11's prelude formatter execution path,
 and the interpreter-native rows are not `BytecodeNewCore` promotion
 candidates without separate runtime/native-boundary design work. No production
 change was needed.
+
+REPL native-runtime red probe, 2026-07-08: temporarily adding
+`BytecodeNewCore` to the interpreter-native
+`runtimeOnlyCellsUseResidentNativeCalls` / `runtimeFileOpenSucceeds` pair
+confirms both rows stay unpromoted.
+`runtimeOnlyCellsUseResidentNativeCalls.BytecodeNewCore` fails on
+`free(malloc(42))` with `` `free` cannot be interpreted at compile time,
+because it has no available source code ``. This is the same missing outbound
+host-FFI/native-runtime bridge as the `rt/cstdlib.d` expected-failure rows:
+runtime calls to resident libc leaves must cross into native code instead of
+being treated as source-less CTFE calls.
+`runtimeFileOpenSucceeds.BytecodeNewCore` gets into the `std.stdio.File`
+construction path and then throws
+`ArrayIndexError` at `source/quickbite/backends/bytecode/core/compiler.d:7277`
+while indexing `layout.offsets[0]` for a call whose parameter layout has no
+ordinary argument slots. Before this row can promote, the backend needs the
+native-runtime bridge plus a guarded/implemented call-lowering path for the
+Phobos `File` construction stack instead of the unchecked parameter-layout
+assumption. The temporary test edit was reverted; no production change was
+made.
