@@ -2298,6 +2298,15 @@ case — distinct from the dynamic-slice descriptor case pinned by
 sliceGlobalRead. `grid.length` is compile-time; `grid[0]`/`grid[3]` read inline
 elements and native `gridAt` reads its own static-array global. Green-as-pin
 with no production change.
+DONE: §35.2 nested struct-with-slice global read —
+dependencyImage.nestedStructGlobalRead. An `extern __gshared Named entry` whose
+first field is a `string` drives the recursive marshaller one level deeper on
+the data-symbol path: `unmarshalNative` -> `unmarshalStruct` recurses into the
+`{length, ptr}` slice field (§34.11's nested-slice-in-struct machinery) from the
+symbol's struct bytes. The literal `Named("hello", 7)` initializer points the
+field at rodata that survives for the process, so `entry.label == "hello"`,
+`entry.id == 7`, and native `labelLength` all read back. Green-as-pin with no
+production change.
 DONE: §35.2 dynamic-array (slice) global writeback —
 dependencyImage.sliceGlobalWriteback. An interpreted `payload = [7, 8, 9]`
 assignment into an `extern __gshared int[] payload` global crosses through the
@@ -3197,6 +3206,19 @@ bytes to the symbol. Native `pointX`/`pointY` read the rebind back. This is
 distinct from the field-write read-modify-write (`config.width = 7`, a
 `DotVarExp`) pinned by structGlobalReadWrite. No production change was needed.
 Green-as-pin.
+
+**Status: nested struct-with-slice global read rung LANDED (§35.2, §34.11).**
+`dependencyImage.nestedStructGlobalRead` drives the recursive marshaller one
+level deeper on the data-symbol read path. An `extern __gshared Named entry`
+(`struct Named { string label; int id; }`, defined identically on both sides)
+has its `string label` field reified from the symbol's struct bytes:
+`unmarshalNative` -> `unmarshalStruct` recurses into the `{length, ptr}` slice
+field exactly as §34.11's by-value nested-slice struct crossing does. The
+literal `Named("hello", 7)` compile-time initializer points the field at rodata
+that survives for the process, so `entry.label == "hello"`, `entry.id == 7`, and
+native `labelLength` all read back. No production change was needed: the
+recursive struct read composes the §34.11 nested-slice machinery with the §35.2a
+symbol-read path. Green-as-pin, read only.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 

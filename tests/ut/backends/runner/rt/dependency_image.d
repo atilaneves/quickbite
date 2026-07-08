@@ -3356,3 +3356,73 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// Pins §35.2 and §34.11: reading a struct-with-slice-field native global. The
+// recursive marshaller reifies the nested `{length,ptr}` field from the
+// symbol's struct bytes: `unmarshalNative` -> `unmarshalStruct` recurses into
+// the `string` field just as §34.11's by-value nested-slice struct crossing
+// does, but here the struct comes from the data-symbol read path. The string
+// field points at a literal in rodata that survives for the process. Read only.
+@("dependencyImage.nestedStructGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_nested_struct_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_nested_struct_global_fixture;
+
+            struct Named { string label; int id; }
+            __gshared Named entry = Named("hello", 7);
+
+            size_t labelLength() { return entry.label.length; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_nested_struct_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_nested_struct_global_fixture;
+
+            struct Named { string label; int id; }
+            extern __gshared Named entry;
+            size_t labelLength();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_nested_struct_global_fixture;
+
+                unittest {
+                    assert(entry.id == 7);           // scalar field
+                    assert(entry.label == "hello");  // slice field reified by
+                                                     // recursing into the struct
+                    assert(entry.label.length == 5);
+                    assert(labelLength() == 5);      // native reads its own
+                                                     // nested global
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
