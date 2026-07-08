@@ -1001,6 +1001,41 @@ visible interpreter blocker is the now-unmasked `RangeError` at
 `value!ubyte.shouldThrow!RangeError` still escapes as an uncaught
 `RangeError`.
 
+**2026-07-08 follow-up: `decode.d:109` RangeError-catching probe.** No
+approved standalone fixture exists for this package-only exposure, so this
+worker did not add a test. The existing cerealed bench stayed the red signal.
+A temporary location probe corrected the visible label: the first failing
+`__unittest_L109_C1` is `decode.d:109`, the `decode.double` unittest, not
+`decode.chars` (that unittest starts at line 116 in the checked-out cerealed
+source).
+
+Temporary probes (reverted before commit) showed:
+
+```text
+bin/bench.sh -b interpreter --dub cerealed
+QB_SHOULD_THROW e1=variable arg0=function_ lazy0=true args=3 params=3
+QB_CATCH_RANGE ... has=true
+QB_TOP loc=decode.d(109) msg=index [0] is out of bounds for array of length 0
+```
+
+The `shouldThrow` call shape is already a plain function call whose argument
+0 is a DMD-generated lazy wrapper (`FuncExp`) and whose first formal is
+recognized as `lazy`. `catch(RangeError)` also matches the synthetic
+`core.exception.RangeError` object (`has=true`) in the same run, so Worker 9's
+exception hierarchy fix is not the remaining blocker.
+
+A filtered `grainUByte` receiver probe for the exact `decode.double` byte
+pattern showed the first two `shouldNotThrow(cereal.value!double)` calls
+consume all 16 bytes successfully; the next read then sees
+`Decerealiser([], [], 0, 0)` and throws the raw RangeError before the unittest
+is reported green. The current evidence points at lazy forwarding/state around
+the generated function-literal wrapper used by unit-threaded's
+`shouldNotThrow`/`shouldThrow`, not at catch matching. Proposed fixture, after
+approval: a dependency-free ct/ test with a mutable reader struct, two
+`shouldNotThrow(reader.read64)` calls that advance shared reader state, then
+`reader.read8.shouldThrow!RangeError`, plus a variant that forwards a lazy
+parameter through a helper before catching `RangeError`.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
