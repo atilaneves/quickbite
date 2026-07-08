@@ -2240,16 +2240,17 @@ dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
 sort by consumer need, not table position:
 
 ```text
-1. §35.10: pthread_mutexattr_init diagnosis — 51 measured corpus mismatches
-   (48× automem, 3× fearless), the highest-leverage item by count,
-   actionable today
-2. item 0 (§34.3.1): generic Type-driven marshaller audit — the verified
+1. item 0 (§34.3.1): generic Type-driven marshaller audit — the verified
    gaps (Tsarray, slice-of-structs, AA diagnostic) are actionable now;
    interpreter.md's second-package inventory extends the fixture list
-3. §35.2: data symbols + dependency-image init, first rung §35.2a — no
+2. §35.2: data symbols + dependency-image init, first rung §35.2a — no
    measured demand yet; climbs when a real package forces it
-4. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
+3. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
+
+DONE: §35.10 pthread_mutexattr_init (union out-pointer) — fixed 2026-07-08
+(commit `fd95624`), verified 51× → 0× corpus mismatches (automem 48→0,
+fearless 3→0), the former highest-leverage item by count; see §35.10.
 ```
 
 An agent asked to "work on ffi.md" starts at the top of this list, not at
@@ -3321,7 +3322,8 @@ as a native buffer and is never boxed. The by-value union refusal in
 reproduce overlapped bytes, and the out-cell path never marshals from one. The
 bytecode marshaller implements the seam as its existing both-directions
 `canRepresent`. Both fixtures below are now green on Interpreter (and stay green
-on SystemLinker/LLVMJit). The corpus re-measure is a separate follow-up.
+on SystemLinker/LLVMJit). The corpus re-measure is recorded below
+(2026-07-08).
 
 The dominant class of the 2026-07-07 two-backend corpus re-measure
 (`interpreter.md` §7 close-out entry): 48× automem + 3× fearless
@@ -3382,6 +3384,21 @@ SystemLinker/LLVMJit) after the fix above:**
 Both Interpreter legs failed before the fix with
 `` `pthread_mutexattr_init`/`dependencyInitHandle` cannot be interpreted
 at compile time, because it has no available source code ``; both pass now.
+
+**Corpus verification (2026-07-08, branch post-fix `fd95624`, off master
+`db1dfbab`).** Re-ran the two-backend corpus measure
+(`bin/bench.sh -b interpreter -b system-linker --dub <pkg>`). The
+`pthread_mutexattr_init` mismatch class is fully retired: automem 48× → 0×
+and fearless 3× → 0× (51× → 0× combined — the dominant FFI corpus mismatch
+class, gone). Totals are unchanged (automem 111, fearless 8) because the same
+tests now clear the `Mutex`/`theAllocator` init path and fail deeper,
+predominantly as `Unsupported eval expression: address of dotVariable` — an
+interpreter-owned triage class (tracked in `interpreter.md` §7), not an FFI
+class. This is the same "class cleared, tests proceed deeper" pattern as the
+§35.9 / PR #373 fix. The `canRepresentOutCell` seam also covers
+`pthread_mutex_t` / `pthread_mutex_init`, which share the identical
+`{byte[N] __size, integer __align}` union shape and are handled by the same
+fix (no extra work). The §35.10 corpus gate is met.
 
 ### 35.11 `getrandom` scalar-buffer fill misreads `&(scalar)` as a slice base (handed off 2026-07-08)
 
