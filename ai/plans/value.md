@@ -282,6 +282,19 @@ Progress 2026-07-07: the formatter-gate test debt is cleaned up. Tests no
 longer assert that expression cells contain `__quickbiteFormat`; the surviving
 coverage now runs formatter-capable backends and asserts user-visible display.
 
+Progress 2026-07-08: the formatter gate now covers direct expression cells
+whose return type is any primitive D-literal scalar already handled by the
+prelude (`bool`, character widths, integral widths, and floating widths), plus
+dynamic/static arrays whose element type can itself use the prelude. CTFE and
+Interpreter therefore render ordinary scalar cells and ordinary/nested array
+cells through `__quickbiteFormat` instead of the interim `Value.toString`
+display path. CTFE also gained a REPL-session fast path for formatter-wrapped
+cells: it extracts the formatter's returned string directly from DMD CTFE
+results (`StringExp` or char-array literal), so those CTFE REPL displays no
+longer pass through `ctfeValue`/`displayString`. The old CTFE reifier remains
+for unformatted evaluator calls and still-ungated REPL cases such as
+range/template structs and nested-context structs.
+
 Decision 2026-07-07: ownership split with the bytecode rewrite
 (`ai/plans/bytecode.md`), so the two tracks can run in parallel without one
 building what the other deletes.
@@ -554,11 +567,13 @@ are done; what is still pending, in order:
 
 Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
 
-4. Carve the seam: move the boxed `Value <-> ABI bytes` marshalling out of the
-   FFI core (`backends/ffi.d`) and into the interpreter as its
-   `materialize`/`reify` implementation, behind the `ffi.md` §5 interface.
-   Mechanical and behaviour-preserving — the existing `rt/` FFI suite stays
-   green. This is the prerequisite that unblocks the two parallel tracks.
+4. Done 2026-07-08: carve the seam. The boxed `Value <-> ABI bytes`
+   marshalling now lives in
+   `source/quickbite/backends/interpreter/ffi_marshal.d` as the interpreter's
+   `materialize`/`reify` implementation behind the `ffi.md` §5
+   `NativeMarshaller` interface. The backend-neutral bridge core lives under
+   `source/quickbite/ffi/` and never names `Value`. This unblocks the two
+   parallel tracks; future Track B work stays behind the same seam.
 5. Own the `ffi.md` §34.3 `B*` rungs (boxed-slice/struct/nested/writeback
    marshalling) as the interpreter's `materialize`/`reify`, keeping FFI working
    so real dub tests can run.

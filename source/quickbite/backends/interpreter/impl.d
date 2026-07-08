@@ -1063,6 +1063,9 @@ private struct Walker {
             return runExpression(comma.e2);
         }
 
+        if (auto tuple = expression.isTupleExp)
+            return runTupleExpression(tuple);
+
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
 
@@ -1206,6 +1209,24 @@ private struct Walker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    private Value runTupleExpression(imported!"dmd.expression".TupleExp tuple) {
+        // DMD lowers a tuple assignment (`target.tupleof = source.tupleof`, or a
+        // `Tuple` constructor's `field[] = values[]`) into a `TupleExp`: an
+        // optional side-effect prefix `e0` followed by the per-element
+        // expressions, which are ordinary assignments the interpreter already
+        // evaluates. Run the prefix, then each element in order; the sequence's
+        // value is its last element (matching the IR lowering), and is discarded
+        // in the statement-expression positions this arises in.
+        if (tuple.e0 !is null)
+            runExpression(tuple.e0);
+
+        auto result = Value.void_;  // mutated below; `const` cannot express the fold
+        if (tuple.exps !is null)
+            foreach (element; *tuple.exps)
+                result = runExpression(element);
+        return result;
     }
 
     private Value runSymbolDeclarationVarExpression(

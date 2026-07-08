@@ -345,6 +345,55 @@ unchanged at 111; all other classes byte-identical to the 2026-07-07
 table above. `pthread_mutexattr_init` (48×, `ffi.md` §35.10) remains
 the dominant class.
 
+**2026-07-08 (interpreter-rung-triage, master 8633929d).** Re-measure
+confirms the cerealed inventory byte-identical to the 2026-07-07 table
+(91 mismatches). A throwaway location probe (§6 pattern: source loc +
+expression text appended to the unsupported diagnostics, reverted after
+the run) collapses the three reopened symptom buckets into exactly
+**three single-site clusters** — one root cause each, no fan-out:
+
+```text
+35× tuple       ONE site: std.typecons.Tuple's constructor
+                (`field[] = values[]`), i.e. a TupleExp of per-field
+                assignments in expression position. Every one of the 35
+                tests reaches it through unit_threaded's `shouldThrow`
+                (its `threw` helper builds `tuple!("threw","info")(…)`).
+                Root: `runExpression` has no TupleExp branch at all —
+                the expression falls to the generic fall-through
+                (impl.d ~1208). Rung 1, re-scoped below.
+21× identifier  ONE site: std.internal.entropy's module-scope
+                `_entropySource = defaultEntropySource`. All 21 are
+                tests/property.d (20 static-foreach instances + 1),
+                via unit_threaded `check!` → std.random. NOT rung 1's
+                root: the initializer is a still-unresolved
+                IdentifierExp because only root modules get semantic2
+                (compiler.d `parseRootModulesLocked`); the dataseg
+                materialization path (impl.d ~1193) evaluates the raw
+                `_init`. New Rung 9 (§9.9).
+ 1× assignment  ONE site: the vendored scopebuffer.d put
+    target      (`buf[used .. newlen] = s[]`), from ScopeBuffer's own
+                unittest: a default-initialised buffer receiving an
+                empty put — a zero-length slice assignment through a
+                null pointer, a no-op in compiled D. Root:
+                `runPointerSliceAssignExpression` (impl.d ~4322) checks
+                pointer provenance before element count. Rung 3.
+```
+
+Each cluster is verified by a standalone repro through `bin/bench`
+(interpreter vs system-linker): identical diagnostic at the identical
+site, oracle leg green. The proposed exposing fixtures live in the rung
+sections below and await approval; no existing matrix fixture covers
+any of the three constructs, so no pre-approved promotions applied.
+
+**2026-07-08 (Rung 1 landed, TupleExp).** §9.1's fix (a `TupleExp`
+branch in `runExpression`) closes the 35× `tuple` cluster: re-measure
+shows 0× `tuple` in cerealed. The 35 tests, which died on their final
+`shouldThrow → tuple!(…)` assertion, now run past it and stop at the
+next deeper class — `Unsupported eval call.` grew 1× → 36×, the newly
+exposed blocker (triage / Rung 6 family). cerealed total is unchanged
+at 91; the rest of the inventory is byte-identical to the table above
+(the `identifier` cluster — Rung 9/§9.9 — is untouched and remains 21×).
+
 **The goal is support, not pinned refusal** (user directive, 2026-07-07).
 The `rt/concurrency.d` `thisTid` fixture currently lets the Interpreter
 leg pass on *either* oracle agreement *or* a structured unsupported
@@ -436,12 +485,43 @@ DMD-lowered `foreach`; tuple element lvalues for the writeback half.
 (`impl.d` ~214) DMD lowers `.tupleof` foreach into; `Value.Struct`
 (`lang/package.d`).
 
-**Status: reopened by the 2026-07-06 remeasure (§7).** The fixture stays
-green, but `tuple` is now the top class (35×) with 21× `identifier` likely
-sharing the root: tuple positions outside the DMD-lowered `foreach` (and the
-`Expected struct` failures they previously masked are gone, so these are now
-the first thrown error). Per §8's rung-done criterion the class must leave
-the inventory; triage the surviving sites and distil new fixtures.
+**Status: reopened by the 2026-07-06 remeasure; triaged 2026-07-08 (§7).**
+The fixture stays green. The location probe shows all 35 `tuple` failures
+(count as of 2026-07-08) are ONE construct the original rung scoped out:
+a `TupleExp` in *expression position* — DMD's lowering of tuple assignment
+(`field[] = values[]` in std.typecons.Tuple's constructor, equivalently
+`target.tupleof = source.tupleof`) into
+`AliasSeq!(target.head = source.head, target.tail = source.tail)`.
+`runExpression` has no `TupleExp` branch, so it falls to the generic
+fall-through (impl.d ~1208; only the `UnrolledLoopStatement` foreach
+lowering ever consumes tuples today). Every failing test reaches it via
+unit_threaded's `shouldThrow` → `threw` → `tuple!("threw","info")(…)`,
+which is why the class blankets cerealed: the tests die on their *last*
+assertion line — the preceding grain/shouldEqual chains already pass.
+The 21× `identifier` bucket does NOT share this root; it is a distinct
+defect, now §9.9.
+
+The fix direction: evaluate a `TupleExp` by running `e0` (the
+side-effect prefix) if present, then each element expression in order —
+for the assignment-tuple case the elements are ordinary assignments the
+interpreter already handles individually.
+
+**Done (2026-07-08).** `runExpression` now has a `TupleExp` branch
+(`runTupleExpression`, impl.d) mirroring the IR lowering
+(`lowering.d` `lowerTupleExpression`): run `e0` if present, then each
+element in order, returning the last (the value is discarded in the
+statement-expression positions this arises in). Two standalone
+fixtures landed in ct/structs.d — the headline
+`struct.tupleConstructionFromLocals` (`Tuple!(int, int)(first, second)`)
+and the dependency-free distillation
+`struct.tupleofAssignmentCopiesFields`
+(`target.tupleof = source.tupleof`) — each green on
+`Ctfe, Interpreter, SystemLinker, LLVMJit` (BytecodeNewCore omitted per
+§8; still red there). Re-measure (§6): the 35× `tuple` class is gone
+from the cerealed inventory (0×); the 35 tests now progress past their
+final `shouldThrow` assertion and surface the next deeper class —
+`Unsupported eval call.` rose 1× → 36× (triage / Rung 6 family), the
+newly-revealed blocker. cerealed total unchanged at 91.
 
 ### 9.2 Rung 2 — residual `Expected struct`
 
@@ -488,10 +568,50 @@ element logic and writes the result back with `writeLocation`.
 interpreter handles that local `VarExp` target with the existing concatenation
 element logic and writes the result back with `writeLocation`.
 
-**Status: reopened by the 2026-07-06 remeasure (§7).** `concatenateAssign`
-is gone, and §9.8 closed further assignment shapes (struct-field slice
-bases), but 5 `Unsupported interpreter assignment target` failures remain in
-the inventory. Triage the surviving lvalue shapes and distil new fixtures.
+**Status: reopened by the 2026-07-06 remeasure; triaged 2026-07-08 (§7).**
+`concatenateAssign` is gone, and §9.8 closed further assignment shapes
+(struct-field slice bases). Of 2026-07-06's 5×, four were retired by the
+2026-07-07 pointer-slice fixes; the ONE survivor (count as of
+2026-07-08) is located: the vendored `cerealed/scopebuffer.d` `put` —
+`buf[used .. newlen] = s[]` — hit by ScopeBuffer's own unittest, which
+`put`s empty slices into *default-initialised* buffers. That makes
+`used == newlen == 0` and `buf` null: a **zero-length** slice assignment
+through a null pointer, which compiled D executes as a no-op (nothing is
+written). `runPointerSliceAssignExpression` (impl.d ~4322) evaluates the
+base pointer and checks its provenance (native vs tracked-array) before
+looking at the element count, so a pointer with no writable provenance
+refuses even when there is nothing to write. Fix direction: an empty
+range (`upper == lower`) writes zero elements and returns the rhs value
+before any provenance check, matching compiled D.
+
+**Proposed exposing fixture (awaits approval; verified red on
+`Interpreter` with `Unsupported interpreter assignment target: slice of
+dotVariable`, green on `SystemLinker`, via standalone `bin/bench` repro
+2026-07-08).** ct/arrays.d, pointer.* family:
+
+```d
+struct Buffer {
+    char* buf;
+    uint used;
+
+    void put(const(char)[] s) {
+        const newlen = used + s.length;
+        buf[used .. newlen] = s[];
+        used = cast(uint) newlen;
+    }
+}
+
+unittest {
+    Buffer b;
+    string empty;
+    b.put(empty);
+    assert(b.used == 0);
+}
+```
+
+Backend matrix per §8; `Ctfe`'s treatment of a null-pointer slice is
+determined at landing and omitted or characterized per
+`single-oracle.md` if it diverges.
 
 ### 9.4 Rung 4 — `VarExp(SymbolDeclaration)` struct default init
 
@@ -623,6 +743,63 @@ instance first instantiated by another test's snippet is never emitted in a
 later link; `adoptOrphans` in the native codegen (one adopt-then-prune pass,
 replacing the ad-hoc `adoptTypeInfos`) re-homes out-of-link instances and
 TypeInfos onto the rod, gated by the same provenance rules the prune uses.
+
+### 9.9 Rung 9 — non-root module-scope variable initializers
+
+**Contract.** Reading a module-scope variable of an imported (non-root)
+module whose initializer references another symbol by name. Only root
+modules get semantic2 (`parseRootModulesLocked`,
+`source/quickbite/frontend/compiler.d`), so a Phobos module's
+`ExpInitializer` can still be a bare, unresolved `IdentifierExp` when
+the interpreter's dataseg materialization (impl.d ~1193, the §9.8
+bomTable path) evaluates it — `runExpression` then falls through with
+`Unsupported eval expression: identifier`. This is the module-variable
+sibling of the on-demand-semantic3 finding documented at the top of
+`tests/ut/backends/runner/ct/imports.d` for imported *function bodies*.
+
+Concretely (triaged 2026-07-08, §7): std.internal.entropy's
+`static EntropySource _entropySource = defaultEntropySource;`, where
+`defaultEntropySource` is an enum introduced by the `entropyImpl` mixin
+template instance. Reached by std.random's `unpredictableSeed`, i.e. by
+every property-based cerealed test (unit_threaded `check!`) — 21
+failures as of 2026-07-08. A sandbox import-path module does NOT
+reproduce it: user imports are root-promoted and get semantic2, so the
+exposing fixture must lean on a real archive (Phobos) module, like
+§9.8's std.encoding fixture did.
+
+**Fix direction.** Resolve the initializer before evaluating it — run
+initializer/expression semantic in the variable's own module scope on
+demand (the semantic2 analogue of the existing `functionSemantic3`
+calls), rather than teaching `runExpression` to resolve raw
+identifiers.
+
+**Proposed exposing fixture (awaits approval; the unpredictableSeed
+shape verified red on `Interpreter` at the exact entropy.d site, green
+on `SystemLinker`, via standalone `bin/bench` repro 2026-07-08).** New
+rt/random.d — rt/ because the green path reads the platform entropy
+source (/dev/urandom via the §9.8 posix FFI machinery):
+
+```d
+unittest {
+    import std.random: Random, uniform, unpredictableSeed;
+
+    auto rng = Random(unpredictableSeed);
+    const draw = uniform(0, 10, rng);
+    assert(draw >= 0 && draw < 10);
+}
+```
+
+Red today: `Unsupported eval expression: identifier`. The minimal core
+is the `unpredictableSeed` read alone; the `Random`/`uniform` wrapper is
+the user-visible headline and asserts a bounded draw on both backends.
+If the wrapper drags in unrelated gaps at landing time, trim to the
+seed read.
+
+**Out of scope.** The entropy *call chain* past the initializer (open/
+read of /dev/urandom) — that already routes through the existing FFI
+path; if a deeper marshalling gap surfaces once the initializer
+resolves, it is documented against `ffi.md`, not fixed here (seam-carve
+lane owns `backends/ffi.d` and the marshalling files).
 
 ## 10. Done
 

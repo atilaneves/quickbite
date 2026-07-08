@@ -1258,14 +1258,15 @@ display-string promotion is frozen pending slice 11 (prelude formatter
 execution). The current backlog for this track, in order:
 
 1. Remaining language-feature gaps exposed by the `repl.d` sweep that are
-   not display formatting: module-level variable assignment
+   not display formatting are now re-verified green on current master:
+   module-level variable assignment
    (`moduleLevelVariablesAreVisibleToFunctions`), Phobos range and
-   `ref`-argument execution (`importStdExposesPhobosSymbols` and the range
-   blocks that fail on `Unsupported ref argument` / `Unsupported type`),
-   and associative-array execution through the druntime template lowerings
-   (slice 7).
-2. Slice 8, native runtime: the outbound host FFI bridge — which also
-   unblocks the deferred `rt/cstdlib.d` runtime rows above.
+   `ref`-argument execution (`importStdExposesPhobosSymbols`), and the
+   promoted associative-array execution rows in `arrays.d` (slice 7).
+2. Slice 8, native runtime: continue widening the outbound host FFI bridge,
+   which unblocks the deferred `rt/cstdlib.d` runtime rows above. The first
+   promoted runtime row, `atoi.value.BytecodeNewCore`, is green via the shared
+   `quickbite.ffi.callNative` path.
 3. Slice 9, classes.
 4. Slice 11, prelude formatter execution — which re-earns the frozen
    `repl.d` display rows and deletes the interim display scaffolding
@@ -4289,6 +4290,24 @@ bounds for array of length 3`. That wording matches the
 CTFE/tree-walker characterization and the new-core row uses the compiled
 oracle text. No production change was needed.
 
+Slice 8 native-runtime first rung, 2026-07-08: current-master frontier
+verification found backlog item 1 already green (`moduleLevelVariables...`,
+`importStdExposesPhobosSymbols`, and the promoted `int[int]` AA execution
+family), so the next red rung was `rt/cstdlib.d`'s existing
+SystemLinker-backed `atoi.value` row on `BytecodeNewCore`. The red diagnostic
+was `` `atoi` cannot be interpreted at compile time, because it has no
+available source code ``. The new core now compiles `atoi("literal")` to a
+narrow VM native call: a NUL-terminated literal in `Program.data`, a data
+pointer argument slot, and a native-call table entry. Execution delegates
+symbol lookup and ABI invocation to `quickbite.ffi.callNative` through a small
+`NativeMarshaller`; the bytecode backend does not call `dlsym` directly. This
+is not a general native ABI, and the adjacent `free`/`malloc` no-source rows
+remain green. Focused verification covered `atoi.value.BytecodeNewCore`,
+`free.null.voidReturn.BytecodeNewCore`, and
+`malloc.pointerReturn.nativeMemory.BytecodeNewCore`; `ninja bin/ut` and full
+random runs with seeds `496789113` and `1909046720` reported the invariant
+`0 failed, 6/6 failing as expected`.
+
 REPL promotion audit, 2026-07-08: no new `tests/ut/bin/repl.d`
 `BytecodeNewCore` promotion was made in this pass. The next unpromoted
 coherent blocks are display-only or interpreter-native rows:
@@ -4309,10 +4328,10 @@ REPL native-runtime red probe, 2026-07-08: temporarily adding
 confirms both rows stay unpromoted.
 `runtimeOnlyCellsUseResidentNativeCalls.BytecodeNewCore` fails on
 `free(malloc(42))` with `` `free` cannot be interpreted at compile time,
-because it has no available source code ``. This is the same missing outbound
-host-FFI/native-runtime bridge as the `rt/cstdlib.d` expected-failure rows:
-runtime calls to resident libc leaves must cross into native code instead of
-being treated as source-less CTFE calls.
+because it has no available source code ``. The narrow `atoi` native-call rung
+above does not yet cover general resident libc calls: runtime calls to
+resident libc leaves must cross into native code instead of being treated as
+source-less CTFE calls.
 `runtimeFileOpenSucceeds.BytecodeNewCore` gets into the `std.stdio.File`
 construction path and then throws
 `ArrayIndexError` at `source/quickbite/backends/bytecode/core/compiler.d:7277`
@@ -4326,11 +4345,10 @@ made.
 REPL native-runtime implementation decision, 2026-07-08: no production change
 was made for the native-runtime pair in this slice. Making
 `runtimeOnlyCellsUseResidentNativeCalls.BytecodeNewCore` pass honestly requires
-the same outbound resident-native bridge that the existing
-`tests/ut/backends/runner/rt/cstdlib.d` `BytecodeNewCore` expected-failure
-rows intentionally defer. The `runtimeFileOpenSucceeds.BytecodeNewCore` crash
-can be prevented only as a diagnostic guard on the mismatched argument-layout
-path, but that guard would not make the approved REPL behaviour pass and there
-is no approved existing test delta here to cover the improved diagnostic.
-Leave both REPL rows unpromoted until the native bridge is implemented by the
-runtime/FFI track or a separate approved diagnostic test is added.
+the general outbound resident-native bridge beyond the narrow `atoi` rung.
+The `runtimeFileOpenSucceeds.BytecodeNewCore` crash can be prevented only as a
+diagnostic guard on the mismatched argument-layout path, but that guard would
+not make the approved REPL behaviour pass and there is no approved existing
+test delta here to cover the improved diagnostic. Leave both REPL rows
+unpromoted until the native bridge is extended by the runtime/FFI track or a
+separate approved diagnostic test is added.
