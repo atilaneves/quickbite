@@ -4381,3 +4381,28 @@ an `int` argument; it now copies exactly the buffer's native ABI width.
 green and the `free`/`malloc` no-source rows still red-as-expected; `bin/ut
 --random` with seed `2087389007` reported the invariant `0 failed, 6/6 failing
 as expected`.
+
+Slice 8 native wider-scalar call, 2026-07-08: promoted `rt/cstdlib.d`'s
+existing SystemLinker-backed `labs.widerScalar` row (`long labs(long)` on a
+runtime `long negative = -5_000_000_000L`) to `BytecodeNewCore`. The red
+diagnostic was `` `labs` cannot be interpreted at compile time, because it has
+no available source code `` — the native chokepoint's return-type gate hard-
+required `Tint32`, so `labs` fell through to the no-source throw. The
+production change generalises the same `abs`/`atoi` native-call chokepoint
+rather than adding a parallel path. `tryCompileNativeCall`
+(`source/quickbite/backends/bytecode/core/compiler.d`) now accepts a `Tint32`
+or `Tint64` return, and a single scalar `int`/`long` argument passed by value:
+it sizes the argument slot to the argument's native width (4 or 8) via the
+ordinary `emitCallArgument` path. `emitNativeCall` now derives the result slot
+scalar (and returned `Operand`) from the function's actual return type via
+`scalarType`, replacing the hard-wired `ScalarType.int_`, so the destination is
+8 bytes for a `long` return. In `BytecodeNativeMarshaller`
+(`source/quickbite/backends/bytecode/core/machine.d`), `canRepresent` now also
+allows `Tint64`, and `readResult` writes exactly the return type's native size
+(4 for `int`, 8 for `long`) via a small `nativeResultSize` helper instead of a
+fixed `int.sizeof`, mirroring the earlier `fillArgument` width fix (the ffi
+return buffer is padded to at least 8 bytes, so its length is not the true
+result width). Verification: `ninja bin/ut`, focused
+`labs.widerScalar.BytecodeNewCore` green, with `abs.scalar.BytecodeNewCore` and
+`atoi.value.BytecodeNewCore` still green; `bin/ut --random` with seed
+`3078925616` reported the invariant `0 failed, 6/6 failing as expected`.

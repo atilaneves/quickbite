@@ -7323,17 +7323,21 @@ private struct Compiler {
         import quickbite.frontend.dmd.string_literals: stringChars;
         import std.conv: text;
 
-        if (function_.type.toBasetype.nextOf.toBasetype.ty != TY.Tint32 ||
+        const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
+        if ((returnTy != TY.Tint32 && returnTy != TY.Tint64) ||
             call.arguments is null ||
             call.arguments.length != 1)
             return null;
 
         auto argument = (*call.arguments)[0];
 
-        // A scalar `int` argument passed by value: evaluate it into an
-        // int-sized argument slot the native marshaller copies verbatim.
-        if (argument.type.toBasetype.ty == TY.Tint32) {
-            const argumentArea = allocateBytes(int.sizeof, int.sizeof);
+        // A scalar `int`/`long` argument passed by value: evaluate it into an
+        // argument slot sized to its native width; the marshaller copies
+        // exactly those bytes.
+        const argumentTy = argument.type.toBasetype.ty;
+        if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64) {
+            const width = argumentTy == TY.Tint64 ? long.sizeof : int.sizeof;
+            const argumentArea = allocateBytes(width, width);
             emitCallArgument(argumentArea, false, argument);
             return emitNativeCall(
                 function_, argument.type.toBasetype, argumentArea,
@@ -7374,7 +7378,9 @@ private struct Compiler {
         Type argumentType,
         in ushort argumentArea,
     ) {
-        const destination = allocate(ScalarType.int_);
+        const returnScalar =
+            scalarType(function_.type.toBasetype.nextOf.toBasetype);
+        const destination = allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
         _program.nativeCalls ~= NativeCall(function_, argumentType);
         _code ~= Instruction(
@@ -7383,7 +7389,7 @@ private struct Compiler {
             argumentArea,
             destination,
         );
-        return new Operand(destination, ScalarType.int_);
+        return new Operand(destination, returnScalar);
     }
 
     // `_aApply*(s, dg)`: emit a transcode of the source string `s` into a fresh

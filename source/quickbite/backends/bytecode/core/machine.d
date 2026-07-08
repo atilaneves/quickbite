@@ -2640,7 +2640,7 @@ private final class BytecodeNativeMarshaller:
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
         import dmd.astenums: TY;
         const ty = type.toBasetype.ty;
-        return ty == TY.Tint32 || ty == TY.Tpointer;
+        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tpointer;
     }
 
     public void fillArgument(
@@ -2657,8 +2657,26 @@ private final class BytecodeNativeMarshaller:
     }
 
     public void readResult(Type type, in ubyte[] buffer) {
-        _stack[_destination .. _destination + int.sizeof] =
-            buffer[0 .. int.sizeof];
+        // `buffer` is padded to at least ffi_arg width (8 bytes); copy exactly
+        // the return type's native size (4 for `int`, 8 for `long`), not a
+        // fixed 4.
+        const resultSize = nativeResultSize(type);
+        _stack[_destination .. _destination + resultSize] =
+            buffer[0 .. resultSize];
+    }
+
+    private static size_t nativeResultSize(Type type) {
+        import dmd.astenums: TY;
+        switch (type.toBasetype.ty) with (TY) {
+            case Tint32:
+                return int.sizeof;
+            case Tint64:
+                return long.sizeof;
+            case Tpointer:
+                return (void*).sizeof;
+            default:
+                throw new Exception("Unsupported native result type.");
+        }
     }
 
     public void fillReceiver(ubyte[] buffer, Type type, in bool stableString,
