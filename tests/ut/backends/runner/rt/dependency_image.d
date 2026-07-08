@@ -3291,3 +3291,68 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// Pins §35.2: reading a static-array (Tsarray) native global. A
+// `__gshared int[4]` stores its elements INLINE in the symbol (no
+// {length,ptr} descriptor), so the data-symbol path reifies the inline
+// element bytes through `unmarshalValue`'s `Tsarray` case. This is distinct
+// from the dynamic-slice descriptor case pinned by `sliceGlobalRead`.
+@("dependencyImage.staticArrayGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_static_array_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_static_array_global_fixture;
+
+            __gshared int[4] grid = [11, 22, 33, 44];
+
+            int gridAt(int i) { return grid[i]; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_static_array_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_static_array_global_fixture;
+
+            extern __gshared int[4] grid;
+            int gridAt(int i);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_static_array_global_fixture;
+
+                unittest {
+                    assert(grid.length == 4);  // static-array length is compile-time
+                    assert(grid[0] == 11);     // interpreter reads inline elements
+                    assert(grid[3] == 44);
+                    assert(gridAt(2) == 33);   // native reads its static-array global
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

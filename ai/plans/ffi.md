@@ -2290,6 +2290,14 @@ dlopen, reifies its slice `{length, ptr}` descriptor from the symbol's bytes via
 the same dlsym data-symbol path as a scalar: `unmarshalValue`'s `Tarray` case
 reads `length`, reads `ptr`, and copies `length` elements. Green-as-pin with no
 production change (read companion to the writeback rung below).
+DONE: §35.2 static-array (Tsarray) global read —
+dependencyImage.staticArrayGlobalRead. A `__gshared int[4] grid` stores its four
+ints INLINE in the symbol (no `{length, ptr}` descriptor), so the data-symbol
+path reifies the inline element bytes through `unmarshalValue`'s `Tsarray`
+case — distinct from the dynamic-slice descriptor case pinned by
+sliceGlobalRead. `grid.length` is compile-time; `grid[0]`/`grid[3]` read inline
+elements and native `gridAt` reads its own static-array global. Green-as-pin
+with no production change.
 DONE: §35.2 dynamic-array (slice) global writeback —
 dependencyImage.sliceGlobalWriteback. An interpreted `payload = [7, 8, 9]`
 assignment into an `extern __gshared int[] payload` global crosses through the
