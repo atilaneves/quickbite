@@ -2649,3 +2649,939 @@ unittest {
         "int[string]".should.be in interpreted[0].message;
     }
 }
+
+
+@("dependencyImage.externGsharedGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_gshared_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_gshared_fixture;
+
+            __gshared int dependencyCounter;
+
+            void bump() {
+                dependencyCounter += 1;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_gshared_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_gshared_fixture;
+
+            extern __gshared int dependencyCounter;
+            void bump();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_gshared_fixture;
+
+                unittest {
+                    bump;
+                    bump;
+                    assert(dependencyCounter == 2);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+@("dependencyImage.externGsharedGlobalWrite.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_gshared_write_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_gshared_write_fixture;
+
+            __gshared int dependencyCounter;
+
+            void bump() {
+                dependencyCounter += 1;
+            }
+
+            int readCounter() {
+                return dependencyCounter;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_gshared_write_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_gshared_write_fixture;
+
+            extern __gshared int dependencyCounter;
+            void bump();
+            int readCounter();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_gshared_write_fixture;
+
+                unittest {
+                    dependencyCounter = 5;
+                    assert(readCounter == 5);
+                    bump;
+                    assert(dependencyCounter == 6);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// Pins §35.2b: the dependency image's `static this()` runs when the image is
+// dlopened (RTLD_NOW | RTLD_GLOBAL), so `seed` is 42 for both the SystemLinker
+// oracle and the Interpreter. The direct `seed` read also exercises the §35.2a
+// symbol-read path, proving the ctor's write is visible through the resolved
+// symbol.
+@("dependencyImage.moduleCtorRanAtDlopen.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_modulector_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_modulector_fixture;
+
+            __gshared int seed;
+
+            static this() {
+                seed = 42;
+            }
+
+            int readSeed() {
+                return seed;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_modulector_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_modulector_fixture;
+
+            extern __gshared int seed;
+            int readSeed();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_modulector_fixture;
+
+                unittest {
+                    assert(readSeed == 42);
+                    assert(seed == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// Pins §35.2: a plain module-level `int` is thread-local by default (STT_TLS)
+// in D — the common case for dub-package globals, unlike the minority
+// `__gshared`. It crosses the boundary via the same dlsym data-symbol path as
+// `__gshared`: the §35.2a predicate matches `extern int` (extern_ set, dataseg,
+// no _init) and `dlsym` resolves the STT_TLS symbol to the interpreter thread's
+// instance, so reads and write-through both work with no extra code.
+@("dependencyImage.tlsGlobalReadWrite.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_tls_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_tls_fixture;
+
+            int tlsCounter = 100;                 // thread-local by default in D
+
+            void bumpTls() {
+                tlsCounter += 1;
+            }
+
+            int readTls() {
+                return tlsCounter;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_tls_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_tls_fixture;
+
+            extern int tlsCounter;
+            void bumpTls();
+            int readTls();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_tls_fixture;
+
+                unittest {
+                    assert(tlsCounter == 100);
+                    tlsCounter = 5;
+                    assert(readTls == 5);
+                    bumpTls;
+                    assert(tlsCounter == 6);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// Pins §35.2: an aggregate (struct) native global crosses via the recursive
+// marshaller on the same dlsym data-symbol path as a scalar. The read reifies
+// the struct `Value` from the symbol's bytes through `unmarshalStruct`, and an
+// interpreted field write (`config.width = 7`) composes the `DotVarExp`
+// read-modify-write with the §35.2 write branch: `writeLocation` reads the
+// receiver from native, rebuilds it with `withStructField`, and recurses onto
+// the `VarExp`, pushing the struct bytes back to the symbol. No per-shape code.
+@("dependencyImage.structGlobalReadWrite.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_struct_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_struct_global_fixture;
+
+            struct Config { int width; int height; }
+            __gshared Config config = Config(80, 25);
+
+            void setConfig(int w, int h) {
+                config.width = w;
+                config.height = h;
+            }
+
+            int configWidth() { return config.width; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_struct_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_struct_global_fixture;
+
+            struct Config { int width; int height; }
+            extern __gshared Config config;
+            void setConfig(int w, int h);
+            int configWidth();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_struct_global_fixture;
+
+                unittest {
+                    assert(config.width == 80);
+                    assert(config.height == 25);
+                    setConfig(3, 4);
+                    assert(config.width == 3);
+                    assert(config.height == 4);
+                    config.width = 7;
+                    assert(configWidth == 7);
+                    assert(config.height == 4);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// Pins §35.2: reading a dynamic-array native global. The slice `{length,ptr}`
+// descriptor is reified from the symbol via the same dlsym data-symbol path
+// used for scalars — `unmarshalValue`'s `Tarray` case reads `length`, reads
+// `ptr`, and copies `length` elements. The image's `static this()` populates
+// the slice at dlopen (pinned in an earlier commit). Read only;
+// slice-global writeback is a later rung.
+@("dependencyImage.sliceGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_slice_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_slice_global_fixture;
+
+            __gshared int[] numbers;
+
+            static this() {
+                numbers = [10, 20, 30];
+            }
+
+            int total() {
+                int s = 0;
+                foreach (n; numbers) s += n;
+                return s;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_slice_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_slice_global_fixture;
+
+            extern __gshared int[] numbers;
+            int total();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_slice_global_fixture;
+
+                unittest {
+                    assert(total() == 60);        // native sums its slice
+                    assert(numbers.length == 3);  // reads {length,ptr}
+                    assert(numbers[0] == 10);
+                    assert(numbers[1] == 20);
+                    assert(numbers[2] == 30);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Pins §35.2: writing a whole new slice into a dynamic-array native global.
+// The interpreter's `writeLocation` (VarExp case) routes the assignment
+// through the generic `marshalNative` descriptor path: for a `Tarray` it
+// allocates a fresh element buffer, writes `{length, ptr=buffer.ptr}` into the
+// symbol's 16 bytes, and pins the buffer for the process lifetime (§5). Native
+// code then reads the interpreter-written `{length,ptr}` and elements back.
+@("dependencyImage.sliceGlobalWriteback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_slice_write_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_slice_write_fixture;
+
+            __gshared int[] payload;
+
+            int sumPayload() {
+                int s = 0;
+                foreach (v; payload) s += v;
+                return s;
+            }
+
+            size_t payloadLength() {
+                return payload.length;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_slice_write_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_slice_write_fixture;
+
+            extern __gshared int[] payload;
+            int sumPayload();
+            size_t payloadLength();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_slice_write_fixture;
+
+                unittest {
+                    payload = [7, 8, 9];          // slice-rebind write-through
+                    assert(payloadLength() == 3); // native sees new length
+                    assert(sumPayload() == 24);   // native sees new elements
+                    payload = [100];              // overwrite with a new slice
+                    assert(payloadLength() == 1);
+                    assert(sumPayload() == 100);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+
+// Pins that native globals of different scalar widths (64-bit int, double,
+// unsigned byte, bool) reify correctly through the data-symbol read path
+// (ffi.md §35.2).
+@("dependencyImage.scalarWidthGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_scalar_width_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_scalar_width_fixture;
+
+            __gshared long   bigCount    = 5_000_000_000;
+            __gshared double ratio       = 1.5;
+            __gshared ubyte  flagByte    = 200;
+            __gshared bool   enabledFlag = true;
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_scalar_width_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_scalar_width_fixture;
+
+            extern __gshared long   bigCount;
+            extern __gshared double ratio;
+            extern __gshared ubyte  flagByte;
+            extern __gshared bool   enabledFlag;
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_scalar_width_fixture;
+
+                unittest {
+                    assert(bigCount == 5_000_000_000); // 64-bit, exceeds int
+                    assert(ratio == 1.5);              // double
+                    assert(flagByte == 200);           // unsigned byte
+                    assert(enabledFlag == true);       // bool
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Pins §35.2: a whole-struct rebind assignment (`origin = Point(9, 8)`) to a
+// native struct global writes through via `writeLocation`'s VarExp branch +
+// `marshalNative`. The target is the `VarExp` of the struct global, so the
+// assignment drives the VarExp write branch directly with a struct `Value`,
+// distinct from the field-write read-modify-write path (`config.width = 7`,
+// a `DotVarExp`) pinned by `structGlobalReadWrite`.
+@("dependencyImage.structGlobalRebindWriteback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_struct_rebind_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_struct_rebind_fixture;
+
+            struct Point { int x; int y; }
+            __gshared Point origin = Point(1, 2);
+
+            int pointX() { return origin.x; }
+            int pointY() { return origin.y; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_struct_rebind_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_struct_rebind_fixture;
+
+            struct Point { int x; int y; }
+            extern __gshared Point origin;
+            int pointX();
+            int pointY();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_struct_rebind_fixture;
+
+                unittest {
+                    assert(pointX() == 1);  // native reads its initializer
+                    origin = Point(9, 8);   // WHOLE-struct rebind write-through
+                    assert(pointX() == 9);  // native sees the rebind
+                    assert(pointY() == 8);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Pins §35.2: reading a static-array (Tsarray) native global. A
+// `__gshared int[4]` stores its elements INLINE in the symbol (no
+// {length,ptr} descriptor), so the data-symbol path reifies the inline
+// element bytes through `unmarshalValue`'s `Tsarray` case. This is distinct
+// from the dynamic-slice descriptor case pinned by `sliceGlobalRead`.
+@("dependencyImage.staticArrayGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_static_array_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_static_array_global_fixture;
+
+            __gshared int[4] grid = [11, 22, 33, 44];
+
+            int gridAt(int i) { return grid[i]; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_static_array_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_static_array_global_fixture;
+
+            extern __gshared int[4] grid;
+            int gridAt(int i);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_static_array_global_fixture;
+
+                unittest {
+                    assert(grid.length == 4);  // static-array length is compile-time
+                    assert(grid[0] == 11);     // interpreter reads inline elements
+                    assert(grid[3] == 44);
+                    assert(gridAt(2) == 33);   // native reads its static-array global
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Pins §35.2 and §34.11: reading a struct-with-slice-field native global. The
+// recursive marshaller reifies the nested `{length,ptr}` field from the
+// symbol's struct bytes: `unmarshalNative` -> `unmarshalStruct` recurses into
+// the `string` field just as §34.11's by-value nested-slice struct crossing
+// does, but here the struct comes from the data-symbol read path. The string
+// field points at a literal in rodata that survives for the process. Read only.
+@("dependencyImage.nestedStructGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_nested_struct_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_nested_struct_global_fixture;
+
+            struct Named { string label; int id; }
+            __gshared Named entry = Named("hello", 7);
+
+            size_t labelLength() { return entry.label.length; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_nested_struct_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_nested_struct_global_fixture;
+
+            struct Named { string label; int id; }
+            extern __gshared Named entry;
+            size_t labelLength();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_nested_struct_global_fixture;
+
+                unittest {
+                    assert(entry.id == 7);           // scalar field
+                    assert(entry.label == "hello");  // slice field reified by
+                                                     // recursing into the struct
+                    assert(entry.label.length == 5);
+                    assert(labelLength() == 5);      // native reads its own
+                                                     // nested global
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Pins §35.2 cross-image dependency-image initialization ordering: A's module
+// ctor runs before B's because images load in list order under RTLD_GLOBAL, so
+// B's ctor (which reads A's shared `seedBase`) sees A's initialized value.
+// Image B references A's symbol as an undefined extern, resolved at load time
+// through RTLD_GLOBAL. The shared global is `extern(C)` so both images agree on
+// the symbol name `seedBase`; a plain extern(D) global mangles the module name
+// in (`_D21dep_image_ctororder_a...` vs `..._b...`), so B's reference would not
+// resolve to A's definition. First multi-image fixture.
+@("dependencyImage.crossImageCtorOrdering.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+
+        const depAPath =
+            buildPath(importPath, "dep_image_ctororder_a.d");
+        writeFile(depAPath, q{
+            module dep_image_ctororder_a;
+
+            extern(C) __gshared int seedBase;
+
+            static this() {
+                seedBase = 10;
+            }
+        });
+        const imageAPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctororder_a",
+            [depAPath],
+        );
+
+        const depBPath =
+            buildPath(importPath, "dep_image_ctororder_b.d");
+        writeFile(depBPath, q{
+            module dep_image_ctororder_b;
+
+            extern(C) extern __gshared int seedBase;
+            __gshared int seedDerived;
+
+            static this() {
+                seedDerived = seedBase + 5;
+            }
+
+            int readDerived() {
+                return seedDerived;
+            }
+        });
+        const imageBPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctororder_b",
+            [depBPath],
+        );
+
+        writeFile(depBPath, q{
+            module dep_image_ctororder_b;
+
+            int readDerived();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ctororder_b;
+
+                unittest {
+                    assert(readDerived() == 15);  // B's ctor ran after A's:
+                                                  // 10 + 5
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imageAPath, imageBPath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imageAPath, imageBPath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Pins §35.2: reading a pointer-typed native global. The data-symbol path routes
+// through `unmarshalValue`'s `Tpointer` case, reifying `anchorPtr` as a non-null
+// native-pointer Value. To exercise the read without interpreted native-pointer
+// deref (out of scope, §35.2), the interpreter reads the pointer global and
+// passes it to a native callee that dereferences it.
+@("dependencyImage.pointerGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_pointer_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_pointer_global_fixture;
+
+            __gshared int anchor = 77;
+            __gshared int* anchorPtr = &anchor;
+
+            int derefArg(int* p) { return *p; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_pointer_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_pointer_global_fixture;
+
+            extern __gshared int anchor;
+            extern __gshared int* anchorPtr;
+            int derefArg(int* p);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_pointer_global_fixture;
+
+                unittest {
+                    assert(anchorPtr !is null);          // pointer global reified
+                                                         // as a non-null native
+                                                         // pointer
+                    assert(derefArg(anchorPtr) == 77);   // interpreter reads the
+                                                         // pointer global, passes
+                                                         // it to native which
+                                                         // derefs it
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

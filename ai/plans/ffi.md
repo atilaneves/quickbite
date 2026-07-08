@@ -2240,11 +2240,107 @@ dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
 sort by consumer need, not table position:
 
 ```text
-1. §35.2: data symbols + dependency-image init, first rung §35.2a — no
-   measured demand yet; climbs when a real package forces it
+1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
+   write rung, the module-ctor-at-dlopen pin, the TLS-default rung, the
+   struct-global read+field-write rung, the slice-global read rung, the
+   slice-global writeback rung, the struct-global whole-value rebind rung, and
+   cross-image module-ctor ORDERING are DONE. What remains is the case where
+   load order is NOT specified by the caller (DT_NEEDED-driven ordering, where
+   the dynamic loader decides) and TLS-in-dependency-image edge cases
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
+DONE: §35.2a read of a native `extern __gshared` global —
+dependencyImage.externGsharedGlobalRead resolves the data symbol via dlsym
+by mangled name and reifies it through unmarshalNative; write/TLS/ctor
+init stay as later §35.2 rungs.
+DONE: §35.2 write of a native `extern __gshared` global —
+dependencyImage.externGsharedGlobalWrite writes an interpreted assignment
+through to the resolved symbol via marshalNative and never caches it in
+`locals`, so native memory stays the single source of truth (a later native
+mutation is not shadowed by a stale local copy). TLS and ctor-ordering stay
+as the remaining §35.2 rungs.
+DONE: §35.2b module-ctor-at-dlopen pin —
+dependencyImage.moduleCtorRanAtDlopen. A dependency image with
+`static this() { seed = 42; }` and an accessor `readSeed` is dlopened
+(RTLD_NOW | RTLD_GLOBAL). Both the SystemLinker oracle and the Interpreter
+observe `readSeed == 42` and a direct `seed == 42` read: the D DSO registry
+runs module ctors at dlopen for both backends, so this is green-as-pin with
+no production change (the Interpreter already dlopens dependency images in
+its constructor). The TLS variant is the remaining §35.2 rung.
+DONE: §35.2 TLS-default global read/write — dependencyImage.tlsGlobalReadWrite.
+A plain module-level `int tlsCounter = 100;` (thread-local by default, STT_TLS —
+the common case for D globals, unlike the minority `__gshared`) reads its
+initializer, takes an interpreted write-through, is mutated natively, and is
+read back, all through the same dlsym data-symbol path as `__gshared`: the
+§35.2a predicate matches `extern int` (extern_ set, dataseg, no _init) and
+`dlsym` resolves the STT_TLS symbol to the interpreter thread's instance.
+Green-as-pin with no production change; the remaining §35.2 work is
+ctor-ORDERING guarantees across images.
+DONE: §35.2 struct-typed global read + field write-through —
+dependencyImage.structGlobalReadWrite. An `extern __gshared Config config`
+(a two-`int` struct) reifies both fields from the symbol's bytes, sees a
+native mutation, takes an interpreted field write, and is read back by native
+code. The read reaches `unmarshalStruct` via `unmarshalNative`, and the field
+write composes the `DotVarExp` read-modify-write (`withStructField`) with the
+§35.2 write branch, so an aggregate crosses on the same dlsym path as a scalar
+with no per-shape code. Green-as-pin with no production change; the remaining
+§35.2 work is ctor-ORDERING guarantees across images.
+DONE: §35.2 dynamic-array (slice) global read — dependencyImage.sliceGlobalRead.
+An `extern __gshared int[] numbers`, populated by the image's `static this()` at
+dlopen, reifies its slice `{length, ptr}` descriptor from the symbol's bytes via
+the same dlsym data-symbol path as a scalar: `unmarshalValue`'s `Tarray` case
+reads `length`, reads `ptr`, and copies `length` elements. Green-as-pin with no
+production change (read companion to the writeback rung below).
+DONE: §35.2 static-array (Tsarray) global read —
+dependencyImage.staticArrayGlobalRead. A `__gshared int[4] grid` stores its four
+ints INLINE in the symbol (no `{length, ptr}` descriptor), so the data-symbol
+path reifies the inline element bytes through `unmarshalValue`'s `Tsarray`
+case — distinct from the dynamic-slice descriptor case pinned by
+sliceGlobalRead. `grid.length` is compile-time; `grid[0]`/`grid[3]` read inline
+elements and native `gridAt` reads its own static-array global. Green-as-pin
+with no production change.
+DONE: §35.2 nested struct-with-slice global read —
+dependencyImage.nestedStructGlobalRead. An `extern __gshared Named entry` whose
+first field is a `string` drives the recursive marshaller one level deeper on
+the data-symbol path: `unmarshalNative` -> `unmarshalStruct` recurses into the
+`{length, ptr}` slice field (§34.11's nested-slice-in-struct machinery) from the
+symbol's struct bytes. The literal `Named("hello", 7)` initializer points the
+field at rodata that survives for the process, so `entry.label == "hello"`,
+`entry.id == 7`, and native `labelLength` all read back. Green-as-pin with no
+production change.
+DONE: §35.2 pointer-typed global read — dependencyImage.pointerGlobalRead. An
+`extern __gshared int* anchorPtr` reifies through the data-symbol path into
+`unmarshalValue`'s `Tpointer` case as a non-null native-pointer Value; the
+interpreter reads the pointer global and passes it to native `derefArg` which
+dereferences it (interpreted native-pointer deref stays out of scope).
+Green-as-pin with no production change.
+DONE: §35.2 dynamic-array (slice) global writeback —
+dependencyImage.sliceGlobalWriteback. An interpreted `payload = [7, 8, 9]`
+assignment into an `extern __gshared int[] payload` global crosses through the
+generic `marshalNative` descriptor path: `writeLocation`'s VarExp case calls
+`marshalNative(variable.type, address, storageValue(...))`, which for a `Tarray`
+allocates a fresh element buffer, writes `{length, ptr=buffer.ptr}` into the
+symbol's 16 bytes, and pins the buffer for the process lifetime (§5). Native
+`sumPayload`/`payloadLength` then read the interpreter-written length and
+elements back, and a second `payload = [100]` overwrites cleanly. Green-as-pin
+with no production change — slice-global writeback already works via the generic
+marshaller, so it is no longer deferred. The remaining §35.2 work is
+ctor-ORDERING guarantees across images.
+DONE: §35.2 scalar-width global reads — dependencyImage.scalarWidthGlobalRead
+pins that native `__gshared` globals of a 64-bit `long`, a `double`, an unsigned
+`ubyte`, and a `bool` each reify at their correct width through the data-symbol
+read path, exercising `unmarshalValue`'s distinct per-scalar-kind cases beyond
+the `int` already covered. Green-as-pin with no production change.
+DONE: §35.2 struct-global whole-value rebind writeback —
+dependencyImage.structGlobalRebindWriteback. An interpreted `origin = Point(9,
+8)` assignment into an `extern __gshared Point origin` global targets the
+`VarExp` of the struct global, driving `writeLocation`'s VarExp branch directly
+with a struct `Value` and calling `marshalNative(structType, address, value)` to
+push the whole struct's bytes to the symbol. Native `pointX`/`pointY` then read
+the rebind back. Distinct write path from the field-write read-modify-write
+(`config.width = 7`, a `DotVarExp`) pinned by structGlobalReadWrite.
+Green-as-pin with no production change.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
@@ -2254,6 +2350,20 @@ inventory may still extend the fixture list.
 DONE: §35.10 pthread_mutexattr_init (union out-pointer) — fixed 2026-07-08
 (commit `fd95624`), verified 51× → 0× corpus mismatches (automem 48→0,
 fearless 3→0), the former highest-leverage item by count; see §35.10.
+DONE: §35.2 cross-image module-ctor ORDERING —
+dependencyImage.crossImageCtorOrdering, the first multi-image fixture. Two
+dependency images are loaded as `[imageA, imageB]`: B's `static this()` reads a
+shared global that A's `static this()` initialized. `loadDependencyImages`
+(core.d) loads images in list order under RTLD_NOW | RTLD_GLOBAL, so A fully
+loads (its ctors run) before B, and B's ctor sees A's initialized value — B's
+`readDerived` returns 15 (A's 10 + 5) on both the SystemLinker oracle and the
+Interpreter. The shared global is `extern(C)` so both independently-mangled
+images agree on the symbol name (a plain extern(D) global mangles its own module
+name in, so B's reference would not resolve to A's definition). Green-as-pin
+with no production change: the caller specifies load order and the loader
+honours it. What genuinely remains is DT_NEEDED-driven ordering where the caller
+does NOT specify load order (the dynamic loader picks it) and TLS-in-dependency-
+image edge cases.
 ```
 
 An agent asked to "work on ffi.md" starts at the top of this list, not at
@@ -3040,6 +3150,123 @@ b. image with `static this() { seed = 42; }` and `int readSeed()`; the test
 mangled name through the same dlsym path, reify through the declared type
 with the existing descriptor machinery — no call involved. Writes, TLS, and
 ctor-ordering guarantees are later rungs.
+
+**Status: read rung LANDED (§35.2a).** `dependencyImage.externGsharedGlobalRead`
+drives it: the predicate `isExternDataSymbol` (`frontend/dmd/functions.d`)
+recognises an `extern __gshared` global with no local initializer; the
+Value-free core resolver `resolveDataSymbol` (`ffi/core.d`) computes the
+mangled name via `mangleToBuffer` and `dlsym(RTLD_DEFAULT, …)`; the
+Interpreter's `VarExp` branch reifies the bytes through the existing
+`unmarshalNative(type, address)`. A null address (symbol not loaded) falls
+through to the default zero-init, so the change is strictly additive and
+cannot regress an extern global that isn't loaded. Scalar-width coverage
+(64-bit `long`, `double`, unsigned `ubyte`, `bool`) is pinned by
+`dependencyImage.scalarWidthGlobalRead`, exercising `unmarshalValue`'s distinct
+per-scalar-kind reification cases beyond the `int` already covered.
+Green-as-pin with no production change.
+
+**Status: write rung LANDED (§35.2).** `dependencyImage.externGsharedGlobalWrite`
+drives it: the Interpreter's `writeLocation` `VarExp` branch tests the same
+`isExternDataSymbol` predicate and, when `resolveDataSymbol` yields a non-null
+address, writes the assigned Value through to native memory via
+`marshalNative(type, address, value)` and returns without touching `locals`.
+Native memory is the single source of truth: caching in `locals` would let a
+later native mutation be shadowed by a stale local copy, and the read path
+(§35.2a) reifies from native memory on every read. A null address falls through
+to the existing local-assignment behaviour, so the change is strictly additive.
+The TLS rung remains; part b (module-ctor-at-dlopen) is now pinned below.
+
+**Status: module-ctor-at-dlopen pinned (§35.2b).**
+`dependencyImage.moduleCtorRanAtDlopen` resolves part b's unverified
+assumption. A dependency image with `static this() { seed = 42; }` and an
+accessor `readSeed` is dlopened (RTLD_NOW | RTLD_GLOBAL). Both the
+SystemLinker oracle and the Interpreter observe `readSeed == 42` and a direct
+`seed == 42` read, so the D DSO registry does run module ctors at dlopen for
+both backends. This is a characterization pin (like §34.7 sret / §34.11
+nested-slice): green as-is with no production change, because the Interpreter
+already dlopens dependency images in its constructor and the ctor's write is
+visible through the §35.2a symbol-read path. The TLS variant is the remaining
+§35.2 rung.
+
+**Status: TLS-default rung LANDED (§35.2).**
+`dependencyImage.tlsGlobalReadWrite` pins the common case: a plain module-level
+`int tlsCounter = 100;` is thread-local by default in D (STT_TLS), unlike the
+minority `__gshared`. It reads its TLS initializer (100), takes an interpreted
+write-through (5, seen natively via `readTls`), is mutated natively (`bumpTls`
+to 6), and is read back — all through the same dlsym data-symbol path as
+`__gshared`. No production change was needed: the §35.2a predicate
+(`isExternDataSymbol` = dataseg, no `_init`, `extern_` set) already matches a
+plain `extern int` because TLS-ness is not part of the predicate, and `dlsym`
+resolves the STT_TLS symbol to the interpreter thread's own instance. The
+interpreter is single-threaded per test run, so the dlsym'd address, the
+interpreted reads/writes, and the native calls all touch the same thread's TLS
+instance. Green-as-pin. The remaining §35.2 work is ctor-ORDERING guarantees
+across images.
+
+**Status: struct-typed global rung LANDED (§35.2).**
+`dependencyImage.structGlobalReadWrite` pins that an aggregate native global
+crosses on the same dlsym path as a scalar. An `extern __gshared Config config`
+(`struct Config { int width; int height; }`, defined identically on both sides
+for layout) has both fields read back from the symbol's bytes (80, 25), is
+mutated natively (`setConfig(3, 4)`), takes an interpreted field write
+(`config.width = 7`, seen natively via `configWidth`), and keeps its untouched
+field. No production change was needed: the read reaches `unmarshalStruct`
+through `unmarshalNative` (the §35.2a VarExp branch), which recurses over the
+fields, and the field write is a `DotVarExp` assignment whose `writeLocation`
+reads the receiver from native, rebuilds it with `withStructField`, and recurses
+onto the `VarExp`, hitting the §35.2 write branch (`marshalNative`) that pushes
+the struct bytes back to the symbol. The recursive marshaller composes with the
+read-modify-write, so no per-shape code is required. Green-as-pin.
+
+**Status: struct-global whole-value rebind rung LANDED (§35.2).**
+`dependencyImage.structGlobalRebindWriteback` pins the sibling write path: an
+interpreted `origin = Point(9, 8)` rebind of an `extern __gshared Point origin`
+global is an `AssignExp` whose target is the `VarExp` of the struct global, so
+it drives `writeLocation`'s VarExp branch directly with a whole struct `Value`
+and calls `marshalNative(structType, address, value)` to push all the struct's
+bytes to the symbol. Native `pointX`/`pointY` read the rebind back. This is
+distinct from the field-write read-modify-write (`config.width = 7`, a
+`DotVarExp`) pinned by structGlobalReadWrite. No production change was needed.
+Green-as-pin.
+
+**Status: nested struct-with-slice global read rung LANDED (§35.2, §34.11).**
+`dependencyImage.nestedStructGlobalRead` drives the recursive marshaller one
+level deeper on the data-symbol read path. An `extern __gshared Named entry`
+(`struct Named { string label; int id; }`, defined identically on both sides)
+has its `string label` field reified from the symbol's struct bytes:
+`unmarshalNative` -> `unmarshalStruct` recurses into the `{length, ptr}` slice
+field exactly as §34.11's by-value nested-slice struct crossing does. The
+literal `Named("hello", 7)` compile-time initializer points the field at rodata
+that survives for the process, so `entry.label == "hello"`, `entry.id == 7`, and
+native `labelLength` all read back. No production change was needed: the
+recursive struct read composes the §34.11 nested-slice machinery with the §35.2a
+symbol-read path. Green-as-pin, read only.
+
+**Status: pointer-typed global read rung LANDED (§35.2).**
+`dependencyImage.pointerGlobalRead` pins reading an `extern __gshared int*
+anchorPtr` global: the data-symbol path routes through `unmarshalValue`'s
+`Tpointer` case, reifying the symbol's pointer word as a non-null native-pointer
+Value. To exercise the read without interpreted native-pointer dereference
+(a separate, out-of-scope surface), the interpreter reads the pointer global and
+passes it to native `derefArg(int*)` which dereferences it, returning 77. No
+production change was needed. Green-as-pin, read only.
+
+**Status: cross-image module-ctor ORDERING rung LANDED (§35.2).**
+`dependencyImage.crossImageCtorOrdering` is the first fixture that loads two
+dependency images. Image A's `static this()` initializes a shared global; image
+B's `static this()` reads it and derives a second value, exposed through
+`readDerived`. Passing `[imageA, imageB]` to both the SystemLinker oracle and
+the Interpreter, `loadDependencyImages` (core.d) loads the images in list order
+under RTLD_NOW | RTLD_GLOBAL, so A fully loads — its module ctor runs — before B
+loads, and B's ctor observes A's initialized value: `readDerived` returns 15
+(A's 10 + 5). The shared global is `extern(C)` so both independently-mangled
+images agree on the symbol name; a plain extern(D) global would mangle its
+defining module into the name (`_D21dep_image_ctororder_a...` vs `..._b...`), so
+B's reference would not resolve to A's definition through RTLD_GLOBAL. No
+production change was needed: the caller specifies load order and the loader
+honours it. What genuinely remains for §35.2 is DT_NEEDED-driven ordering where
+the caller does NOT specify load order (the dynamic loader picks it) and
+TLS-in-dependency-image edge cases. Green-as-pin.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
