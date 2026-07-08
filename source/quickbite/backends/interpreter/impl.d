@@ -3871,6 +3871,25 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported interpreter assignment target.");
 
+            // A native extern __gshared global's memory is the single source of
+            // truth (ffi.md §35.2): write through to the resolved symbol and do
+            // NOT cache in `locals`, or a later native mutation would be
+            // shadowed by a stale copy. The read path (§35.2a) reifies from
+            // native memory on every read.
+            import quickbite.frontend.dmd.functions: isExternDataSymbol;
+            if (isExternDataSymbol(variable)) {
+                import quickbite.backends.interpreter.ffi_marshal: marshalNative;
+                import quickbite.ffi: resolveDataSymbol;
+
+                if (auto address = resolveDataSymbol(variable)) {
+                    // A writable process-memory address belonging to the loaded
+                    // dependency image, so the cast to a mutable pointer is safe.
+                    marshalNative(variable.type.toBasetype, cast(void*) address,
+                        storageValue(variable.type, value));
+                    return;
+                }
+            }
+
             locals[variable] = storageValue(variable.type, value);
             writeThroughArrayElementAlias(variable, locals[variable]);
             writeThroughStructFieldAlias(variable, locals[variable]);

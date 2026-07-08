@@ -2240,8 +2240,8 @@ dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
 sort by consumer need, not table position:
 
 ```text
-1. §35.2: data symbols + dependency-image init — the §35.2a read rung is
-   DONE; write/TLS/ctor-ordering remain
+1. §35.2: data symbols + dependency-image init — the §35.2a read rung and
+   the write rung are DONE; TLS/ctor-ordering remain
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -2249,6 +2249,12 @@ DONE: §35.2a read of a native `extern __gshared` global —
 dependencyImage.externGsharedGlobalRead resolves the data symbol via dlsym
 by mangled name and reifies it through unmarshalNative; write/TLS/ctor
 init stay as later §35.2 rungs.
+DONE: §35.2 write of a native `extern __gshared` global —
+dependencyImage.externGsharedGlobalWrite writes an interpreted assignment
+through to the resolved symbol via marshalNative and never caches it in
+`locals`, so native memory stays the single source of truth (a later native
+mutation is not shadowed by a stale local copy). TLS and ctor-ordering stay
+as the remaining §35.2 rungs.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
@@ -3053,8 +3059,18 @@ mangled name via `mangleToBuffer` and `dlsym(RTLD_DEFAULT, …)`; the
 Interpreter's `VarExp` branch reifies the bytes through the existing
 `unmarshalNative(type, address)`. A null address (symbol not loaded) falls
 through to the default zero-init, so the change is strictly additive and
-cannot regress an extern global that isn't loaded. Writes, TLS, and
-ctor-ordering remain later rungs (part b below is untouched).
+cannot regress an extern global that isn't loaded.
+
+**Status: write rung LANDED (§35.2).** `dependencyImage.externGsharedGlobalWrite`
+drives it: the Interpreter's `writeLocation` `VarExp` branch tests the same
+`isExternDataSymbol` predicate and, when `resolveDataSymbol` yields a non-null
+address, writes the assigned Value through to native memory via
+`marshalNative(type, address, value)` and returns without touching `locals`.
+Native memory is the single source of truth: caching in `locals` would let a
+later native mutation be shadowed by a stale local copy, and the read path
+(§35.2a) reifies from native memory on every read. A null address falls through
+to the existing local-assignment behaviour, so the change is strictly additive.
+TLS and ctor-ordering remain later rungs (part b below is untouched).
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
