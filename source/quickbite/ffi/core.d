@@ -8,6 +8,56 @@ public void loadDependencyImages(in string[] dependencyImages) {
         loadDependencyImage(dependencyImage);
 }
 
+// Returns a diagnostic naming an FFI-uncrossable type in `function_`'s
+// signature (today: an associative array, whose hashing/allocation the bridge
+// cannot reproduce across the ABI), or null if none. Lets the caller replace
+// the misleading no-available-source message with an honest one (ffi.md
+// §34.3.1 item 0). Scoped to the top-level return and parameter types; an AA
+// nested inside a struct or slice is out of scope.
+public string unsupportedNativeTypeMessage(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import dmd.mtype: TypeFunction;
+    import std.conv: text;
+
+    auto type = cast(TypeFunction) function_.type;
+    if (type is null)
+        return null;
+
+    auto offending = uncrossableAssocArray(type.next);
+    if (offending is null && type.parameterList.parameters !is null)
+        foreach (parameter; *type.parameterList.parameters) {
+            offending = uncrossableAssocArray(parameter.type);
+            if (offending !is null)
+                break;
+        }
+
+    if (offending is null)
+        return null;
+
+    return text(
+        "`",
+        function_.toChars,
+        "` cannot be called natively: the associative array type `",
+        offending.toChars,
+        "` cannot cross the FFI boundary",
+    );
+}
+
+// The basetype of `type` if it is an associative array the bridge cannot cross,
+// else null.
+private imported!"dmd.mtype".Type uncrossableAssocArray(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return null;
+
+    auto base = type.toBasetype;
+    return base.ty == TY.Taarray ? base : null;
+}
+
 public class NativeCallException: Exception {
     public string className;
     // The native Throwable.next link, captured as another NativeCallException
@@ -841,7 +891,7 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiArgumentTypeFor(
     import dmd.astenums: TY;
 
     if (type.ty == TY.Tarray)
-        return isSupportedScalarSlice(type) ? ffiSliceType : null;
+        return isSupportedFfiSlice(type) ? ffiSliceType : null;
 
     return ffiTypeFor(type);
 }
@@ -852,7 +902,7 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
 ) {
     import quickbite.ffi.libffi;
     import dmd.astenums: TY;
-    import dmd.mtype: TypeStruct;
+    import dmd.mtype: TypeStruct, TypeSArray;
 
     switch (type.ty) {
         case TY.Tvoid:                 return &ffi_type_void;
@@ -873,8 +923,9 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
         // (ffi.md §11.3/§34.12); it crosses as an opaque native handle.
         case TY.Tclass:                return &ffi_type_pointer;
         case TY.Tarray:
-            return isSupportedScalarSlice(type) ? ffiSliceType : null;
+            return isSupportedFfiSlice(type) ? ffiSliceType : null;
         case TY.Tstruct:               return ffiStructType(cast(TypeStruct) type);
+        case TY.Tsarray:               return ffiStaticArrayType(cast(TypeSArray) type);
         // A delegate crosses as its two-pointer {context, funcptr} struct
         // (ffi.md §34.16); the interpreted closure behind it is invoked through
         // a libffi closure trampoline.
@@ -942,6 +993,34 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiStructType(
         (sym.alignsize != naturalAlignment ||
          alignUp(naturalOffset, naturalAlignment) != sym.structsize))
         return null;
+
+    auto result = new ffi_type;
+    result.type = FFI_TYPE_STRUCT;
+    result.elements = elements.ptr;
+    return result;
+}
+
+// A fixed-size array has no native libffi type; the ABI classifies it as a
+// struct of `dim` identical elements (ffi.md §34.3.1). Recurse for the element
+// so any supported element kind (scalar, pointer, nested struct/array) crosses,
+// returning null when the element is unmodelled to keep the graceful
+// no-available-source refusal. The elements are naturally aligned and
+// sequential — exactly D's static-array layout — so ffi_prep_cif computes the
+// same size DMD did without any offset fix-up.
+private imported!"quickbite.ffi.libffi".ffi_type* ffiStaticArrayType(
+    imported!"dmd.mtype".TypeSArray type,
+) {
+    import quickbite.ffi.libffi: ffi_type, FFI_TYPE_STRUCT;
+
+    auto element = ffiTypeFor(type.next.toBasetype);
+    if (element is null)
+        return null;
+
+    const dim = cast(size_t) type.dim.toInteger;
+    auto elements = new ffi_type*[](dim + 1);
+    foreach (index; 0 .. dim)
+        elements[index] = element;
+    elements[dim] = null;
 
     auto result = new ffi_type;
     result.type = FFI_TYPE_STRUCT;
@@ -1021,6 +1100,16 @@ public bool isSupportedScalarSlice(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
     return type.ty == TY.Tarray && isScalarFfiType(type.nextOf.toBasetype);
+}
+
+// A dynamic slice crosses when its element type is itself FFI-representable —
+// a scalar as before, or a by-value struct/static array that ffiTypeFor maps
+// (ffi.md §34.3.1 item 0). The slice ABI descriptor {length, ptr} is
+// element-agnostic; only the element gate widens.
+public bool isSupportedFfiSlice(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tarray && ffiTypeFor(type.nextOf.toBasetype) !is null;
 }
 
 // A DMD basetype that maps to a single libffi scalar ffi_type (not a pointer,

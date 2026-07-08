@@ -936,7 +936,6 @@ private bool canMarshalToNative(imported!"dmd.mtype".Type type) {
 // Mirrors unmarshalValue's switch (ffi.md §35.8): the types whose native ABI
 // bytes the interpreter can reify into a boxed Value.
 private bool canReifyFromNative(imported!"dmd.mtype".Type type) {
-    import quickbite.ffi: isSupportedScalarSlice;
     import dmd.astenums: TY;
     import dmd.mtype: TypeStruct;
 
@@ -949,10 +948,11 @@ private bool canReifyFromNative(imported!"dmd.mtype".Type type) {
              Tpointer, Tclass, Tdelegate:
             return true;
 
-        case Tarray:
-            return isSupportedScalarSlice(type);
-
-        case Tsarray:
+        case Tarray, Tsarray:
+            // A struct-element slice reifies through unmarshalSlice's
+            // per-element default loop (ffi.md §34.3.1 item 0); a string slice
+            // through its char special-case. Either way the element type
+            // decides.
             return canReifyFromNative(type.nextOf.toBasetype);
 
         case Tstruct:
@@ -998,12 +998,12 @@ private imported!"quickbite.lang".Value unmarshalSlice(
     imported!"dmd.mtype".Type type,
     in ubyte[] buffer,
 ) {
-    import quickbite.ffi: isSupportedScalarSlice;
+    import quickbite.ffi: isSupportedFfiSlice;
     import quickbite.lang: Value;
     import dmd.astenums: TY;
     import dmd.typesem: size;
 
-    assert(isSupportedScalarSlice(type));
+    assert(isSupportedFfiSlice(type));
 
     const length = *cast(const size_t*) buffer.ptr;
     const data = *cast(const void**) (buffer.ptr + size_t.sizeof);

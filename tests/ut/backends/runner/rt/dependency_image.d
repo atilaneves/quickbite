@@ -1278,6 +1278,76 @@ unittest {
     }
 }
 
+// A by-value struct with a static-array field (ffi.md §34.3.1 item 0): the
+// static array crosses as a STRUCT ffi_type of `dim` element copies, so the
+// containing struct is no longer refused. Covers the argument direction.
+@("dependencyImage.externDStaticArrayField.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_static_array_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_static_array_fixture;
+
+            struct Fixed {
+                int[4] values;
+                int tag;
+            }
+
+            int dependencyFixedSum(Fixed fixed) {
+                return fixed.values[0] + fixed.values[1] + fixed.values[2]
+                    + fixed.values[3] + fixed.tag;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_static_array_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_static_array_fixture;
+
+            struct Fixed {
+                int[4] values;
+                int tag;
+            }
+            int dependencyFixedSum(Fixed fixed);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_static_array_fixture;
+
+                unittest {
+                    int base = 10;
+                    Fixed fixed = Fixed([base, base + 1, base + 2, base + 3], 100);
+                    assert(dependencyFixedSum(fixed) == 146);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externCScalarOutParameter.Interpreter")
 @Tags("Interpreter")
 unittest {
@@ -2423,5 +2493,159 @@ unittest {
             .runTests(moduleResult.module_);
         interpreted.length.should == 1;
         interpreted[0].passed.should == true;
+    }
+}
+
+// A dynamic slice whose element is a by-value struct (ffi.md §34.3.1 item 0):
+// the slice ABI descriptor is element-agnostic, so once the element gate is
+// representability-driven the slice crosses both as an argument and a return.
+@("dependencyImage.externDSliceOfStructs.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_slice_of_structs_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_slice_of_structs_fixture;
+
+            struct Point {
+                int x;
+                int y;
+            }
+
+            long dependencyPointSum(const(Point)[] points) {
+                long total = 0;
+                foreach (point; points)
+                    total += point.x + point.y;
+                return total;
+            }
+
+            const(Point)[] dependencyMakePoints(int seed) {
+                return [Point(seed, seed + 1), Point(seed + 2, seed + 3)];
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_slice_of_structs_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_slice_of_structs_fixture;
+
+            struct Point {
+                int x;
+                int y;
+            }
+
+            long dependencyPointSum(const(Point)[] points);
+            const(Point)[] dependencyMakePoints(int seed);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_slice_of_structs_fixture;
+
+                unittest {
+                    int base = 5;
+                    Point[] points =
+                        [Point(base, base + 1), Point(base + 2, base + 3)];
+                    assert(dependencyPointSum(points) == 26);
+
+                    const made = dependencyMakePoints(base);
+                    assert(made.length == 2);
+                    assert(made[0].x == 5);
+                    assert(made[1].y == 8);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// An associative-array parameter crossing the boundary (ffi.md §34.3.1 item 0):
+// the boxed interpreter cannot reproduce the AA's hashing, allocation, and
+// layout across the ABI, so the crossing stays refused — but the diagnostic
+// must name the associative array rather than blame missing source. The native
+// oracle crosses it fine (the KEPT supported-behavior leg); the Interpreter
+// refuses it honestly (unsupportedNativeTypeMessage). extern(C) keeps argument
+// ordering irrelevant.
+@("dependencyImage.externCAssocArrayRejected.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_assoc_array_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_assoc_array_fixture;
+
+            extern(C) int dependencyCountEntries(int[string] table) {
+                return cast(int) table.length;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_assoc_array_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_assoc_array_fixture;
+
+            extern(C) int dependencyCountEntries(int[string] table);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_assoc_array_fixture;
+
+                unittest {
+                    int[string] table;
+                    table["a"] = 1;
+                    table["b"] = 2;
+                    assert(dependencyCountEntries(table) == 2);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == false;
+        // Honest diagnostic: names the associative array and its type spelling,
+        // not missing source (ffi.md §34.3.1 item 0).
+        "associative array".should.be in interpreted[0].message;
+        "int[string]".should.be in interpreted[0].message;
     }
 }

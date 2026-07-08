@@ -2240,14 +2240,17 @@ dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
 sort by consumer need, not table position:
 
 ```text
-1. item 0 (§34.3.1): generic Type-driven marshaller audit — the verified
-   gaps (Tsarray, slice-of-structs, AA diagnostic) are actionable now;
-   interpreter.md's second-package inventory extends the fixture list
-2. §35.2: data symbols + dependency-image init, first rung §35.2a — no
+1. §35.2: data symbols + dependency-image init, first rung §35.2a — no
    measured demand yet; climbs when a real package forces it
-3. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
+2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
+DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
+verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
+demonstrated by dependencyImage.externDStaticArrayField,
+dependencyImage.externDSliceOfStructs, and
+dependencyImage.externCAssocArrayRejected. interpreter.md's second-package
+inventory may still extend the fixture list.
 DONE: §35.10 pthread_mutexattr_init (union out-pointer) — fixed 2026-07-08
 (commit `fd95624`), verified 51× → 0× corpus mismatches (automem 48→0,
 fearless 3→0), the former highest-leverage item by count; see §35.10.
@@ -2292,23 +2295,36 @@ least-work path only item 0, the generic Type-driven marshaller audit, remains
 open. It is tracked as a rung-style item directly below.
 ```
 
-**Item 0: generic-marshaller audit (tracked 2026-07-06). Status: open.
+**Item 0: generic-marshaller audit (tracked 2026-07-06). Status: verified
+gaps closed (2026-07-08) — the three enumerated fixtures are delivered.
 Owner: Track B** (interpreter-owned boxed marshalling — `value.md` item 5
 side of the seam; the `ffi/core.d` descriptor mappers are touched only where
 a leaf kind is missing). The recursion is not yet fully Type-driven; verified
-gaps as of 2026-07-06: no `Tsarray` case anywhere in `ffi_marshal.d` or
-`ffi/core.d` (a static array cannot cross the seam at all, including as a
-struct field); `isSupportedScalarSlice` gates slices to scalar elements (no
-slice-of-structs argument or return); no `Taarray` handling (should reject
-with an honest diagnostic, not a generic one). Fixture list (each needs the
-usual approval; oracle = `SystemLinker`): a by-value struct containing a
-static-array field; a slice-of-structs argument and a slice-of-structs
-return; an AA crossing rejected with a named diagnostic. Done-criterion:
-`materialize`/`reify` handle any aggregate composed of supported leaf kinds
-at any nesting depth, demonstrated by those fixtures without adding per-shape
-special cases. Scheduling: after `interpreter.md` phase 0 + rung 1 — the
-"beyond cerealed" second-package inventory will surface these gaps
-empirically and extends this fixture list.
+gaps as of 2026-07-06: the `Tsarray` seam gap is now CLOSED in `ffi/core.d`
+(`ffiTypeFor` maps a static array to a STRUCT `ffi_type` of `dim` element
+copies; `ffi_marshal.d` already handled `Tsarray`), so a static array crosses
+the seam standalone and as a struct field at any nesting depth — demonstrated
+by the `dependencyImage.externDStaticArrayField.Interpreter` fixture. The
+slice-of-structs gap is now CLOSED: the slice element gate is
+representability-driven (`isSupportedFfiSlice`, i.e. `ffiTypeFor(element) !=
+null`) rather than scalar-only, so a slice whose element is a by-value struct
+crosses both as an argument and as a return — demonstrated by the
+`dependencyImage.externDSliceOfStructs.Interpreter` fixture. The `Taarray`
+gap is now CLOSED: an associative-array crossing is genuinely uncrossable by
+the boxed interpreter (its hashing/allocation/layout cannot be reproduced
+across the ABI), so it stays refused — but now with an honest named
+diagnostic (`unsupportedNativeTypeMessage` in `ffi/core.d`, mechanically
+derived from the signature's top-level return/parameter types) instead of the
+misleading no-available-source message — demonstrated by the
+`dependencyImage.externCAssocArrayRejected.Interpreter` fixture. All three
+enumerated fixtures (`Tsarray`, slice-of-structs, AA diagnostic) are now
+delivered.
+Done-criterion: `materialize`/`reify` handle any aggregate composed of
+supported leaf kinds at any nesting depth, demonstrated by those fixtures
+without adding per-shape special cases — met for the three verified gaps.
+Scheduling: after `interpreter.md`
+phase 0 + rung 1 — the "beyond cerealed" second-package inventory will surface
+these gaps empirically and extends this fixture list.
 
 Known limitation: the boxed seam cannot faithfully cross an aggregate whose bytes
 *are* the semantics (a struct field that is a `union`, or one captured by `&` and
