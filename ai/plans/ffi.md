@@ -8,6 +8,10 @@ is mapped back. Reaching that lets real dub projects run their unittests under
 a backend, which is the prerequisite for measuring whether any backend's
 representation choice is actually faster.
 
+**What to work on next: the §34.3 work order.** Do not derive next work from
+section order, from the ladder table alone, or from whichever critique item
+appears first — the work order is the single selector.
+
 **Companion plan.** The FFI bridge is split from the backend value
 representation by the seam in §5. This document (the bridge) is the charter for
 the FFI-bridge work track; `ai/plans/value.md` is the charter for the
@@ -508,13 +512,17 @@ native-layout backend is simply the seam endpoint where `materialize`/`reify`
 is the identity. The deferred cold-path caching story (§3) is independent of
 this and unaffected.
 
-Scheduling boundary (updated 2026-07-06): the original gate here — "until the
+Scheduling boundary (updated 2026-07-08): the original gate here — "until the
 Interpreter can call arbitrary native functions" — is met (§34.18), so it no
-longer gates anything. What replaces it: the Bytecode/IR call site is owned by
-`bytecode.md`'s native-runtime slice, and before that call site is wired the
-seam must be able to express the identity crossing this section promises —
-today it cannot (§35.1). Do not promote Bytecode or IR FFI expected-failure
-fixtures before both are true.
+longer gates anything. The Bytecode/IR call site is owned by `bytecode.md`'s
+native-runtime slice and is already wired through the buffer-copy path
+(`backends/bytecode/core/machine.d` → `quickbite.ffi.callNative`; the `atoi`
+runtime row is green). What §35.1 still gates is narrower: the seam cannot
+yet express the identity crossing this section promises, so no latency claim
+about the native-layout representation's FFI crossing is valid before rung 24
+— the buffer path taxes both representations equally at the boundary. Rung 24
+adds nothing to Interpreter dub coverage, so it orders after the dub-coverage
+items (§34.3 work order) and is sequenced with bytecode FFI-latency work.
 
 ## 24. Increment 3: descriptor-driven resident calls (Interpreter)
 
@@ -888,10 +896,10 @@ work from this plan; their native-layout bridge remains governed by §23 and
 
 **Superseded by §34.** The remaining Interpreter ladder is now enumerated in
 full, in dependency order, in §34. Do **not** open a new per-increment planning
-PR to choose and spec the next rung — that spec already exists there. Implement
-the next unimplemented rung from §34 directly (it still needs its approved
-oracle fixture per `AGENTS.md`, but no new plan). This contract list stays as
-the index of the semantic gaps §34 closes.
+PR to choose and spec the next rung — that spec already exists there. Pick the
+next open item from the §34.3 work order (it still needs its approved oracle
+fixture per `AGENTS.md`, but no new plan). This contract list stays as the
+index of the semantic gaps §34 closes.
 
 ## 27. Increment 4: correct the extern(D) calling convention (Interpreter)
 
@@ -2133,7 +2141,11 @@ scope, the code to change, and the done criteria.
 How to use this section:
 
 ```text
-- Implement the next rung whose Status is not "landed", top to bottom.
+- Pick the next open item from the §34.3 work order, top to bottom — NOT the
+  next open row of the ladder table. The work order includes non-ladder items
+  (§35.10, item 0, §35.2) and sorts rungs 24–25 last; the old rule "next rung
+  whose Status is not landed" selected bytecode-gate work over
+  Interpreter-serving items and is superseded (2026-07-08).
 - Do NOT write a new planning PR to choose or re-spec a rung. The spec is here.
 - Each rung still needs its approved oracle fixture before code (AGENTS.md);
   propose the fixture sketched here, get approval, then go red -> green.
@@ -2213,11 +2225,35 @@ concern going forward), 12 was genuine ABI ordering (Track A). The pure-A rungs
 bridge track. The AB rungs need the seam interface stable first.
 
 Rungs 24–25 (promoted 2026-07-08 from the §35 critique; specs in §35.1 and
-§35.3): unlike 10–23 they are not ordered by dub-code frequency — they are the
-gate for the second consumer. §35.1 is the explicit prerequisite for any
-Bytecode/IR call site (§23; `bytecode.md`'s slice-11 entry criteria), and
-§35.3 re-does the exception crossing at the altitude that backend needs. Climb
-them before wiring any non-Interpreter backend to the bridge.
+§35.3): unlike 10–23 they are not ordered by dub-code frequency and add
+nothing to Interpreter dub coverage — they serve the second consumer. The
+original framing ("prerequisite for any Bytecode/IR call site") is stale: the
+bytecode call site is already wired through the buffer-copy path
+(`backends/bytecode/core/machine.d` calls `quickbite.ffi.callNative`; the
+`atoi` runtime row is green). What §35.1 actually gates is the zero-copy
+identity crossing and therefore any boxed-vs-native-layout FFI *latency*
+measurement; §35.3 re-does the exception crossing at the altitude that
+backend needs.
+
+**Work order** (2026-07-08). The driving goal — the Interpreter runs more
+dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
+sort by consumer need, not table position:
+
+```text
+1. §35.10: pthread_mutexattr_init diagnosis — 51 measured corpus mismatches
+   (48× automem, 3× fearless), the highest-leverage item by count,
+   actionable today
+2. item 0 (§34.3.1): generic Type-driven marshaller audit — the verified
+   gaps (Tsarray, slice-of-structs, AA diagnostic) are actionable now;
+   interpreter.md's second-package inventory extends the fixture list
+3. §35.2: data symbols + dependency-image init, first rung §35.2a — no
+   measured demand yet; climbs when a real package forces it
+4. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
+   FFI latency / exception fidelity as its stated work
+```
+
+An agent asked to "work on ffi.md" starts at the top of this list, not at
+the bottom of the rung table.
 
 ### 34.3.1 Least-work path to arbitrary FFI (2026-06-23)
 
@@ -2875,7 +2911,9 @@ both the ladder's "done" claim and the seam's readiness for the bytecode
 backend; they are enumerated as work items in §35, which also accretes
 later-found holes in the "done" claim (§35.9, native ref returns). Two of
 those items are promoted back into the ladder as rungs 24 (§35.1, seam v2)
-and 25 (§35.3, exception fidelity) — the open spine of the bridge track.
+and 25 (§35.3, exception fidelity) — bytecode-gate work, ordered after the
+Interpreter dub-coverage items (§34.3 work order) and sequenced with that
+backend's FFI latency / exception-fidelity work.
 
 ## 35. 2026-07-06 critique: plan vs code vs the bytecode backend
 
@@ -2890,7 +2928,9 @@ block the terminal goal (§34.1) for the two backends.
 
 ### 35.1 Seam v2: no identity crossing, no CIF cache
 
-**Status: open — promoted to ladder rung 24 (§34.3, 2026-07-08).**
+**Status: open — ladder rung 24 (§34.3, 2026-07-08). Ordered after the
+Interpreter dub-coverage items (§34.3 work order); sequenced with
+`bytecode.md`'s FFI-latency work.**
 
 **Claim.** §5/§23: for a native-layout backend `materialize`/`reify` is the
 identity — "there is no marshalling for this backend to own". §1/§4/§24.1:
@@ -2931,17 +2971,21 @@ a. pointer-handing seam variant: optional NativeMarshaller methods
 b. reinstate the per-callable CIF cache for non-variadic calls, keyed by the
    resolved FuncDeclaration; variadic calls keep per-call ffi_prep_cif_var
    (§34.15).
-c. second-consumer neutrality proof: a core-level unit test implementing a
-   minimal native-layout NativeMarshaller over a raw byte frame (a stand-in
-   for the bytecode backend) calling a resident function through callNative.
-   Today it can only be written by copying frame bytes into core buffers,
-   which pins the problem; after (a) it proves the identity path. Needs
-   approval like any test.
+c. second-consumer neutrality proof: the narrowest REAL bytecode call site
+   crossing by address — the live machine.d callNative site switched to hand
+   frame-slot addresses, proven by an oracle-backed fixture (SystemLinker
+   oracle, existing rt/ harness). NOT a core-level mock-NativeMarshaller
+   unit test: a fake consumer has no oracle and pins an interface shape
+   guessed by the same hand that shaped the seam (decided 2026-07-08,
+   superseding this item's earlier core-level-mock sketch). Needs approval
+   like any test.
 ```
 
-**Done when:** the mock native-layout marshaller crosses with zero
-per-argument copies; a non-variadic CIF is prepared once per callable; every
-existing Interpreter fixture stays green.
+**Done when:** a bytecode frame argument and result cross by address through
+the real call site with zero per-argument copies, proven by an oracle-backed
+fixture; the CIF cache's correctness is the existing suite staying green and
+its benefit is a bench delta (per-call `ffi_prep_cif` gone), not a mock
+assertion; every existing Interpreter fixture stays green.
 
 ### 35.2 Data symbols and dependency-image initialization are missing
 
@@ -2982,7 +3026,9 @@ ctor-ordering guarantees are later rungs.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
-**Status: open — promoted to ladder rung 25 (§34.3, 2026-07-08).**
+**Status: open — ladder rung 25 (§34.3, 2026-07-08). Ordered after the
+Interpreter dub-coverage items (§34.3 work order); sequenced with
+`bytecode.md`'s exception-fidelity work.**
 
 **Claim.** §12: the exception guard "survives for every backend regardless of
 representation". §34.18 counts exceptions as done.

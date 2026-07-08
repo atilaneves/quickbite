@@ -1266,7 +1266,14 @@ execution). The current backlog for this track, in order:
 2. Slice 8, native runtime: continue widening the outbound host FFI bridge,
    which unblocks the deferred `rt/cstdlib.d` runtime rows above. The first
    promoted runtime row, `atoi.value.BytecodeNewCore`, is green via the shared
-   `quickbite.ffi.callNative` path.
+   `quickbite.ffi.callNative` path — the buffer-copy path, which taxes the
+   native-layout frame with per-argument copies. When this slice's FFI
+   *latency* (or exception fidelity) becomes the active work, that is when
+   `ffi.md` rungs 24–25 (§35.1 seam v2 pointer-handing + CIF cache, §35.3
+   Throwable crossing) are climbed — they are ordered behind ffi.md's
+   Interpreter dub-coverage items until then (ffi.md §34.3 work order).
+   Until they land, correctness rows keep using the buffer path and no
+   boxed-vs-native FFI latency claim is valid.
 3. Slice 9, classes.
 4. Slice 11, prelude formatter execution — which re-earns the frozen
    `repl.d` display rows and deletes the interim display scaffolding

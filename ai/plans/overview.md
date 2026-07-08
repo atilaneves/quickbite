@@ -59,9 +59,14 @@ Live plans:
 
 - `interpreter.md` — make the Interpreter execute a real dub package
   (cerealed first): phase 0 diagnostic fix, then six gap rungs.
-- `ffi.md` — the native-leaf bridge. The §34 ladder is landed with
-  tracked residuals (GC-rooted class handles §34.12, generic-marshaller
-  audit §34.3.1); the terminal goal is gated on `interpreter.md`.
+- `ffi.md` — the native-leaf bridge. Ladder rungs 10–23 are landed with
+  tracked residuals; the open work is ordered (§34.3 work order): the
+  §35.10 pthread refusal (51 measured corpus mismatches),
+  generic-marshaller audit (item 0, §34.3.1), data symbols / image init
+  (§35.2), and only then rungs 24–25 (seam
+  v2, native exception fidelity) — bytecode-gate work that adds nothing
+  to Interpreter dub coverage. The terminal goal is gated on
+  `interpreter.md`.
 - `value.md` — Track B: prelude display formatter and its wiring, shared
   `Value` removal, boxed-vs-native representation experiment.
 - `bytecode.md` — new-core rewrite; test modules 1–13 promoted; the
