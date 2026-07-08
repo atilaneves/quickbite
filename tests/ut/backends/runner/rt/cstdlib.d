@@ -596,3 +596,46 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         runBackendSourceFixtureTests!backend(strlenLocalBufferSource);
     }
 }
+
+
+// ffi.md §35.10: a body-less libc call taking a union-typed out-pointer. The
+// glibc `pthread_mutexattr_t` is `union { byte[N] __size; int __align; }`, so
+// passing `&attr` marshals a union toNative. `canMarshalToNative`
+// (ffi_marshal.d) refuses unions and `canRepresentCall`'s out-cell check
+// (core.d) rejects the whole call, so the Interpreter degrades to the
+// no-available-source refusal today even though the union bytes round-trip
+// byte-faithfully. Reading the type back through `gettype` proves the bytes
+// written through the union survived the crossing. SystemLinker (and its
+// LLVMJit promotion) is the behaviour oracle; the Interpreter leg is red
+// pending the gate fix.
+enum pthreadMutexattrUnionSource = q{
+    unittest {
+        import core.sys.posix.pthread:
+            pthread_mutexattr_t,
+            pthread_mutexattr_init,
+            pthread_mutexattr_settype,
+            pthread_mutexattr_gettype,
+            pthread_mutexattr_destroy,
+            PTHREAD_MUTEX_RECURSIVE;
+
+        pthread_mutexattr_t attr;
+        assert(pthread_mutexattr_init(&attr) == 0);
+
+        int wanted = PTHREAD_MUTEX_RECURSIVE;
+        assert(pthread_mutexattr_settype(&attr, wanted) == 0);
+
+        int kind = -1;
+        assert(pthread_mutexattr_gettype(&attr, &kind) == 0);
+        assert(kind == PTHREAD_MUTEX_RECURSIVE);
+
+        assert(pthread_mutexattr_destroy(&attr) == 0);
+    }
+};
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("pthread.mutexattr.unionOutPointer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(pthreadMutexattrUnionSource);
+    }
+}

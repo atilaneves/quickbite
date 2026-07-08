@@ -3303,7 +3303,7 @@ gone (0×) — the Done-when corpus gate is met. The same ten tests now
 proceed deeper and fail as `Expected struct.`, an interpreter-side gap
 owned by `interpreter.md` §7, not this bridge.
 
-### 35.10 `pthread_mutexattr_init` is refused (measured 2026-07-07, undiagnosed)
+### 35.10 `pthread_mutexattr_init` is refused (measured 2026-07-07, diagnosed 2026-07-08)
 
 The dominant class of the 2026-07-07 two-backend corpus re-measure
 (`interpreter.md` §7 close-out entry): 48× automem + 3× fearless
@@ -3320,19 +3320,50 @@ runs for real, so nearly every automem test funnels through a `Mutex`
 setup and hits this: it is the single highest-leverage FFI item by
 mismatch count.
 
-**Not yet diagnosed.** `pthread_mutexattr_init` is an ordinary extern(C)
-body-less libc function — exactly what the ladder exists to call — so
-the graceful no-available-source refusal means some gate said no. Prime
-suspect: its `pthread_mutexattr_t*` argument — the pointed-to libc type
-is a union, and `canRepresent` (§35.8) refuses unions in both directions
-(§35.7). For an *opaque out-pointer* the interpreted code never reads
-field-wise, that refusal may be stricter than needed: an opaque native
-buffer (handle-style, §11.3) would do. Diagnose first — confirm which
-gate fires — then choose between opaque-buffer marshalling for
-union-typed out-pointers and a §35.7-style raw-bytes union crossing.
-Exposing rt/ fixture (usual `AGENTS.md` approval): a body-less libc call
-taking a union-typed out-pointer (a
-`pthread_mutexattr_init`/`_destroy` round-trip), SystemLinker oracle.
+**Confirmed gate: the union out-pointer refusal.** The glibc
+`pthread_mutexattr_t` is `union { byte[N] __size; int __align; }`
+(`core.sys.posix.sys.types`). Called as `pthread_mutexattr_init(&attr)`
+(address-of a local), the `pthread_mutexattr_t*` parameter is an
+out-struct-pointer (`isOutStructPointer` in `ffi/core.d` — a union's
+`TypeStruct` has `ty == Tstruct`). `canRepresentCall`'s out-cell branch
+(`ffi/core.d`, the `isOutParameter` block that queries the pointed-to
+type in both directions) asks
+`marshaller.canRepresent(pthread_mutexattr_t, toNative)`. That routes to
+`canMarshalToNative` in `backends/interpreter/ffi_marshal.d`, whose
+`Tstruct` case returns `false` when `sym.isUnionDeclaration !is null` —
+the gate. `canRepresentCall` → `false` → `callViaLibffi` → `false` →
+`tryCallNative` → `false`, so the backend throws the graceful
+no-available-source diagnostic.
+
+The refusal is stricter than the bytes require: the `fromNative` side
+(`canReifyFromNative`, same module) already snapshots unions
+field-by-field from the same overlapped bytes — a bit-faithful copy — and
+the existing marshal/reify machinery round-trips these libc unions
+byte-faithfully (the `externCUnionOutParameter` oracle leg passes). So
+the eventual fix is **gate-only**: teach `canMarshalToNative` (and/or the
+out-cell path) to accept a union-typed out-pointer as an opaque native
+buffer whose bytes cross verbatim — no new marshalling of the overlapped
+representation is needed. This is narrower than a §35.7-style by-value
+union crossing (a boxed union cannot reproduce overlapped bytes); the
+out-pointer case never boxes the union, it hands the callee a native
+buffer and reifies the bytes back afterward.
+
+**Exposing fixtures landed 2026-07-08 (red on Interpreter, green on
+SystemLinker/LLVMJit), item still open pending the production fix:**
+
+- `rt/cstdlib.d`
+  `pthread.mutexattr.unionOutPointer.{Interpreter,SystemLinker,LLVMJit}`:
+  a body-less `pthread_mutexattr_init`/`settype(RECURSIVE)`/`gettype`
+  (reads the type back and asserts it survived)/`destroy` round-trip.
+- `rt/dependency_image.d`
+  `dependencyImage.externCUnionOutParameter.Interpreter`: a hermetic
+  repro — `union Handle { long aligned; byte[16] bytes; }` written by
+  `extern(C) dependencyInitHandle(Handle*)` and read back through
+  `extern(C) dependencyReadHandle(Handle*)`, SystemLinker oracle.
+
+Both Interpreter legs fail today with
+`` `pthread_mutexattr_init`/`dependencyInitHandle` cannot be interpreted
+at compile time, because it has no available source code ``.
 
 ### 35.11 `getrandom` scalar-buffer fill misreads `&(scalar)` as a slice base (handed off 2026-07-08)
 
