@@ -2241,8 +2241,8 @@ sort by consumer need, not table position:
 
 ```text
 1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
-   write rung, and the module-ctor-at-dlopen pin are DONE; only the TLS
-   variant remains
+   write rung, the module-ctor-at-dlopen pin, and the TLS-default rung are
+   DONE; what remains is ctor-ORDERING guarantees across images
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -2264,6 +2264,15 @@ observe `readSeed == 42` and a direct `seed == 42` read: the D DSO registry
 runs module ctors at dlopen for both backends, so this is green-as-pin with
 no production change (the Interpreter already dlopens dependency images in
 its constructor). The TLS variant is the remaining §35.2 rung.
+DONE: §35.2 TLS-default global read/write — dependencyImage.tlsGlobalReadWrite.
+A plain module-level `int tlsCounter = 100;` (thread-local by default, STT_TLS —
+the common case for D globals, unlike the minority `__gshared`) reads its
+initializer, takes an interpreted write-through, is mutated natively, and is
+read back, all through the same dlsym data-symbol path as `__gshared`: the
+§35.2a predicate matches `extern int` (extern_ set, dataseg, no _init) and
+`dlsym` resolves the STT_TLS symbol to the interpreter thread's instance.
+Green-as-pin with no production change; the remaining §35.2 work is
+ctor-ORDERING guarantees across images.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
@@ -3092,6 +3101,21 @@ nested-slice): green as-is with no production change, because the Interpreter
 already dlopens dependency images in its constructor and the ctor's write is
 visible through the §35.2a symbol-read path. The TLS variant is the remaining
 §35.2 rung.
+
+**Status: TLS-default rung LANDED (§35.2).**
+`dependencyImage.tlsGlobalReadWrite` pins the common case: a plain module-level
+`int tlsCounter = 100;` is thread-local by default in D (STT_TLS), unlike the
+minority `__gshared`. It reads its TLS initializer (100), takes an interpreted
+write-through (5, seen natively via `readTls`), is mutated natively (`bumpTls`
+to 6), and is read back — all through the same dlsym data-symbol path as
+`__gshared`. No production change was needed: the §35.2a predicate
+(`isExternDataSymbol` = dataseg, no `_init`, `extern_` set) already matches a
+plain `extern int` because TLS-ness is not part of the predicate, and `dlsym`
+resolves the STT_TLS symbol to the interpreter thread's own instance. The
+interpreter is single-threaded per test run, so the dlsym'd address, the
+interpreted reads/writes, and the native calls all touch the same thread's TLS
+instance. Green-as-pin. The remaining §35.2 work is ctor-ORDERING guarantees
+across images.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 

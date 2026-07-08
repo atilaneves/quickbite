@@ -2847,3 +2847,77 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+
+// Pins §35.2: a plain module-level `int` is thread-local by default (STT_TLS)
+// in D — the common case for dub-package globals, unlike the minority
+// `__gshared`. It crosses the boundary via the same dlsym data-symbol path as
+// `__gshared`: the §35.2a predicate matches `extern int` (extern_ set, dataseg,
+// no _init) and `dlsym` resolves the STT_TLS symbol to the interpreter thread's
+// instance, so reads and write-through both work with no extra code.
+@("dependencyImage.tlsGlobalReadWrite.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_tls_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_tls_fixture;
+
+            int tlsCounter = 100;                 // thread-local by default in D
+
+            void bumpTls() {
+                tlsCounter += 1;
+            }
+
+            int readTls() {
+                return tlsCounter;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_tls_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_tls_fixture;
+
+            extern int tlsCounter;
+            void bumpTls();
+            int readTls();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_tls_fixture;
+
+                unittest {
+                    assert(tlsCounter == 100);
+                    tlsCounter = 5;
+                    assert(readTls == 5);
+                    bumpTls;
+                    assert(tlsCounter == 6);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
