@@ -4288,3 +4288,17 @@ bounds for array of length 3`. That wording matches the
 `tests/ut/backends/runner/ct/arrays.d`, so the CTFE wording stays as a
 CTFE/tree-walker characterization and the new-core row uses the compiled
 oracle text. No production change was needed.
+
+REPL promotion audit, 2026-07-08: no new `tests/ut/bin/repl.d`
+`BytecodeNewCore` promotion was made in this pass. The next unpromoted
+coherent blocks are display-only or interpreter-native rows:
+`displaysFiniteRangeResults`, `displaysFilteredArrayResults`,
+`displaysAssocArrayResults`, `stringFieldsRenderWithLiteralSuffixes`,
+`assocArrayFieldsRenderElementSuffixes`,
+`assocArrayWithStructValuesRendersEntries`, and the
+`runtimeOnlyCellsUseResidentNativeCalls` / `runtimeFileOpenSucceeds`
+interpreter-native pair. Per the re-scoped REPL parity continuation, the
+display rows stay frozen until slice 11's prelude formatter execution path,
+and the interpreter-native rows are not `BytecodeNewCore` promotion
+candidates without separate runtime/native-boundary design work. No production
+change was needed.
