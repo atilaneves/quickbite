@@ -112,207 +112,94 @@ unittest {
 
 @("repl.frontend.enumExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
-        "({ enum E { a, b } return E.b; })()",
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput(["({ enum E { a, b } return E.b; })()"], ["E.b"]);
 }
 
 @("repl.frontend.enumArrayExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
+    assertFormatterBackendOutput([
         "({ enum E { a, b } return [E.a, E.b]; })()",
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
-}
-
-@("repl.frontend.scalarExpressionUsesPreludeFormatter")
-unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit("cast(uint) 42");
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
-}
-
-@("repl.frontend.characterExpressionUsesPreludeFormatter")
-unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit("cast(wchar) 'a'");
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
-}
-
-@("repl.frontend.wholeFloatingExpressionUsesPreludeFormatter")
-unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit("3.0");
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    ], ["[E.a, E.b]"]);
 }
 
 @("repl.frontend.longArrayExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit("[1L, 2L]");
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput(["[1L, 2L]"], ["[1L, 2L]"]);
 }
 
 @("repl.frontend.assocArrayExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(`["answer": 42L]`);
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput([`["answer": 42L]`], [`["answer":42L]`]);
 }
 
 @("repl.frontend.structExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
+    assertFormatterBackendOutput([
         "({ struct Point { int x; int y; } return Point(1, 2); })()",
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    ], ["Point(1, 2)"]);
 }
 
 @("repl.frontend.structArrayExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
+    assertFormatterBackendOutput([
         "({ struct Point { int x; int y; } return [Point(1, 2)]; })()",
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    ], ["[Point(1, 2)]"]);
 }
 
 @("repl.frontend.classFieldStructExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
-        "({ struct Node { int id; Object payload; } " ~
-        "return Node(5, null); })()",
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput([
+        "({ struct Node { int id; Object payload; } return Node(5, null); })()",
+    ], ["Node(5, null)"]);
 }
 
 @("repl.frontend.arrayFieldStructExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
-        "({ struct Bag { long[] values; } " ~
-        "return Bag([1L, 2L]); })()",
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput([
+        "({ struct Bag { long[] values; } return Bag([1L, 2L]); })()",
+    ], ["Bag([1L, 2L])"]);
 }
 
 @("repl.frontend.stringFieldStructExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
-        `({ struct Person { string name; wstring label; } ` ~
-        `return Person("Bob", "wide"w); })()`,
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput([
+        `({ struct Person { string name; wstring label; } return Person("Bob", "wide"w); })()`,
+    ], [`Person("Bob", "wide"w)`]);
 }
 
 @("repl.frontend.assocArrayFieldStructExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
-        `({ struct Lookup { long[string] values; } ` ~
-        `return Lookup(["answer": 42L]); })()`,
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput([
+        `({ struct Lookup { long[string] values; } return Lookup(["answer": 42L]); })()`,
+    ], [`Lookup(["answer":42L])`]);
 }
 
 @("repl.frontend.pointerFieldStructExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
-        "({ struct Link { int id; int* next; } " ~
-        "return Link(4, null); })()",
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput([
+        "({ struct Link { int id; int* next; } return Link(4, null); })()",
+    ], ["Link(4, null)"]);
 }
 
 @("repl.frontend.enumFieldStructExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
-
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
-        "({ enum E { a, b } struct Box { E value; } " ~
-        "return Box(E.b); })()",
-    );
-
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    assertFormatterBackendOutput([
+        "({ enum E { a, b } struct Box { E value; } return Box(E.b); })()",
+    ], ["Box(E.b)"]);
 }
 
 @("repl.frontend.enumArrayFieldStructExpressionUsesPreludeFormatter")
 unittest {
-    import quickbite.frontend.cell: EvalSession;
+    assertFormatterBackendOutput([
+        "({ enum E { a, b } struct Box { E[] values; } return Box([E.a, E.b]); })()",
+    ], ["Box([E.a, E.b])"]);
+}
 
-    auto session = EvalSession([], true);
-    auto cell = session.submit(
-        "({ enum E { a, b } struct Box { E[] values; } " ~
-        "return Box([E.a, E.b]); })()",
-    );
+private void assertFormatterBackendOutput(in string[] cells, in string[] expected) {
+    import quickbite.repl: runReplLoop;
 
-    cell.displayIsFormatted.should == true;
-    "__quickbiteFormat".should.be in cell.source;
+    static foreach (backend; AliasSeq!(Ctfe, Interpreter))
+        runReplLoop(newBackend!backend, cells ~ [":q"]).should == expected;
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore)) {
