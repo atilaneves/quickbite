@@ -1206,6 +1206,21 @@ private struct Walker {
                 }
             }
 
+            // An `extern __gshared` global defined in a compiled dependency
+            // image: read it from its native symbol and reify through its
+            // declared type (ffi.md §35.2a). A null address (symbol not loaded)
+            // falls through to the default init below, keeping this strictly
+            // additive so it cannot regress any extern global that isn't loaded.
+            // Writes/TLS/ctor-ordering remain later §35.2 rungs.
+            import quickbite.frontend.dmd.functions: isExternDataSymbol;
+            if (isExternDataSymbol(variable)) {
+                import quickbite.backends.interpreter.ffi_marshal: unmarshalNative;
+                import quickbite.ffi: resolveDataSymbol;
+
+                if (auto address = resolveDataSymbol(variable))
+                    return unmarshalNative(variable.type.toBasetype, address);
+            }
+
             return defaultValue(variable);
         }
 

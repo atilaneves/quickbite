@@ -390,6 +390,29 @@ private const(void)* resolveSymbol(
     return dlsym(RTLD_DEFAULT, mangleExact(function_));
 }
 
+// Resolve the address of a native `extern __gshared` global data symbol by its
+// mangled name against the process (ffi.md §35.2a). Value-free: core is the
+// backend-neutral bridge, so the caller reifies the bytes through its own
+// marshaller.
+public const(void)* resolveDataSymbol(
+    imported!"dmd.declaration".VarDeclaration variable,
+) {
+    import core.sys.posix.dlfcn: dlsym;
+    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
+    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
+    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
+    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
+    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
+    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
+    import dmd.mangle: mangleToBuffer;
+    import dmd.common.outbuffer: OutBuffer;
+
+    OutBuffer buf;
+    mangleToBuffer(variable, buf);
+    return dlsym(RTLD_DEFAULT, buf.peekChars);
+}
+
 private void loadDependencyImage(in string dependencyImage) {
     import core.sys.posix.dlfcn: dlerror, dlopen, RTLD_GLOBAL, RTLD_NOW;
     import std.conv: text;

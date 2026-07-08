@@ -2240,11 +2240,15 @@ dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
 sort by consumer need, not table position:
 
 ```text
-1. §35.2: data symbols + dependency-image init, first rung §35.2a — no
-   measured demand yet; climbs when a real package forces it
+1. §35.2: data symbols + dependency-image init — the §35.2a read rung is
+   DONE; write/TLS/ctor-ordering remain
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
+DONE: §35.2a read of a native `extern __gshared` global —
+dependencyImage.externGsharedGlobalRead resolves the data symbol via dlsym
+by mangled name and reifies it through unmarshalNative; write/TLS/ctor
+init stay as later §35.2 rungs.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
@@ -3040,6 +3044,17 @@ b. image with `static this() { seed = 42; }` and `int readSeed()`; the test
 mangled name through the same dlsym path, reify through the declared type
 with the existing descriptor machinery — no call involved. Writes, TLS, and
 ctor-ordering guarantees are later rungs.
+
+**Status: read rung LANDED (§35.2a).** `dependencyImage.externGsharedGlobalRead`
+drives it: the predicate `isExternDataSymbol` (`frontend/dmd/functions.d`)
+recognises an `extern __gshared` global with no local initializer; the
+Value-free core resolver `resolveDataSymbol` (`ffi/core.d`) computes the
+mangled name via `mangleToBuffer` and `dlsym(RTLD_DEFAULT, …)`; the
+Interpreter's `VarExp` branch reifies the bytes through the existing
+`unmarshalNative(type, address)`. A null address (symbol not loaded) falls
+through to the default zero-init, so the change is strictly additive and
+cannot regress an extern global that isn't loaded. Writes, TLS, and
+ctor-ordering remain later rungs (part b below is untouched).
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 

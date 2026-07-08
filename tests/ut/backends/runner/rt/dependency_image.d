@@ -2649,3 +2649,64 @@ unittest {
         "int[string]".should.be in interpreted[0].message;
     }
 }
+
+
+@("dependencyImage.externGsharedGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_gshared_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_gshared_fixture;
+
+            __gshared int dependencyCounter;
+
+            void bump() {
+                dependencyCounter += 1;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_gshared_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_gshared_fixture;
+
+            extern __gshared int dependencyCounter;
+            void bump();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_gshared_fixture;
+
+                unittest {
+                    bump;
+                    bump;
+                    assert(dependencyCounter == 2);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
