@@ -829,6 +829,40 @@ tests.classes.ClassWithStruct(DummyStruct(2, 3), 4)
 That next blocker is no longer message corruption; it is a real class
 serialization/equality wrong-answer frontier.
 
+**2026-07-08 follow-up: class references passed by value alias their
+object.** The readable `tests/classes.d:42` failure above was root-caused with
+a temporary full-message bench probe:
+
+```text
+Expected: tests.classes.ClassWithStruct(DummyStruct(2, 3), 4)
+     Got: tests.classes.ClassWithStruct(DummyStruct(0, 0), 0)
+```
+
+The decoded class object was constructed, but all field writes were lost. A
+writeback probe showed cerealed's `Decerealiser.grainClass(T)(T val)` was the
+break: `T val` is a by-value class reference. In compiled D, writes through
+that copied reference mutate the same object. In the interpreter,
+`Value.ClassObject` is immutable value data, so `grainClass`'s local `val`
+received `dummy` and `anotherByte`, but the caller's outer `ref val` still held
+the default object and was later written back over the decoded value. The
+interpreter now writes back changed by-value class parameters to writable class
+arguments after interpreted function/member calls, modelling class-reference
+field mutation with the existing value representation. No new fixture was
+added; this package frontier had no approved standalone test, so the existing
+cerealed bench remained the red signal.
+
+Re-measure:
+
+```text
+bin/bench.sh -b interpreter --dub cerealed
+skipping cerealed interpreter: pointer slice `[0..1]` exceeds allocated memory
+  block `[0..0]`
+```
+
+The class-with-struct serialization/equality mismatch is gone. The next visible
+interpreter blocker is the pre-existing pointer-slice-over-empty-allocation
+class, now exposed as the first cerealed failure.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

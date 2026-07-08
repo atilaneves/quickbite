@@ -3112,6 +3112,7 @@ private struct Walker {
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
     }
 
@@ -3138,6 +3139,7 @@ private struct Walker {
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
@@ -3504,6 +3506,49 @@ private struct Walker {
 
                 writeLocation(argument, *value);
             }
+        }
+    }
+
+    private void writeBackByValueClassArguments(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        import dmd.astenums: TY;
+
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (parameter.isReference)
+                continue;
+
+            if (
+                parameter.type is null ||
+                parameter.type.toBasetype.ty != TY.Tclass
+            )
+                continue;
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            if (argument is null || !isWritableLocation(argument))
+                continue;
+
+            auto finalParam = parameter in child.locals;
+            if (finalParam is null || !finalParam.isClassObject)
+                continue;
+
+            const original = runExpression(argument);
+            if (!original.isClassObject)
+                continue;
+
+            if (finalParam.classTypeName != original.classTypeName)
+                continue;
+
+            if (*finalParam != original)
+                writeLocation(argument, *finalParam);
         }
     }
 
