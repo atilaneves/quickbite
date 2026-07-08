@@ -723,6 +723,15 @@ scope. The ScopeBuffer mismatches are gone;
 `bin/bench.sh -b interpreter --dub cerealed` now advances to `gc_getArrayUsed`
 with no source, the GC array-growth frontier in §11.
 
+The concrete trigger was `cerealed` `ScopeBuffer.resize`: it explicitly imports
+`core.stdc.string : memcpy` and calls `memcpy(newBuf, buf, used * T.sizeof)`.
+The interpreter treats this as a narrow primitive-memory bridge because
+`memcpy` erases the element type behind `void*`, while interpreter-owned storage
+is still typed `Value`s plus tracked pointer snapshots. The generic native-call
+path cannot correctly copy between interpreter-owned storage and native/realloc
+memory. This is not an open-ended libc special case; future cleanup can fold it
+into a small `memset`/array-copy-like memory-intrinsics layer.
+
 **2026-07-08 follow-up: overlapping slice assignment diagnostic.** The
 existing `dynamicArray.overlappingSliceAssignmentDiagnostic` oracle fixture now
 includes `Interpreter` instead of pinning it to CTFE's detailed overlap text.
