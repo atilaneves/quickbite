@@ -2644,6 +2644,14 @@ private final class BytecodeNativeMarshaller:
             ty == TY.Tpointer;
     }
 
+    public bool canRepresentOutCell(Type pointedToType) {
+        // The bytecode marshaller has no special out-cell handling (ffi.md
+        // §35.10), so require the pointed-to type to cross both directions.
+        with (NativeMarshaller.Direction)
+            return canRepresent(pointedToType, toNative) &&
+                canRepresent(pointedToType, fromNative);
+    }
+
     public void fillArgument(
         ubyte[] buffer,
         Type type,

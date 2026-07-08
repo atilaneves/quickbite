@@ -39,6 +39,15 @@ public interface NativeMarshaller {
     // graceful no-available-source diagnostic instead of a post-call assert.
     bool canRepresent(imported!"dmd.mtype".Type type, in Direction direction);
 
+    // Whether the backend can cross an out-parameter's pointed-to type as an
+    // out cell (ffi.md §35.10). Distinct from canRepresent both-directions
+    // because an out cell crosses as an opaque native byte buffer the callee
+    // writes and the backend snapshots back: a union out-cell round-trips its
+    // overlapped bytes verbatim even where a by-value union cannot be
+    // marshalled from a boxed value (ffi.md §35.7). Backends that cannot
+    // special-case this fall back to canRepresent both directions.
+    bool canRepresentOutCell(imported!"dmd.mtype".Type pointedToType);
+
     void fillArgument(
         ubyte[] buffer,
         imported!"dmd.mtype".Type type,
@@ -665,9 +674,11 @@ private bool canRepresentCall(
                 index < addressOfLocalArguments.length &&
                 addressOfLocalArguments[index];
             if (isOutParameter(parameter, addressOfLocal)) {
-                auto pointedTo = parameter.nextOf.toBasetype;
-                if (!marshaller.canRepresent(pointedTo, toNative) ||
-                    !marshaller.canRepresent(pointedTo, fromNative))
+                // An out cell crosses both ways as an opaque native buffer; the
+                // marshaller owns whether it can (ffi.md §35.10), which lets a
+                // union out-cell round-trip even though a by-value union stays
+                // refused (§35.7). Do not query canRepresent both directions.
+                if (!marshaller.canRepresentOutCell(parameter.nextOf.toBasetype))
                     return false;
             } else if (!marshaller.canRepresent(parameter, toNative))
                 return false;

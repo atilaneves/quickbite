@@ -311,6 +311,23 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         }
     }
 
+    public override bool canRepresentOutCell(Type pointedToType) {
+        // An out cell is filled from and reified back into raw native bytes,
+        // never boxed as a by-value union (ffi.md §35.10). A union whose
+        // members are all fixed-size scalars (or scalar static arrays) has its
+        // overlapped bytes round-trip verbatim through marshalArgument's
+        // declaration-order field walk and unmarshalStruct's field-by-field
+        // snapshot, so accept it here even though canMarshalToNative refuses a
+        // by-value union — an interpreter-boxed union cannot reproduce
+        // overlapped bytes from per-member values (ffi.md §35.7), but the out
+        // cell never marshals from one. Everything else keeps the strict
+        // both-directions check.
+        if (isOpaqueUnionOutCell(pointedToType))
+            return true;
+        return canMarshalToNative(pointedToType) &&
+            canReifyFromNative(pointedToType);
+    }
+
     public PointerElementsWriteback[] pointerWritebacks() {
         import dmd.typesem: size;
 
@@ -839,6 +856,47 @@ private imported!"quickbite.lang".Value unmarshalValue(
             );
         default:
             assert(false, "unmarshalled libffi return type");
+    }
+}
+
+// A union out-parameter cell the interpreter can cross as an opaque native
+// byte buffer (ffi.md §35.10): a union whose every member is a fixed-size
+// scalar or a static array (any nesting) of scalars, so the callee-written
+// overlapped bytes fill from and reify back verbatim. Narrower than a general
+// union — a pointer, slice, or nested-aggregate member would not round-trip
+// byte-for-byte — and distinct from the by-value union refusal in
+// canMarshalToNative, which the out cell never triggers because it hands the
+// callee a native buffer rather than boxing the union (ffi.md §35.7).
+private bool isOpaqueUnionOutCell(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeStruct;
+
+    if (type.ty != TY.Tstruct)
+        return false;
+    auto sym = (cast(TypeStruct) type).sym;
+    if (sym.isUnionDeclaration is null)
+        return false;
+    foreach (field; sym.fields)
+        if (!isFixedSizeScalarField(field.type.toBasetype))
+            return false;
+    return true;
+}
+
+private bool isFixedSizeScalarField(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (type.ty == TY.Tsarray)
+        return isFixedSizeScalarField(type.nextOf.toBasetype);
+
+    switch (type.ty) with (TY) {
+        case Tbool, Tchar, Twchar, Tdchar,
+             Tint8, Tuns8, Tint16, Tuns16,
+             Tint32, Tuns32, Tint64, Tuns64,
+             Tfloat32, Tfloat64, Tfloat80:
+            return true;
+
+        default:
+            return false;
     }
 }
 
