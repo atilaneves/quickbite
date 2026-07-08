@@ -2242,9 +2242,9 @@ sort by consumer need, not table position:
 ```text
 1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
    write rung, the module-ctor-at-dlopen pin, the TLS-default rung, the
-   struct-global read+field-write rung, and the slice-global read rung are
-   DONE; what remains is slice/aggregate-global WRITEBACK and ctor-ORDERING
-   guarantees across images
+   struct-global read+field-write rung, the slice-global read rung, and the
+   slice-global writeback rung are DONE; what remains is ctor-ORDERING
+   guarantees across images (and struct-global whole-value rebind writeback)
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -2289,10 +2289,20 @@ An `extern __gshared int[] numbers`, populated by the image's `static this()` at
 dlopen, reifies its slice `{length, ptr}` descriptor from the symbol's bytes via
 the same dlsym data-symbol path as a scalar: `unmarshalValue`'s `Tarray` case
 reads `length`, reads `ptr`, and copies `length` elements. Green-as-pin with no
-production change. Read only — slice-global WRITEBACK (allocating and pinning
-interpreter memory, then writing a descriptor back to the symbol) is a later
-rung. The remaining §35.2 work is slice/aggregate-global writeback and
-ctor-ORDERING guarantees across images.
+production change (read companion to the writeback rung below).
+DONE: §35.2 dynamic-array (slice) global writeback —
+dependencyImage.sliceGlobalWriteback. An interpreted `payload = [7, 8, 9]`
+assignment into an `extern __gshared int[] payload` global crosses through the
+generic `marshalNative` descriptor path: `writeLocation`'s VarExp case calls
+`marshalNative(variable.type, address, storageValue(...))`, which for a `Tarray`
+allocates a fresh element buffer, writes `{length, ptr=buffer.ptr}` into the
+symbol's 16 bytes, and pins the buffer for the process lifetime (§5). Native
+`sumPayload`/`payloadLength` then read the interpreter-written length and
+elements back, and a second `payload = [100]` overwrites cleanly. Green-as-pin
+with no production change — slice-global writeback already works via the generic
+marshaller, so it is no longer deferred. The remaining §35.2 work is
+ctor-ORDERING guarantees across images (and struct-global whole-value rebind
+writeback).
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,

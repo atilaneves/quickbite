@@ -3077,3 +3077,80 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// Pins §35.2: writing a whole new slice into a dynamic-array native global.
+// The interpreter's `writeLocation` (VarExp case) routes the assignment
+// through the generic `marshalNative` descriptor path: for a `Tarray` it
+// allocates a fresh element buffer, writes `{length, ptr=buffer.ptr}` into the
+// symbol's 16 bytes, and pins the buffer for the process lifetime (§5). Native
+// code then reads the interpreter-written `{length,ptr}` and elements back.
+@("dependencyImage.sliceGlobalWriteback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_slice_write_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_slice_write_fixture;
+
+            __gshared int[] payload;
+
+            int sumPayload() {
+                int s = 0;
+                foreach (v; payload) s += v;
+                return s;
+            }
+
+            size_t payloadLength() {
+                return payload.length;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_slice_write_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_slice_write_fixture;
+
+            extern __gshared int[] payload;
+            int sumPayload();
+            size_t payloadLength();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_slice_write_fixture;
+
+                unittest {
+                    payload = [7, 8, 9];          // slice-rebind write-through
+                    assert(payloadLength() == 3); // native sees new length
+                    assert(sumPayload() == 24);   // native sees new elements
+                    payload = [100];              // overwrite with a new slice
+                    assert(payloadLength() == 1);
+                    assert(sumPayload() == 100);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
