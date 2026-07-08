@@ -361,14 +361,15 @@ private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
 
     auto baseType = type.toBasetype;
     with (TY) switch (baseType.ty) {
-        case Tchar, Twchar, Tdchar,
-             Tuns32, Tint64, Tuns64,
+        case Tbool,
+             Tchar, Twchar, Tdchar,
+             Tint8, Tuns8, Tint16, Tuns16, Tint32, Tuns32, Tint64, Tuns64,
              Tfloat32, Tfloat64, Tfloat80:
             return true;
         case Taarray:
             return true;
         case Tarray, Tsarray:
-            return arrayElementNeedsPreludeFormat(baseType);
+            return arrayElementCanUsePreludeFormat(baseType);
         case Tstruct:
             return structTypeNeedsPreludeFormat(baseType);
         default:
@@ -377,6 +378,10 @@ private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
 }
 
 private bool structTypeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
+    auto structType = type.isTypeStruct;
+    if (structType is null || structType.sym.isInstantiated !is null)
+        return false;
+
     return structNeedsPreludeFormat(type) || ordinaryStructNeedsPreludeFormat(type);
 }
 
@@ -400,7 +405,7 @@ private bool structNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
                 case Taarray:
                     return true;
                 case Tarray, Tsarray:
-                    return arrayElementNeedsPreludeFormat(fieldType);
+                    return arrayElementCanUsePreludeFormat(fieldType);
                 case Tpointer:
                     if (field.isThisDeclaration is null)
                         return true;
@@ -425,27 +430,12 @@ private bool ordinaryStructNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
     return true;
 }
 
-private bool arrayElementNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
+private bool arrayElementCanUsePreludeFormat(imported!"dmd.mtype".Type type) {
     auto elementType = type.nextOf;
     if (elementType is null)
         return false;
 
-    if (elementType.ty == TY.Tenum)
-        return true;
-
-    auto baseType = elementType.toBasetype;
-    with (TY) switch (baseType.ty) {
-        case Tchar, Twchar, Tdchar:
-            return true;
-        case Tint64, Tuns64:
-            return true;
-        case Tstruct:
-            return structTypeNeedsPreludeFormat(baseType);
-        default:
-            return false;
-    }
+    return typeNeedsPreludeFormat(elementType);
 }
 
 private string[] withReplPreludeImportPath(in string[] importPaths) @safe pure {

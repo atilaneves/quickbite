@@ -282,6 +282,19 @@ Progress 2026-07-07: the formatter-gate test debt is cleaned up. Tests no
 longer assert that expression cells contain `__quickbiteFormat`; the surviving
 coverage now runs formatter-capable backends and asserts user-visible display.
 
+Progress 2026-07-08: the formatter gate now covers direct expression cells
+whose return type is any primitive D-literal scalar already handled by the
+prelude (`bool`, character widths, integral widths, and floating widths), plus
+dynamic/static arrays whose element type can itself use the prelude. CTFE and
+Interpreter therefore render ordinary scalar cells and ordinary/nested array
+cells through `__quickbiteFormat` instead of the interim `Value.toString`
+display path. CTFE also gained a REPL-session fast path for formatter-wrapped
+cells: it extracts the formatter's returned string directly from DMD CTFE
+results (`StringExp` or char-array literal), so those CTFE REPL displays no
+longer pass through `ctfeValue`/`displayString`. The old CTFE reifier remains
+for unformatted evaluator calls and still-ungated REPL cases such as
+range/template structs and nested-context structs.
+
 Decision 2026-07-07: ownership split with the bytecode rewrite
 (`ai/plans/bytecode.md`), so the two tracks can run in parallel without one
 building what the other deletes.
