@@ -4356,6 +4356,12 @@ private struct Walker {
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
+        // An empty range writes nothing, so the pointer's provenance never
+        // matters — a zero-length assignment through a null pointer is a no-op
+        // in compiled D, not an unsupported target.
+        if (upper == lower)
+            return value;
+
         Value elementAt(in size_t index) {
             return block ? copyArrayValue(value) : value[index];
         }
