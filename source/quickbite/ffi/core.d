@@ -841,7 +841,7 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiArgumentTypeFor(
     import dmd.astenums: TY;
 
     if (type.ty == TY.Tarray)
-        return isSupportedScalarSlice(type) ? ffiSliceType : null;
+        return isSupportedFfiSlice(type) ? ffiSliceType : null;
 
     return ffiTypeFor(type);
 }
@@ -873,7 +873,7 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
         // (ffi.md §11.3/§34.12); it crosses as an opaque native handle.
         case TY.Tclass:                return &ffi_type_pointer;
         case TY.Tarray:
-            return isSupportedScalarSlice(type) ? ffiSliceType : null;
+            return isSupportedFfiSlice(type) ? ffiSliceType : null;
         case TY.Tstruct:               return ffiStructType(cast(TypeStruct) type);
         case TY.Tsarray:               return ffiStaticArrayType(cast(TypeSArray) type);
         // A delegate crosses as its two-pointer {context, funcptr} struct
@@ -1050,6 +1050,16 @@ public bool isSupportedScalarSlice(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
     return type.ty == TY.Tarray && isScalarFfiType(type.nextOf.toBasetype);
+}
+
+// A dynamic slice crosses when its element type is itself FFI-representable —
+// a scalar as before, or a by-value struct/static array that ffiTypeFor maps
+// (ffi.md §34.3.1 item 0). The slice ABI descriptor {length, ptr} is
+// element-agnostic; only the element gate widens.
+public bool isSupportedFfiSlice(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tarray && ffiTypeFor(type.nextOf.toBasetype) !is null;
 }
 
 // A DMD basetype that maps to a single libffi scalar ffi_type (not a pointer,

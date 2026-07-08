@@ -2300,12 +2300,15 @@ gaps as of 2026-07-06: the `Tsarray` seam gap is now CLOSED in `ffi/core.d`
 (`ffiTypeFor` maps a static array to a STRUCT `ffi_type` of `dim` element
 copies; `ffi_marshal.d` already handled `Tsarray`), so a static array crosses
 the seam standalone and as a struct field at any nesting depth — demonstrated
-by the `dependencyImage.externDStaticArrayField.Interpreter` fixture. Still
-open: `isSupportedScalarSlice` gates slices to scalar elements (no
-slice-of-structs argument or return); no `Taarray` handling (should reject
-with an honest diagnostic, not a generic one). Fixture list (each needs the
-usual approval; oracle = `SystemLinker`): a slice-of-structs argument and a
-slice-of-structs return; an AA crossing rejected with a named diagnostic.
+by the `dependencyImage.externDStaticArrayField.Interpreter` fixture. The
+slice-of-structs gap is now CLOSED: the slice element gate is
+representability-driven (`isSupportedFfiSlice`, i.e. `ffiTypeFor(element) !=
+null`) rather than scalar-only, so a slice whose element is a by-value struct
+crosses both as an argument and as a return — demonstrated by the
+`dependencyImage.externDSliceOfStructs.Interpreter` fixture. Still open: no
+`Taarray` handling (should reject with an honest diagnostic, not a generic
+one). Fixture list (each needs the usual approval; oracle = `SystemLinker`):
+an AA crossing rejected with a named diagnostic.
 Done-criterion: `materialize`/`reify` handle any aggregate composed of
 supported leaf kinds at any nesting depth, demonstrated by those fixtures
 without adding per-shape special cases. Scheduling: after `interpreter.md`

@@ -2495,3 +2495,88 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A dynamic slice whose element is a by-value struct (ffi.md §34.3.1 item 0):
+// the slice ABI descriptor is element-agnostic, so once the element gate is
+// representability-driven the slice crosses both as an argument and a return.
+@("dependencyImage.externDSliceOfStructs.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_slice_of_structs_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_slice_of_structs_fixture;
+
+            struct Point {
+                int x;
+                int y;
+            }
+
+            long dependencyPointSum(const(Point)[] points) {
+                long total = 0;
+                foreach (point; points)
+                    total += point.x + point.y;
+                return total;
+            }
+
+            const(Point)[] dependencyMakePoints(int seed) {
+                return [Point(seed, seed + 1), Point(seed + 2, seed + 3)];
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_slice_of_structs_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_slice_of_structs_fixture;
+
+            struct Point {
+                int x;
+                int y;
+            }
+
+            long dependencyPointSum(const(Point)[] points);
+            const(Point)[] dependencyMakePoints(int seed);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_slice_of_structs_fixture;
+
+                unittest {
+                    int base = 5;
+                    Point[] points =
+                        [Point(base, base + 1), Point(base + 2, base + 3)];
+                    assert(dependencyPointSum(points) == 26);
+
+                    const made = dependencyMakePoints(base);
+                    assert(made.length == 2);
+                    assert(made[0].x == 5);
+                    assert(made[1].y == 8);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
