@@ -4537,14 +4537,8 @@ private struct Walker {
             ? length
             : cast(size_t) runExpression(source.upr).asLong;
 
-        if (lower < sourceUpper && sourceLower < upper) {
-            import std.conv: text;
-
-            throw new Exception(text(
-                "overlapping slice assignment `[", lower, "..", upper,
-                "] = [", sourceLower, "..", sourceUpper, "]`",
-            ));
-        }
+        if (lower < sourceUpper && sourceLower < upper)
+            throw new Exception("Range violation");
     }
 
     // A slice assignment through a struct field (`s.buf[i .. j] = source[]`):

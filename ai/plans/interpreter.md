@@ -723,6 +723,13 @@ scope. The ScopeBuffer mismatches are gone;
 `bin/bench.sh -b interpreter --dub cerealed` now advances to `gc_getArrayUsed`
 with no source, the GC array-growth frontier in §11.
 
+**2026-07-08 follow-up: overlapping slice assignment diagnostic.** The
+existing `dynamicArray.overlappingSliceAssignmentDiagnostic` oracle fixture now
+includes `Interpreter` instead of pinning it to CTFE's detailed overlap text.
+The interpreter's local dynamic-array slice assignment path now reports
+compiled D's `Range violation`, matching `SystemLinker` for this already
+rejected overlapping write.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
