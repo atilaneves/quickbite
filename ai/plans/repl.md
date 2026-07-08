@@ -224,10 +224,14 @@ extern(C) void __qb_cell_N(void* ctx, SinkFunction sink) { ... }  // see 5
   `auto x = e;` is promoted to a module-level variable so it has real
   storage that later cells reference by symbol. The frontend knows the
   resolved type after semantic analysis.
-- **Visibility**: later cells `public import` live prior cells, so
-  statements execute exactly once and per-cell cost is O(cell), not
-  O(session). Finding 4 (globals) falls out naturally: a module-level
-  `VarDeclaration` is just a lifted variable the user declared explicitly.
+- **Visibility**: later cells `public import` live prior cells (drepl's
+  import-chain mechanism), so statements execute exactly once and
+  per-cell *execution* cost is O(cell), not O(session). The compile
+  component still grows with depth — cell N imports N−1 modules and
+  identifier lookup searches them — which is why B1's acceptance is
+  split (see Tests and Benchmarks). Finding 4 (globals) falls out
+  naturally: a module-level `VarDeclaration` is just a lifted variable
+  the user declared explicitly.
 - **Loaded images are never `dlclose`d.** Old cells' symbols stay
   referenced; D shared-object unloading with live GC pointers and TLS is
   unsafe anyway. Per-load runtime obligations (module ctors, eh_frame, GC
@@ -369,9 +373,17 @@ expressiveness gaps are exposed by straight-line behaviour tests.
   (`sourceCache`, `frontend/compiler.d`), and identical probes would hide
   the parse growth. Variant B times `eval(Cell)` alone to attribute
   parse
-  vs execution growth. Acceptance criterion for the delta path: linear-fit
-  slope of median latency vs depth ≈ 0 (today: affine, ~15× from depth 1
-  to 200 expected).
+  vs execution growth. Acceptance for the delta path is split, because
+  its compile component is inherently Ω(depth): the per-cell import list
+  is O(depth) and identifier lookup searches it, so total-latency slope
+  ≈ 0 is unsatisfiable as a gate (drepl, the same import-chain shape,
+  slows with session depth in the field). The **hard gate** is Variant
+  B: linear-fit slope of median *execution* latency vs depth ≈ 0 — that
+  is what replay fails. Total latency must show only a small slope,
+  measured and documented, not gated at ≈ 0; if the measured
+  import-chain slope proves unacceptable, the escape hatch is a
+  Cling-style flat symbol namespace instead of a transitive import
+  list. (Today: affine, ~15× from depth 1 to 200 expected.)
 
 - **T5 — redefinition behaviours** (gates slice 4): function replace,
   overload preservation, rejected replacement keeps old definition,
@@ -440,7 +452,9 @@ Dependencies are noted; order within independent slices is flexible.
 9. **Native REPL session** (depends on 5, 7, 8, and a working
    codegen-and-load path from the dmd-backend work): delta modules,
    lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on
-   the native backend, the full existing REPL matrix, and B1 flatness.
+   the native backend, the full existing REPL matrix, and B1's split
+   criterion (execution-slope flatness; compile slope measured and
+   documented).
 
 ## Deferred Work
 
@@ -491,6 +505,17 @@ per test.
   closest existing native-REPL-without-JIT analogue.
 - JShell: replace + dependency cascade (superseded here by free
   whole-transcript recheck); `$N` scratch variables.
+- drepl (D, Nowak — the canonical D REPL): per-line module compiled
+  with `dmd -shared`, dlopen'd; state persists via an import chain over
+  prior cells plus linking their `.so`s — the session-level existence
+  proof for Target Design 3 (import chain, link prior images, never
+  unload). Its quirks are exactly this plan's deltas from it:
+  module-scope declarations collide with D's static-initializer rule
+  (solved here by lifting with runtime init in the eval body), no
+  redefinition, textual classification without semantic analysis, and a
+  fresh dmd process per line — the cost baseline the in-process
+  frontend must beat. Its depth-dependent slowdown is the field
+  evidence behind B1's split criterion.
 - dabble (D, 2014): heap-lifted variables, dlopen'd cells — prior proof
   the lifting approach works for D specifically.
 - gore (Go): the replay cautionary tale — same architecture as today's
