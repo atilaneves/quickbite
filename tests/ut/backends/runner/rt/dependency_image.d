@@ -2344,3 +2344,84 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A union-typed out-pointer written by one extern(C) call and read back
+// through a second (ffi.md §35.10), mirroring externCScalarOutParameter but
+// with a union behind the pointer. `Handle*` passed as `&handle` is an
+// out-struct-pointer whose pointed-to type is a union, so `canMarshalToNative`
+// (ffi_marshal.d) refuses it toNative and `canRepresentCall`'s out-cell check
+// (core.d) rejects the call: the Interpreter degrades to the
+// no-available-source refusal today even though the sentinel byte would
+// round-trip. SystemLinker is the behaviour oracle; the Interpreter leg is red
+// pending the union-gate fix.
+@("dependencyImage.externCUnionOutParameter.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_union_out_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_union_out_fixture;
+
+            union Handle {
+                long aligned;
+                byte[16] bytes;
+            }
+
+            extern(C) void dependencyInitHandle(Handle* h) {
+                h.bytes[0] = 7;
+            }
+
+            extern(C) int dependencyReadHandle(Handle* h) {
+                return h.bytes[0];
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_union_out_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_union_out_fixture;
+
+            union Handle {
+                long aligned;
+                byte[16] bytes;
+            }
+
+            extern(C) void dependencyInitHandle(Handle* h);
+            extern(C) int dependencyReadHandle(Handle* h);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_union_out_fixture;
+
+                unittest {
+                    Handle handle;
+                    dependencyInitHandle(&handle);
+                    assert(dependencyReadHandle(&handle) == 7);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
