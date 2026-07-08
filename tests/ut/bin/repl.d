@@ -1254,7 +1254,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, BytecodeNewCore)) {
 
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
@@ -1345,6 +1345,23 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         }
         outOfBoundsIndex.shouldThrow.msg.should ==
             "array index 99 is out of bounds `[0..3]`";
+    }
+}
+
+static foreach (backend; AliasSeq!(BytecodeNewCore)) {
+
+    @("repl.backend.expressionCtfeErrorsReportDiagnostics." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("auto arr = [1,2,3];").should == "";
+        void outOfBoundsIndex() {
+            repl.submit("arr[99]");
+        }
+        outOfBoundsIndex.shouldThrow.msg.should ==
+            "index [99] is out of bounds for array of length 3";
     }
 }
 
