@@ -8,6 +8,56 @@ public void loadDependencyImages(in string[] dependencyImages) {
         loadDependencyImage(dependencyImage);
 }
 
+// Returns a diagnostic naming an FFI-uncrossable type in `function_`'s
+// signature (today: an associative array, whose hashing/allocation the bridge
+// cannot reproduce across the ABI), or null if none. Lets the caller replace
+// the misleading no-available-source message with an honest one (ffi.md
+// §34.3.1 item 0). Scoped to the top-level return and parameter types; an AA
+// nested inside a struct or slice is out of scope.
+public string unsupportedNativeTypeMessage(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import dmd.mtype: TypeFunction;
+    import std.conv: text;
+
+    auto type = cast(TypeFunction) function_.type;
+    if (type is null)
+        return null;
+
+    auto offending = uncrossableAssocArray(type.next);
+    if (offending is null && type.parameterList.parameters !is null)
+        foreach (parameter; *type.parameterList.parameters) {
+            offending = uncrossableAssocArray(parameter.type);
+            if (offending !is null)
+                break;
+        }
+
+    if (offending is null)
+        return null;
+
+    return text(
+        "`",
+        function_.toChars,
+        "` cannot be called natively: the associative array type `",
+        offending.toChars,
+        "` cannot cross the FFI boundary",
+    );
+}
+
+// The basetype of `type` if it is an associative array the bridge cannot cross,
+// else null.
+private imported!"dmd.mtype".Type uncrossableAssocArray(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return null;
+
+    auto base = type.toBasetype;
+    return base.ty == TY.Taarray ? base : null;
+}
+
 public class NativeCallException: Exception {
     public string className;
     // The native Throwable.next link, captured as another NativeCallException

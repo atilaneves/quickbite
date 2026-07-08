@@ -2580,3 +2580,72 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// An associative-array parameter crossing the boundary (ffi.md §34.3.1 item 0):
+// the boxed interpreter cannot reproduce the AA's hashing, allocation, and
+// layout across the ABI, so the crossing stays refused — but the diagnostic
+// must name the associative array rather than blame missing source. The native
+// oracle crosses it fine (the KEPT supported-behavior leg); the Interpreter
+// refuses it honestly (unsupportedNativeTypeMessage). extern(C) keeps argument
+// ordering irrelevant.
+@("dependencyImage.externCAssocArrayRejected.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_assoc_array_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_assoc_array_fixture;
+
+            extern(C) int dependencyCountEntries(int[string] table) {
+                return cast(int) table.length;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_assoc_array_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_assoc_array_fixture;
+
+            extern(C) int dependencyCountEntries(int[string] table);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_assoc_array_fixture;
+
+                unittest {
+                    int[string] table;
+                    table["a"] = 1;
+                    table["b"] = 2;
+                    assert(dependencyCountEntries(table) == 2);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == false;
+        // Honest diagnostic: names the associative array and its type spelling,
+        // not missing source (ffi.md §34.3.1 item 0).
+        "associative array".should.be in interpreted[0].message;
+        "int[string]".should.be in interpreted[0].message;
+    }
+}

@@ -1988,6 +1988,7 @@ private struct Walker {
             if (call.f !is null && call.f.needThis) {
                 import quickbite.frontend.dmd.functions:
                     hasNoAvailableSource, noAvailableSourceMessage;
+                import quickbite.ffi: unsupportedNativeTypeMessage;
 
                 if (
                     call.f.isCtorDeclaration !is null &&
@@ -2095,7 +2096,13 @@ private struct Walker {
                         throwNativeException(exception);
                     }
 
-                    throw new Exception(noAvailableSourceMessage(function_));
+                    const unsupportedType =
+                        unsupportedNativeTypeMessage(function_);
+                    throw new Exception(
+                        unsupportedType is null
+                            ? noAvailableSourceMessage(function_)
+                            : unsupportedType,
+                    );
                 }
                 return runMemberFunction(
                     function_,
@@ -2110,6 +2117,7 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
+            import quickbite.ffi: unsupportedNativeTypeMessage;
             import quickbite.backends.interpreter.ffi_marshal:
                 NativeCallException, tryCallNative;
 
@@ -2143,7 +2151,15 @@ private struct Walker {
                     throwNativeException(exception);
                 }
 
-                throw new Exception(noAvailableSourceMessage(call.f));
+                // An FFI-uncrossable signature type (e.g. an associative array,
+                // ffi.md §34.3.1 item 0) gets an honest diagnostic naming the
+                // type rather than the misleading no-available-source message.
+                const unsupportedType = unsupportedNativeTypeMessage(call.f);
+                throw new Exception(
+                    unsupportedType is null
+                        ? noAvailableSourceMessage(call.f)
+                        : unsupportedType,
+                );
             }
 
             if (call.f.isNested && hasThis)
