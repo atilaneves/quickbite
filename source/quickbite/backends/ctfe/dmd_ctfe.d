@@ -6,7 +6,8 @@ private:
 
 public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, ReplSession,
+        displayString;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
@@ -26,6 +27,87 @@ public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
         return diagnostic.length == 0
             ? EvalResult(displayString(ctfeValue(interpreted), function_))
             : EvalResult(EvalResult.Diagnostic(diagnostic));
+    }
+
+    public override ReplSession createReplSession() {
+        return new CtfeReplSession(this);
+    }
+
+    private EvalResult evalFormattedDisplay(FuncDeclaration function_) {
+        string diagnostic;
+        auto interpreted = interpretCtfeWithDiagnostic(
+            callExpression(function_),
+            diagnostic,
+        );
+        if (diagnostic.length != 0)
+            return EvalResult(EvalResult.Diagnostic(diagnostic));
+
+        try
+            return EvalResult(ctfeStringDisplay(interpreted));
+        catch (Exception exception)
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
+    }
+}
+
+private imported!"dmd.expression".StringExp ctfeString(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (auto string_ = expression.isStringExp)
+        return string_;
+
+    if (auto construct = expression.isConstructExp)
+        return ctfeString(construct.e2);
+
+    return null;
+}
+
+private string ctfeStringDisplay(imported!"dmd.expression".Expression expression) {
+    if (auto string_ = ctfeString(expression)) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+
+        return stringChars(string_).idup;
+    }
+
+    if (auto array = expression.isArrayLiteralExp)
+        return ctfeCharArrayDisplay(array);
+
+    throw new Exception("Prelude formatter returned a non-string value.");
+}
+
+private string ctfeCharArrayDisplay(
+    imported!"dmd.expression".ArrayLiteralExp array,
+) {
+    char[] chars;
+    foreach (index; 0 .. array.elements.length)
+        chars ~= ctfeChar(array[index]);
+
+    return chars.idup;
+}
+
+private char ctfeChar(imported!"dmd.expression".Expression expression) {
+    if (auto construct = expression.isConstructExp)
+        return ctfeChar(construct.e2);
+
+    if (auto integer = expression.isIntegerExp)
+        return cast(char) integer.getInteger;
+
+    throw new Exception("Prelude formatter returned a non-character string element.");
+}
+
+private class CtfeReplSession: imported!"quickbite.backends.evaluator".ReplSession {
+    private Ctfe _ctfe;
+
+    public this(Ctfe ctfe) {
+        _ctfe = ctfe;
+    }
+
+    public override imported!"quickbite.backends.evaluator".EvalResult submit(
+        imported!"quickbite.frontend.repl".ReplCell cell,
+    ) {
+        if (cell.evalCell.displayIsFormatted)
+            return _ctfe.evalFormattedDisplay(cell.evalCell.function_);
+
+        return _ctfe.eval(cell.evalCell);
     }
 }
 

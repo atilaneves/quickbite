@@ -427,23 +427,16 @@ Dependencies are noted; order within independent slices is flexible.
    with `ninja bin/ut` and `bin/ut --random` (seed `3527759054`).
 8. **Formatter prelude** (the canonical display formatter,
    `ai/plans/value.md`; independent of 7; testable today under CTFE and
-   compiled unittests). Initial CTFE-capable prelude cases are done in
-   `repl-backend-sessions`: `__quickbiteFormat(42)` renders `"42"`,
-   `__quickbiteFormat('a')` renders `"'a'"`,
-   `__quickbiteFormat("quickbite")` renders `"\"quickbite\""`, and
-   `__quickbiteFormat(3.0)` renders `"3.0"`. Verified with
-   `ninja bin/ut` and `bin/ut --random` (latest seed `2822468755`) — but
-   those runs pin only the formatter's own unit tests. **Not wired as of
-   2026-07-06**: nothing in `source/` imports `repl_prelude`, expression
-   cells are still synthesized as `return <expr>;`, and every backend's
-   display still goes through the interim `displayString`/`Value.toString`
-   path. Remaining, in order: extend the formatter to structs/enums/AAs
-   (today a `text(value)` catch-all that breaks the round-trip spec for
-   exactly the aggregate cases the formatter exists for); import the
-   prelude into the synthesized module and synthesize expression cells as
-   `__quickbiteFormat(expr)`, gated per backend (value.md decision 4:
-   only views consumed by backends that can execute it); only then retire
-   `displayString` per backend (value.md remaining-work item 2).
+   compiled unittests). The formatter surface and the first frontend wiring
+   rungs are active for formatter-capable backends; `value.md` owns the
+   detailed ledger. As of 2026-07-08, CTFE and Interpreter expression cells
+   synthesize `__quickbiteFormat(expr)` for primitive display scalars,
+   selected structs/enums/AAs, and arrays whose element type can use the
+   prelude. CTFE formatter-wrapped REPL cells no longer route their display
+   through the private `ctfeValue`/`displayString` path. Remaining slice-8
+   work stays in `value.md`: keep expanding the per-backend gate, then retire
+   each backend's interim display scaffolding only after its display rows are
+   covered by formatter execution.
 9. **Native REPL session** (depends on 5, 7, 8, and a working
    codegen-and-load path from the dmd-backend work): delta modules,
    lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on
