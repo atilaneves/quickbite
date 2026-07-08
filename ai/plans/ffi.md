@@ -75,9 +75,10 @@ performs the SysV x86_64 classification (INTEGER/SSE eightbytes, small-struct
 in registers vs. memory, the hidden `sret` pointer, `real` via x87). `real` in
 a signature is a known libffi x86_64 hazard and gets explicit oracle fixtures.
 
-Implemented today in `source/quickbite/backends/ffi.d` (`tryCallNative`,
-`callViaLibffi`) over the libffi binding in
-`source/quickbite/backends/libffi.d`. §5/§6 describe where this code is going.
+Implemented today in the backend-neutral bridge core
+`source/quickbite/ffi/core.d` (`callNative`, `callViaLibffi`) over the libffi
+binding in `source/quickbite/ffi/libffi.d`, with backend-owned
+materialize/reify injected through the §5 seam.
 
 ## 5. The seam: backend-neutral core + materialize/reify
 
@@ -120,6 +121,18 @@ Consequences:
 - This finally makes the §21.1 "shared, backend-neutral resolver" claim true,
   and makes the backend representation **swappable behind a stable interface**
   so it can be measured rather than guessed.
+
+**Status 2026-07-08: carved.** The old `backends/ffi.d` chokepoint has been
+split: `quickbite.ffi.core` owns symbol resolution, ABI descriptors, CIF prep,
+`ffi_call`, ABI argument ordering, receiver/ref-return mechanics, callback
+closures, and native-exception capture without naming `Value`; the interpreter
+injects `InterpreterNativeMarshaller` from
+`source/quickbite/backends/interpreter/ffi_marshal.d`. The core-facing seam is
+buffer-shaped (`NativeMarshaller.fillArgument` / `fillReceiver` /
+`fillOutParameterCell`, `readResult` / `writeOutParameter` /
+`writeRefResult`, plus callback and native-receiver hooks) so future
+native-layout backends can implement identity materialize/reify without
+importing interpreter code.
 
 ## 6. Package layout and the parallel-agent partition
 
