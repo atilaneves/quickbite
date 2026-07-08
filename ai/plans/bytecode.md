@@ -4359,3 +4359,25 @@ not make the approved REPL behaviour pass and there is no approved existing
 test delta here to cover the improved diagnostic. Leave both REPL rows
 unpromoted until the native bridge is extended by the runtime/FFI track or a
 separate approved diagnostic test is added.
+
+Slice 8 native scalar-int argument, 2026-07-08: promoted `rt/cstdlib.d`'s
+existing SystemLinker-backed `abs.scalar` row to `BytecodeNewCore`. The red
+diagnostic was `` `abs` cannot be interpreted at compile time, because it has
+no available source code ``. The production change generalises the narrow
+`atoi` native-call chokepoint rather than adding a parallel path.
+`tryCompileNativeCall`
+(`source/quickbite/backends/bytecode/core/compiler.d`) now also accepts a
+single scalar `int` argument passed by value: it evaluates the argument into an
+int-sized argument slot via the ordinary `emitCallArgument` path and records
+the argument's basetype in the `NativeCall`. The shared table-entry/instruction
+tail is factored into a small `emitNativeCall` helper used by both the string
+and scalar shapes. Also fixed a latent size bug in
+`BytecodeNativeMarshaller.fillArgument`
+(`source/quickbite/backends/bytecode/core/machine.d`): it copied a fixed
+`size_t.sizeof` (8) bytes into a buffer that is only `int.sizeof` (4) wide for
+an `int` argument; it now copies exactly the buffer's native ABI width.
+`canRepresent` already allowed `Tint32`. Verification: `ninja bin/ut`, focused
+`abs.scalar.BytecodeNewCore` green, with `atoi.value.BytecodeNewCore` still
+green and the `free`/`malloc` no-source rows still red-as-expected; `bin/ut
+--random` with seed `2087389007` reported the invariant `0 failed, 6/6 failing
+as expected`.

@@ -2651,7 +2651,9 @@ private final class BytecodeNativeMarshaller:
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
-        buffer[0 .. size_t.sizeof] = _stack[_argument .. _argument + size_t.sizeof];
+        // `buffer` is sized to the argument type's native ABI width (4 bytes
+        // for `int`, 8 for a pointer); copy exactly that many, not a fixed 8.
+        buffer[] = _stack[_argument .. _argument + buffer.length];
     }
 
     public void readResult(Type type, in ubyte[] buffer) {

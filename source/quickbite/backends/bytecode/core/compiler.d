@@ -7329,6 +7329,17 @@ private struct Compiler {
             return null;
 
         auto argument = (*call.arguments)[0];
+
+        // A scalar `int` argument passed by value: evaluate it into an
+        // int-sized argument slot the native marshaller copies verbatim.
+        if (argument.type.toBasetype.ty == TY.Tint32) {
+            const argumentArea = allocateBytes(int.sizeof, int.sizeof);
+            emitCallArgument(argumentArea, false, argument);
+            return emitNativeCall(
+                function_, argument.type.toBasetype, argumentArea,
+            );
+        }
+
         if (argument.type.toBasetype.ty != TY.Tpointer ||
             argument.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
             return null;
@@ -7351,9 +7362,21 @@ private struct Compiler {
             Op.loadDataPointer, argumentArea, cast(ushort) dataOffset,
         );
 
+        return emitNativeCall(
+            function_, argument.type.toBasetype, argumentArea,
+        );
+    }
+
+    // Emit the native-call table entry and instruction shared by every native
+    // libc call shape: the argument bytes already live at `argumentArea`.
+    private Operand* emitNativeCall(
+        FuncDeclaration function_,
+        Type argumentType,
+        in ushort argumentArea,
+    ) {
         const destination = allocate(ScalarType.int_);
         const nativeIndex = _program.nativeCalls.length;
-        _program.nativeCalls ~= NativeCall(function_, argument.type.toBasetype);
+        _program.nativeCalls ~= NativeCall(function_, argumentType);
         _code ~= Instruction(
             Op.nativeCall,
             cast(ushort) nativeIndex,
