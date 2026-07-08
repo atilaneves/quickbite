@@ -3221,3 +3221,73 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// Pins §35.2: a whole-struct rebind assignment (`origin = Point(9, 8)`) to a
+// native struct global writes through via `writeLocation`'s VarExp branch +
+// `marshalNative`. The target is the `VarExp` of the struct global, so the
+// assignment drives the VarExp write branch directly with a struct `Value`,
+// distinct from the field-write read-modify-write path (`config.width = 7`,
+// a `DotVarExp`) pinned by `structGlobalReadWrite`.
+@("dependencyImage.structGlobalRebindWriteback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_struct_rebind_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_struct_rebind_fixture;
+
+            struct Point { int x; int y; }
+            __gshared Point origin = Point(1, 2);
+
+            int pointX() { return origin.x; }
+            int pointY() { return origin.y; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_struct_rebind_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_struct_rebind_fixture;
+
+            struct Point { int x; int y; }
+            extern __gshared Point origin;
+            int pointX();
+            int pointY();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_struct_rebind_fixture;
+
+                unittest {
+                    assert(pointX() == 1);  // native reads its initializer
+                    origin = Point(9, 8);   // WHOLE-struct rebind write-through
+                    assert(pointX() == 9);  // native sees the rebind
+                    assert(pointY() == 8);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

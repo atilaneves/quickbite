@@ -2301,13 +2301,21 @@ symbol's 16 bytes, and pins the buffer for the process lifetime (§5). Native
 elements back, and a second `payload = [100]` overwrites cleanly. Green-as-pin
 with no production change — slice-global writeback already works via the generic
 marshaller, so it is no longer deferred. The remaining §35.2 work is
-ctor-ORDERING guarantees across images (and struct-global whole-value rebind
-writeback).
+ctor-ORDERING guarantees across images.
 DONE: §35.2 scalar-width global reads — dependencyImage.scalarWidthGlobalRead
 pins that native `__gshared` globals of a 64-bit `long`, a `double`, an unsigned
 `ubyte`, and a `bool` each reify at their correct width through the data-symbol
 read path, exercising `unmarshalValue`'s distinct per-scalar-kind cases beyond
 the `int` already covered. Green-as-pin with no production change.
+DONE: §35.2 struct-global whole-value rebind writeback —
+dependencyImage.structGlobalRebindWriteback. An interpreted `origin = Point(9,
+8)` assignment into an `extern __gshared Point origin` global targets the
+`VarExp` of the struct global, driving `writeLocation`'s VarExp branch directly
+with a struct `Value` and calling `marshalNative(structType, address, value)` to
+push the whole struct's bytes to the symbol. Native `pointX`/`pointY` then read
+the rebind back. Distinct write path from the field-write read-modify-write
+(`config.width = 7`, a `DotVarExp`) pinned by structGlobalReadWrite.
+Green-as-pin with no production change.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
@@ -3170,6 +3178,17 @@ reads the receiver from native, rebuilds it with `withStructField`, and recurses
 onto the `VarExp`, hitting the §35.2 write branch (`marshalNative`) that pushes
 the struct bytes back to the symbol. The recursive marshaller composes with the
 read-modify-write, so no per-shape code is required. Green-as-pin.
+
+**Status: struct-global whole-value rebind rung LANDED (§35.2).**
+`dependencyImage.structGlobalRebindWriteback` pins the sibling write path: an
+interpreted `origin = Point(9, 8)` rebind of an `extern __gshared Point origin`
+global is an `AssignExp` whose target is the `VarExp` of the struct global, so
+it drives `writeLocation`'s VarExp branch directly with a whole struct `Value`
+and calls `marshalNative(structType, address, value)` to push all the struct's
+bytes to the symbol. Native `pointX`/`pointY` read the rebind back. This is
+distinct from the field-write read-modify-write (`config.width = 7`, a
+`DotVarExp`) pinned by structGlobalReadWrite. No production change was needed.
+Green-as-pin.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
