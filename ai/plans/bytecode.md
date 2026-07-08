@@ -4289,6 +4289,7 @@ bounds for array of length 3`. That wording matches the
 `tests/ut/backends/runner/ct/arrays.d`, so the CTFE wording stays as a
 CTFE/tree-walker characterization and the new-core row uses the compiled
 oracle text. No production change was needed.
+
 Slice 8 native-runtime first rung, 2026-07-08: current-master frontier
 verification found backlog item 1 already green (`moduleLevelVariables...`,
 `importStdExposesPhobosSymbols`, and the promoted `int[int]` AA execution
@@ -4306,3 +4307,48 @@ remain green. Focused verification covered `atoi.value.BytecodeNewCore`,
 `malloc.pointerReturn.nativeMemory.BytecodeNewCore`; `ninja bin/ut` and full
 random runs with seeds `496789113` and `1909046720` reported the invariant
 `0 failed, 6/6 failing as expected`.
+
+REPL promotion audit, 2026-07-08: no new `tests/ut/bin/repl.d`
+`BytecodeNewCore` promotion was made in this pass. The next unpromoted
+coherent blocks are display-only or interpreter-native rows:
+`displaysFiniteRangeResults`, `displaysFilteredArrayResults`,
+`displaysAssocArrayResults`, `stringFieldsRenderWithLiteralSuffixes`,
+`assocArrayFieldsRenderElementSuffixes`,
+`assocArrayWithStructValuesRendersEntries`, and the
+`runtimeOnlyCellsUseResidentNativeCalls` / `runtimeFileOpenSucceeds`
+interpreter-native pair. Per the re-scoped REPL parity continuation, the
+display rows stay frozen until slice 11's prelude formatter execution path,
+and the interpreter-native rows are not `BytecodeNewCore` promotion
+candidates without separate runtime/native-boundary design work. No production
+change was needed.
+
+REPL native-runtime red probe, 2026-07-08: temporarily adding
+`BytecodeNewCore` to the interpreter-native
+`runtimeOnlyCellsUseResidentNativeCalls` / `runtimeFileOpenSucceeds` pair
+confirms both rows stay unpromoted.
+`runtimeOnlyCellsUseResidentNativeCalls.BytecodeNewCore` fails on
+`free(malloc(42))` with `` `free` cannot be interpreted at compile time,
+because it has no available source code ``. The narrow `atoi` native-call rung
+above does not yet cover general resident libc calls: runtime calls to
+resident libc leaves must cross into native code instead of being treated as
+source-less CTFE calls.
+`runtimeFileOpenSucceeds.BytecodeNewCore` gets into the `std.stdio.File`
+construction path and then throws
+`ArrayIndexError` at `source/quickbite/backends/bytecode/core/compiler.d:7277`
+while indexing `layout.offsets[0]` for a call whose parameter layout has no
+ordinary argument slots. Before this row can promote, the backend needs the
+native-runtime bridge plus a guarded/implemented call-lowering path for the
+Phobos `File` construction stack instead of the unchecked parameter-layout
+assumption. The temporary test edit was reverted; no production change was
+made.
+
+REPL native-runtime implementation decision, 2026-07-08: no production change
+was made for the native-runtime pair in this slice. Making
+`runtimeOnlyCellsUseResidentNativeCalls.BytecodeNewCore` pass honestly requires
+the general outbound resident-native bridge beyond the narrow `atoi` rung.
+The `runtimeFileOpenSucceeds.BytecodeNewCore` crash can be prevented only as a
+diagnostic guard on the mismatched argument-layout path, but that guard would
+not make the approved REPL behaviour pass and there is no approved existing
+test delta here to cover the improved diagnostic. Leave both REPL rows
+unpromoted until the native bridge is extended by the runtime/FFI track or a
+separate approved diagnostic test is added.
