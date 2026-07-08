@@ -4406,3 +4406,20 @@ result width). Verification: `ninja bin/ut`, focused
 `labs.widerScalar.BytecodeNewCore` green, with `abs.scalar.BytecodeNewCore` and
 `atoi.value.BytecodeNewCore` still green; `bin/ut --random` with seed
 `3078925616` reported the invariant `0 failed, 6/6 failing as expected`.
+
+Slice 8 native ctype toupper/tolower calls, 2026-07-08: promoted
+`rt/cstdlib.d`'s existing SystemLinker-backed `ctype.toupperTolower` row to
+`BytecodeNewCore`. The fixture imports a second module (`core.stdc.ctype`) and
+makes two native calls in one unittest — `toupper(int)` and `tolower(int)`,
+both `int(int)`. No production change was needed: this is stale coverage. Both
+calls already fall in the widened `int(int)` shape the native chokepoint
+(`tryCompileNativeCall`/`emitNativeCall` in
+`source/quickbite/backends/bytecode/core/compiler.d`) accepts from the `abs`
+rung, each emits its own `NativeCall` table entry, and `callNative` resolves
+the symbol per entry at VM runtime regardless of the callee's declaring
+module, so two calls and the second module needed no new machinery. The
+promotion passed on the first run (no RED). Verification: `ninja bin/ut`,
+focused `ctype.toupperTolower.BytecodeNewCore` green, with
+`abs.scalar`/`labs.widerScalar`/`atoi.value` `.BytecodeNewCore` still green;
+`bin/ut --random` with seed `3779664640` reported the invariant `0 failed,
+6/6 failing as expected`.
