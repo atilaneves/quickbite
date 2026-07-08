@@ -1258,14 +1258,15 @@ display-string promotion is frozen pending slice 11 (prelude formatter
 execution). The current backlog for this track, in order:
 
 1. Remaining language-feature gaps exposed by the `repl.d` sweep that are
-   not display formatting: module-level variable assignment
+   not display formatting are now re-verified green on current master:
+   module-level variable assignment
    (`moduleLevelVariablesAreVisibleToFunctions`), Phobos range and
-   `ref`-argument execution (`importStdExposesPhobosSymbols` and the range
-   blocks that fail on `Unsupported ref argument` / `Unsupported type`),
-   and associative-array execution through the druntime template lowerings
-   (slice 7).
-2. Slice 8, native runtime: the outbound host FFI bridge — which also
-   unblocks the deferred `rt/cstdlib.d` runtime rows above.
+   `ref`-argument execution (`importStdExposesPhobosSymbols`), and the
+   promoted associative-array execution rows in `arrays.d` (slice 7).
+2. Slice 8, native runtime: continue widening the outbound host FFI bridge,
+   which unblocks the deferred `rt/cstdlib.d` runtime rows above. The first
+   promoted runtime row, `atoi.value.BytecodeNewCore`, is green via the shared
+   `quickbite.ffi.callNative` path.
 3. Slice 9, classes.
 4. Slice 11, prelude formatter execution — which re-earns the frozen
    `repl.d` display rows and deletes the interim display scaffolding
@@ -4288,3 +4289,20 @@ bounds for array of length 3`. That wording matches the
 `tests/ut/backends/runner/ct/arrays.d`, so the CTFE wording stays as a
 CTFE/tree-walker characterization and the new-core row uses the compiled
 oracle text. No production change was needed.
+Slice 8 native-runtime first rung, 2026-07-08: current-master frontier
+verification found backlog item 1 already green (`moduleLevelVariables...`,
+`importStdExposesPhobosSymbols`, and the promoted `int[int]` AA execution
+family), so the next red rung was `rt/cstdlib.d`'s existing
+SystemLinker-backed `atoi.value` row on `BytecodeNewCore`. The red diagnostic
+was `` `atoi` cannot be interpreted at compile time, because it has no
+available source code ``. The new core now compiles `atoi("literal")` to a
+narrow VM native call: a NUL-terminated literal in `Program.data`, a data
+pointer argument slot, and a native-call table entry. Execution delegates
+symbol lookup and ABI invocation to `quickbite.ffi.callNative` through a small
+`NativeMarshaller`; the bytecode backend does not call `dlsym` directly. This
+is not a general native ABI, and the adjacent `free`/`malloc` no-source rows
+remain green. Focused verification covered `atoi.value.BytecodeNewCore`,
+`free.null.voidReturn.BytecodeNewCore`, and
+`malloc.pointerReturn.nativeMemory.BytecodeNewCore`; `ninja bin/ut` and full
+random runs with seeds `496789113` and `1909046720` reported the invariant
+`0 failed, 6/6 failing as expected`.

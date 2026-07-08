@@ -153,6 +153,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
     loadRealConstant, // a: destination frame offset, b: real constant index
     loadStringSlice, // a: destination frame offset, b: data offset, c: length
+    loadDataPointer, // a: destination frame offset, b: data offset
     // Copy `c` bytes from the read-only data segment at offset `b` into the
     // inline static-array slot at frame offset `a` (a value-type byte copy).
     loadStaticArray,
@@ -461,6 +462,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // selected function index. Looks up the object's dynamic class and writes
     // the overriding function index, or c when no override is registered.
     classVirtualFunction,
+    nativeCall, // a: native-call index, b: argument area, c: destination
     assertTrue, // a: condition frame offset, b: assert diagnostic index
     // a: condition frame offset, b: assert diagnostic index (verbatim message)
     assertTrueVerbatim,
@@ -558,6 +560,11 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
     RefParameter[] refParameters; // empty for functions with no ref parameters
 }
 
+package(quickbite.backends.bytecode) struct NativeCall {
+    imported!"dmd.func".FuncDeclaration function_;
+    imported!"dmd.mtype".Type argumentType;
+}
+
 // How to render a failed assertion: read both operands from the frame and
 // format them per their static type around the inverted operator.
 package(quickbite.backends.bytecode) struct AssertDiagnostic {
@@ -599,6 +606,7 @@ package(quickbite.backends.bytecode) struct Program {
     ubyte[] data; // read-only segment holding string-literal bytes
     ubyte[] moduleData; // mutable VM-owned storage for module-level variables
     AssertDiagnostic[] assertDiagnostics;
+    NativeCall[] nativeCalls;
     ClassInfo[] classes;
     CatchClause[] catchClauses;
 }

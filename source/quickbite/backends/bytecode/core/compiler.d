@@ -32,7 +32,7 @@ private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
-        Instruction, Op, Program,
+        Instruction, NativeCall, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
         VirtualFunction, isSigned,
         noCatchObjectField, noExceptionClass, size, sliceDescriptorSize,
@@ -7214,6 +7214,10 @@ private struct Compiler {
 
         const layout = parameterLayout(function_);
         if (function_.fbody is null && !layout.hasClassThis)
+            if (auto native = tryCompileNativeCall(call, function_, layout))
+                return *native;
+
+        if (function_.fbody is null && !layout.hasClassThis)
             throw new Exception(text(
                 "`",
                 function_.ident is null
@@ -7308,6 +7312,55 @@ private struct Compiler {
                 pointerElementScalar(call.type),
             );
         return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    private Operand* tryCompileNativeCall(
+        CallExp call,
+        FuncDeclaration function_,
+        in ParameterLayout layout,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
+
+        if (function_.type.toBasetype.nextOf.toBasetype.ty != TY.Tint32 ||
+            call.arguments is null ||
+            call.arguments.length != 1)
+            return null;
+
+        auto argument = (*call.arguments)[0];
+        if (argument.type.toBasetype.ty != TY.Tpointer ||
+            argument.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
+            return null;
+
+        auto string_ = stringLiteralOf(argument);
+        if (string_ is null)
+            return null;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length + 1 > ushort.max)
+            throw new Exception(text(
+                "String literal too large for bytecode core: ",
+                expressionChars(string_),
+            ));
+        _program.data ~= bytes;
+        _program.data ~= 0;
+        const argumentArea = allocateBytes(size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.loadDataPointer, argumentArea, cast(ushort) dataOffset,
+        );
+
+        const destination = allocate(ScalarType.int_);
+        const nativeIndex = _program.nativeCalls.length;
+        _program.nativeCalls ~= NativeCall(function_, argument.type.toBasetype);
+        _code ~= Instruction(
+            Op.nativeCall,
+            cast(ushort) nativeIndex,
+            argumentArea,
+            destination,
+        );
+        return new Operand(destination, ScalarType.int_);
     }
 
     // `_aApply*(s, dg)`: emit a transcode of the source string `s` into a fresh

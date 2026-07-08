@@ -82,6 +82,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case loadDataPointer:
+                writeRawPointer(
+                    stack,
+                    base + instruction.a,
+                    cast(size_t) (program.data.ptr + instruction.b),
+                );
+                ++ip;
+                break;
+
             case loadStaticArray:
                 // Copy the static array's bytes from the read-only data
                 // segment into its inline frame slot.
@@ -1324,6 +1333,29 @@ package(quickbite.backends.bytecode) RunResult run(
                 ip = 0;
                 break;
 
+            case nativeCall:
+                import quickbite.frontend.dmd.functions:
+                    noAvailableSourceMessage;
+                import quickbite.ffi: callNative;
+
+                auto native = program.nativeCalls[instruction.a];
+                auto marshaller = new BytecodeNativeMarshaller(
+                    stack,
+                    base + instruction.b,
+                    base + instruction.c,
+                );
+                if (!callNative(
+                    native.function_,
+                    marshaller,
+                    [native.argumentType],
+                    [],
+                ))
+                    throw new Exception(noAvailableSourceMessage(
+                        native.function_,
+                    ));
+                ++ip;
+                break;
+
             case assertTrue:
                 if (stack[base + instruction.a] == 0)
                     throw new Exception(assertMessage(
@@ -1919,6 +1951,16 @@ private void writeBlockPointer(
 
     stack[offset .. offset + size_t.sizeof] =
         nativeToLittleEndian(cast(size_t) block.ptr);
+}
+
+private void writeRawPointer(
+    ref ubyte[] stack,
+    in size_t offset,
+    in size_t pointer,
+) @safe {
+    import std.bitmanip: nativeToLittleEndian;
+
+    stack[offset .. offset + size_t.sizeof] = nativeToLittleEndian(pointer);
 }
 
 // Write the native address of the frame slot at `slotOffset` as a raw `size_t`
@@ -2576,6 +2618,74 @@ private struct AssocArray {
             if (existing == key)
                 return index;
         return size_t.max;
+    }
+}
+
+private final class BytecodeNativeMarshaller:
+    imported!"quickbite.ffi".NativeMarshaller
+{
+    import dmd.mtype: Type;
+    import quickbite.ffi: NativeMarshaller;
+
+    private ubyte[] _stack;
+    private size_t _argument;
+    private size_t _destination;
+
+    public this(ubyte[] stack, in size_t argument, in size_t destination) {
+        _stack = stack;
+        _argument = argument;
+        _destination = destination;
+    }
+
+    public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
+        import dmd.astenums: TY;
+        const ty = type.toBasetype.ty;
+        return ty == TY.Tint32 || ty == TY.Tpointer;
+    }
+
+    public void fillArgument(
+        ubyte[] buffer,
+        Type type,
+        in size_t index,
+        in bool stableString,
+        ref const(char)*[] keepAlive,
+        ref ubyte[][] keepAliveBuffers,
+    ) {
+        buffer[0 .. size_t.sizeof] = _stack[_argument .. _argument + size_t.sizeof];
+    }
+
+    public void readResult(Type type, in ubyte[] buffer) {
+        _stack[_destination .. _destination + int.sizeof] =
+            buffer[0 .. int.sizeof];
+    }
+
+    public void fillReceiver(ubyte[] buffer, Type type, in bool stableString,
+        ref const(char)*[] keepAlive, ref ubyte[][] keepAliveBuffers)
+    { unsupportedNativeCall; }
+
+    public void writeRefResult(Type type, void* address, in bool stableString,
+        ref const(char)*[] keepAlive, ref ubyte[][] keepAliveBuffers)
+    { unsupportedNativeCall; }
+
+    public void writeOutParameter(in size_t index, Type pointedToType,
+        in ubyte[] cell)
+    { unsupportedNativeCall; }
+
+    public void fillOutParameterCell(ubyte[] cell, Type pointedToType,
+        in size_t index, in bool stableString, ref const(char)*[] keepAlive,
+        ref ubyte[][] keepAliveBuffers)
+    { unsupportedNativeCall; }
+
+    public const(void)* receiverObjectPointer() {
+        return null;
+    }
+
+    public void invokeClosure(in size_t argumentIndex, Type returnType,
+        Type[] parameterTypes, void*[] argumentBuffers, ubyte[] resultBuffer)
+    { unsupportedNativeCall; }
+
+    private void unsupportedNativeCall() {
+        throw new Exception("Unsupported bytecode native call shape.");
     }
 }
 
