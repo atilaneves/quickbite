@@ -1333,3 +1333,47 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// DMD lowers a `Tuple` construction's field assignment into a `TupleExp` in
+// expression position (per-field assignments). The interpreter evaluates the
+// prefix `e0` then each element in order.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.tupleConstructionFromLocals." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.typecons: Tuple;
+
+            unittest {
+                int first = 1;
+                int second = 2;
+                auto pair = Tuple!(int, int)(first, second);
+                assert(pair[0] == 1);
+                assert(pair[1] == 2);
+            }
+        });
+    }
+}
+
+// The dependency-free distillation: `target.tupleof = source.tupleof` lowers to
+// a `TupleExp` of per-field assignments, the same root construct.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.tupleofAssignmentCopiesFields." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int head;
+                long tail;
+            }
+
+            unittest {
+                auto source = Pair(2, 3L);
+                Pair target;
+                target.tupleof = source.tupleof;
+                assert(target.head == 2);
+                assert(target.tail == 3);
+            }
+        });
+    }
+}
