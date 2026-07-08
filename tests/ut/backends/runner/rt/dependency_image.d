@@ -2921,3 +2921,83 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+
+// Pins §35.2: an aggregate (struct) native global crosses via the recursive
+// marshaller on the same dlsym data-symbol path as a scalar. The read reifies
+// the struct `Value` from the symbol's bytes through `unmarshalStruct`, and an
+// interpreted field write (`config.width = 7`) composes the `DotVarExp`
+// read-modify-write with the §35.2 write branch: `writeLocation` reads the
+// receiver from native, rebuilds it with `withStructField`, and recurses onto
+// the `VarExp`, pushing the struct bytes back to the symbol. No per-shape code.
+@("dependencyImage.structGlobalReadWrite.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_struct_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_struct_global_fixture;
+
+            struct Config { int width; int height; }
+            __gshared Config config = Config(80, 25);
+
+            void setConfig(int w, int h) {
+                config.width = w;
+                config.height = h;
+            }
+
+            int configWidth() { return config.width; }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_struct_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_struct_global_fixture;
+
+            struct Config { int width; int height; }
+            extern __gshared Config config;
+            void setConfig(int w, int h);
+            int configWidth();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_struct_global_fixture;
+
+                unittest {
+                    assert(config.width == 80);
+                    assert(config.height == 25);
+                    setConfig(3, 4);
+                    assert(config.width == 3);
+                    assert(config.height == 4);
+                    config.width = 7;
+                    assert(configWidth == 7);
+                    assert(config.height == 4);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

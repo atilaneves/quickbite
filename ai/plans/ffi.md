@@ -2273,6 +2273,15 @@ read back, all through the same dlsym data-symbol path as `__gshared`: the
 `dlsym` resolves the STT_TLS symbol to the interpreter thread's instance.
 Green-as-pin with no production change; the remaining §35.2 work is
 ctor-ORDERING guarantees across images.
+DONE: §35.2 struct-typed global read + field write-through —
+dependencyImage.structGlobalReadWrite. An `extern __gshared Config config`
+(a two-`int` struct) reifies both fields from the symbol's bytes, sees a
+native mutation, takes an interpreted field write, and is read back by native
+code. The read reaches `unmarshalStruct` via `unmarshalNative`, and the field
+write composes the `DotVarExp` read-modify-write (`withStructField`) with the
+§35.2 write branch, so an aggregate crosses on the same dlsym path as a scalar
+with no per-shape code. Green-as-pin with no production change; the remaining
+§35.2 work is ctor-ORDERING guarantees across images.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
@@ -3116,6 +3125,21 @@ interpreter is single-threaded per test run, so the dlsym'd address, the
 interpreted reads/writes, and the native calls all touch the same thread's TLS
 instance. Green-as-pin. The remaining §35.2 work is ctor-ORDERING guarantees
 across images.
+
+**Status: struct-typed global rung LANDED (§35.2).**
+`dependencyImage.structGlobalReadWrite` pins that an aggregate native global
+crosses on the same dlsym path as a scalar. An `extern __gshared Config config`
+(`struct Config { int width; int height; }`, defined identically on both sides
+for layout) has both fields read back from the symbol's bytes (80, 25), is
+mutated natively (`setConfig(3, 4)`), takes an interpreted field write
+(`config.width = 7`, seen natively via `configWidth`), and keeps its untouched
+field. No production change was needed: the read reaches `unmarshalStruct`
+through `unmarshalNative` (the §35.2a VarExp branch), which recurses over the
+fields, and the field write is a `DotVarExp` assignment whose `writeLocation`
+reads the receiver from native, rebuilds it with `withStructField`, and recurses
+onto the `VarExp`, hitting the §35.2 write branch (`marshalNative`) that pushes
+the struct bytes back to the symbol. The recursive marshaller composes with the
+read-modify-write, so no per-shape code is required. Green-as-pin.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
