@@ -4322,3 +4322,15 @@ native-runtime bridge plus a guarded/implemented call-lowering path for the
 Phobos `File` construction stack instead of the unchecked parameter-layout
 assumption. The temporary test edit was reverted; no production change was
 made.
+
+REPL native-runtime implementation decision, 2026-07-08: no production change
+was made for the native-runtime pair in this slice. Making
+`runtimeOnlyCellsUseResidentNativeCalls.BytecodeNewCore` pass honestly requires
+the same outbound resident-native bridge that the existing
+`tests/ut/backends/runner/rt/cstdlib.d` `BytecodeNewCore` expected-failure
+rows intentionally defer. The `runtimeFileOpenSucceeds.BytecodeNewCore` crash
+can be prevented only as a diagnostic guard on the mismatched argument-layout
+path, but that guard would not make the approved REPL behaviour pass and there
+is no approved existing test delta here to cover the improved diagnostic.
+Leave both REPL rows unpromoted until the native bridge is implemented by the
+runtime/FFI track or a separate approved diagnostic test is added.
