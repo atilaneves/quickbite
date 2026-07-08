@@ -1106,9 +1106,12 @@ public struct Value {
                         "]`",
                     ));
 
-                return Value.arrayValue(
+                return Value(Array(
                     pointer.target[cast(size_t) begin .. cast(size_t) end],
-                );
+                    ArrayDisplay.normal,
+                    pointer.target,
+                    cast(size_t) begin,
+                ));
             },
             (_) {
                 throw new Exception("Expected pointer.");

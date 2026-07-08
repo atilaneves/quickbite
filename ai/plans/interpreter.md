@@ -863,6 +863,42 @@ The class-with-struct serialization/equality mismatch is gone. The next visible
 interpreter blocker is the pre-existing pointer-slice-over-empty-allocation
 class, now exposed as the first cerealed failure.
 
+**2026-07-08 follow-up: pointer slices preserve backing allocation.** The
+`pointer slice [0..1] exceeds allocated memory block [0..0]` frontier is
+root-caused and fixed. No approved standalone fixture existed for this
+package-only exposure, so the real-package bench remained the red signal. A
+temporary unittest-result probe located the first failure at cerealed
+`tests/classes.d:93` (`serialisation.via.base.class`), with a second matching
+site at `tests/reset.d:9` (`reset.cerealiser`). A slice-expression probe showed
+the failing read was `cast(ubyte*)(*this._data).arr[0 .. 1]` from
+`std.array.Appender.data`.
+
+The root was not a missing field write: a follow-up probe showed
+`(*this._data).arr` assignments occurring throughout `Appender.put`. The lost
+state was earlier, in `Appender.clear`, which assigns
+`_data.arr = _data.arr.ptr[0 .. 0]`. The interpreter's `Value.pointerSlice`
+rebuilt every pointer slice with `Value.arrayValue`, preserving the visible
+slice elements but discarding the pointer target allocation and offset. The
+empty array after `clear` therefore had length zero and no backing allocation,
+so the next `put` could not grow from `arr.ptr[0 .. len + 1]` and `data`
+tripped the stale empty-block bounds check.
+
+`Value.pointerSlice` now returns an array view with the pointer target as its
+allocation and the slice lower bound as its allocation offset. That keeps empty
+pointer slices usable as zero-length views into existing storage, which matches
+the `Appender.clear` contract and compiled D behavior.
+
+Re-measure:
+
+```text
+bin/bench.sh -b interpreter --dub cerealed
+skipping cerealed interpreter: Expression did not throw
+```
+
+The pointer-slice-over-empty-allocation frontier is gone. The next visible
+interpreter blocker is a cerealed negative test whose expected exception is not
+being thrown.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
