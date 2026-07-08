@@ -3001,3 +3001,79 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+
+// Pins §35.2: reading a dynamic-array native global. The slice `{length,ptr}`
+// descriptor is reified from the symbol via the same dlsym data-symbol path
+// used for scalars — `unmarshalValue`'s `Tarray` case reads `length`, reads
+// `ptr`, and copies `length` elements. The image's `static this()` populates
+// the slice at dlopen (pinned in an earlier commit). Read only;
+// slice-global writeback is a later rung.
+@("dependencyImage.sliceGlobalRead.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath =
+            buildPath(importPath, "dep_image_slice_global_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_slice_global_fixture;
+
+            __gshared int[] numbers;
+
+            static this() {
+                numbers = [10, 20, 30];
+            }
+
+            int total() {
+                int s = 0;
+                foreach (n; numbers) s += n;
+                return s;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_slice_global_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_slice_global_fixture;
+
+            extern __gshared int[] numbers;
+            int total();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_slice_global_fixture;
+
+                unittest {
+                    assert(total() == 60);        // native sums its slice
+                    assert(numbers.length == 3);  // reads {length,ptr}
+                    assert(numbers[0] == 10);
+                    assert(numbers[1] == 20);
+                    assert(numbers[2] == 30);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

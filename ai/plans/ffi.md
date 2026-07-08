@@ -2241,8 +2241,10 @@ sort by consumer need, not table position:
 
 ```text
 1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
-   write rung, the module-ctor-at-dlopen pin, and the TLS-default rung are
-   DONE; what remains is ctor-ORDERING guarantees across images
+   write rung, the module-ctor-at-dlopen pin, the TLS-default rung, the
+   struct-global read+field-write rung, and the slice-global read rung are
+   DONE; what remains is slice/aggregate-global WRITEBACK and ctor-ORDERING
+   guarantees across images
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -2282,6 +2284,15 @@ write composes the `DotVarExp` read-modify-write (`withStructField`) with the
 §35.2 write branch, so an aggregate crosses on the same dlsym path as a scalar
 with no per-shape code. Green-as-pin with no production change; the remaining
 §35.2 work is ctor-ORDERING guarantees across images.
+DONE: §35.2 dynamic-array (slice) global read — dependencyImage.sliceGlobalRead.
+An `extern __gshared int[] numbers`, populated by the image's `static this()` at
+dlopen, reifies its slice `{length, ptr}` descriptor from the symbol's bytes via
+the same dlsym data-symbol path as a scalar: `unmarshalValue`'s `Tarray` case
+reads `length`, reads `ptr`, and copies `length` elements. Green-as-pin with no
+production change. Read only — slice-global WRITEBACK (allocating and pinning
+interpreter memory, then writing a descriptor back to the symbol) is a later
+rung. The remaining §35.2 work is slice/aggregate-global writeback and
+ctor-ORDERING guarantees across images.
 DONE: item 0 (§34.3.1) generic Type-driven marshaller audit — the three
 verified gaps (Tsarray, slice-of-structs, AA diagnostic) are closed,
 demonstrated by dependencyImage.externDStaticArrayField,
