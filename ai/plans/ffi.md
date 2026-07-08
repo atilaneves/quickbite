@@ -3305,6 +3305,24 @@ owned by `interpreter.md` §7, not this bridge.
 
 ### 35.10 `pthread_mutexattr_init` is refused (measured 2026-07-07, diagnosed 2026-07-08)
 
+**Status: fixed 2026-07-08** — added a `canRepresentOutCell(pointedToType)`
+seam method to `interface NativeMarshaller` (`ffi/core.d`) and routed
+`canRepresentCall`'s out-cell branch through it (replacing the two
+`canRepresent(pointedTo, toNative/fromNative)` queries); the by-value branch
+is unchanged. The interpreter marshaller
+(`backends/interpreter/ffi_marshal.d`) accepts an opaque union out-cell — a
+`Tstruct` whose `sym.isUnionDeclaration` is set and whose every member is a
+fixed-size scalar or a static array of scalars (helper `isOpaqueUnionOutCell`)
+— and otherwise falls back to `canMarshalToNative && canReifyFromNative`. Such
+a union round-trips its overlapped bytes verbatim through the fill (declaration-
+order field walk) and reify (field-by-field snapshot) paths; the union crosses
+as a native buffer and is never boxed. The by-value union refusal in
+`canMarshalToNative` is deliberately preserved (§35.7): a boxed union cannot
+reproduce overlapped bytes, and the out-cell path never marshals from one. The
+bytecode marshaller implements the seam as its existing both-directions
+`canRepresent`. Both fixtures below are now green on Interpreter (and stay green
+on SystemLinker/LLVMJit). The corpus re-measure is a separate follow-up.
+
 The dominant class of the 2026-07-07 two-backend corpus re-measure
 (`interpreter.md` §7 close-out entry): 48× automem + 3× fearless
 mismatches, all
@@ -3348,8 +3366,8 @@ union crossing (a boxed union cannot reproduce overlapped bytes); the
 out-pointer case never boxes the union, it hands the callee a native
 buffer and reifies the bytes back afterward.
 
-**Exposing fixtures landed 2026-07-08 (red on Interpreter, green on
-SystemLinker/LLVMJit), item still open pending the production fix:**
+**Exposing fixtures landed 2026-07-08, now green on Interpreter (and on
+SystemLinker/LLVMJit) after the fix above:**
 
 - `rt/cstdlib.d`
   `pthread.mutexattr.unionOutPointer.{Interpreter,SystemLinker,LLVMJit}`:
@@ -3361,9 +3379,9 @@ SystemLinker/LLVMJit), item still open pending the production fix:**
   `extern(C) dependencyInitHandle(Handle*)` and read back through
   `extern(C) dependencyReadHandle(Handle*)`, SystemLinker oracle.
 
-Both Interpreter legs fail today with
+Both Interpreter legs failed before the fix with
 `` `pthread_mutexattr_init`/`dependencyInitHandle` cannot be interpreted
-at compile time, because it has no available source code ``.
+at compile time, because it has no available source code ``; both pass now.
 
 ### 35.11 `getrandom` scalar-buffer fill misreads `&(scalar)` as a slice base (handed off 2026-07-08)
 
