@@ -80,7 +80,7 @@ private string statementLabel(imported!"dmd.identifier".Identifier identifier) {
 
 private struct Walker {
     import dmd.declaration: VarDeclaration;
-    import dmd.expression: DivExp, ModExp;
+    import dmd.expression: DivExp, Expression, ModExp;
     import dmd.func: FuncDeclaration;
     import dmd.statement: Statement;
     import quickbite.frontend.dmd.values: defaultValue;
@@ -94,6 +94,8 @@ private struct Walker {
     private size_t[FuncDeclaration] functionPointerIds;
     private size_t nextFunctionPointerId;
     private RuntimeDelegate[size_t] delegates;
+    private Expression[VarDeclaration] lazyArgumentExpressions;
+    private Value[VarDeclaration][VarDeclaration] lazyArgumentLocals;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private ArrayElementAlias[VarDeclaration] arrayElementAliases;
@@ -1553,6 +1555,8 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -1963,8 +1967,15 @@ private struct Walker {
         Value[] arguments;
         Expression[] argumentExpressions;
         if (call.arguments !is null) {
-            foreach (argument; *call.arguments) {
-                arguments ~= runExpression(argument);
+            foreach (index, argument; *call.arguments) {
+                auto parameter = call.f is null ||
+                    call.f.parameters is null ||
+                    index >= call.f.parameters.length
+                    ? null
+                    : (*call.f.parameters)[index];
+                arguments ~= parameter !is null && parameterIsLazy(parameter)
+                    ? Value.undisplayable
+                    : runExpression(argument);
                 argumentExpressions ~= argument;
             }
         }
@@ -2179,6 +2190,9 @@ private struct Walker {
 
             return runFunction(function_, arguments, argumentExpressions);
         }
+
+        if (auto variable = lazyCallVariable(call))
+            return runLazyArgument(variable);
 
         const callee = runExpression(call.e1);
         if (callee.isNativeDelegate)
@@ -2953,6 +2967,8 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -3001,6 +3017,8 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -3070,6 +3088,8 @@ private struct Walker {
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
+        lazyArgumentExpressions = child.lazyArgumentExpressions;
+        lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
@@ -3095,6 +3115,8 @@ private struct Walker {
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
+        lazyArgumentExpressions = child.lazyArgumentExpressions;
+        lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
@@ -3305,6 +3327,16 @@ private struct Walker {
             throw new Exception("Unsupported interpreter call arguments.");
 
         foreach (index, parameter; *function_.parameters) {
+            if (parameterIsLazy(parameter)) {
+                bindLazyFunctionParameter(
+                    parameter,
+                    index < argumentExpressions.length
+                        ? argumentExpressions[index]
+                        : null,
+                );
+                continue;
+            }
+
             locals[parameter] = arguments[index];
             recordParameterSliceAlias(
                 parameter,
@@ -3314,6 +3346,73 @@ private struct Walker {
                     : null,
             );
         }
+    }
+
+    private void bindLazyFunctionParameter(
+        VarDeclaration parameter,
+        Expression argumentExpression,
+    ) {
+        locals[parameter] = Value.undisplayable;
+
+        if (auto variable = lazyExpressionVariable(argumentExpression)) {
+            if (auto expression = variable in lazyArgumentExpressions) {
+                lazyArgumentExpressions[parameter] = *expression;
+                if (auto captured = variable in lazyArgumentLocals)
+                    lazyArgumentLocals[parameter] = (*captured).dup;
+                return;
+            }
+        }
+
+        if (argumentExpression is null)
+            throw new Exception("Unsupported interpreter call arguments.");
+
+        lazyArgumentExpressions[parameter] = argumentExpression;
+        lazyArgumentLocals[parameter] = locals.dup;
+    }
+
+    private Value runLazyArgument(VarDeclaration variable) {
+        auto expression = variable in lazyArgumentExpressions;
+        if (expression is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto captured = variable in lazyArgumentLocals;
+        if (captured is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto savedLocals = locals;  // mutated below while evaluating the thunk
+        scope(exit) locals = savedLocals;
+
+        locals = (*captured).dup;
+        const result = runExpression(*expression);
+        lazyArgumentLocals[variable] = locals.dup;
+        return result;
+    }
+
+    private VarDeclaration lazyCallVariable(imported!"dmd.expression".CallExp call) {
+        if (call.arguments !is null && call.arguments.length != 0)
+            return null;
+
+        return lazyExpressionVariable(call.e1);
+    }
+
+    private VarDeclaration lazyExpressionVariable(Expression expression) {
+        auto variable = expression is null ? null : expression.isVarExp;
+        if (variable is null)
+            return null;
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+
+        return (declaration in lazyArgumentExpressions) is null
+            ? null
+            : declaration;
+    }
+
+    private bool parameterIsLazy(VarDeclaration parameter) {
+        import dmd.astenums: STC;
+
+        return (parameter.storage_class & STC.lazy_) != STC.none;
     }
 
     private void recordParameterSliceAlias(
@@ -4048,6 +4147,8 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -4128,6 +4229,8 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -5592,6 +5695,8 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.thisValue = object;
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
@@ -5601,6 +5706,8 @@ private struct Walker {
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
+        lazyArgumentExpressions = child.lazyArgumentExpressions;
+        lazyArgumentLocals = child.lazyArgumentLocals;
         return child.thisValue;
     }
 

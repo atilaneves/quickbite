@@ -696,6 +696,34 @@ class gone from §7.
 the dispatcher misses, or a native leaf that should route to `ffi.md` — the
 latter is deferred, not built here.
 
+**2026-07-08 follow-up: lazy assertion thunks.** After the GC array-capacity
+hook slice, the real-package red signal was:
+
+```text
+bin/bench.sh -b interpreter --dub cerealed
+skipping cerealed interpreter: Unsupported eval call.
+```
+
+A throwaway dispatcher-location probe (reverted before commit) identified the
+call as unit-threaded's lazy assertion parameter: `expr()` in
+`unit_threaded/assertions.d` (`threw`/`shouldNotThrow`). This is interpreter
+owned, not FFI: `lazy E expr` arguments were being evaluated before binding, so
+the formal held either `Value.undisplayable` for a DMD `FuncExp` wrapper or the
+already-evaluated expression value when a lazy parameter was forwarded into
+another lazy parameter. The dispatcher then saw `expr()` as a non-callable local
+value and threw the generic call diagnostic.
+
+No new standalone fixture was added because this worker did not have approval
+to add tests; the existing cerealed bench signal is the red. The interpreter
+now records lazy formal parameters as expression thunks with a captured local
+snapshot, preserves that thunk when a lazy parameter is forwarded to another
+lazy parameter, and evaluates the thunk when the zero-argument lazy parameter is
+called.
+
+Re-measure: the `Unsupported eval call.` frontier is gone. The package advances
+to the pre-existing corrupted/garbage failure-message class tracked under Rung
+7; this is the next visible interpreter blocker.
+
 **Done.** Each site either interprets, or is documented as an `ffi.md` rung.
 
 ### 9.7 Rung 7 — correctness bugs in existing paths
