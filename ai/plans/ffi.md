@@ -3287,3 +3287,37 @@ union-typed out-pointers and a §35.7-style raw-bytes union crossing.
 Exposing rt/ fixture (usual `AGENTS.md` approval): a body-less libc call
 taking a union-typed out-pointer (a
 `pthread_mutexattr_init`/`_destroy` round-trip), SystemLinker oracle.
+
+### 35.11 `getrandom` scalar-buffer fill misreads `&(scalar)` as a slice base (handed off 2026-07-08)
+
+Handed off from `interpreter.md` Rung 9 (§9.9). Once that rung's fix
+(`resolveNonRootInitializer`) resolves std.internal.entropy's non-root
+`_entropySource` initializer, std.random's `unpredictableSeed` progresses
+into the entropy read chain and the Interpreter leg now stops here
+instead of on the old `Unsupported eval expression: identifier`:
+
+```text
+Expected pointer.   (quickbite.lang.Value.pointerSlice, LocalPointer variant)
+```
+
+Root: `unpredictableSeed` does `uint buffer; getEntropy(&buffer,
+buffer.sizeof, …)`, and `getEntropy(scope void* buffer, size_t length,
+…)` slices `buffer[0 .. length]` — a `void[length]` byte view of a
+**scalar local's** address. The interpreter models `&(uint local)` as a
+`LocalPointer` (an id, not a `Pointer` with target storage), and
+`Value.pointerSlice` (source/quickbite/lang/package.d ~1091) only handles
+the `Pointer` variant, so it refuses. Making it green is a full FFI
+feature, not a slice patch: the `void[length]` must **alias the scalar
+local**, be handed to `getEntropyImpl` → `dlopen("libc")`/`getrandom`
+syscall (or `/dev/urandom` read), have the syscall write `length` random
+bytes into it, and reflect those bytes back into the `uint` local.
+§9.8's FFI writeback filled array/struct out-params (`read`, `fstat`); a
+*scalar* local viewed as a byte buffer filled by `getrandom` is a new
+shape, and the `getrandom` leaf marshalling belongs to this lane.
+
+Exposing fixture already landed (green on the native backends,
+documenting the target): `rt/random.d`
+`random.unpredictableSeedReadsNonRootInitializer` — `SystemLinker` +
+`LLVMJit`, with `Interpreter` omitted per `interpreter.md` §8 pending this
+item. When worked, add the scalar-buffer-fill rt/ repro and promote
+`Interpreter` onto that fixture.

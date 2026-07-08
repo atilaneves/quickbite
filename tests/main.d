@@ -34,5 +34,6 @@ int main(string[] args) {
         "ut.backends.runner.rt.elf",
         "ut.backends.runner.rt.inline_asm",
         "ut.backends.runner.rt.llvm_jit",
+        "ut.backends.runner.rt.random",
     );
 }

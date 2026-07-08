@@ -613,6 +613,17 @@ Backend matrix per §8; `Ctfe`'s treatment of a null-pointer slice is
 determined at landing and omitted or characterized per
 `single-oracle.md` if it diverges.
 
+**Done (2026-07-08).** `runPointerSliceAssignExpression` (impl.d ~4356)
+now short-circuits an empty range (`upper == lower`) — after evaluating
+the rhs, before any provenance check — returning the rhs value, matching
+compiled D's no-op for a zero-length write. Standalone fixture
+`pointer.emptySliceAssignmentThroughNullPointerIsNoOp` (ct/arrays.d,
+the §9.3 `Buffer.put(empty)` shape) is green on
+`Ctfe, Interpreter, SystemLinker, LLVMJit` — `Ctfe` treats the
+null-pointer empty slice as the same no-op, so no divergence to
+characterize. Closes the last cerealed `Unsupported interpreter
+assignment target: slice of dotVariable` (1×).
+
 ### 9.4 Rung 4 — `VarExp(SymbolDeclaration)` struct default init
 
 **Contract.** Evaluate the `VarExp` DMD emits for a struct
@@ -800,6 +811,36 @@ read of /dev/urandom) — that already routes through the existing FFI
 path; if a deeper marshalling gap surfaces once the initializer
 resolves, it is documented against `ffi.md`, not fixed here (seam-carve
 lane owns `backends/ffi.d` and the marshalling files).
+
+**Done (2026-07-08) — fix landed; Interpreter fixture blocked
+downstream by an ffi.md gap.** `resolveNonRootInitializer` (impl.d, near
+`runExpression`) runs `semantic2` on the dataseg variable in its own
+module's global scope on demand — the semantic2 analogue of the
+`functionSemantic3` calls that resolve imported function bodies — before
+the dataseg materialization path (impl.d ~1196) evaluates its
+initializer; `semantic2` may replace `variable._init`, so the caller
+re-reads it. This resolves the non-root `IdentifierExp`: the
+`Unsupported eval expression: identifier` error is **gone**.
+
+The predicted deeper gap did surface exactly as the out-of-scope note
+anticipated. On the standalone `unpredictableSeed` repro the Interpreter
+leg now stops one step later, in the entropy read chain, with
+`Expected pointer` — `getEntropy(&buffer, buffer.sizeof, …)` slices a
+scalar local's address as a `void[]` byte buffer to be filled by the
+`getrandom` syscall. That is a full FFI feature (scalar-local byte view +
+`getrandom` fill + byte writeback), handed off to `ffi.md` §35.11, not
+fixed here.
+
+The exposing fixture landed as `rt/random.d`
+`random.unpredictableSeedReadsNonRootInitializer` on the widest **green**
+matrix — `SystemLinker` + `LLVMJit` — with `Interpreter` **omitted** per
+§8 (the omission is the documentation; no pinned refusal), pending
+`ffi.md` §35.11. `Ctfe` (no getrandom source) and `BytecodeNewCore` are
+likewise omitted. The Rung 9 fix's own evidence is the standalone-repro
+progression (`identifier` → `Expected pointer` at the identical entropy
+site); the cerealed 21× `identifier` class converts to the same
+getrandom FFI class rather than disappearing, so it is `ffi.md` §35.11
+that finally clears it from the §7 inventory.
 
 ## 10. Done
 

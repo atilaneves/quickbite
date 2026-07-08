@@ -1503,6 +1503,40 @@ static foreach (backend; AliasSeq!(BytecodeNewCore)) {
     }
 }
 
+// A zero-length slice assignment through a null pointer is a no-op in
+// compiled D: nothing is written, so the null provenance never matters
+// (ai/plans/interpreter.md Rung 3). ScopeBuffer's own unittest hits this by
+// `put`ting an empty slice into a default-initialised buffer.
+enum pointerEmptyNullSliceAssignSource = q{
+    struct Buffer {
+        char* buf;
+        uint used;
+
+        void put(const(char)[] s) {
+            const newlen = used + s.length;
+            buf[used .. newlen] = s[];
+            used = cast(uint) newlen;
+        }
+    }
+
+    unittest {
+        Buffer b;
+        string empty;
+
+        b.put(empty);
+
+        assert(b.used == 0);
+    }
+};
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.emptySliceAssignmentThroughNullPointerIsNoOp." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(pointerEmptyNullSliceAssignSource);
+    }
+}
+
 // Bytecode ("Unsupported expression `rows.length`"), BytecodeNewCore
 // ("Unsupported type in bytecode core: int[][]"), and IR (unsupported nested
 // array literal) cannot run jagged arrays.

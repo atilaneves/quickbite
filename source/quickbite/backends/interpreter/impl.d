@@ -1193,7 +1193,8 @@ private struct Walker {
             // itself). Seed the type's default first so an initializer that
             // reads the variable back (directly or through calls) terminates,
             // as compiled D's pre-initialized statics do.
-            if (variable.isDataseg && variable._init !is null)
+            if (variable.isDataseg && variable._init !is null) {
+                resolveNonRootInitializer(variable);
                 if (auto initializer = variable._init.isExpInitializer) {
                     locals[variable] = defaultValue(variable);
                     const value = storageValue(
@@ -1203,12 +1204,43 @@ private struct Walker {
                     locals[variable] = value;
                     return value;
                 }
+            }
 
             return defaultValue(variable);
         }
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    // A module-scope variable of an imported (non-root) module only gets
+    // semantic1: DMD runs semantic2 over root modules alone (compiler.d
+    // parseRootModulesLocked), so the variable's initializer expression can
+    // still be an unresolved IdentifierExp (e.g. std.internal.entropy's
+    // `_entropySource = defaultEntropySource`, read via std.random's
+    // unpredictableSeed). Run semantic2 on the variable in its own module's
+    // global scope on demand — the semantic2 analogue of the functionSemantic3
+    // calls that resolve imported function bodies — so the initializer resolves
+    // before we evaluate it. semantic2 may replace `variable._init`, so callers
+    // re-read it afterwards.
+    private void resolveNonRootInitializer(VarDeclaration variable) {
+        import dmd.dsymbol: PASS;
+
+        if (variable.semanticRun >= PASS.semantic2done)
+            return;
+
+        auto mod = variable.getModule;
+        if (mod is null)
+            return;
+
+        import dmd.dscope: Scope;
+        import dmd.globals: global;
+        import dmd.semantic2: semantic2;
+
+        auto scope_ = Scope.createGlobal(mod, global.errorSink);
+        semantic2(variable, scope_);
+        scope_ = scope_.pop;
+        scope_.pop;
     }
 
     private Value runTupleExpression(imported!"dmd.expression".TupleExp tuple) {
@@ -4355,6 +4387,12 @@ private struct Walker {
 
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
+
+        // An empty range writes nothing, so the pointer's provenance never
+        // matters — a zero-length assignment through a null pointer is a no-op
+        // in compiled D, not an unsupported target.
+        if (upper == lower)
+            return value;
 
         Value elementAt(in size_t index) {
             return block ? copyArrayValue(value) : value[index];
