@@ -2296,19 +2296,21 @@ open. It is tracked as a rung-style item directly below.
 Owner: Track B** (interpreter-owned boxed marshalling — `value.md` item 5
 side of the seam; the `ffi/core.d` descriptor mappers are touched only where
 a leaf kind is missing). The recursion is not yet fully Type-driven; verified
-gaps as of 2026-07-06: no `Tsarray` case anywhere in `ffi_marshal.d` or
-`ffi/core.d` (a static array cannot cross the seam at all, including as a
-struct field); `isSupportedScalarSlice` gates slices to scalar elements (no
+gaps as of 2026-07-06: the `Tsarray` seam gap is now CLOSED in `ffi/core.d`
+(`ffiTypeFor` maps a static array to a STRUCT `ffi_type` of `dim` element
+copies; `ffi_marshal.d` already handled `Tsarray`), so a static array crosses
+the seam standalone and as a struct field at any nesting depth — demonstrated
+by the `dependencyImage.externDStaticArrayField.Interpreter` fixture. Still
+open: `isSupportedScalarSlice` gates slices to scalar elements (no
 slice-of-structs argument or return); no `Taarray` handling (should reject
 with an honest diagnostic, not a generic one). Fixture list (each needs the
-usual approval; oracle = `SystemLinker`): a by-value struct containing a
-static-array field; a slice-of-structs argument and a slice-of-structs
-return; an AA crossing rejected with a named diagnostic. Done-criterion:
-`materialize`/`reify` handle any aggregate composed of supported leaf kinds
-at any nesting depth, demonstrated by those fixtures without adding per-shape
-special cases. Scheduling: after `interpreter.md` phase 0 + rung 1 — the
-"beyond cerealed" second-package inventory will surface these gaps
-empirically and extends this fixture list.
+usual approval; oracle = `SystemLinker`): a slice-of-structs argument and a
+slice-of-structs return; an AA crossing rejected with a named diagnostic.
+Done-criterion: `materialize`/`reify` handle any aggregate composed of
+supported leaf kinds at any nesting depth, demonstrated by those fixtures
+without adding per-shape special cases. Scheduling: after `interpreter.md`
+phase 0 + rung 1 — the "beyond cerealed" second-package inventory will surface
+these gaps empirically and extends this fixture list.
 
 Known limitation: the boxed seam cannot faithfully cross an aggregate whose bytes
 *are* the semantics (a struct field that is a `union`, or one captured by `&` and

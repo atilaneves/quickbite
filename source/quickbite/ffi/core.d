@@ -852,7 +852,7 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
 ) {
     import quickbite.ffi.libffi;
     import dmd.astenums: TY;
-    import dmd.mtype: TypeStruct;
+    import dmd.mtype: TypeStruct, TypeSArray;
 
     switch (type.ty) {
         case TY.Tvoid:                 return &ffi_type_void;
@@ -875,6 +875,7 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
         case TY.Tarray:
             return isSupportedScalarSlice(type) ? ffiSliceType : null;
         case TY.Tstruct:               return ffiStructType(cast(TypeStruct) type);
+        case TY.Tsarray:               return ffiStaticArrayType(cast(TypeSArray) type);
         // A delegate crosses as its two-pointer {context, funcptr} struct
         // (ffi.md §34.16); the interpreted closure behind it is invoked through
         // a libffi closure trampoline.
@@ -942,6 +943,34 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiStructType(
         (sym.alignsize != naturalAlignment ||
          alignUp(naturalOffset, naturalAlignment) != sym.structsize))
         return null;
+
+    auto result = new ffi_type;
+    result.type = FFI_TYPE_STRUCT;
+    result.elements = elements.ptr;
+    return result;
+}
+
+// A fixed-size array has no native libffi type; the ABI classifies it as a
+// struct of `dim` identical elements (ffi.md §34.3.1). Recurse for the element
+// so any supported element kind (scalar, pointer, nested struct/array) crosses,
+// returning null when the element is unmodelled to keep the graceful
+// no-available-source refusal. The elements are naturally aligned and
+// sequential — exactly D's static-array layout — so ffi_prep_cif computes the
+// same size DMD did without any offset fix-up.
+private imported!"quickbite.ffi.libffi".ffi_type* ffiStaticArrayType(
+    imported!"dmd.mtype".TypeSArray type,
+) {
+    import quickbite.ffi.libffi: ffi_type, FFI_TYPE_STRUCT;
+
+    auto element = ffiTypeFor(type.next.toBasetype);
+    if (element is null)
+        return null;
+
+    const dim = cast(size_t) type.dim.toInteger;
+    auto elements = new ffi_type*[](dim + 1);
+    foreach (index; 0 .. dim)
+        elements[index] = element;
+    elements[dim] = null;
 
     auto result = new ffi_type;
     result.type = FFI_TYPE_STRUCT;

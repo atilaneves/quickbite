@@ -1278,6 +1278,76 @@ unittest {
     }
 }
 
+// A by-value struct with a static-array field (ffi.md §34.3.1 item 0): the
+// static array crosses as a STRUCT ffi_type of `dim` element copies, so the
+// containing struct is no longer refused. Covers the argument direction.
+@("dependencyImage.externDStaticArrayField.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_static_array_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_static_array_fixture;
+
+            struct Fixed {
+                int[4] values;
+                int tag;
+            }
+
+            int dependencyFixedSum(Fixed fixed) {
+                return fixed.values[0] + fixed.values[1] + fixed.values[2]
+                    + fixed.values[3] + fixed.tag;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_static_array_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_static_array_fixture;
+
+            struct Fixed {
+                int[4] values;
+                int tag;
+            }
+            int dependencyFixedSum(Fixed fixed);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_static_array_fixture;
+
+                unittest {
+                    int base = 10;
+                    Fixed fixed = Fixed([base, base + 1, base + 2, base + 3], 100);
+                    assert(dependencyFixedSum(fixed) == 146);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externCScalarOutParameter.Interpreter")
 @Tags("Interpreter")
 unittest {
