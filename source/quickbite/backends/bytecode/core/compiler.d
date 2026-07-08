@@ -7323,12 +7323,28 @@ private struct Compiler {
         import quickbite.frontend.dmd.string_literals: stringChars;
         import std.conv: text;
 
-        if (function_.type.toBasetype.nextOf.toBasetype.ty != TY.Tint32 ||
+        const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
+        if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
+             returnTy != TY.Tfloat64) ||
             call.arguments is null ||
             call.arguments.length != 1)
             return null;
 
         auto argument = (*call.arguments)[0];
+
+        // A scalar `int`/`long` argument passed by value: evaluate it into an
+        // argument slot sized to its native width; the marshaller copies
+        // exactly those bytes.
+        const argumentTy = argument.type.toBasetype.ty;
+        if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64) {
+            const width = argumentTy == TY.Tint64 ? long.sizeof : int.sizeof;
+            const argumentArea = allocateBytes(width, width);
+            emitCallArgument(argumentArea, false, argument);
+            return emitNativeCall(
+                function_, argument.type.toBasetype, argumentArea,
+            );
+        }
+
         if (argument.type.toBasetype.ty != TY.Tpointer ||
             argument.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
             return null;
@@ -7351,16 +7367,30 @@ private struct Compiler {
             Op.loadDataPointer, argumentArea, cast(ushort) dataOffset,
         );
 
-        const destination = allocate(ScalarType.int_);
+        return emitNativeCall(
+            function_, argument.type.toBasetype, argumentArea,
+        );
+    }
+
+    // Emit the native-call table entry and instruction shared by every native
+    // libc call shape: the argument bytes already live at `argumentArea`.
+    private Operand* emitNativeCall(
+        FuncDeclaration function_,
+        Type argumentType,
+        in ushort argumentArea,
+    ) {
+        const returnScalar =
+            scalarType(function_.type.toBasetype.nextOf.toBasetype);
+        const destination = allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
-        _program.nativeCalls ~= NativeCall(function_, argument.type.toBasetype);
+        _program.nativeCalls ~= NativeCall(function_, argumentType);
         _code ~= Instruction(
             Op.nativeCall,
             cast(ushort) nativeIndex,
             argumentArea,
             destination,
         );
-        return new Operand(destination, ScalarType.int_);
+        return new Operand(destination, returnScalar);
     }
 
     // `_aApply*(s, dg)`: emit a transcode of the source string `s` into a fresh

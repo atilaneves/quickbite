@@ -2640,7 +2640,8 @@ private final class BytecodeNativeMarshaller:
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
         import dmd.astenums: TY;
         const ty = type.toBasetype.ty;
-        return ty == TY.Tint32 || ty == TY.Tpointer;
+        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tfloat64 ||
+            ty == TY.Tpointer;
     }
 
     public bool canRepresentOutCell(Type pointedToType) {
@@ -2659,12 +2660,34 @@ private final class BytecodeNativeMarshaller:
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
-        buffer[0 .. size_t.sizeof] = _stack[_argument .. _argument + size_t.sizeof];
+        // `buffer` is sized to the argument type's native ABI width (4 bytes
+        // for `int`, 8 for a pointer); copy exactly that many, not a fixed 8.
+        buffer[] = _stack[_argument .. _argument + buffer.length];
     }
 
     public void readResult(Type type, in ubyte[] buffer) {
-        _stack[_destination .. _destination + int.sizeof] =
-            buffer[0 .. int.sizeof];
+        // `buffer` is padded to at least ffi_arg width (8 bytes); copy exactly
+        // the return type's native size (4 for `int`, 8 for `long`), not a
+        // fixed 4.
+        const resultSize = nativeResultSize(type);
+        _stack[_destination .. _destination + resultSize] =
+            buffer[0 .. resultSize];
+    }
+
+    private static size_t nativeResultSize(Type type) {
+        import dmd.astenums: TY;
+        switch (type.toBasetype.ty) with (TY) {
+            case Tint32:
+                return int.sizeof;
+            case Tint64:
+                return long.sizeof;
+            case Tfloat64:
+                return double.sizeof;
+            case Tpointer:
+                return (void*).sizeof;
+            default:
+                throw new Exception("Unsupported native result type.");
+        }
     }
 
     public void fillReceiver(ubyte[] buffer, Type type, in bool stableString,

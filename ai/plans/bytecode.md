@@ -4359,3 +4359,92 @@ not make the approved REPL behaviour pass and there is no approved existing
 test delta here to cover the improved diagnostic. Leave both REPL rows
 unpromoted until the native bridge is extended by the runtime/FFI track or a
 separate approved diagnostic test is added.
+
+Slice 8 native scalar-int argument, 2026-07-08: promoted `rt/cstdlib.d`'s
+existing SystemLinker-backed `abs.scalar` row to `BytecodeNewCore`. The red
+diagnostic was `` `abs` cannot be interpreted at compile time, because it has
+no available source code ``. The production change generalises the narrow
+`atoi` native-call chokepoint rather than adding a parallel path.
+`tryCompileNativeCall`
+(`source/quickbite/backends/bytecode/core/compiler.d`) now also accepts a
+single scalar `int` argument passed by value: it evaluates the argument into an
+int-sized argument slot via the ordinary `emitCallArgument` path and records
+the argument's basetype in the `NativeCall`. The shared table-entry/instruction
+tail is factored into a small `emitNativeCall` helper used by both the string
+and scalar shapes. Also fixed a latent size bug in
+`BytecodeNativeMarshaller.fillArgument`
+(`source/quickbite/backends/bytecode/core/machine.d`): it copied a fixed
+`size_t.sizeof` (8) bytes into a buffer that is only `int.sizeof` (4) wide for
+an `int` argument; it now copies exactly the buffer's native ABI width.
+`canRepresent` already allowed `Tint32`. Verification: `ninja bin/ut`, focused
+`abs.scalar.BytecodeNewCore` green, with `atoi.value.BytecodeNewCore` still
+green and the `free`/`malloc` no-source rows still red-as-expected; `bin/ut
+--random` with seed `2087389007` reported the invariant `0 failed, 6/6 failing
+as expected`.
+
+Slice 8 native wider-scalar call, 2026-07-08: promoted `rt/cstdlib.d`'s
+existing SystemLinker-backed `labs.widerScalar` row (`long labs(long)` on a
+runtime `long negative = -5_000_000_000L`) to `BytecodeNewCore`. The red
+diagnostic was `` `labs` cannot be interpreted at compile time, because it has
+no available source code `` — the native chokepoint's return-type gate hard-
+required `Tint32`, so `labs` fell through to the no-source throw. The
+production change generalises the same `abs`/`atoi` native-call chokepoint
+rather than adding a parallel path. `tryCompileNativeCall`
+(`source/quickbite/backends/bytecode/core/compiler.d`) now accepts a `Tint32`
+or `Tint64` return, and a single scalar `int`/`long` argument passed by value:
+it sizes the argument slot to the argument's native width (4 or 8) via the
+ordinary `emitCallArgument` path. `emitNativeCall` now derives the result slot
+scalar (and returned `Operand`) from the function's actual return type via
+`scalarType`, replacing the hard-wired `ScalarType.int_`, so the destination is
+8 bytes for a `long` return. In `BytecodeNativeMarshaller`
+(`source/quickbite/backends/bytecode/core/machine.d`), `canRepresent` now also
+allows `Tint64`, and `readResult` writes exactly the return type's native size
+(4 for `int`, 8 for `long`) via a small `nativeResultSize` helper instead of a
+fixed `int.sizeof`, mirroring the earlier `fillArgument` width fix (the ffi
+return buffer is padded to at least 8 bytes, so its length is not the true
+result width). Verification: `ninja bin/ut`, focused
+`labs.widerScalar.BytecodeNewCore` green, with `abs.scalar.BytecodeNewCore` and
+`atoi.value.BytecodeNewCore` still green; `bin/ut --random` with seed
+`3078925616` reported the invariant `0 failed, 6/6 failing as expected`.
+
+Slice 8 native ctype toupper/tolower calls, 2026-07-08: promoted
+`rt/cstdlib.d`'s existing SystemLinker-backed `ctype.toupperTolower` row to
+`BytecodeNewCore`. The fixture imports a second module (`core.stdc.ctype`) and
+makes two native calls in one unittest — `toupper(int)` and `tolower(int)`,
+both `int(int)`. No production change was needed: this is stale coverage. Both
+calls already fall in the widened `int(int)` shape the native chokepoint
+(`tryCompileNativeCall`/`emitNativeCall` in
+`source/quickbite/backends/bytecode/core/compiler.d`) accepts from the `abs`
+rung, each emits its own `NativeCall` table entry, and `callNative` resolves
+the symbol per entry at VM runtime regardless of the callee's declaring
+module, so two calls and the second module needed no new machinery. The
+promotion passed on the first run (no RED). Verification: `ninja bin/ut`,
+focused `ctype.toupperTolower.BytecodeNewCore` green, with
+`abs.scalar`/`labs.widerScalar`/`atoi.value` `.BytecodeNewCore` still green;
+`bin/ut --random` with seed `3779664640` reported the invariant `0 failed,
+6/6 failing as expected`.
+
+Slice 8 native atof double-return call, 2026-07-08: promoted `rt/cstdlib.d`'s
+existing SystemLinker-backed `atof.floatReturn` row (`double atof(const char*)`
+on `atof("3.5".ptr)`, asserting `value == 3.5`) to `BytecodeNewCore`. The RED
+diagnostic was `` `atof` cannot be interpreted at compile time, because it has
+no available source code `` — the native chokepoint's return-type gate accepted
+only `Tint32`/`Tint64`, so a `Tfloat64` return fell through to the no-source
+throw. This is the first floating-point return through the native bridge; the
+argument is the existing `char*`-string-literal shape, so no arg-side work was
+needed. The production change adds `Tfloat64` to that return-type gate in
+`tryCompileNativeCall` (`source/quickbite/backends/bytecode/core/compiler.d`);
+`scalarType(Tfloat64)` already maps to the 8-byte `double_` scalar that
+`emitNativeCall` uses for the destination slot and result `Operand`. In the
+`BytecodeNativeMarshaller`
+(`source/quickbite/backends/bytecode/core/machine.d`), `canRepresent` also
+accepts `Tfloat64` and `nativeResultSize` returns `double.sizeof` for it. No
+libffi-float subtlety: `ffiTypeFor` already maps `Tfloat64` to
+`ffi_type_double`, libffi writes the 8-byte double at the start of the return
+buffer (proven by the Interpreter's own `readResult`), and the marshaller
+copies exactly those 8 bytes, so the bit pattern matches the SystemLinker
+oracle. Verification: `ninja bin/ut`, focused
+`atof.floatReturn.BytecodeNewCore` green, with
+`abs.scalar`/`labs.widerScalar`/`ctype.toupperTolower`/`atoi.value`
+`.BytecodeNewCore` still green; `bin/ut --random` with seed `1023230401`
+reported the invariant `0 failed, 6/6 failing as expected`.

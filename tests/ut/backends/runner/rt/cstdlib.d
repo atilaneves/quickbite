@@ -506,7 +506,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+)) {
     @("abs.scalar." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -522,7 +524,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+)) {
     @("labs.widerScalar." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -538,7 +542,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+)) {
     @("ctype.toupperTolower." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -554,7 +560,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+)) {
     @("atof.floatReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
