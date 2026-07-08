@@ -232,6 +232,66 @@ unittest {
     }
 }
 
+@("dependencyImage.externDRefReturn.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_ref_return_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_ref_return_fixture;
+
+            private int stored = 41;
+
+            ref int dependencySlot() {
+                return stored;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ref_return_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_return_fixture;
+
+            ref int dependencySlot();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_return_fixture;
+
+                unittest {
+                    assert(dependencySlot == 41);
+
+                    dependencySlot = 42;
+                    assert(dependencySlot == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externDTypedSliceFunction.Interpreter")
 @Tags("Interpreter")
 unittest {
