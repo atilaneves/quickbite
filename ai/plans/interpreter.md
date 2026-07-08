@@ -209,7 +209,7 @@ degraded to an untracked local pointer (mode 3, one of Rung 3's 5×
 note: `writeBackSliceElements` (the array-op `+=` lowering's splice copy)
 still rebuilds a pointer-typed slice base as a detached local `Array` —
 same latent silent-lost-write class, needs its own exposing fixture.
-Re-measure (§6) pending.
+Re-measure (§6): done 2026-07-07, see the close-out entry below.
 
 **2026-07-07 (bench-dub-corpus follow-on).** The automem
 `Unsupported eval expression: address of call` class (the largest
@@ -272,26 +272,78 @@ in `ffi.md` §35.9 (the native ref-return defect above, now a tracked FFI
 work item), in `bench.md` (tardy run-executor crash; `bin/bench` build
 misconfiguration; crash-containment motivation for fork-per-package),
 and in `ai/plans/link-set-pollution.md` (the template-instance pollution
-flake). The freshest two-backend corpus measurement
-(`-b interpreter -b system-linker`, merged master, 2026-07-07):
+flake).
+
+**2026-07-07 re-measure (master e7e698c8, `-b interpreter
+-b system-linker`, full per-test mismatch lists).** This supersedes the
+snapshot the close-out first carried, which had copied the plan's
+pre-#359 verification state: in particular fearless's `address of
+dotVariable` was ALREADY CLEARED by the address-of-call fix (PR #359)
+and is not a live class. All four packages prepare 100% and print a
+frontend row; all post-parse timing is skipped on disagreement (or, for
+tardy, backend error). Deduplicated inventories:
 
 ```text
-automem   prepares 14/14; mismatches: pthread_mutexattr_init FFI (no
-          available source), `cannot read uninitialized variable
-          .trustedMoveImpl.result`, `Unsupported eval expression: cast_`,
-          and the ffi ref-return class (ffi.md §35.9)
-fearless  prepares 7/7; `Unsupported eval expression: address of
-          dotVariable` (`__unittest_L33_C7`) — NEW class, not yet in the
-          inventory above (fearless is the first non-cerealed driver to
-          hit it); needs triage and a standalone fixture per §8
-cerealed  prepares 32/32, past `Expected array.`; L302 now fails deeper:
-          `[ , a] != "xa"`, the ScopeBuffer realloc/memcpy family
-          (Rung 7)
-tardy     by path: prepares 22/22, interpreter leg times the frontend;
-          the system-linker leg's run-executor crash is bench.md's item,
-          not an interpreter gap. By registry name: correctly
-          unpreparable (`ut/polymorphic.d(24,12): scope variable ...`)
+automem  14/14 prepared, 111 mismatching tests (was 14 before #359/#363
+         — the fixes let tests run much deeper, fanning out onto the
+         common theAllocator initialization path):
+   48  pthread_mutexattr_init no available source     ffi.md §35.10
+   26  Unsupported eval expression: cast_             triage
+   18  cannot read uninitialized variable
+       `.trustedMoveImpl.result` in ctfe              triage
+   10  Unsupported interpreter assignment target:
+       call (all fakePureErrno)                       ffi.md §35.9
+    3  Unsupported eval call.                         Rung 6 family
+    2  Unsupported eval statement: Error in
+       test_allocator.TestAllocator.deallocate        NEW class, triage
+    1  Unsupported eval expression: tuple             Rung 1 family
+    1  Unsupported binary lhs type.                   triage
+    1  false != true (silent)                         Rung 7 family
+    1  Expected array. (new automem site)             triage
+
+fearless  7/7 prepared, 8 mismatching tests — address of dotVariable
+          GONE (cleared by PR #359):
+    3  pthread_mutexattr_init no available source     ffi.md §35.10
+    3  cannot read uninitialized variable
+       `.trustedMoveImpl.result` in ctfe              triage
+    2  Unsupported eval expression: cast_             triage
+
+cerealed  32/32 prepared, 91 mismatching tests — same total as the
+          2026-07-06 table above, slightly reshaped:
+   35  Unsupported eval expression: tuple             Rung 1 (reopened)
+   21  Unsupported eval expression: identifier        triage with Rung 1
+    8  Expected integer-compatible scalar.            Rung 5
+    6  index [18446744073709551615] out of bounds     Rung 7 (underflow)
+    3  cannot read uninitialized variable `.grain.b`  void-init reads
+    2  pointer slice exceeds allocated memory block   Rung 7 (ScopeBuffer)
+    2  ScopeBuffer value mismatches (L302
+       `[ , a] != "xa"`, L345) — replaced the fixed
+       `Expected array.` class                        Rung 7 (ScopeBuffer)
+   11  corrupted/garbage messages                     Rung 7 (wchar/dchar)
+    1  Unsupported interpreter assignment target:
+       slice of dotVariable (down from 5×, now
+       located)                                       Rung 3
+    1  index [0] out of bounds for length 0           Rung 7
+    1  [0, 0, 0, 0] != [0, 0, 0, 5] (silent)          Rung 7
+    1  gc_getArrayUsed no available source            §11 (GC growth)
+    1  Unsupported eval call.                         Rung 6
+
+tardy  by path: 22/22 prepared, frontend row prints; the system-linker
+       leg's run-executor crash (bench.md) skips the whole package's
+       post-parse timing INCLUDING the interpreter leg. By registry
+       name: correctly unpreparable
+       (`ut/polymorphic.d(24,12): scope variable ...`)
 ```
+
+**2026-07-08 (post-#373 automem re-measure, master ce8b5851).** The ffi
+native-ref-return fix (PR #373, `ffi.md` §35.9) retires the 10×
+`Unsupported interpreter assignment target: call` class; the same ten
+tests now proceed deeper and fail as 10× `Expected struct.` — a NEW
+automem class (Rung 2 was cerealed-scoped and closed; this is a fresh
+site), needs triage and a standalone fixture per §8. automem total
+unchanged at 111; all other classes byte-identical to the 2026-07-07
+table above. `pthread_mutexattr_init` (48×, `ffi.md` §35.10) remains
+the dominant class.
 
 **The goal is support, not pinned refusal** (user directive, 2026-07-07).
 The `rt/concurrency.d` `thisTid` fixture currently lets the Interpreter

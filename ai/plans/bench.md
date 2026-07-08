@@ -1405,6 +1405,17 @@ the frontend, so the package itself is preparable; the crash is on the
 system-linker execution side. Needs its own diagnosis and an exposing
 unit test per `AGENTS.md` before any fix.
 
+Re-confirmed on master e7e698c8 (2026-07-07): still crashes, and in a
+*two-backend* run (`-b interpreter -b system-linker`) the executor
+error skips the whole package's post-parse timing — the interpreter
+leg's rows included — though the driver survives, reports the error
+(`run executor exited with status -11 (a fixture may have crashed the
+process)`), and the frontend row still prints. A second cost of the
+crash, and a second beneficiary of fixing it: the interpreter leg's
+post-parse numbers for tardy are unobtainable until either the crash is
+fixed or per-backend failure isolation stops one backend's error from
+skipping another's timing.
+
 ## The Bare-`ninja` `bin/bench` Target Is Misconfigured
 
 `ninja bin/bench` passes the LDC-only flag `-link-defaultlib-shared` to

@@ -3132,6 +3132,13 @@ SystemLinker oracle): `dependencyImage.externDDelegateReturn` in
 `tests/ut/backends/runner/rt/dependency_image.d`. It pins the terminal
 behaviour (the returned delegate is callable and yields 42).
 
+**Work.** Make refusal single-sourced and pre-call: the marshaller (the
+seam's owner of representability) should expose "can I cross this type in
+this direction?" and the core must consult it before `ffi_prep_cif`, so
+mapper/marshaller drift degrades to the graceful diagnostic instead of a
+post-call assert. Actually crossing a returned native delegate needs an
+opaque callable value (the inverse of §34.16), which is its own rung.
+
 ### 35.9 Native ref returns are misread as values (found 2026-07-07)
 
 **Status: fixed 2026-07-07.** The core now treats a `TypeFunction.isRef`
@@ -3194,9 +3201,41 @@ is visible to a subsequent native read.
 `assignment target: call` mismatches gone from the two-backend
 disagreement list; every existing rt/ fixture stays green.
 
-**Work.** Make refusal single-sourced and pre-call: the marshaller (the
-seam's owner of representability) should expose "can I cross this type in
-this direction?" and the core must consult it before `ffi_prep_cif`, so
-mapper/marshaller drift degrades to the graceful diagnostic instead of a
-post-call assert. Actually crossing a returned native delegate needs an
-opaque callable value (the inverse of §34.16), which is its own rung.
+Corpus verification: the pre-fix re-measure (master e7e698c8,
+2026-07-07, `interpreter.md` §7 close-out entry) confirmed the ten
+automem mismatches, all `fakePureErrno`. The post-fix re-measure
+(master ce8b5851, 2026-07-08, includes PR #373's fix) shows the class
+gone (0×) — the Done-when corpus gate is met. The same ten tests now
+proceed deeper and fail as `Expected struct.`, an interpreter-side gap
+owned by `interpreter.md` §7, not this bridge.
+
+### 35.10 `pthread_mutexattr_init` is refused (measured 2026-07-07, undiagnosed)
+
+The dominant class of the 2026-07-07 two-backend corpus re-measure
+(`interpreter.md` §7 close-out entry): 48× automem + 3× fearless
+mismatches, all
+
+```text
+`pthread_mutexattr_init` cannot be interpreted at compile time, because
+it has no available source code
+```
+
+on the Interpreter leg while SystemLinker passes. Since the
+address-of-call fix (PR #359) the `theAllocator` initialization path
+runs for real, so nearly every automem test funnels through a `Mutex`
+setup and hits this: it is the single highest-leverage FFI item by
+mismatch count.
+
+**Not yet diagnosed.** `pthread_mutexattr_init` is an ordinary extern(C)
+body-less libc function — exactly what the ladder exists to call — so
+the graceful no-available-source refusal means some gate said no. Prime
+suspect: its `pthread_mutexattr_t*` argument — the pointed-to libc type
+is a union, and `canRepresent` (§35.8) refuses unions in both directions
+(§35.7). For an *opaque out-pointer* the interpreted code never reads
+field-wise, that refusal may be stricter than needed: an opaque native
+buffer (handle-style, §11.3) would do. Diagnose first — confirm which
+gate fires — then choose between opaque-buffer marshalling for
+union-typed out-pointers and a §35.7-style raw-bytes union crossing.
+Exposing rt/ fixture (usual `AGENTS.md` approval): a body-less libc call
+taking a union-typed out-pointer (a
+`pthread_mutexattr_init`/`_destroy` round-trip), SystemLinker oracle.
