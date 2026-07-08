@@ -1928,6 +1928,9 @@ private struct Walker {
         if (call.f !is null && functionName(call.f) == "memcpy")
             return runMemcpyCall(call);
 
+        if (call.f !is null && isEmplaceRef(call.f))
+            return runEmplaceRefCall(call);
+
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
                 GCArrayHook, tryGCArrayHook;
@@ -2214,6 +2217,15 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    private Value runEmplaceRefCall(imported!"dmd.expression".CallExp call) {
+        if (call.arguments is null || call.arguments.length != 2)
+            throw new Exception("Unsupported eval call.");
+
+        const value = runExpression((*call.arguments)[1]);
+        writeLocation((*call.arguments)[0], value);
+        return Value.void_;
     }
 
     private Value runMemcpyCall(imported!"dmd.expression".CallExp call) {
@@ -6606,6 +6618,14 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
     import std.string: fromStringz;
 
     return function_.toChars.fromStringz.idup;
+}
+
+private bool isEmplaceRef(imported!"dmd.func".FuncDeclaration function_) {
+    import std.conv: text;
+    import std.string: startsWith;
+
+    return text(function_.toPrettyChars)
+        .startsWith("core.internal.lifetime.emplaceRef!(");
 }
 
 

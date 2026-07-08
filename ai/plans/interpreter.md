@@ -792,6 +792,43 @@ The interpreter's local dynamic-array slice assignment path now reports
 compiled D's `Range violation`, matching `SystemLinker` for this already
 rejected overlapping write.
 
+**2026-07-08 follow-up: `emplaceRef` fills uninitialized join buffers.** After
+the lazy assertion thunk slice, the real-package red signal was:
+
+```text
+bin/bench.sh -b interpreter --dub cerealed
+skipping cerealed interpreter: <127 bytes of 0xff rendered as garbage>
+```
+
+No approved standalone fixture existed for this package-only frontier, so the
+bench remained the red signal. A probe on `InterpretedException` showed the
+failing `UnitTestException.msg` had the correct length but every element was
+`char.init` (`0xff`). The first failing site was cerealed
+`tests/classes.d:42` (`class.with.struct`), whose `shouldEqual` failure message
+is built by unit-threaded's `UnitTestException` constructor:
+`msgLines.join("\n")`. Phobos `std.array.join` allocates the result with
+`uninitializedArray!(char[])` and fills each slot via
+`core.internal.lifetime.emplaceRef(result[len++], e)`. The interpreter was
+executing `emplaceRef`'s runtime implementation literally: it initializes the
+slot, then casts `&chunk` to a wrapper `S*` and writes through `p.payload`.
+That pointer-cast wrapper does not alias back to the original array element in
+the interpreter's value model, so the write was lost and the buffer stayed
+filled with `char.init`.
+
+The interpreter now treats `core.internal.lifetime.emplaceRef!(...)` as the
+ref-write primitive it is for this path: evaluate the value argument, write it
+through the first ref argument with `writeLocation`, and return `void`.
+Re-measure: the corrupted/garbage message class is past. The package now
+advances to a readable assertion mismatch at the same first site:
+
+```text
+skipping cerealed interpreter: Expected:
+tests.classes.ClassWithStruct(DummyStruct(2, 3), 4)
+```
+
+That next blocker is no longer message corruption; it is a real class
+serialization/equality wrong-answer frontier.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
