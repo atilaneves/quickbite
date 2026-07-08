@@ -840,6 +840,12 @@ able to execute this section without other context. Read `ai/plans/dmd-backend.m
 (lessons 1-2, 8-9, 13, 17-20) and `ai/plans/dub-deps.md` for the background it
 references, but the diagnosis and plan below are complete on their own.
 
+(A rejected alternative, from the deleted `dub-build-via-reggae.md` plan: build
+`--dub` targets through a generic reggaefile so reggae derives the dub dialect
+canonically instead of us re-deriving flags. Superseded by the `dub describe`
+flag capture plus the `DubMode` split below; it remains the fallback direction
+if the describe-based path ever proves incomplete for a corpus package.)
+
 ### Symptom
 
 ```sh

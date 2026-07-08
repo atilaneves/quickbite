@@ -92,10 +92,12 @@ Live plans:
 Parked / historical:
 
 - `dmd-compiled-fixture-sentinel.md` — parked design, unstarted.
-- `dub-build-via-reggae.md` — superseded by the `dub describe` flag
-  path; kept as the fallback direction.
-- `mini-linker.md` — archived exploration; its conclusion (use LLVM
-  JITLink) was adopted.
+
+Deleted plans whose conclusions were folded into their owning plans:
+`dub-build-via-reggae.md` (superseded by the `dub describe` flag path;
+fallback argument folded into bench.md's template-emission section) and
+`mini-linker.md` (rejected in favour of LLVM JITLink; decision folded
+into llvm-jit.md's Scope section).
 
 ## Testing Rules
 

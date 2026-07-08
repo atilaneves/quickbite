@@ -434,8 +434,9 @@ a per-run `dlopen`). The leaves discussed here are the interpreter family's
    (sqlite3, ssl, pq, ...). Present on the system, absent from the
    process. The general case for real projects, but not cerealed.
 3. Static-only `.a` with no `.so` — rare in the popular ecosystem (the
-   common binders all ship `.so`s); deferred to the native-image /
-   mini-linker track (ffi.md §3-§20).
+   common binders all ship `.so`s); deferred to the native-image track
+   (ffi.md §3-§20; `LLVMJit` already attaches static archives via the
+   ORC search generator, see llvm-jit.md).
 
 Anticipated mechanism for (2), not built until a corpus project needs
 it: the driver extracts each dep's `libs`/`lflags` from `dub describe`,

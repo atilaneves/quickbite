@@ -26,6 +26,12 @@ upstream JITLink duplicate-`UND` minimal repro (see the normalizer section).
 
 ## Scope
 
+(Provenance: a hand-written in-memory linker was explored as the alternative
+load step and rejected — ELF linking semantics are too deep to re-implement;
+JITLink/ORC is battle-tested and already solves it, including static archives.
+That conclusion, from the deleted `mini-linker.md` exploration, is settled:
+do not revisit hand-rolling a linker.)
+
 A second native backend that **reuses SystemLinker's object production
 verbatim** and replaces only the load step: instead of spawning
 `dmd -shared` (~30 ms) and `dlopen`ing the result, link the same `.o`
