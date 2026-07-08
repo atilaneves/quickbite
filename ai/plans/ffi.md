@@ -75,10 +75,13 @@ performs the SysV x86_64 classification (INTEGER/SSE eightbytes, small-struct
 in registers vs. memory, the hidden `sret` pointer, `real` via x87). `real` in
 a signature is a known libffi x86_64 hazard and gets explicit oracle fixtures.
 
-Implemented today in the backend-neutral bridge core
-`source/quickbite/ffi/core.d` (`callNative`, `callViaLibffi`) over the libffi
-binding in `source/quickbite/ffi/libffi.d`, with backend-owned
-materialize/reify injected through the §5 seam.
+As built (2026-06-23 seam carve): the Value-free bridge core lives in
+`source/quickbite/ffi/core.d` (`callNative`/`callNativeMember`/
+`callNativeDelegate`/`callViaLibffi`) over the libffi binding in
+`source/quickbite/ffi/libffi.d`; the interpreter-owned boxed marshalling
+(`tryCallNative` and friends) lives in
+`source/quickbite/backends/interpreter/ffi_marshal.d`. §5/§6 describe the
+split.
 
 ## 5. The seam: backend-neutral core + materialize/reify
 
@@ -108,6 +111,16 @@ from the core's side they are injected callbacks over `(index, Type, buffer)` �
 the same separation that keeps backends isolated (`AGENTS.md`) while letting one
 shared core serve all of them.
 
+As built (2026-06-23 carve): the seam is the `NativeMarshaller` interface in
+`source/quickbite/ffi/core.d` — `canRepresent`, `fillArgument`,
+`fillReceiver`, `readResult`, `writeRefResult`, `writeOutParameter`,
+`fillOutParameterCell`, `receiverObjectPointer`, `invokeClosure` — implemented
+for the boxed Interpreter by `InterpreterNativeMarshaller` in
+`source/quickbite/backends/interpreter/ffi_marshal.d`. The interface is
+Value-free as promised, but it is buffer-copy-shaped and grew copy-lifetime
+parameters (`stableString`/`keepAlive`), so it cannot yet express the identity
+crossing a native-layout backend needs — that redesign is rung 24 (§35.1).
+
 Consequences:
 
 - `Value` **leaves the FFI core's API.** The `Value <-> ABI bytes` conversion
@@ -136,8 +149,9 @@ importing interpreter code.
 
 ## 6. Package layout and the parallel-agent partition
 
-`quickbite.ffi` becomes a **package** (promoted from the single
-`backends/ffi.d` module). The seam (§5) is the conflict boundary that lets two
+`quickbite.ffi` is now a **package** (promoted 2026-06-23 from the single
+`backends/ffi.d` module: `ffi/core.d` + `ffi/libffi.d`). The seam (§5) is the
+conflict boundary that lets two
 agents work concurrently with disjoint file ownership:
 
 ```text
@@ -157,7 +171,8 @@ Shared, read-mostly (either the ffi package or a backends/-level module):
 ```
 
 Sequencing: carve the seam first (mechanical: move marshalling out of the core
-behind the §5 interface), then the two tracks proceed independently. The seam —
+behind the §5 interface — done 2026-06-23), then the two tracks proceed
+independently. The seam —
 not native layout — is the prerequisite; native layout is one thing Track B may
 try once the seam exists.
 
@@ -2182,6 +2197,8 @@ Inc  Contract                                          Track  Status   Ref
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.15
 22  delegates / callbacks / closures: reverse bridge    AB    done*    §34.16
 23  extern(C++) function and member ABI                 A     done     §34.17
+24  seam v2: pointer-handing crossing + CIF cache       A     open     §35.1
+25  native Throwable crossing as rooted reference       A     open     §35.3
 ```
 
 `done*` = landed with residuals tracked in the rung's own still-todo text
@@ -2194,6 +2211,13 @@ marshalling, native-layout obviates. The done rungs
 concern going forward), 12 was genuine ABI ordering (Track A). The pure-A rungs
 (13, 20, 21, 23) are independent of the representation and are the spine of the
 bridge track. The AB rungs need the seam interface stable first.
+
+Rungs 24–25 (promoted 2026-07-08 from the §35 critique; specs in §35.1 and
+§35.3): unlike 10–23 they are not ordered by dub-code frequency — they are the
+gate for the second consumer. §35.1 is the explicit prerequisite for any
+Bytecode/IR call site (§23; `bytecode.md`'s slice-11 entry criteria), and
+§35.3 re-does the exception crossing at the altitude that backend needs. Climb
+them before wiring any non-Interpreter backend to the bridge.
 
 ### 34.3.1 Least-work path to arbitrary FFI (2026-06-23)
 
@@ -2849,7 +2873,9 @@ Those get their own plans when scheduled; they are out of this section's scope.
 A 2026-07-06 critique of this plan against the as-built code found gaps in
 both the ladder's "done" claim and the seam's readiness for the bytecode
 backend; they are enumerated as work items in §35, which also accretes
-later-found holes in the "done" claim (§35.9, native ref returns).
+later-found holes in the "done" claim (§35.9, native ref returns). Two of
+those items are promoted back into the ladder as rungs 24 (§35.1, seam v2)
+and 25 (§35.3, exception fidelity) — the open spine of the bridge track.
 
 ## 35. 2026-07-06 critique: plan vs code vs the bytecode backend
 
@@ -2863,6 +2889,8 @@ consequence, and the work — with fixture sketches that need the usual
 block the terminal goal (§34.1) for the two backends.
 
 ### 35.1 Seam v2: no identity crossing, no CIF cache
+
+**Status: open — promoted to ladder rung 24 (§34.3, 2026-07-08).**
 
 **Claim.** §5/§23: for a native-layout backend `materialize`/`reify` is the
 identity — "there is no marshalling for this backend to own". §1/§4/§24.1:
@@ -2954,6 +2982,8 @@ ctor-ordering guarantees are later rungs.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
+**Status: open — promoted to ladder rung 25 (§34.3, 2026-07-08).**
+
 **Claim.** §12: the exception guard "survives for every backend regardless of
 representation". §34.18 counts exceptions as done.
 
@@ -2978,6 +3008,11 @@ backend uses the reference directly. **Fixture sketch** (approval required):
 dependency exception subclass with an `int` field set by its ctor; the test
 catches it and reads the field. Green on the oracle, red on the Interpreter
 today.
+
+**Done when:** the field-reading fixture is green on `SystemLinker` and
+`Interpreter`; the caught `Throwable` pointer is carried in
+`NativeCallException` and rooted for its lifetime; and the §30/§31/§34.14
+exception fixtures stay green.
 
 ### 35.4 Durable inbound trampolines have no owner
 
