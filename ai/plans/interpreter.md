@@ -385,6 +385,15 @@ site, oracle leg green. The proposed exposing fixtures live in the rung
 sections below and await approval; no existing matrix fixture covers
 any of the three constructs, so no pre-approved promotions applied.
 
+**2026-07-08 (Rung 1 landed, TupleExp).** §9.1's fix (a `TupleExp`
+branch in `runExpression`) closes the 35× `tuple` cluster: re-measure
+shows 0× `tuple` in cerealed. The 35 tests, which died on their final
+`shouldThrow → tuple!(…)` assertion, now run past it and stop at the
+next deeper class — `Unsupported eval call.` grew 1× → 36×, the newly
+exposed blocker (triage / Rung 6 family). cerealed total is unchanged
+at 91; the rest of the inventory is byte-identical to the table above
+(the `identifier` cluster — Rung 9/§9.9 — is untouched and remains 21×).
+
 **The goal is support, not pinned refusal** (user directive, 2026-07-07).
 The `rt/concurrency.d` `thisTid` fixture currently lets the Interpreter
 leg pass on *either* oracle agreement *or* a structured unsupported
@@ -497,43 +506,22 @@ side-effect prefix) if present, then each element expression in order —
 for the assignment-tuple case the elements are ordinary assignments the
 interpreter already handles individually.
 
-**Proposed exposing fixtures (await approval; verified red on
-`Interpreter` at the exact cerealed site, green on `SystemLinker`, via
-standalone `bin/bench` repro 2026-07-08).** Headline shape, ct/structs.d
-(or ct/expressions.d):
-
-```d
-unittest {
-    import std.typecons: Tuple;
-
-    int first = 1;
-    int second = 2;
-    auto pair = Tuple!(int, int)(first, second);
-    assert(pair[0] == 1);
-    assert(pair[1] == 2);
-}
-```
-
-Red today: `Unsupported eval expression: tuple`. Plus the
-dependency-free distillation of the same root (fails identically):
-
-```d
-struct Pair {
-    int head;
-    long tail;
-}
-
-unittest {
-    auto source = Pair(2, 3L);
-    Pair target;
-    target.tupleof = source.tupleof;
-    assert(target.head == 2);
-    assert(target.tail == 3);
-}
-```
-
-Backend matrix per §8: widest that passes at landing time; omit
-still-red backends rather than pinning refusals.
+**Done (2026-07-08).** `runExpression` now has a `TupleExp` branch
+(`runTupleExpression`, impl.d) mirroring the IR lowering
+(`lowering.d` `lowerTupleExpression`): run `e0` if present, then each
+element in order, returning the last (the value is discarded in the
+statement-expression positions this arises in). Two standalone
+fixtures landed in ct/structs.d — the headline
+`struct.tupleConstructionFromLocals` (`Tuple!(int, int)(first, second)`)
+and the dependency-free distillation
+`struct.tupleofAssignmentCopiesFields`
+(`target.tupleof = source.tupleof`) — each green on
+`Ctfe, Interpreter, SystemLinker, LLVMJit` (BytecodeNewCore omitted per
+§8; still red there). Re-measure (§6): the 35× `tuple` class is gone
+from the cerealed inventory (0×); the 35 tests now progress past their
+final `shouldThrow` assertion and surface the next deeper class —
+`Unsupported eval call.` rose 1× → 36× (triage / Rung 6 family), the
+newly-revealed blocker. cerealed total unchanged at 91.
 
 ### 9.2 Rung 2 — residual `Expected struct`
 
