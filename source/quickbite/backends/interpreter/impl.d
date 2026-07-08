@@ -3397,9 +3397,16 @@ private struct Walker {
         scope(exit) locals = savedLocals;
 
         locals = (*captured).dup;
-        const result = runExpression(*expression);
+        const result = runLazyArgumentExpression(*expression);
         lazyArgumentLocals[variable] = locals.dup;
         return result;
+    }
+
+    private Value runLazyArgumentExpression(Expression expression) {
+        if (auto function_ = functionPointerExpressionFunction(expression))
+            return runFunction(function_, [], [], true);
+
+        return runExpression(expression);
     }
 
     private VarDeclaration lazyCallVariable(imported!"dmd.expression".CallExp call) {
@@ -5229,6 +5236,9 @@ private struct Walker {
             ? source.length
             : cast(size_t) runExpression(slice.upr).asLong;
 
+        if (source.isArray && (lower > upper || upper > source.length))
+            throwRangeError("Range violation");
+
         return source.arraySlice(lower, upper);
     }
 
@@ -5414,7 +5424,6 @@ private struct Walker {
         out size_t arrayIndex,
     ) {
         import quickbite.frontend.dmd.types:
-            isArrayType,
             isAssocArrayType,
             isPointerType;
 
@@ -5441,10 +5450,10 @@ private struct Walker {
             return source.pointerIndex(arrayIndex);
         }
 
-        if (isArrayType(index.e1.type) && arrayIndex >= source.length) {
+        if (source.isArray && arrayIndex >= source.length) {
             import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
 
-            throw new Exception(indexOutOfBoundsMessage(
+            throwRangeError(indexOutOfBoundsMessage(
                 arrayIndex,
                 source.length,
                 isSliceValue(index.e1),
@@ -5453,6 +5462,13 @@ private struct Walker {
         }
 
         return source[arrayIndex];
+    }
+
+    private void throwRangeError(in string message) {
+        throw new InterpretedException(nativeExceptionBaseObject(
+            message,
+            "core.exception.RangeError",
+        ));
     }
 
     private bool isSliceValue(imported!"dmd.expression".Expression expression) {

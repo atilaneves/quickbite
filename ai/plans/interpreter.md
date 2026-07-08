@@ -899,6 +899,43 @@ The pointer-slice-over-empty-allocation frontier is gone. The next visible
 interpreter blocker is a cerealed negative test whose expected exception is not
 being thrown.
 
+**2026-07-08 follow-up: lazy shouldThrow thunks execute generated wrappers.**
+The `Expression did not throw` frontier is root-caused and fixed. No approved
+standalone fixture existed for this package-only exposure, so the real-package
+bench remained the red signal. A two-backend bench probe first located the
+class across cerealed's negative tests (`decode.d`, `encode_decode.d`,
+`enums.d`, `protocol_unit.d`, etc.); the first visible site was
+`decode.d(8)`, `cereal.value!bool.shouldThrow!RangeError`.
+
+Two temporary probes (reverted before commit) showed the decisive shape:
+unit-threaded's lazy `expr` parameter captured DMD-generated zero-argument
+function literals (`__dgliteral...`) for the UFCS negative checks. The previous
+lazy-thunk support evaluated that literal expression as a value, so
+`threw!T(expr)` observed a normal return instead of executing the wrapped
+operation. The interpreter now invokes captured zero-formal function/delegate
+literals in the saved lazy environment before falling back to direct expression
+evaluation.
+
+The same frontier also exposed that interpreter array bounds errors must be
+catchable D exceptions, not host-only diagnostics: `grainRaw(length)` slices
+`_bytes[0 .. length]`, while direct `grainUByte` uses `_bytes[0]`. The
+interpreter now checks interpreted array slice/index bounds before the
+unchecked value-layer access used by the benchmark build, and raises an
+interpreted `core.exception.RangeError` with the existing diagnostic text.
+
+Re-measure:
+
+```text
+bin/bench.sh -b interpreter --dub cerealed
+skipping cerealed interpreter: Expected integer-compatible scalar.
+```
+
+A two-backend re-measure confirms the `Expression did not throw` class is gone.
+The next visible interpreter blocker is `Expected integer-compatible scalar.`
+The full mismatch list also shows deeper classes now exposed, including
+`Unsupported cast to bool from Array` and existing property/underflow
+families; the first single-backend frontier is the scalar-compatibility class.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
