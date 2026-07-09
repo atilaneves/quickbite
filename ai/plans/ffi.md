@@ -3136,6 +3136,14 @@ pointer machinery. A small pointer-local metadata fix records a pointer local's
 declared element type, so a native write into an initially-null `char*` local
 still dereferences as `char*` afterward.
 
+**Progress 2026-07-09 (result-slot safety).** Direct result-slot handoff is
+limited to return types whose native result size is at least `ffi_arg.sizeof`.
+Narrow returns such as `int` use the core-owned padded result buffer, then the
+bytecode marshaller copies back exactly the native result size. This preserves
+zero-copy handoff for ABI-safe naturally wide slots while avoiding libffi
+overwriting adjacent frame bytes when an ABI path stores a full `ffi_arg` for a
+narrow integer return.
+
 The non-variadic CIF cache was deliberately left for the next §35.1 slice:
 this commit proves the real call-site pointer-handing seam and keeps the
 backend-neutral core fallback for existing Interpreter paths.

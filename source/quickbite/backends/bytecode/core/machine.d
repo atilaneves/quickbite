@@ -2689,9 +2689,14 @@ private final class BytecodeNativeMarshaller:
             buffer[0 .. resultSize];
     }
 
-    // @trusted: libffi writes only the ABI-sized result for `type`; the slot was
-    // allocated by the compiler for that result type in the current frame.
+    // @trusted: for direct handoff, libffi writes no more than the result slot
+    // can hold. Narrow results use the core's padded buffer and copy-out path.
     public void* resultAddress(Type type) @trusted {
+        import quickbite.ffi.libffi: ffi_arg;
+
+        if (nativeResultSize(type) < ffi_arg.sizeof)
+            return null;
+
         return &_stack[_destination];
     }
 
