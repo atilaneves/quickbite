@@ -80,7 +80,7 @@ private string statementLabel(imported!"dmd.identifier".Identifier identifier) {
 
 private struct Walker {
     import dmd.declaration: VarDeclaration;
-    import dmd.expression: DivExp, ModExp;
+    import dmd.expression: DivExp, Expression, ModExp;
     import dmd.func: FuncDeclaration;
     import dmd.statement: Statement;
     import quickbite.frontend.dmd.values: defaultValue;
@@ -94,6 +94,8 @@ private struct Walker {
     private size_t[FuncDeclaration] functionPointerIds;
     private size_t nextFunctionPointerId;
     private RuntimeDelegate[size_t] delegates;
+    private Expression[VarDeclaration] lazyArgumentExpressions;
+    private Value[VarDeclaration][VarDeclaration] lazyArgumentLocals;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private ArrayElementAlias[VarDeclaration] arrayElementAliases;
@@ -101,9 +103,11 @@ private struct Walker {
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
     private StructArrayFieldAliases[VarDeclaration] structArrayFieldAliases;
     private size_t[VarDeclaration] arrayAllocations;
+    private size_t[VarDeclaration] arrayAllocationAliases;
     private VarDeclaration[size_t] arrayAllocationVariables;
     private bool[VarDeclaration] arrayPointerWritebacks;
     private size_t allocationCount;
+    private size_t lastGCArrayUsedAllocation;
     private Value result;
     private bool runningCalledFunction;
     private bool inUnitTest;
@@ -1566,8 +1570,11 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -1655,9 +1662,10 @@ private struct Walker {
         if (auto alias_ = variable in sliceAliases)
             source = alias_.source;
 
+        const id = variable in arrayAllocationAliases;
         return Value.arrayPointerValue(
             arrayPointerElements(*current),
-            allocationId(source),
+            id is null ? allocationId(source) : *id,
             arrayPointerOffset(*current, offset),
         );
     }
@@ -1810,9 +1818,41 @@ private struct Walker {
             throw new Exception("Unsupported interpreter pointer target.");
 
         if (auto current = (*variable) in locals)
-            return *current;
+            return reinterpretLocalPointerLoad(
+                *current,
+                (*variable).type,
+                pointer.e1.type,
+            );
 
-        return defaultValue(*variable);
+        return reinterpretLocalPointerLoad(
+            defaultValue(*variable),
+            (*variable).type,
+            pointer.e1.type,
+        );
+    }
+
+    private Value reinterpretLocalPointerLoad(
+        in Value value,
+        imported!"dmd.mtype".Type sourceType,
+        imported!"dmd.mtype".Type pointerType,
+    ) {
+        import dmd.astenums: TY;
+
+        auto source = sourceType is null ? null : sourceType.toBasetype;
+        auto pointer = pointerType is null ? null : pointerType.toBasetype;
+        auto target = pointer is null || pointer.nextOf is null
+            ? null
+            : pointer.nextOf.toBasetype;
+        if (source is null || target is null)
+            return value;
+
+        if (source.ty == TY.Tfloat32 && target.ty == TY.Tuns32)
+            return Value(floatBits(cast(float) value.asReal));
+
+        if (source.ty == TY.Tfloat64 && target.ty == TY.Tuns64)
+            return Value(doubleBits(cast(double) value.asReal));
+
+        return value;
     }
 
     private Value staticArrayPointerView(
@@ -1935,6 +1975,18 @@ private struct Walker {
         if (call.f !is null && functionName(call.f) == "memcpy")
             return runMemcpyCall(call);
 
+        if (call.f !is null && isEmplaceRef(call.f))
+            return runEmplaceRefCall(call);
+
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.builtins:
+                GCArrayHook, tryGCArrayHook;
+
+            GCArrayHook gcArrayHook;
+            if (tryGCArrayHook(call.f, gcArrayHook))
+                return runGCArrayHookCall(call, gcArrayHook);
+        }
+
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
                 AssocArrayHook, tryAssocArrayHook;
@@ -1965,8 +2017,15 @@ private struct Walker {
         Value[] arguments;
         Expression[] argumentExpressions;
         if (call.arguments !is null) {
-            foreach (argument; *call.arguments) {
-                arguments ~= runExpression(argument);
+            foreach (index, argument; *call.arguments) {
+                auto parameter = call.f is null ||
+                    call.f.parameters is null ||
+                    index >= call.f.parameters.length
+                    ? null
+                    : (*call.f.parameters)[index];
+                arguments ~= parameter !is null && parameterIsLazy(parameter)
+                    ? Value.undisplayable
+                    : runExpression(argument);
                 argumentExpressions ~= argument;
             }
         }
@@ -2198,6 +2257,9 @@ private struct Walker {
             return runFunction(function_, arguments, argumentExpressions);
         }
 
+        if (auto variable = lazyCallVariable(call))
+            return runLazyArgument(variable);
+
         const callee = runExpression(call.e1);
         if (callee.isNativeDelegate)
             return runNativeDelegateCall(
@@ -2218,6 +2280,15 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    private Value runEmplaceRefCall(imported!"dmd.expression".CallExp call) {
+        if (call.arguments is null || call.arguments.length != 2)
+            throw new Exception("Unsupported eval call.");
+
+        const value = runExpression((*call.arguments)[1]);
+        writeLocation((*call.arguments)[0], value);
+        return Value.void_;
     }
 
     private Value runMemcpyCall(imported!"dmd.expression".CallExp call) {
@@ -2265,6 +2336,57 @@ private struct Walker {
         }
 
         return destination;
+    }
+
+    private Value runGCArrayHookCall(
+        imported!"dmd.expression".CallExp call,
+        in imported!"quickbite.backends.interpreter.builtins".GCArrayHook hook,
+    ) {
+        import quickbite.backends.interpreter.builtins: GCArrayHook;
+
+        if (call.arguments is null)
+            throw new Exception("Unsupported eval call.");
+
+        with (GCArrayHook) final switch (hook) {
+            case getUsed:
+                requireArgumentCount(call, 2);
+                return gcArrayUsed(runExpression((*call.arguments)[0]));
+
+            case reserveCapacity:
+                requireArgumentCount(call, 3);
+                const slice = runExpression((*call.arguments)[0]);
+                const request =
+                    cast(size_t) runExpression((*call.arguments)[1]).asLong;
+                runExpression((*call.arguments)[2]);
+                return Value(request == 0 ? slice.length : request);
+
+            case shrinkUsed:
+                requireArgumentCount(call, 3);
+                runExpression((*call.arguments)[0]);
+                runExpression((*call.arguments)[1]);
+                runExpression((*call.arguments)[2]);
+                return Value(true);
+        }
+    }
+
+    private Value gcArrayUsed(in Value pointer) {
+        lastGCArrayUsedAllocation = 0;
+        if (pointer == Value.null_ || pointer.isNativePointer)
+            return Value.null_;
+
+        if (!pointer.isPointer)
+            throw new Exception("Expected pointer.");
+
+        lastGCArrayUsedAllocation = pointer.pointerAllocation;
+        return Value.arrayValue(pointerArrayElements(pointer));
+    }
+
+    private Value[] pointerArrayElements(in Value pointer) {
+        Value[] elements;
+        foreach (index; 0 .. pointer.pointerLength)
+            elements ~= pointer.pointerIndex(index);
+
+        return elements;
     }
 
     private Value readPointerElement(
@@ -2920,8 +3042,11 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -2967,8 +3092,11 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -3035,8 +3163,11 @@ private struct Walker {
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
+        lazyArgumentExpressions = child.lazyArgumentExpressions;
+        lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
+        arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackNestedLocals(function_, child, captureLocals);
@@ -3044,6 +3175,7 @@ private struct Walker {
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
     }
 
@@ -3059,14 +3191,18 @@ private struct Walker {
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
+        lazyArgumentExpressions = child.lazyArgumentExpressions;
+        lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
+        arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
@@ -3171,6 +3307,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
@@ -3180,6 +3317,7 @@ private struct Walker {
         nextLocalPointerId = child.nextLocalPointerId;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
+        arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -3266,6 +3404,16 @@ private struct Walker {
             throw new Exception("Unsupported interpreter call arguments.");
 
         foreach (index, parameter; *function_.parameters) {
+            if (parameterIsLazy(parameter)) {
+                bindLazyFunctionParameter(
+                    parameter,
+                    index < argumentExpressions.length
+                        ? argumentExpressions[index]
+                        : null,
+                );
+                continue;
+            }
+
             locals[parameter] = arguments[index];
             recordParameterSliceAlias(
                 parameter,
@@ -3275,6 +3423,80 @@ private struct Walker {
                     : null,
             );
         }
+    }
+
+    private void bindLazyFunctionParameter(
+        VarDeclaration parameter,
+        Expression argumentExpression,
+    ) {
+        locals[parameter] = Value.undisplayable;
+
+        if (auto variable = lazyExpressionVariable(argumentExpression)) {
+            if (auto expression = variable in lazyArgumentExpressions) {
+                lazyArgumentExpressions[parameter] = *expression;
+                if (auto captured = variable in lazyArgumentLocals)
+                    lazyArgumentLocals[parameter] = (*captured).dup;
+                return;
+            }
+        }
+
+        if (argumentExpression is null)
+            throw new Exception("Unsupported interpreter call arguments.");
+
+        lazyArgumentExpressions[parameter] = argumentExpression;
+        lazyArgumentLocals[parameter] = locals.dup;
+    }
+
+    private Value runLazyArgument(VarDeclaration variable) {
+        auto expression = variable in lazyArgumentExpressions;
+        if (expression is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto captured = variable in lazyArgumentLocals;
+        if (captured is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto savedLocals = locals;  // mutated below while evaluating the thunk
+        scope(exit) locals = savedLocals;
+
+        locals = (*captured).dup;
+        const result = runLazyArgumentExpression(*expression);
+        lazyArgumentLocals[variable] = locals.dup;
+        return result;
+    }
+
+    private Value runLazyArgumentExpression(Expression expression) {
+        if (auto function_ = functionPointerExpressionFunction(expression))
+            return runFunction(function_, [], [], true);
+
+        return runExpression(expression);
+    }
+
+    private VarDeclaration lazyCallVariable(imported!"dmd.expression".CallExp call) {
+        if (call.arguments !is null && call.arguments.length != 0)
+            return null;
+
+        return lazyExpressionVariable(call.e1);
+    }
+
+    private VarDeclaration lazyExpressionVariable(Expression expression) {
+        auto variable = expression is null ? null : expression.isVarExp;
+        if (variable is null)
+            return null;
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+
+        return (declaration in lazyArgumentExpressions) is null
+            ? null
+            : declaration;
+    }
+
+    private bool parameterIsLazy(VarDeclaration parameter) {
+        import dmd.astenums: STC;
+
+        return (parameter.storage_class & STC.lazy_) != STC.none;
     }
 
     private void recordParameterSliceAlias(
@@ -3354,6 +3576,49 @@ private struct Walker {
 
                 writeLocation(argument, *value);
             }
+        }
+    }
+
+    private void writeBackByValueClassArguments(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        import dmd.astenums: TY;
+
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (parameter.isReference)
+                continue;
+
+            if (
+                parameter.type is null ||
+                parameter.type.toBasetype.ty != TY.Tclass
+            )
+                continue;
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            if (argument is null || !isWritableLocation(argument))
+                continue;
+
+            auto finalParam = parameter in child.locals;
+            if (finalParam is null || !finalParam.isClassObject)
+                continue;
+
+            const original = runExpression(argument);
+            if (!original.isClassObject)
+                continue;
+
+            if (finalParam.classTypeName != original.classTypeName)
+                continue;
+
+            if (*finalParam != original)
+                writeLocation(argument, *finalParam);
         }
     }
 
@@ -4028,8 +4293,11 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -4107,8 +4375,11 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -5047,6 +5318,9 @@ private struct Walker {
             ? source.length
             : cast(size_t) runExpression(slice.upr).asLong;
 
+        if (source.isArray && (lower > upper || upper > source.length))
+            throwRangeError("Range violation");
+
         return source.arraySlice(lower, upper);
     }
 
@@ -5232,7 +5506,6 @@ private struct Walker {
         out size_t arrayIndex,
     ) {
         import quickbite.frontend.dmd.types:
-            isArrayType,
             isAssocArrayType,
             isPointerType;
 
@@ -5259,10 +5532,10 @@ private struct Walker {
             return source.pointerIndex(arrayIndex);
         }
 
-        if (isArrayType(index.e1.type) && arrayIndex >= source.length) {
+        if (source.isArray && arrayIndex >= source.length) {
             import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
 
-            throw new Exception(indexOutOfBoundsMessage(
+            throwRangeError(indexOutOfBoundsMessage(
                 arrayIndex,
                 source.length,
                 isSliceValue(index.e1),
@@ -5271,6 +5544,13 @@ private struct Walker {
         }
 
         return source[arrayIndex];
+    }
+
+    private void throwRangeError(in string message) {
+        throw new InterpretedException(nativeExceptionBaseObject(
+            message,
+            "core.exception.RangeError",
+        ));
     }
 
     private bool isSliceValue(imported!"dmd.expression".Expression expression) {
@@ -5570,6 +5850,8 @@ private struct Walker {
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.thisValue = object;
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
@@ -5579,6 +5861,8 @@ private struct Walker {
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
+        lazyArgumentExpressions = child.lazyArgumentExpressions;
+        lazyArgumentLocals = child.lazyArgumentLocals;
         return child.thisValue;
     }
 
@@ -5812,6 +6096,7 @@ private struct Walker {
                 : runExpression(initializer),
         );
         locals[variable] = value;
+        recordGCArrayUsedAlias(variable, initializer);
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)
             recordArrayElementAlias(variable, indexInitializer, arrayElementAliasIndex);
@@ -5825,6 +6110,42 @@ private struct Walker {
         recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    private void recordGCArrayUsedAlias(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        import quickbite.backends.interpreter.builtins:
+            GCArrayHook, tryGCArrayHook;
+
+        auto call = gcArrayUsedCall(initializer);
+        if (call is null || call.f is null) {
+            arrayAllocationAliases.remove(variable);
+            return;
+        }
+
+        GCArrayHook hook;
+        if (!tryGCArrayHook(call.f, hook) || hook != GCArrayHook.getUsed) {
+            arrayAllocationAliases.remove(variable);
+            return;
+        }
+
+        if (lastGCArrayUsedAllocation == 0) {
+            arrayAllocationAliases.remove(variable);
+            return;
+        }
+
+        arrayAllocationAliases[variable] = lastGCArrayUsedAllocation;
+    }
+
+    private imported!"dmd.expression".CallExp gcArrayUsedCall(
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        if (auto cast_ = initializer.isCastExp)
+            return gcArrayUsedCall(cast_.e1);
+
+        return initializer.isCallExp;
     }
 
     private Value defaultLocalValue(VarDeclaration variable) {
@@ -6305,16 +6626,31 @@ private string[] classTypeNames(imported!"dmd.dclass".ClassDeclaration class_) {
 
 
 private string[] nativeExceptionTypeNames(in string name) @safe pure {
+    const root = nativeExceptionRoot(name);
     return [
         unqualifiedName(name),
         name,
-        "Exception",
+        root,
         "Throwable",
         "Object",
-        "object.Exception",
+        "object." ~ root,
         "object.Throwable",
         "object.Object",
     ];
+}
+
+private string nativeExceptionRoot(in string name) @safe pure {
+    import std.algorithm: endsWith, startsWith;
+
+    return (
+        (
+            name.startsWith("core.exception.") ||
+            name.startsWith("object.")
+        ) &&
+        name.endsWith("Error")
+    )
+        ? "Error"
+        : "Exception";
 }
 
 
@@ -6442,6 +6778,14 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
     return function_.toChars.fromStringz.idup;
 }
 
+private bool isEmplaceRef(imported!"dmd.func".FuncDeclaration function_) {
+    import std.conv: text;
+    import std.string: startsWith;
+
+    return text(function_.toPrettyChars)
+        .startsWith("core.internal.lifetime.emplaceRef!(");
+}
+
 
 private struct SliceAlias {
     public imported!"dmd.declaration".VarDeclaration source;
@@ -6497,6 +6841,22 @@ private imported!"dmd.dstruct".StructDeclaration constructorStructDeclaration(
     // returns an existing declaration reference.
     imported!"dmd.aggregate".AggregateDeclaration aggregate = function_.isThis;
     return aggregate is null ? null : aggregate.isStructDeclaration;
+}
+
+
+private ulong floatBits(in float value) @trusted pure nothrow {
+    // @trusted: reads the bytes of a local float as a same-sized uint for a
+    // single immediate reinterpret load; the pointer never escapes.
+    static assert(float.sizeof == uint.sizeof);
+    return *cast(uint*) &value;
+}
+
+
+private ulong doubleBits(in double value) @trusted pure nothrow {
+    // @trusted: reads the bytes of a local double as a same-sized ulong for a
+    // single immediate reinterpret load; the pointer never escapes.
+    static assert(double.sizeof == ulong.sizeof);
+    return *cast(ulong*) &value;
 }
 
 
