@@ -416,7 +416,9 @@ stride` can't overflow either -- no second `mulu` needed. Whether the
 eventual Walker call site should re-throw this as a `RangeError` for
 compiled-D parity (`arr[i]` throws `core.exception.RangeError`, an
 `Error`, not an `Exception`) is that call site's decision when it wires
-up, not this container's.
+up, not this container's. `layout.d` also now asserts a 64-bit host at
+compile time, since DMD reports type sizes as 64-bit `uinteger_t`
+values that the module narrows to `size_t`.
 
 ## Audit findings (June 2026)
 
