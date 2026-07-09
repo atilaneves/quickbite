@@ -2687,6 +2687,7 @@ private struct Compiler {
     }
 
     private void compilePointerDeclaration(VarDeclaration variable) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -2708,7 +2709,12 @@ private struct Compiler {
             ));
 
         _locals[variable] = offset;
-        _pointerLocals[variable] = pointer.pointerElement;
+        auto declaredElement = variable.type.toBasetype.nextOf;
+        _pointerLocals[variable] =
+            declaredElement !is null &&
+            declaredElement.toBasetype.ty == TY.Tdelegate
+            ? pointer.pointerElement
+            : pointerElementScalar(variable.type);
         // A `S* p = new S(...)` pointer addresses a heap struct block; record the
         // struct declaration so `p.field` resolves through the pointer.
         if (auto structDeclaration = structPointerDeclaration(variable.type))
@@ -7320,17 +7326,39 @@ private struct Compiler {
         in ParameterLayout layout,
     ) {
         import dmd.astenums: TY;
-        import quickbite.frontend.dmd.string_literals: stringChars;
-        import std.conv: text;
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
-        if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
-             returnTy != TY.Tfloat64) ||
-            call.arguments is null ||
-            call.arguments.length != 1)
+        if (returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
+            returnTy != TY.Tfloat64)
             return null;
 
-        auto argument = (*call.arguments)[0];
+        if (call.arguments is null)
+            return null;
+
+        Type[] argumentTypes;
+        ushort[] argumentOffsets;
+        bool[] addressOfLocalArguments;
+        foreach (argument; *call.arguments) {
+            const argumentOffset = compileNativeArgument(argument);
+            if (argumentOffset is null)
+                return null;
+            argumentTypes ~= argument.type.toBasetype;
+            argumentOffsets ~= *argumentOffset;
+            addressOfLocalArguments ~= isAddressOfLocal(argument);
+        }
+
+        return emitNativeCall(
+            function_,
+            argumentTypes,
+            argumentOffsets,
+            addressOfLocalArguments,
+        );
+    }
+
+    private ushort* compileNativeArgument(Expression argument) {
+        import dmd.astenums: TY;
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
 
         // A scalar `int`/`long` argument passed by value: evaluate it into an
         // argument slot sized to its native width; the marshaller copies
@@ -7340,54 +7368,86 @@ private struct Compiler {
             const width = argumentTy == TY.Tint64 ? long.sizeof : int.sizeof;
             const argumentArea = allocateBytes(width, width);
             emitCallArgument(argumentArea, false, argument);
-            return emitNativeCall(
-                function_, argument.type.toBasetype, argumentArea,
-            );
+            return new ushort(argumentArea);
         }
 
-        if (argument.type.toBasetype.ty != TY.Tpointer ||
-            argument.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
+        if (argument.type.toBasetype.ty != TY.Tpointer)
             return null;
 
-        auto string_ = stringLiteralOf(argument);
-        if (string_ is null)
-            return null;
+        if (argument.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar) {
+            const argumentArea = allocateBytes(
+                cast(uint) size_t.sizeof,
+                size_t.sizeof,
+            );
+            emitCallArgument(argumentArea, false, argument);
+            return new ushort(argumentArea);
+        }
 
-        const bytes = cast(const(ubyte)[]) stringChars(string_);
-        const dataOffset = _program.data.length;
-        if (dataOffset > ushort.max || bytes.length + 1 > ushort.max)
-            throw new Exception(text(
-                "String literal too large for bytecode core: ",
-                expressionChars(string_),
-            ));
-        _program.data ~= bytes;
-        _program.data ~= 0;
         const argumentArea = allocateBytes(size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.loadDataPointer, argumentArea, cast(ushort) dataOffset,
-        );
+        auto string_ = stringLiteralOf(argument);
+        if (string_ !is null) {
+            const bytes = cast(const(ubyte)[]) stringChars(string_);
+            const dataOffset = _program.data.length;
+            if (dataOffset > ushort.max || bytes.length + 1 > ushort.max)
+                throw new Exception(text(
+                    "String literal too large for bytecode core: ",
+                    expressionChars(string_),
+                ));
+            _program.data ~= bytes;
+            _program.data ~= 0;
+            _code ~= Instruction(
+                Op.loadDataPointer, argumentArea, cast(ushort) dataOffset,
+            );
+        } else
+            emitCallArgument(argumentArea, false, argument);
 
-        return emitNativeCall(
-            function_, argument.type.toBasetype, argumentArea,
-        );
+        return new ushort(argumentArea);
+    }
+
+    private bool isAddressOfLocal(Expression argument) {
+        auto target = argument;
+        while (auto cast_ = target.isCastExp)
+            target = cast_.e1;
+
+        if (auto address = target.isAddrExp)
+            target = address.e1;
+        else if (auto symOff = target.isSymOffExp)
+            return (symOff.var.isVarDeclaration in _locals) !is null;
+        else
+            return false;
+
+        while (auto cast_ = target.isCastExp)
+            target = cast_.e1;
+
+        if (auto variable = target.isVarExp) {
+            auto declaration = variable.var.isVarDeclaration;
+            return declaration !is null && declaration in _locals;
+        }
+        return false;
     }
 
     // Emit the native-call table entry and instruction shared by every native
     // libc call shape: the argument bytes already live at `argumentArea`.
     private Operand* emitNativeCall(
         FuncDeclaration function_,
-        Type argumentType,
-        in ushort argumentArea,
+        Type[] argumentTypes,
+        ushort[] argumentOffsets,
+        bool[] addressOfLocalArguments,
     ) {
         const returnScalar =
             scalarType(function_.type.toBasetype.nextOf.toBasetype);
         const destination = allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
-        _program.nativeCalls ~= NativeCall(function_, argumentType);
+        _program.nativeCalls ~= NativeCall(
+            function_,
+            argumentTypes,
+            argumentOffsets,
+            addressOfLocalArguments,
+        );
         _code ~= Instruction(
             Op.nativeCall,
             cast(ushort) nativeIndex,
-            argumentArea,
+            0,
             destination,
         );
         return new Operand(destination, returnScalar);
@@ -9622,6 +9682,8 @@ private struct Compiler {
         if (element.toBasetype.ty == TY.Tsarray)
             element = element.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tstruct)
+            return ScalarType.void_;
+        if (element.toBasetype.ty == TY.Tdelegate)
             return ScalarType.void_;
         if (element.toBasetype.ty == TY.Tfunction)
             return ScalarType.void_;

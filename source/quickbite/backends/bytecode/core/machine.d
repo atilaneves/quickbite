@@ -1341,14 +1341,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 auto native = program.nativeCalls[instruction.a];
                 auto marshaller = new BytecodeNativeMarshaller(
                     stack,
-                    base + instruction.b,
+                    base,
+                    native.argumentOffsets,
                     base + instruction.c,
                 );
                 if (!callNative(
                     native.function_,
                     marshaller,
-                    [native.argumentType],
-                    [],
+                    native.argumentTypes,
+                    native.addressOfLocalArguments,
                 ))
                     throw new Exception(noAvailableSourceMessage(
                         native.function_,
@@ -2628,12 +2629,19 @@ private final class BytecodeNativeMarshaller:
     import quickbite.ffi: NativeMarshaller;
 
     private ubyte[] _stack;
-    private size_t _argument;
+    private size_t _base;
+    private ushort[] _argumentOffsets;
     private size_t _destination;
 
-    public this(ubyte[] stack, in size_t argument, in size_t destination) {
+    public this(
+        ubyte[] stack,
+        in size_t base,
+        ushort[] argumentOffsets,
+        in size_t destination,
+    ) {
         _stack = stack;
-        _argument = argument;
+        _base = base;
+        _argumentOffsets = argumentOffsets;
         _destination = destination;
     }
 
@@ -2662,7 +2670,14 @@ private final class BytecodeNativeMarshaller:
     ) {
         // `buffer` is sized to the argument type's native ABI width (4 bytes
         // for `int`, 8 for a pointer); copy exactly that many, not a fixed 8.
-        buffer[] = _stack[_argument .. _argument + buffer.length];
+        const argument = _base + _argumentOffsets[index];
+        buffer[] = _stack[argument .. argument + buffer.length];
+    }
+
+    // @trusted: the stack reserve at run start prevents reallocation while the
+    // native call is active, so this frame-slot pointer stays valid for libffi.
+    public const(void)* argumentAddress(in size_t index, Type type) @trusted {
+        return &_stack[_base + _argumentOffsets[index]];
     }
 
     public void readResult(Type type, in ubyte[] buffer) {
@@ -2672,6 +2687,12 @@ private final class BytecodeNativeMarshaller:
         const resultSize = nativeResultSize(type);
         _stack[_destination .. _destination + resultSize] =
             buffer[0 .. resultSize];
+    }
+
+    // @trusted: libffi writes only the ABI-sized result for `type`; the slot was
+    // allocated by the compiler for that result type in the current frame.
+    public void* resultAddress(Type type) @trusted {
+        return &_stack[_destination];
     }
 
     private static size_t nativeResultSize(Type type) {

@@ -562,7 +562,9 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
 
 package(quickbite.backends.bytecode) struct NativeCall {
     imported!"dmd.func".FuncDeclaration function_;
-    imported!"dmd.mtype".Type argumentType;
+    imported!"dmd.mtype".Type[] argumentTypes;
+    ushort[] argumentOffsets;
+    bool[] addressOfLocalArguments;
 }
 
 // How to render a failed assertion: read both operands from the frame and

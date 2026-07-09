@@ -3063,9 +3063,9 @@ block the terminal goal (§34.1) for the two backends.
 
 ### 35.1 Seam v2: no identity crossing, no CIF cache
 
-**Status: open — ladder rung 24 (§34.3, 2026-07-08). Ordered after the
-Interpreter dub-coverage items (§34.3 work order); sequenced with
-`bytecode.md`'s FFI-latency work.**
+**Status: partially landed — ladder rung 24 (§34.3, 2026-07-09).**
+Pointer-handing through the live BytecodeNewCore call site is green; the
+non-variadic CIF cache remains the open §35.1 subitem.
 
 **Claim.** §5/§23: for a native-layout backend `materialize`/`reify` is the
 identity — "there is no marshalling for this backend to own". §1/§4/§24.1:
@@ -3121,6 +3121,24 @@ the real call site with zero per-argument copies, proven by an oracle-backed
 fixture; the CIF cache's correctness is the existing suite staying green and
 its benefit is a bench delta (per-call `ffi_prep_cif` gone), not a mock
 assertion; every existing Interpreter fixture stays green.
+
+**Progress 2026-07-09.** Promoted the existing SystemLinker-backed
+`rt/cstdlib.d` fixture `strtol.endptr.BytecodeNewCore`. The red first
+failed at the BytecodeNewCore no-source gate; the implementation widened the
+bytecode native-call descriptor from one argument to source-order argument
+arrays, added optional `NativeMarshaller.argumentAddress` /
+`resultAddress` hooks with Interpreter `null` fallbacks, and taught the
+Bytecode marshaller to hand libffi stable frame-slot addresses for arguments
+and results. For `strtol("123xyz".ptr, &endptr, 10)`, the `char**` argument
+is now the frame slot containing the `&endptr` pointer value, so libc writes
+directly into the local and `*endptr == 'x'` reads back through the normal
+pointer machinery. A small pointer-local metadata fix records a pointer local's
+declared element type, so a native write into an initially-null `char*` local
+still dereferences as `char*` afterward.
+
+The non-variadic CIF cache was deliberately left for the next §35.1 slice:
+this commit proves the real call-site pointer-handing seam and keeps the
+backend-neutral core fallback for existing Interpreter paths.
 
 ### 35.2 Data symbols and dependency-image initialization are missing
 

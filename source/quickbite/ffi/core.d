@@ -107,6 +107,14 @@ public interface NativeMarshaller {
         ref ubyte[][] keepAliveBuffers,
     );
 
+    // Optional zero-copy seam (§35.1): a native-layout backend can return the
+    // stable address of the argument slot containing ABI bytes. Returning null
+    // keeps the boxed Interpreter on the existing core-owned buffer path.
+    const(void)* argumentAddress(
+        in size_t index,
+        imported!"dmd.mtype".Type type,
+    );
+
     void fillReceiver(
         ubyte[] buffer,
         imported!"dmd.mtype".Type type,
@@ -116,6 +124,10 @@ public interface NativeMarshaller {
     );
 
     void readResult(imported!"dmd.mtype".Type type, in ubyte[] buffer);
+
+    // Optional zero-copy result slot. Returning null keeps today's return
+    // buffer plus readResult copy-out behavior.
+    void* resultAddress(imported!"dmd.mtype".Type type);
 
     void writeRefResult(
         imported!"dmd.mtype".Type type,
@@ -598,12 +610,16 @@ private bool callViaLibffi(
         ffi_closure_free(closure);
 
     foreach (index; 0 .. nargs) {
-        argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
-
         const addressOfLocal =
             index < addressOfLocalArguments.length &&
             addressOfLocalArguments[index];
-        if (isDelegateParameter(parameterTypes[index])) {
+        if (auto address = marshaller.argumentAddress(
+            index,
+            parameterTypes[index],
+        )) {
+            argumentValues[index] = cast(void*) address;
+        } else if (isDelegateParameter(parameterTypes[index])) {
+            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
             // Build a native trampoline whose calls re-enter the backend to run
             // the interpreted closure, and write the {context, funcptr} delegate
             // into the argument buffer.
@@ -615,7 +631,9 @@ private bool callViaLibffi(
                 closuresToFree,
                 closureContexts,
             );
+            argumentValues[index] = argumentBuffers[index].ptr;
         } else if (isOutParameter(parameterTypes[index], addressOfLocal)) {
+            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
             // Allocate a host cell sized to the pointed-to type, marshal the
             // argument's current value into it (ffi.md §35.6), pass its
             // address as the out parameter, and reify the written value
@@ -632,7 +650,9 @@ private bool callViaLibffi(
             );
             *cast(void**) argumentBuffers[index].ptr =
                 outParameterCells[index].ptr;
+            argumentValues[index] = argumentBuffers[index].ptr;
         } else {
+            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
             marshaller.fillArgument(
                 argumentBuffers[index],
                 parameterTypes[index],
@@ -641,9 +661,8 @@ private bool callViaLibffi(
                 keepAlive,
                 keepAliveBuffers,
             );
+            argumentValues[index] = argumentBuffers[index].ptr;
         }
-
-        argumentValues[index] = argumentBuffers[index].ptr;
     }
     auto abiArgumentValues = new void*[](totalNargs);
     if (receiver.enabled)
@@ -655,7 +674,9 @@ private bool callViaLibffi(
     // The return buffer must be at least ffi_arg-wide (8 bytes) and aligned,
     // even for narrow returns.
     const returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
-    auto returnBuffer = new ubyte[](returnSize);
+    auto returnSlot = returnsRef ? null : marshaller.resultAddress(returnType);
+    auto returnBuffer = returnSlot is null ? new ubyte[](returnSize) : null;
+    auto returnAddress = returnSlot is null ? returnBuffer.ptr : returnSlot;
 
     // Pin the marshalled C-string buffers so a collection triggered by a D
     // allocation cannot reclaim them while the native call reads through them.
@@ -670,7 +691,7 @@ private bool callViaLibffi(
         ffi_call(
             &cif,
             cast(CFunction) symbol,
-            returnBuffer.ptr,
+            returnAddress,
             abiArgumentValues.ptr,
         );
     } catch (Exception exception) {
@@ -706,7 +727,8 @@ private bool callViaLibffi(
             );
         }
     } else {
-        marshaller.readResult(returnType, returnBuffer);
+        if (returnSlot is null)
+            marshaller.readResult(returnType, returnBuffer);
     }
     return true;
 }
