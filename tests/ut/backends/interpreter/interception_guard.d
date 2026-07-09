@@ -5,6 +5,9 @@ import ut;
 import quickbite.frontend.compiler: parseSnippet;
 import quickbite.backends.interpreter.interception_guard:
     enforceInterceptionPolicy, isLegalInterception;
+import dmd.func: FuncDeclaration;
+import dmd.dmodule: Module;
+import dmd.arraytypes: Dsymbols;
 
 private:
 
@@ -15,8 +18,8 @@ private:
 // driving it through a full interpreter fixture, per the plan's own guard
 // work item.
 
-imported!"dmd.func".FuncDeclaration findFunction(
-    imported!"dmd.dmodule".Module module_,
+FuncDeclaration findFunction(
+    Module module_,
     in string name,
 ) {
     return module_.members is null
@@ -28,8 +31,8 @@ imported!"dmd.func".FuncDeclaration findFunction(
 // `LinkDeclaration` (an `AttribDeclaration`), so the `FuncDeclaration` is not
 // a direct member of the module -- recurse into `AttribDeclaration.decl` to
 // find it regardless of how many attribute wrappers surround it.
-imported!"dmd.func".FuncDeclaration findFunction(
-    imported!"dmd.dsymbol".Dsymbols* members,
+FuncDeclaration findFunction(
+    Dsymbols* members,
     in string name,
 ) {
     import dmd.attrib: AttribDeclaration;
@@ -88,6 +91,25 @@ unittest {
     });
 
     auto function_ = findFunction(moduleResult.module_, "quickbiteGuardAsmBody");
+    assert(function_ !is null);
+    isLegalInterception(function_).should == true;
+}
+
+
+@("isLegalInterception.nestedAsmBodyIsAccepted")
+unittest {
+    auto moduleResult = parseSnippet(q{
+        void quickbiteGuardNestedAsmBody(int a) {
+            if (a > 0) {
+                asm {
+                    nop;
+                }
+            }
+        }
+    });
+
+    auto function_ =
+        findFunction(moduleResult.module_, "quickbiteGuardNestedAsmBody");
     assert(function_ !is null);
     isLegalInterception(function_).should == true;
 }
