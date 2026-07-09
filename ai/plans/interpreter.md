@@ -697,7 +697,7 @@ the dispatcher misses, or a native leaf that should route to `ffi.md` — the
 latter is deferred, not built here.
 
 **2026-07-08 follow-up: lazy assertion thunks.** After the GC array-capacity
-hook slice, the real-package red signal was:
+hook slice, the package re-measure discovered:
 
 ```text
 bin/bench.sh -b interpreter --dub cerealed
@@ -713,12 +713,18 @@ already-evaluated expression value when a lazy parameter was forwarded into
 another lazy parameter. The dispatcher then saw `expr()` as a non-callable local
 value and threw the generic call diagnostic.
 
-No new standalone fixture was added because this worker did not have approval
-to add tests; the existing cerealed bench signal is the red. The interpreter
-now records lazy formal parameters as expression thunks with a captured local
-snapshot, preserves that thunk when a lazy parameter is forwarded to another
-lazy parameter, and evaluates the thunk when the zero-argument lazy parameter is
-called.
+Handoff: add a standalone fixture for this before the next implementation
+change. The interrupted worker drafted
+`lazyForwardedAssertionThunkRunsExpression`; reconstruct the red-first proof by
+applying only that fixture on the parent of `7f09bd67` and running it against
+`SystemLinker` and `Interpreter`. The expected red is `Interpreter` failing
+with `Unsupported eval call.` Then add the fixture on this PR branch, where
+the existing lazy-parameter implementation should make it green.
+
+The interpreter now records lazy formal parameters as expression thunks with a
+captured local snapshot, preserves that thunk when a lazy parameter is
+forwarded to another lazy parameter, and evaluates the thunk when the
+zero-argument lazy parameter is called.
 
 Re-measure: the `Unsupported eval call.` frontier is gone. The package advances
 to the pre-existing corrupted/garbage failure-message class tracked under Rung
@@ -742,10 +748,15 @@ fixtures pin the corrected behaviour.
 **2026-07-08 follow-up: ScopeBuffer pointer snapshots.** `cerealed`
 re-measure after the closed Rung 1/Rung 3/Rung 9 work exposed the next
 interpreter-owned red as ScopeBuffer wrong answers (`[\0, a] != "xa"`,
-then `"hellobettyeven more"`). No approved standalone fixture existed, so the
-real-package bench remained the red signal. `memcpy` now copies scalar elements
-into native destinations from the typed source pointer behind `void*` casts,
-and pointer index/slice assignment falls back to updating the pointer target
+then `"hellobettyeven more"`). The package re-measure discovered the missing
+memory-copy/pointer-snapshot behaviour. Handoff: verify that the existing
+`array.newSliceMemcopiesStructElements` and
+`struct.sliceAssignmentViaEscapedPointerWritesBack` fixtures were red-first for
+this exact support gap. If not, add the missing standalone fixture by applying
+only the test on the pre-fix parent, proving it red there, and then carrying it
+forward green on this PR branch. `memcpy` now copies scalar elements into
+native destinations from the typed source pointer behind `void*` casts, and
+pointer index/slice assignment falls back to updating the pointer target
 snapshot when the allocation id is known but the owner local has gone out of
 scope. The ScopeBuffer mismatches are gone;
 `bin/bench.sh -b interpreter --dub cerealed` now advances to `gc_getArrayUsed`
@@ -762,14 +773,23 @@ into a small `memset`/array-copy-like memory-intrinsics layer.
 
 **2026-07-08 follow-up: GC dynamic-array capacity hooks.** The
 `gc_getArrayUsed` blocker from §11 is now past the first runtime hook
-frontier. No approved standalone fixture existed for this package-only
-lowering path, so the red signal was the real-package bench:
+frontier. The package re-measure exposed the dynamic-array-capacity lowering
+gap:
 `bin/bench.sh -b interpreter --dub cerealed` skipped with:
 
 ```text
 `gc_getArrayUsed` cannot be interpreted at compile time, because it has no
 available source code
 ```
+
+Handoff: add a standalone fixture for this before changing the implementation
+further. The interrupted worker drafted
+`gcReserveArrayCapacityHookReturnsRequestedBytes`; reconstruct the red-first
+proof by applying only that fixture on the parent of `ee3594a9` and running it
+against `SystemLinker` and `Interpreter`. The expected red is `Interpreter`
+failing with `` `gc_reserveArrayCapacity` cannot be interpreted at compile
+time, because it has no available source code``. Then add the fixture on this
+PR branch, where the existing GC hook implementation should make it green.
 
 The interpreter now recognizes the druntime `gc_getArrayUsed`,
 `gc_reserveArrayCapacity`, and `gc_shrinkArrayUsed` helpers before the generic
@@ -793,17 +813,23 @@ compiled D's `Range violation`, matching `SystemLinker` for this already
 rejected overlapping write.
 
 **2026-07-08 follow-up: `emplaceRef` fills uninitialized join buffers.** After
-the lazy assertion thunk slice, the real-package red signal was:
+the lazy assertion thunk slice, the package re-measure discovered:
 
 ```text
 bin/bench.sh -b interpreter --dub cerealed
 skipping cerealed interpreter: <127 bytes of 0xff rendered as garbage>
 ```
 
-No approved standalone fixture existed for this package-only frontier, so the
-bench remained the red signal. A probe on `InterpretedException` showed the
-failing `UnitTestException.msg` had the correct length but every element was
-`char.init` (`0xff`). The first failing site was cerealed
+Handoff: add a standalone fixture for this before changing the implementation
+further. The interrupted worker drafted `emplaceRefWritesArrayElement`;
+reconstruct the red-first proof by applying only that fixture on the parent of
+`bce523cc` and running it against `SystemLinker` and `Interpreter`. The
+expected red is `Interpreter` failing in the `emplaceRef`/trusted-move path,
+for example with `cannot read uninitialized variable .trustedMoveImpl.result
+in ctfe`. Then add the fixture on this PR branch, where the existing
+`emplaceRef` hook should make it green. A probe on `InterpretedException`
+showed the failing `UnitTestException.msg` had the correct length but every
+element was `char.init` (`0xff`). The first failing site was cerealed
 `tests/classes.d:42` (`class.with.struct`), whose `shouldEqual` failure message
 is built by unit-threaded's `UnitTestException` constructor:
 `msgLines.join("\n")`. Phobos `std.array.join` allocates the result with
@@ -831,7 +857,7 @@ serialization/equality wrong-answer frontier.
 
 **2026-07-08 follow-up: class references passed by value alias their
 object.** The readable `tests/classes.d:42` failure above was root-caused with
-a temporary full-message bench probe:
+a temporary full-message package probe:
 
 ```text
 Expected: tests.classes.ClassWithStruct(DummyStruct(2, 3), 4)
@@ -847,9 +873,13 @@ received `dummy` and `anotherByte`, but the caller's outer `ref val` still held
 the default object and was later written back over the decoded value. The
 interpreter now writes back changed by-value class parameters to writable class
 arguments after interpreted function/member calls, modelling class-reference
-field mutation with the existing value representation. No new fixture was
-added; this package frontier had no approved standalone test, so the existing
-cerealed bench remained the red signal.
+field mutation with the existing value representation. Handoff: add a
+standalone fixture for this aliasing gap. The interrupted worker drafted
+`classReferencePassedByValueMutatesObject`; reconstruct the red-first proof by
+applying only that fixture on the parent of `ca901fd9` and running it against
+`SystemLinker` and `Interpreter`. The expected red is `Interpreter` observing
+the default field value instead of the callee's mutation. Then add the fixture
+on this PR branch, where the existing writeback should make it green.
 
 Re-measure:
 
@@ -865,9 +895,15 @@ class, now exposed as the first cerealed failure.
 
 **2026-07-08 follow-up: pointer slices preserve backing allocation.** The
 `pointer slice [0..1] exceeds allocated memory block [0..0]` frontier is
-root-caused and fixed. No approved standalone fixture existed for this
-package-only exposure, so the real-package bench remained the red signal. A
-temporary unittest-result probe located the first failure at cerealed
+root-caused and fixed. The package re-measure exposed the pointer-slice
+allocation gap. Handoff: add a standalone fixture for this. The interrupted
+worker drafted `appenderClearKeepsPointerSliceBackingAllocation`; reconstruct
+the red-first proof by applying only that fixture on the parent of `833c560c`
+and running it against `SystemLinker` and `Interpreter`. The expected red is
+`Interpreter` failing with `pointer slice [0..1] exceeds allocated memory
+block [0..0]`. Then add the fixture on this PR branch, where the existing
+pointer-slice allocation preservation should make it green. A temporary
+unittest-result probe located the first failure at cerealed
 `tests/classes.d:93` (`serialisation.via.base.class`), with a second matching
 site at `tests/reset.d:9` (`reset.cerealiser`). A slice-expression probe showed
 the failing read was `cast(ubyte*)(*this._data).arr[0 .. 1]` from
@@ -900,12 +936,18 @@ interpreter blocker is a cerealed negative test whose expected exception is not
 being thrown.
 
 **2026-07-08 follow-up: lazy shouldThrow thunks execute generated wrappers.**
-The `Expression did not throw` frontier is root-caused and fixed. No approved
-standalone fixture existed for this package-only exposure, so the real-package
-bench remained the red signal. A two-backend bench probe first located the
-class across cerealed's negative tests (`decode.d`, `encode_decode.d`,
-`enums.d`, `protocol_unit.d`, etc.); the first visible site was
-`decode.d(8)`, `cereal.value!bool.shouldThrow!RangeError`.
+The `Expression did not throw` frontier is root-caused and fixed. A two-backend
+package probe first located the class across cerealed's negative tests
+(`decode.d`, `encode_decode.d`, `enums.d`, `protocol_unit.d`, etc.); the first
+visible site was `decode.d(8)`,
+`cereal.value!bool.shouldThrow!RangeError`.
+
+Handoff: the generated-wrapper path can share the
+`lazyForwardedAssertionThunkRunsExpression` fixture from Rung 6, but the later
+state-propagation part needs its own standalone fixture. The interrupted worker
+drafted `decodeLazyForwardedRangeErrorSeesReaderState`; prove it red on the
+pre-fix state by applying only the fixture before the lazy-capture writeback
+change, then carry it forward green with the implementation.
 
 Two temporary probes (reverted before commit) showed the decisive shape:
 unit-threaded's lazy `expr` parameter captured DMD-generated zero-argument
@@ -937,13 +979,21 @@ The full mismatch list also shows deeper classes now exposed, including
 families; the first single-backend frontier is the scalar-compatibility class.
 
 **2026-07-08 follow-up: integer-compatible char and reinterpret loads.** The
-`Expected integer-compatible scalar.` frontier is root-caused and advanced. No
-new standalone fixture was added because this worker had no approval for one;
-the existing cerealed bench remained the red signal. A two-backend bench probe
-identified the scalar class at cerealed `tests/encode.d` and
+`Expected integer-compatible scalar.` frontier is root-caused and advanced. A
+two-backend package probe identified the scalar class at cerealed
+`tests/encode.d` and
 `tests/encode_decode.d`: `encode.float`, `encode.double`, `encode.chars`, and
 related encode/decode sites passed under `SystemLinker` and failed under
 `Interpreter`.
+
+Handoff: this frontier still needs standalone red-first fixtures. Split it by
+root cause: one fixture for character scalar values being integer-compatible,
+and one for floating-pointer bit reinterpret loads such as
+`*cast(uint*)(&float)` and `*cast(ulong*)(&double)`. Prove each fixture red on
+the parent of `82297fe9`, then carry it forward green on this PR branch. The
+PR review also asked whether the floating-bit helper belongs outside the
+interpreter; use these fixtures to drive the shared placement if another
+backend needs the same behaviour.
 
 The first root was that `Value.asLong` and
 `Value.isIntegerCompatibleScalar` treated integral values and enums as
@@ -971,8 +1021,13 @@ byte-encoding wrong answers, pointer/underflow families, and
 
 **2026-07-08 follow-up: native `RangeError` is an `Error`, not an
 `Exception`.** The generic `Expression threw` frontier is root-caused and
-advanced. No approved standalone fixture existed for this package-only
-exposure, so the existing cerealed bench remained the red signal. A temporary
+advanced. Handoff: verify that the existing
+`exception.errorIsNotCaughtByExceptionHandler.Interpreter` fixture is a
+red-first proof for this exact native `RangeError` catch-classification gap.
+If it is not, add a narrow standalone fixture and prove it red on the parent of
+`aa1f4796`, then carry it forward green. The PR review also called out the
+name-based `Error`/`Exception` classification; the next implementation pass
+should prefer frontend/type information if it is available. A temporary
 two-backend location probe corrected the visible site: the current
 `__unittest_L109_C1` failure is `tests/decode.d:109` (`decode.chars`), not
 `tests/encode.d:109`; the earlier location was stale after intervening
@@ -1001,10 +1056,8 @@ visible interpreter blocker is the now-unmasked `RangeError` at
 `value!ubyte.shouldThrow!RangeError` still escapes as an uncaught
 `RangeError`.
 
-**2026-07-08 follow-up: `decode.d:109` RangeError-catching probe.** No
-approved standalone fixture exists for this package-only exposure, so this
-worker did not add a test. The existing cerealed bench stayed the red signal.
-A temporary location probe corrected the visible label: the first failing
+**2026-07-08 follow-up: `decode.d:109` RangeError-catching probe.** A
+temporary location probe corrected the visible label: the first failing
 `__unittest_L109_C1` is `decode.d:109`, the `decode.double` unittest, not
 `decode.chars` (that unittest starts at line 116 in the checked-out cerealed
 source).
@@ -1028,13 +1081,50 @@ A filtered `grainUByte` receiver probe for the exact `decode.double` byte
 pattern showed the first two `shouldNotThrow(cereal.value!double)` calls
 consume all 16 bytes successfully; the next read then sees
 `Decerealiser([], [], 0, 0)` and throws the raw RangeError before the unittest
-is reported green. The current evidence points at lazy forwarding/state around
-the generated function-literal wrapper used by unit-threaded's
-`shouldNotThrow`/`shouldThrow`, not at catch matching. Proposed fixture, after
-approval: a dependency-free ct/ test with a mutable reader struct, two
-`shouldNotThrow(reader.read64)` calls that advance shared reader state, then
-`reader.read8.shouldThrow!RangeError`, plus a variant that forwards a lazy
-parameter through a helper before catching `RangeError`.
+is reported green. The evidence pointed at lazy forwarding/state around the
+generated function-literal wrapper used by unit-threaded's
+`shouldNotThrow`/`shouldThrow`, not at catch matching.
+
+**2026-07-09 handoff: red-first reconstruction for missing fixtures.** The
+correct next step is not to treat the package bench as the red test. Because
+this PR already contains several fixes, a new fixture will often pass on the
+current PR head. Reconstruct the red state instead:
+
+```text
+1. For a gap fixed by commit X, create a temporary worktree at X^.
+2. Add only the minimal regression fixture there.
+3. Run the focused fixture against SystemLinker and Interpreter.
+4. Record SystemLinker green and Interpreter red, including the exact failure.
+5. Add the same fixture on this PR branch.
+6. Keep or adjust the implementation so the focused fixture, ninja bin/ut, and
+   bin/ut --random are green.
+7. Commit the fixture, any implementation correction, and this plan update
+   together.
+```
+
+If the fix boundary spans multiple commits, use the parent of the first commit
+that made the behaviour pass. If that boundary is unclear, use a temporary
+revert in a throwaway worktree to prove the fixture fails without the fix, then
+restore the fix on this branch.
+
+The interrupted worker left uncommitted draft work in this worktree for the
+next agent to inspect, not as completed work:
+
+- `tests/ut/backends/runner/ct/cerealed.d` draft fixtures:
+  `lazyForwardedAssertionThunkRunsExpression`,
+  `gcReserveArrayCapacityHookReturnsRequestedBytes`,
+  `emplaceRefWritesArrayElement`,
+  `classReferencePassedByValueMutatesObject`,
+  `appenderClearKeepsPointerSliceBackingAllocation`, and
+  `decodeLazyForwardedRangeErrorSeesReaderState`.
+- `source/quickbite/backends/interpreter/impl.d` draft implementation for lazy
+  captured-local writeback, intended for the `decode.d:109` frontier.
+- `source/quickbite/backends/interpreter/builtins.d` draft cleanup for the
+  `GCArrayHook` lookup review comment.
+
+These drafts need review and real red-first proof before they are committed.
+Do not present them as completed fixtures until the focused red and green
+commands have been run and recorded.
 
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
@@ -1175,11 +1265,12 @@ that finally clears it from the §7 inventory.
   Interpreter and agrees with SystemLinker.
 - `bin/bench.sh -b interpreter --dub cerealed` produces a post-parse row for the
   interpreter (no skip), and bin/ut --random is green.
-- Each rung left an approved oracle-backed ct/ fixture; no ct/ or rt/ regression.
+- Each rung left an approved oracle-backed ct/ fixture; no ct/ or rt/
+  regression.
 ```
 
 At that point the FFI terminal goal (`ffi.md` §34.1) is actually reachable for
-cerealed, and `value.md` has the running real-package suite it needs to measure
+cerealed, and `value.md` has the running package suite it needs to measure
 representations.
 
 ## 11. Beyond cerealed
