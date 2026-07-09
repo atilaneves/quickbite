@@ -484,6 +484,11 @@ handle is put in a field or array slot -- so `capacity` now returns 0
 for it instead of dividing by zero, and `reserve` throws on it instead
 of silently returning with capacity 0 short of what was requested.
 
+Review nit fix (2026-07-09): `tryExtendTo` now only ever grows a block --
+a request that does not grow it returns `false` before subtracting -- so
+its `@trusted` re-slice is provable locally, without appealing to
+allocator internals.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

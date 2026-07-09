@@ -176,13 +176,15 @@ public struct NativeArray {
     // zero operand can't), so without this check `reserve` would "grow" to
     // 0 bytes, copy 0 live bytes, and return normally with
     // `capacity == 0 < n` -- silently violating its own documented
-    // postcondition. Growing an array with no element type is a
-    // programming error, not a no-op, so this fails loudly instead.
+    // postcondition. Growing an array whose element stride is zero (so it
+    // has no capacity to grow) is a programming error, not a no-op, so
+    // this fails loudly instead.
     public void reserve(in size_t n) @safe {
         if (_stride == 0)
             throw new Exception(
                 "quickbite.backends.interpreter.native_array.NativeArray."
-                ~ "reserve: handle has no element type (zero stride)",
+                ~ "reserve: element stride is zero, so the array has no "
+                ~ "capacity to grow",
             );
 
         if (n <= capacity)
@@ -204,7 +206,9 @@ public struct NativeArray {
 // product would otherwise wrap to a small byte count, and `NativeBlock.
 // allocate` would then silently succeed with a block far too small for
 // the handle's `length`. Throws rather than returning an inconsistent
-// handle, matching `layout.typeByteSize`'s failure style.
+// handle, matching `layout.typeByteSize`'s failure style. Called from
+// both `allocate` and `reserve`, so the message names the operation
+// (`length * stride`), not either caller.
 private size_t byteLength(in size_t length, in size_t stride) pure @safe {
     import core.checkedint: mulu;
 
@@ -213,7 +217,7 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
     if (overflow)
         throw new Exception(
             "quickbite.backends.interpreter.native_array.NativeArray."
-            ~ "allocate: length * stride overflows size_t",
+            ~ "byteLength: length * stride overflows size_t",
         );
 
     return bytes;

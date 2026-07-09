@@ -177,3 +177,25 @@ unittest {
     block.address.should == address;
     block.byteLength.should == 4;
 }
+
+
+@("NativeBlock.tryExtendTo.nonGrowingRequestReturnsFalseAndLeavesBlockUnchanged")
+unittest {
+    // `newByteLength <= byteLength` is not a growth request. Both the
+    // equal-length and shrinking cases must report false and leave the
+    // block untouched -- without that guard, the shrinking case computes
+    // `newByteLength - oldByteLength`, which wraps to a huge value.
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
+    block.bytes[] = [1, 2, 3, 4];
+    const address = block.address;
+
+    block.tryExtendTo(4).should == false; // equal length
+    block.byteLength.should == 4;
+    block.bytes.should == [1, 2, 3, 4];
+    block.address.should == address;
+
+    block.tryExtendTo(2).should == false; // shrinking
+    block.byteLength.should == 4;
+    block.bytes.should == [1, 2, 3, 4];
+    block.address.should == address;
+}

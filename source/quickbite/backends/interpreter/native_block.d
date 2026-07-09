@@ -111,21 +111,31 @@ public struct NativeBlock {
     }
 
     // Tries to grow this block's allocation in place to `newByteLength`.
-    // Returns false if the GC cannot extend it, in which case the caller
-    // must reallocate. On success the block spans exactly `newByteLength`
-    // bytes and the newly available tail is zeroed, so an extended block
-    // is indistinguishable from a freshly allocated one of the same size
-    // -- `GC.extend` itself leaves extension bytes uninitialised. The
-    // block's scan attribute (`NO_SCAN` vs conservative) needs no update:
-    // `GC.extend` grows the same underlying allocation rather than
-    // creating a new one, so whatever attribute was set at `allocate`
-    // time still applies. A null `address` -- this block's own
-    // zero-length case, since `GC.calloc(0, ...)` returns null -- simply
-    // makes the GC report "cannot extend" (see `extendBlock`'s comment
-    // below), so this returns false and the caller reallocates; no
-    // special-casing needed here.
+    // This only ever grows the block: a `newByteLength` that does not
+    // exceed the current `byteLength` is not a growth request, so it
+    // returns false without touching the block -- "I did not extend" is
+    // the honest answer for a no-op request, and it keeps the subtraction
+    // below (`newByteLength - oldByteLength`) provably wrap-free rather
+    // than relying on the GC to refuse an absurd (wrapped) size. Beyond
+    // that guard, returns false if the GC cannot extend it, in which case
+    // the caller must reallocate. On success the block spans exactly
+    // `newByteLength` bytes and the newly available tail is zeroed, so an
+    // extended block is indistinguishable from a freshly allocated one of
+    // the same size -- `GC.extend` itself leaves extension bytes
+    // uninitialised. The block's scan attribute (`NO_SCAN` vs
+    // conservative) needs no update: `GC.extend` grows the same
+    // underlying allocation rather than creating a new one, so whatever
+    // attribute was set at `allocate` time still applies. A null
+    // `address` -- this block's own zero-length case, since
+    // `GC.calloc(0, ...)` returns null -- simply makes the GC report
+    // "cannot extend" (see `extendBlock`'s comment below), so this
+    // returns false and the caller reallocates; no special-casing needed
+    // here.
     public bool tryExtendTo(in size_t newByteLength) pure nothrow @safe {
         const oldByteLength = _bytes.length;
+        if (newByteLength <= oldByteLength)
+            return false;
+
         auto ptr = address;
         const extended = extendBlock(ptr, newByteLength - oldByteLength);
         if (extended == 0)
@@ -192,9 +202,17 @@ private size_t extendBlock(void* p, in size_t extension) pure nothrow @trusted {
 }
 
 // Reinterpreting a raw pointer as a slice is not `@safe`; this is the
-// `@trusted` boundary. Called only after `extendBlock` has confirmed the
-// GC extended the allocation at `ptr` to at least `newByteLength` bytes,
-// so the slice this returns stays within that (now larger) allocation.
+// `@trusted` boundary. Called only after `tryExtendTo`'s own guard has
+// confirmed `newByteLength` is strictly greater than the block's prior
+// byte length, and `extendBlock` has confirmed the GC extended the
+// allocation at `ptr` to accommodate at least that many bytes (per
+// `GC.extend`'s documented contract: it returns 0 or the extended size,
+// never a size short of the requested minimum) -- so the slice this
+// returns stays within that (now larger) allocation. Provable from
+// `tryExtendTo`'s own guard and `GC.extend`'s contract alone; it does not
+// rest on any allocator implementation detail (e.g. how a shrinking or
+// no-op request happens to be rejected), because that case never reaches
+// here at all.
 private ubyte[] resliceBytes(void* ptr, in size_t newByteLength) pure nothrow @trusted {
     return (cast(ubyte*) ptr)[0 .. newByteLength];
 }
