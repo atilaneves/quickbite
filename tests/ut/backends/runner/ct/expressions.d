@@ -1247,6 +1247,78 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
+// Dereferencing a pointer cast to a *different, same-size* type than the
+// local it points to (grainReinterpret's shape) does not get an implicit
+// promoting cast inserted by DMD's frontend, unlike every other operator
+// context; the interpreter itself must reinterpret the raw bits. `dchar` (4
+// bytes, already "int-rank") is the necessary representative of the
+// char/wchar/dchar family: a 1-byte `char`/`ubyte*` version does not repro,
+// because DMD inserts an extra implicit `int` promotion for sub-`int`-sized
+// operands in compound-assignment lowering that re-masks the bug.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                dchar c = cast(dchar) 0x41;
+                uint* p = cast(uint*) &c;
+                *p >>= 1;
+                assert(c == cast(dchar) 0x20);
+            }
+        });
+    }
+}
+
+// Bytecode ("Unsupported expression `& c`") and IR (AssertError in
+// compiler.d, valueType) do not support taking the address of a local;
+// BytecodeNewCore ("Unsupported compound assignment in bytecode core") does
+// not support this compound-assignment shape.
+
+// Same reinterpret-load shape as above, but reading (not writing) the raw
+// bits of a `float` local through a same-size `uint*` cast. Ctfe has no
+// byte-level memory model for floating-point locals and permanently refuses
+// `cast(uint*)&floatLocal`, so it is omitted here (unlike the dchar/uint
+// fixture above, where Ctfe does support same-size integer-family pointer
+// reinterpretation).
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+    @("pointer.floatBitsThroughUintPointerAreRawBits." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                float f = 1.5f;
+                uint* p = cast(uint*) &f;
+                uint bits = *p;
+                assert(bits == 0x3FC00000);
+            }
+        });
+    }
+}
+
+// Bytecode and IR ("Unsupported (IR) expression `& f`") do not support
+// taking the address of a local.
+
+// Same as above for `double`/`ulong*`.
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+    @("pointer.doubleBitsThroughUlongPointerAreRawBits." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                double d = 1.5;
+                ulong* p = cast(ulong*) &d;
+                ulong bits = *p;
+                assert(bits == 0x3FF8000000000000UL);
+            }
+        });
+    }
+}
+
+// Bytecode and IR ("Unsupported (IR) expression `& d`") do not support
+// taking the address of a local.
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

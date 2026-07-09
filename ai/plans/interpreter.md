@@ -1382,8 +1382,6 @@ migration — a fixture asserts behaviour, so it survives the shim's deletion):
                                                     elements only, where the
                                                     shim is provably
                                                     equivalent)
-- char integer-compatibility and float/double reinterpret-load fixtures
-  (the §9.7 2026-07-08 handoff's split-by-root pair)
 - native RangeError-is-an-Error fixture (verify the existing
   exception.errorIsNotCaughtByExceptionHandler covers it; add narrow
   fixture if not)
@@ -1536,6 +1534,80 @@ consistent with `lazyForwardedAssertionThunkRunsExpression` above) and
 this file already covers those backends for the simpler thunk-invocation
 case). Full `ct/` and `rt/` suites re-run clean after the change (2422
 tests, 0 failed, 6 pre-existing expected failures).
+
+**Landed (2026-07-09, owed-fixtures follow-up).** The char
+integer-compatibility and float/double reinterpret-load fixtures owed
+above were reconstructed red-first and landed in `ct/expressions.d`:
+`pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible`,
+`pointer.floatBitsThroughUintPointerAreRawBits`, and
+`pointer.doubleBitsThroughUlongPointerAreRawBits`.
+
+Red-first evidence: applied alone at fix commit `82297fe9`'s parent
+(`bf9d6836`, "interpreter: invoke lazy wrapper thunks"), `Interpreter`
+fails all three, with `SystemLinker` green in every case (confirming a
+genuine oracle-agreeing D construct, not UB):
+
+- `dcharCompoundAssignThroughUintPointerIsIntegerCompatible`: refusal,
+  `Expected integer-compatible scalar.`
+- `floatBitsThroughUintPointerAreRawBits`: **wrong answer**, not a
+  refusal — `1 != 1069547520` (`0x3FC00000`). The pre-fix path truncated
+  `cast(uint)(1.5f)` to `1` via `Value.castTo!uint`'s numeric-conversion
+  branch instead of reinterpreting the raw IEEE-754 bits.
+- `doubleBitsThroughUlongPointerAreRawBits`: **wrong answer** —
+  `1 != 4609434218613702656` (`0x3FF8000000000000`), same truncating-cast
+  mechanism.
+
+The two reinterpret fixtures being silent wrong answers rather than
+diagnosed refusals makes them §7's most urgent class: an unguarded
+representation gap that produces plausible-looking incorrect results
+instead of failing loudly.
+
+Backend matrix, verified green at this branch's HEAD:
+- Fixture 1 (`dchar`): `Ctfe, Interpreter, SystemLinker, LLVMJit`.
+  `Bytecode`/`BytecodeNewCore`/`IR` omitted (address-of-local and this
+  compound-assignment shape are unimplemented gaps there, unrelated to
+  this bug class).
+- Fixtures 2a/2b (`float`/`double`): `Interpreter, BytecodeNewCore,
+  SystemLinker, LLVMJit`. `Ctfe` omitted: real dmd CTFE has no
+  byte-level memory model for floating-point locals and permanently
+  refuses `cast(uint*)&floatLocal` (`cannot convert '&float' to 'uint*'
+  at compile time`) — this is dmd's own restriction, not an
+  in-development gap, but the fixtures merely omit it rather than pin
+  the refusal. `Bytecode`/`IR` omitted (address-of-local unimplemented).
+
+Bonus finding confirmed: `Ctfe` *does* support same-size integer-family
+pointer reinterpretation (hence its presence in fixture 1's matrix, and
+absence from 2a/2b — this is not an oversight, it is dmd CTFE's actual,
+type-family-dependent behaviour).
+
+Non-obvious construction finding, load-bearing for reproduction: a
+`char`/`ubyte*` version of fixture 1 does **not** reproduce the bug —
+DMD's frontend inserts an implicit promoting `CastExp` for sub-`int`-
+sized operands in compound-assignment lowering, which re-masks the gap
+before the interpreter's `asLong`/`castTo` ever runs. `dchar`/`uint*`
+(4 bytes, already int-rank) is the necessary representative of the
+char/wchar/dchar family — not an arbitrary substitution, since the
+production fix treats all three identically via a single
+`isSomeChar!T` branch. More generally, every "natural" D operator
+context that reaches a scalar `Value` (shift, bitwise-assign, array
+index, unary complement, case-range dispatch) already carries an
+`int`/`ulong`-tagged `Value` by the time it matters, because DMD
+inserts a promoting cast; the one place that does not is a pointer
+dereference cast to a *different, same-size* type than the pointee's
+declared type — the frontend's static type of `*p` already matches the
+pointer's declared pointee type, so no further cast node is inserted,
+and the interpreter itself must reinterpret the raw bits. This is
+exactly cerealed's `grainReinterpret` shape: same-size pointer casts are
+what it actually does, so this construction is the faithful standalone
+proof, not a contrivance.
+
+Cross-reference to §9.10's shim inventory above:
+`reinterpretLocalPointerLoad` + `floatBits`/`doubleBits` remain listed
+representation debt — they bless exactly two cast shapes (float->uint,
+double->ulong) and every other reinterpret is still wrong or refused.
+These three fixtures are the ratchet: they must stay green through the
+eventual native-layout replacement of that shim, at which point the
+shim itself is deleted per its retirement condition.
 
 ## 10. Done
 
