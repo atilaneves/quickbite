@@ -3,6 +3,7 @@ module ut.backends.interpreter.native_array;
 
 import ut;
 import quickbite.backends.interpreter.native_array: NativeArray;
+import quickbite.backends.interpreter.native_block: NativeBlock;
 import dmd.mtype: Type;
 
 private:
@@ -113,6 +114,7 @@ unittest {
     const attr = GC.getAttr(GC.addrOf(array.block.address));
 
     (attr & GC.BlkAttr.NO_SCAN).should == 0;
+    array.scan.should == NativeBlock.Scan.conservative;
 }
 
 
@@ -124,6 +126,7 @@ unittest {
     const attr = GC.getAttr(GC.addrOf(array.block.address));
 
     (attr & GC.BlkAttr.NO_SCAN).should == GC.BlkAttr.NO_SCAN;
+    array.scan.should == NativeBlock.Scan.no;
 }
 
 

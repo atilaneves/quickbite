@@ -68,6 +68,10 @@ public struct NativeArray {
         return _block.ownership;
     }
 
+    public NativeBlock.Scan scan() const pure nothrow @nogc @safe {
+        return _block.scan;
+    }
+
     public inout(NativeBlock) block() inout pure nothrow @nogc @safe {
         return _block;
     }

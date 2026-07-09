@@ -27,6 +27,7 @@ public struct NativeBlock {
 
     private ubyte[] _bytes;
     private Ownership _ownership;
+    private Scan _scan;
 
     // Zero-initialised GC memory the interpreter owns, allocated with the
     // required scan policy. D's GC is non-moving, so the address is stable
@@ -42,7 +43,7 @@ public struct NativeBlock {
         in size_t byteLength,
         in Scan scan,
     ) pure nothrow @safe {
-        return NativeBlock(allocateBytes(byteLength, scan), Ownership.owned);
+        return NativeBlock(allocateBytes(byteLength, scan), Ownership.owned, scan);
     }
 
     // Wraps memory owned elsewhere. Allocates nothing; writes through
@@ -53,8 +54,18 @@ public struct NativeBlock {
     // derived from this block. This is a raw-memory constructor and so
     // cannot be `@safe`; the FFI seam that supplies `ptr` is the
     // `@trusted` boundary that vouches for the precondition.
+    //
+    // Recorded scan policy is always `no`: this memory is not a D GC
+    // allocation, so the GC never scans it regardless of what policy is
+    // asked for -- there is no attribute to set. That makes a borrowed
+    // block's bytes exactly as invisible to the collector as `malloc`'d C
+    // memory: a GC-owned pointer written into them is unreachable as far
+    // as the GC is concerned, and stays alive only if something else
+    // (typically the borrowed memory's own owner) keeps it alive. Solving
+    // that is the borrower's problem -- per the precondition above, not
+    // something this block can fix by itself.
     public static NativeBlock borrow(void* ptr, in size_t byteLength) pure nothrow @system {
-        return NativeBlock(borrowedBytes(ptr, byteLength), Ownership.borrowed);
+        return NativeBlock(borrowedBytes(ptr, byteLength), Ownership.borrowed, Scan.no);
     }
 
     public size_t byteLength() const pure nothrow @nogc @safe {
@@ -63,6 +74,10 @@ public struct NativeBlock {
 
     public Ownership ownership() const pure nothrow @nogc @safe {
         return _ownership;
+    }
+
+    public Scan scan() const pure nothrow @nogc @safe {
+        return _scan;
     }
 
     // Read/write access to the block's bytes.

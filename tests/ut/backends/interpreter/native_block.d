@@ -106,3 +106,29 @@ unittest {
 
     (attr & GC.BlkAttr.NO_SCAN).should == 0;
 }
+
+
+@("NativeBlock.allocate.recordsNoScanPolicy")
+unittest {
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
+
+    block.scan.should == NativeBlock.Scan.no;
+}
+
+
+@("NativeBlock.allocate.recordsConservativeScanPolicy")
+unittest {
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.conservative);
+
+    block.scan.should == NativeBlock.Scan.conservative;
+}
+
+
+@("NativeBlock.borrow.recordsNoScanPolicy")
+@system
+unittest {
+    ubyte[4] callerOwned = [1, 2, 3, 4];
+    auto block = NativeBlock.borrow(callerOwned.ptr, callerOwned.length);
+
+    block.scan.should == NativeBlock.Scan.no;
+}

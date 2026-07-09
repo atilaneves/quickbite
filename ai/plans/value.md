@@ -374,7 +374,9 @@ real D dynamic-array slice header (`{ size_t length; void* ptr; }`) into a
 caller-supplied destination, aliasing the element block rather than
 snapshotting it -- proven against the host compiler's own slice layout,
 with the ABI fact (`length` first, `ptr` second, `2 * size_t` bytes)
-pinned by a `static assert` rather than hand-rolled.
+pinned by a `static assert` rather than hand-rolled. The block (and so the
+array handle) now records its scan policy, making the handle
+self-describing rather than requiring a question to the GC.
 
 One real bug was fixed on the way: `new ubyte[](n)` is always `NO_SCAN`, so
 a block holding guest pointers would have been invisible to the GC and its
@@ -776,7 +778,14 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    array should observe, and whether that deserves a diagnostic rather than
    compiled D's silent staleness; unions and overlapping fields, which the
    conservative whole-range root policy handles but the layout model does not
-   yet describe; and class object bodies, deferred wholesale.
+   yet describe; class object bodies, deferred wholesale; and a
+   scanned-destination contract for `writeSliceHeader`. A GC-owned pointer
+   written into a destination the collector never scans -- a `NO_SCAN` block,
+   or borrowed non-GC memory -- is invisible to the GC, exactly the hazard
+   `NativeBlock.Scan` exists to avoid for the block itself. `writeSliceHeader`
+   takes a bare `ubyte[]` today and enforces nothing about what that `ubyte[]`
+   is backed by; it needs a real contract once its destination is a genuine
+   frame location instead of a test-supplied buffer.
 
    Next PR: the array-native block handle skeleton — an interpreter-owned array
    value carrying a stable block, `Type*`, length, stride, ownership, and scan
