@@ -2035,6 +2035,7 @@ private struct Walker {
             allocation[lower .. upper],
             allocation,
             lower,
+            allocationId(*variable),
         );
     }
 
@@ -3660,7 +3661,7 @@ private struct Walker {
         }
 
         if (isPointerType(slice.e1.type)) {
-            recordPointerSliceAllocationAlias(parameter, slice);
+            recordPointerSliceAllocationAlias(parameter, argument);
             sliceAliases.remove(parameter);
             return;
         }
@@ -3686,21 +3687,14 @@ private struct Walker {
 
     private void recordPointerSliceAllocationAlias(
         VarDeclaration parameter,
-        imported!"dmd.expression".SliceExp slice,
+        in Value argument,
     ) {
-        const source = runExpression(slice.e1);
-        if (!source.isLocalPointer) {
+        if (argument.arrayAllocationId == 0) {
             arrayAllocationAliases.remove(parameter);
             return;
         }
 
-        auto variable = source.localPointerId in localPointers;
-        if (variable is null) {
-            arrayAllocationAliases.remove(parameter);
-            return;
-        }
-
-        arrayAllocationAliases[parameter] = allocationId(*variable);
+        arrayAllocationAliases[parameter] = argument.arrayAllocationId;
     }
 
     private void recordForwardedArrayAllocationAlias(

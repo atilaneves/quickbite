@@ -93,12 +93,14 @@ public struct Value {
         in Value[] elements,
         in Value[] allocation,
         in size_t allocationOffset,
+        in size_t allocationId = 0,
     ) @safe pure {
         return Value(Array(
             elements,
             ArrayDisplay.normal,
             allocation,
             allocationOffset,
+            allocationId,
         ));
     }
 
@@ -1219,6 +1221,7 @@ public struct Value {
                     array.display,
                     allocation,
                     array.allocationOffset,
+                    array.allocationId,
                 ));
             },
             (_) {
@@ -1237,6 +1240,7 @@ public struct Value {
                 array.display,
                 array.allocation,
                 array.allocationOffset + lower,
+                array.allocationId,
             )),
             (_) {
                 throw new Exception("Expected array.");
@@ -1263,6 +1267,18 @@ public struct Value {
 
         return data.match!(
             (const(Array) array) => array.allocationOffset,
+            (_) {
+                throw new Exception("Expected array.");
+                return size_t.init;
+            },
+        );
+    }
+
+    public size_t arrayAllocationId() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.allocationId,
             (_) {
                 throw new Exception("Expected array.");
                 return size_t.init;
@@ -1857,6 +1873,7 @@ private struct Array {
     public Value[] elements;
     public Value[] allocation;
     public size_t allocationOffset;
+    public size_t allocationId;
     public ArrayDisplay display;
 
     public this(
@@ -1866,6 +1883,7 @@ private struct Array {
         this.elements = elements.dup;
         this.allocation = elements.dup;
         this.allocationOffset = 0;
+        this.allocationId = 0;
         this.display = display;
     }
 
@@ -1874,10 +1892,12 @@ private struct Array {
         in ArrayDisplay display,
         in Value[] allocation,
         in size_t allocationOffset = 0,
+        in size_t allocationId = 0,
     ) @safe pure {
         this.elements = elements.dup;
         this.allocation = allocation.dup;
         this.allocationOffset = allocationOffset;
+        this.allocationId = allocationId;
         this.display = display;
     }
 
