@@ -317,7 +317,7 @@ static foreach (backend; AliasSeq!(IR)) {
 
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
@@ -329,7 +329,7 @@ static foreach (backend; AliasSeq!(
 
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
 
     @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
@@ -380,7 +380,7 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)

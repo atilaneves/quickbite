@@ -3064,7 +3064,7 @@ block the terminal goal (§34.1) for the two backends.
 ### 35.1 Seam v2: no identity crossing, no CIF cache
 
 **Status: landed — ladder rung 24 (§34.3, 2026-07-09).**
-Pointer-handing through the live BytecodeNewCore call site is green, and the
+Pointer-handing through the live Bytecode call site is green, and the
 non-variadic CIF cache subitem is landed.
 
 **Claim.** §5/§23: for a native-layout backend `materialize`/`reify` is the
@@ -3123,8 +3123,8 @@ its benefit is a bench delta (per-call `ffi_prep_cif` gone), not a mock
 assertion; every existing Interpreter fixture stays green.
 
 **Progress 2026-07-09.** Promoted the existing SystemLinker-backed
-`rt/cstdlib.d` fixture `strtol.endptr.BytecodeNewCore`. The red first
-failed at the BytecodeNewCore no-source gate; the implementation widened the
+`rt/cstdlib.d` fixture `strtol.endptr.Bytecode`. The red first
+failed at the Bytecode no-source gate; the implementation widened the
 bytecode native-call descriptor from one argument to source-order argument
 arrays, added optional `NativeMarshaller.argumentAddress` /
 `resultAddress` hooks with Interpreter `null` fallbacks, and taught the
@@ -3825,7 +3825,7 @@ Verification: `ninja bin/ut`, the focused promoted Interpreter fixture, and
 
 **Ledger 2026-07-09.** Promoted the existing SystemLinker-backed
 `rt/cstdlib.d` fixture `calloc.multiArg.zeroedNativeMemory` to
-`BytecodeNewCore`. The expected red on the old CastExp-wrapped
+`Bytecode`. The expected red on the old CastExp-wrapped
 `free(ptr)` pointer-argument gap did not reproduce in the current tree:
 the focused promoted row was already green after `ninja bin/ut`, and
 temporary checks showed the sibling `realloc.null.pointerArgPointerReturn`
@@ -3837,7 +3837,7 @@ that cstdlib block. Verification: `ninja bin/ut`, the focused promoted
 
 **Ledger 2026-07-09.** Promoted the existing SystemLinker-backed
 `rt/cstdlib.d` fixture `realloc.null.pointerArgPointerReturn` to
-`BytecodeNewCore`. The row was already green in the current tree, matching
+`Bytecode`. The row was already green in the current tree, matching
 the prior temporary check above, so no production code changed. Verification:
 `ninja bin/ut`, the focused promoted `realloc` row, `bin/ut --random`
 (intermittent unrelated SystemLinker/LLVMJit failures after the promoted row
@@ -3845,6 +3845,6 @@ passed), and `bin/ut --seed 861487285` green.
 
 **Ledger 2026-07-09.** Promoted the existing SystemLinker-backed
 `rt/cstdlib.d` fixture `realloc.grow.preservesNativeMemory` to
-`BytecodeNewCore`. The row was already green in the current tree, matching
+`Bytecode`. The row was already green in the current tree, matching
 the prior temporary check above, so no production code changed. Verification:
 `ninja bin/ut`, the focused promoted `realloc` row, and `bin/ut --random`.
