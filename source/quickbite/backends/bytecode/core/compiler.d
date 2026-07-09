@@ -35,8 +35,8 @@ private struct Compiler {
         Instruction, NativeCall, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
         VirtualFunction, isSigned,
-        nativeArgumentSlotSize, noCatchObjectField, noExceptionClass, size,
-        sliceDescriptorSize, stringSliceSize;
+        nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
+        noOutParameterOffset, size, sliceDescriptorSize, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
@@ -2693,11 +2693,22 @@ private struct Compiler {
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
-        if (initializer is null)
-            throw new Exception(text(
-                "Unsupported initializer in bytecode core: ",
-                declarationChars(variable),
-            ));
+
+        // No initializer, or an explicit `= null` (`NullExp`, typed
+        // `typeof(null)` not `T*`): allocate a zeroed native-word slot,
+        // taking the element scalar from the declared type.
+        if (initializer is null ||
+            initializerExpression(initializer.exp).isNullExp !is null) {
+            _locals[variable] = offset;
+            _pointerLocals[variable] = pointerElementScalar(variable.type);
+            _code ~= Instruction(
+                Op.loadConstant,
+                offset,
+                constantIndex(0),
+                cast(ushort) size_t.sizeof,
+            );
+            return;
+        }
 
         const pointer =
             compileExpression(initializerExpression(initializer.exp));
@@ -7326,8 +7337,16 @@ private struct Compiler {
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
         if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
              returnTy != TY.Tfloat64) ||
-            call.arguments is null ||
-            call.arguments.length != 1)
+            call.arguments is null)
+            return null;
+
+        // `strtod(s, &endptr)`-shaped calls: a string-literal argument plus a
+        // `&local` out-parameter argument. Narrowly gated to that exact shape;
+        // anything else falls through to the no-available-source diagnostic.
+        if (call.arguments.length == 2)
+            return tryCompileNativeCallOutParameter(call, function_);
+
+        if (call.arguments.length != 1)
             return null;
 
         auto argument = (*call.arguments)[0];
@@ -7371,6 +7390,61 @@ private struct Compiler {
         );
     }
 
+    // `strtod`/`strtol`'s `(stringLiteral, &endptr)` shape. The libc
+    // signature's `char**` parameter type is unconditionally an out
+    // parameter (ffi.md §34.8), so argument 1's argument-area slot is never
+    // read; only its frame offset (for writeback) and type (for count) matter.
+    private Operand* tryCompileNativeCallOutParameter(
+        CallExp call,
+        FuncDeclaration function_,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
+
+        auto stringArgument = (*call.arguments)[0];
+        if (stringArgument.type.toBasetype.ty != TY.Tpointer ||
+            stringArgument.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
+            return null;
+
+        auto string_ = stringLiteralOf(stringArgument);
+        if (string_ is null)
+            return null;
+
+        // `&endptr` arrives as a `SymOffExp` (symbol plus byte offset), the
+        // same shape `tryAddressOfSymbol` matches for `&local` on a scalar;
+        // only a bare `&local` (zero symbol offset) is the accepted shape.
+        auto outArgument = (*call.arguments)[1];
+        auto symOff = outArgument.isSymOffExp;
+        if (symOff is null || symOff.offset != 0)
+            return null;
+        auto declaration = symOff.var.isVarDeclaration;
+        auto outLocal = declaration is null ? null : declaration in _locals;
+        if (outLocal is null || (declaration in _pointerLocals) is null)
+            return null;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length + 1 > ushort.max)
+            throw new Exception(text(
+                "String literal too large for bytecode core: ",
+                expressionChars(string_),
+            ));
+        _program.data ~= bytes;
+        _program.data ~= 0;
+        const argumentArea = allocateNativeArgumentArea(2);
+        _code ~= Instruction(
+            Op.loadDataPointer, argumentArea, cast(ushort) dataOffset,
+        );
+
+        return emitNativeCall(
+            function_,
+            [stringArgument.type.toBasetype, outArgument.type.toBasetype],
+            argumentArea,
+            [noOutParameterOffset, *outLocal],
+        );
+    }
+
     // A native call's argument area is N contiguous fixed-stride slots (see
     // `nativeArgumentSlotSize` in program.d), one per argument, regardless of
     // each argument's own width: argument `index` always lives at
@@ -7390,12 +7464,14 @@ private struct Compiler {
         FuncDeclaration function_,
         Type[] argumentTypes,
         in ushort argumentArea,
+        in ushort[] outParameterOffsets = null,
     ) {
         const returnScalar =
             scalarType(function_.type.toBasetype.nextOf.toBasetype);
         const destination = allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
-        _program.nativeCalls ~= NativeCall(function_, argumentTypes);
+        _program.nativeCalls ~=
+            NativeCall(function_, argumentTypes, outParameterOffsets.dup);
         _code ~= Instruction(
             Op.nativeCall,
             cast(ushort) nativeIndex,

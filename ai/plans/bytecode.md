@@ -4479,3 +4479,66 @@ by the `strtod`/`strtol` out-parameter rung, not this commit. Verification:
 remaining `cstdlib` `.BytecodeNewCore` rows (`free`, `malloc`, `calloc`,
 `realloc`, `div`, `ldiv`) also green (12 tests, 0 failed). `bin/ut --random`
 was not run for this refactor; the orchestrator runs the long suite.
+
+`strtod.floatReturn.endptr` promoted to `BytecodeNewCore`, 2026-07-09:
+pre-approved `SystemLinker`-oracle promotion
+(`tests/ut/backends/runner/rt/cstdlib.d`). Red diagnostic before any
+production change, verbatim:
+
+    object.Exception: `strtod` cannot be interpreted at compile time,
+    because it has no available source code
+
+`tryCompileNativeCall` (`compiler.d`) refused any call site with
+`arguments.length != 1`, so the fixture's two-argument
+`strtod("3.5xyz".ptr, &endptr)` fell straight through to the
+no-available-source diagnostic without ever reaching the native-call
+bridge. Getting to green needed two missing behaviours, not one:
+
+`const(char)* endptr;` has no initializer, so `compilePointerDeclaration`
+threw "Unsupported initializer in bytecode core" for it (and would have for
+`T* p = null` too — `NullExp`'s own type is `typeof(null)`, not `T*`,
+so a `null` initializer can't be read as a pointer-valued expression
+either). Fixed: both shapes now allocate a zeroed native-word slot and take
+the pointed-at element scalar from the declared type (`variable.type`, not
+an initializer operand) via the existing `pointerElementScalar`.
+
+`tryCompileNativeCall`'s arity gate rejected `arguments.length == 2`
+outright. Added a narrowly-gated `tryCompileNativeCallOutParameter`,
+reached only for exactly this shape: argument 0 a string-literal
+`const(char)*` (reusing the single-argument string-literal path), argument 1
+a `&local` whose pointed-to local is a tracked pointer local. `&endptr`
+arrives as a `SymOffExp` (symbol plus byte offset), not an `AddrExp` —
+matching the existing comment on the scalar `&local` path a few hundred
+lines up — so the gate matches `isSymOffExp` with a zero symbol offset, not
+`isAddrExp`. libc's `char**` parameter type is unconditionally an
+out-parameter to `quickbite.ffi.callNative` (ffi.md §34.8's
+pointer-to-pointer case), regardless of any `addressOfLocalArguments` flag,
+so argument 1's slot in the VM argument area is never read by
+`fillArgument` — only its frame offset (for the out-cell writeback) and its
+type (for the argument count) matter. `NativeCall` (`program.d`) gained
+`ushort[] outParameterOffsets` (sentinel `noOutParameterOffset` for a
+non-out argument) and `BytecodeNativeMarshaller` (`machine.d`) gained a
+`_base`/`_outParameterOffsets` pair so `fillOutParameterCell` can seed the
+cell with `endptr`'s current (null, pre-call) value and `writeOutParameter`
+can write the callee's written pointer back into `endptr`'s own frame slot.
+`canRepresentOutCell`/`canRepresent` needed no change — both already accept
+`Tpointer` in both directions. The pointer-dereference lowering
+(`pointerLoad1` reading through a raw host address via
+`readHeapElement`/`cast(const(ubyte)*)`) already handles dereferencing a
+genuine host pointer for `*endptr`, since `loadDataPointer` already writes
+real host addresses (`program.data.ptr + offset`) into pointer-local frame
+slots; no change needed there. Verification: `ninja bin/ut`, focused
+`strtod.floatReturn.endptr.BytecodeNewCore` green, the 12 other
+`cstdlib.*.BytecodeNewCore` rows still green (13 tests, 0 failed), all 35
+`BytecodeNewCore` pointer/null-rendering rows across `ct/expressions`,
+`ct/arrays`, `ct/control_flow`, `ct/structs`, `ct/cerealed`, and `bin/repl`
+still green, and the full `rt/cstdlib.d` module across every backend green
+(88 tests, 0 failed). `bin/ut --random` was not run; the orchestrator runs
+the long suite. Production diff for the whole branch vs `master`
+(`source/`) is 192 changed lines. Next rung, `strtol.endptr`: a
+three-argument call (`strtol(s, &endptr, base)`) — the second `int` argument
+reuses the existing scalar-argument path, and `strtol`'s `endptr` parameter
+is the identical `char**` out-parameter shape, so
+`tryCompileNativeCallOutParameter`-style handling generalises rather than
+needing a new shape; the gate widens from exactly 2 arguments to the
+(string-literal, out-pointer, scalar) triple.

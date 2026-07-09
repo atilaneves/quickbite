@@ -1343,6 +1343,8 @@ package(quickbite.backends.bytecode) RunResult run(
                     stack,
                     base + instruction.b,
                     base + instruction.c,
+                    base,
+                    native.outParameterOffsets,
                 );
                 if (!callNative(
                     native.function_,
@@ -2630,11 +2632,21 @@ private final class BytecodeNativeMarshaller:
     private ubyte[] _stack;
     private size_t _argument;
     private size_t _destination;
+    private size_t _base;
+    private const(ushort)[] _outParameterOffsets;
 
-    public this(ubyte[] stack, in size_t argument, in size_t destination) {
+    public this(
+        ubyte[] stack,
+        in size_t argument,
+        in size_t destination,
+        in size_t base,
+        in ushort[] outParameterOffsets,
+    ) {
         _stack = stack;
         _argument = argument;
         _destination = destination;
+        _base = base;
+        _outParameterOffsets = outParameterOffsets;
     }
 
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
@@ -2707,14 +2719,24 @@ private final class BytecodeNativeMarshaller:
         ref const(char)*[] keepAlive, ref ubyte[][] keepAliveBuffers)
     { unsupportedNativeCall; }
 
+    // Write the callee's out-cell bytes back into the pointed-to local's
+    // frame slot (`_outParameterOffsets[index]`, set by `emitNativeCall`).
     public void writeOutParameter(in size_t index, Type pointedToType,
         in ubyte[] cell)
-    { unsupportedNativeCall; }
+    {
+        const slot = _base + _outParameterOffsets[index];
+        _stack[slot .. slot + cell.length] = cell[];
+    }
 
+    // Seed the out cell with the pointed-to local's current value (ffi.md
+    // §35.6), e.g. `endptr`'s null pre-call value, which strtod ignores.
     public void fillOutParameterCell(ubyte[] cell, Type pointedToType,
         in size_t index, in bool stableString, ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers)
-    { unsupportedNativeCall; }
+    {
+        const slot = _base + _outParameterOffsets[index];
+        cell[] = _stack[slot .. slot + cell.length];
+    }
 
     public const(void)* receiverObjectPointer() {
         return null;
