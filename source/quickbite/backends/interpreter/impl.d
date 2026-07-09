@@ -1962,6 +1962,11 @@ private struct Walker {
                 call.arguments !is null &&
                 call.arguments.length == interpreterBuiltinArgumentCount(builtin)
             ) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "tryInterpreterBuiltin");
+
                 with (InterpreterBuiltin) final switch (builtin) {
                     case fabs:
                     case isInfinity:
@@ -1982,22 +1987,42 @@ private struct Walker {
             }
         }
 
-        if (call.f !is null && isDruntimeArrayOpAddAssign(call.f))
+        if (call.f !is null && isDruntimeArrayOpAddAssign(call.f)) {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+
+            enforceInterceptionPolicy(call.f, "isDruntimeArrayOpAddAssign");
             return runArrayOpAddAssignCall(call);
+        }
 
-        if (call.f !is null && functionName(call.f) == "memcpy")
+        if (call.f !is null && functionName(call.f) == "memcpy") {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+
+            enforceInterceptionPolicy(call.f, "memcpy");
             return runMemcpyCall(call);
+        }
 
-        if (call.f !is null && isEmplaceRef(call.f))
+        if (call.f !is null && isEmplaceRef(call.f)) {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+
+            enforceInterceptionPolicy(call.f, "isEmplaceRef");
             return runEmplaceRefCall(call);
+        }
 
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
                 GCArrayHook, tryGCArrayHook;
 
             GCArrayHook gcArrayHook;
-            if (tryGCArrayHook(call.f, gcArrayHook))
+            if (tryGCArrayHook(call.f, gcArrayHook)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "tryGCArrayHook");
                 return runGCArrayHookCall(call, gcArrayHook);
+            }
         }
 
         if (call.f !is null) {
@@ -2005,8 +2030,13 @@ private struct Walker {
                 AssocArrayHook, tryAssocArrayHook;
 
             AssocArrayHook assocArrayHook;
-            if (tryAssocArrayHook(call.f, assocArrayHook))
+            if (tryAssocArrayHook(call.f, assocArrayHook)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "tryAssocArrayHook");
                 return runAssocArrayHookCall(call, assocArrayHook);
+            }
         }
 
         if (call.f !is null) {
@@ -2014,8 +2044,13 @@ private struct Walker {
                 AtomicHook, tryAtomicHook;
 
             AtomicHook atomicHook;
-            if (tryAtomicHook(call.f, atomicHook))
+            if (tryAtomicHook(call.f, atomicHook)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "tryAtomicHook");
                 return runAtomicHookCall(call, atomicHook);
+            }
         }
 
         auto stringForeachApply = call.f is null
@@ -2024,8 +2059,16 @@ private struct Walker {
         if (
             stringForeachApply !is null &&
             isStringForeachApplyCall(stringForeachApply)
-        )
+        ) {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+
+            enforceInterceptionPolicy(
+                stringForeachApply,
+                "isStringForeachApplyCall",
+            );
             return runStringForeachApplyCall(call, stringForeachApply);
+        }
 
         Value[] arguments;
         Expression[] argumentExpressions;
@@ -2047,8 +2090,13 @@ private struct Walker {
             import quickbite.backends.interpreter.builtins:
                 isStdConvText, stdConvTextCall;
 
-            if (isStdConvText(call.f))
+            if (isStdConvText(call.f)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "isStdConvText");
                 return stdConvTextCall(arguments);
+            }
         }
 
         if (auto dot = call.e1.isDotVarExp) {
@@ -2253,8 +2301,16 @@ private struct Walker {
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
             if (isZeroFormalCall(function_) && arguments.length == 5) {
-                if (functionName(function_) == "enforceRawArraysConformableNogc")
+                if (functionName(function_) == "enforceRawArraysConformableNogc") {
+                    import quickbite.backends.interpreter.interception_guard:
+                        enforceInterceptionPolicy;
+
+                    enforceInterceptionPolicy(
+                        function_,
+                        "enforceRawArraysConformableNogc",
+                    );
                     return Value(false);
+                }
 
                 throw new Exception("Unsupported eval call.");
             }

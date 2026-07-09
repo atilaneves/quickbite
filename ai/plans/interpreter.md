@@ -507,8 +507,106 @@ interpreter or value-model gap to fix at the root, never to special-case.
 The #386 `emplaceRef` intercept violates this and is tracked for deletion
 in §9.10; `std.conv.text` is the one pre-existing, deliberate exemption
 (perf scaffolding, already scheduled for removal by `value.md` remaining
-work item 1). A mechanical guard enforcing this at the dispatcher
-chokepoint is a planned follow-up code change.
+work item 1).
+
+**Mechanical guard (landed, owed-fixtures follow-up).** The chokepoint is
+`Walker.runCallExpression` (impl.d). Every name-based intercept there —
+`tryInterpreterBuiltin`, `isDruntimeArrayOpAddAssign`, the `memcpy` name
+check, `isEmplaceRef`, `tryGCArrayHook`, `tryAssocArrayHook`, `tryAtomicHook`,
+`isStringForeachApplyCall`, `isStdConvText`, and the raw-function-pointer
+`enforceRawArraysConformableNogc` special case — now calls
+`enforceInterceptionPolicy(callee, interceptorName)`
+(`source/quickbite/backends/interpreter/interception_guard.d`) immediately
+before running its handler. The guard's predicate,
+`isLegalInterception`, accepts a callee when `fd.fbody is null`
+(`hasNoAvailableSource`), or the body is/contains a `CompoundAsmStatement`
+(a recursive walk using dmd's own `StatementRewriteWalker`, overriding
+`visit(CompoundStatement)` — quickbite runs dmd frontend-only, so the
+individual `AsmStatement`/`InlineAsmStatement` instructions inside an asm
+block are never resolved past `null` placeholders; only the
+`CompoundAsmStatement` wrapper node itself is reliably present, from parse
+time onward), or the callee is on the exemption list below. Any other
+body-ful, non-asm callee fails an `assert` naming the intercept and the
+callee's `toPrettyChars` — deliberately an `AssertError`
+(a `Throwable`, not `Exception`) rather than a thrown `Exception`, so it
+cannot be swallowed by an interpreted `catch (Exception)` or by
+unit-threaded's `shouldThrow`, and fails the enclosing unittest outright.
+The check runs only on the already-rare path where some intercept has
+matched, so it carries no hot-path cost worth gating behind `debug`.
+Predicate unit tests live in
+`tests/ut/backends/interpreter/interception_guard.d` (body-ful/non-exempt
+rejected, body-less accepted, asm-bodied accepted, and the assert fires).
+
+Exemption list (`isExemptInterception`), each with its retirement condition:
+
+```text
+core.internal.lifetime.emplaceRef!(...)   §9.10 tracked violation; retire
+                                           once the value model sees
+                                           cast-aliasing, or native layout
+                                           lands, and the real body runs.
+std.conv.text                             §8's pre-existing deliberate
+                                           exemption; retire per value.md
+                                           remaining work item 1.
+core.internal.array.operations.arrayOp!(  discovered by this guard, not
+...)                                      previously in §9.10; retire with
+                                           §9.10's native-layout-aggregates
+                                           item.
+core.internal.newaa._d_aa*!(...),         discovered by this guard, not
+object.dup/keys/values!(...),             previously in §9.10; retire when
+_d_aaApply2!(...)                         the AA representation moves to
+                                           native layout (§9.10).
+rt.aApply's _aApplycd1/_aApplywd1/        discovered by this guard, not
+_aApplydc1/_aApplyRwd1                    previously in §9.10; extern(C)-
+                                           mangled but D-bodied; retire when
+                                           string/array native layout lands.
+core.internal.util.array.                 discovered by this guard, not
+enforceRawArraysConformableNogc           previously in §9.10; the worst of
+                                           this batch — the shim fakes a
+                                           `bool` return for a `void`-
+                                           returning function. Retire by
+                                           executing the real body once
+                                           static-array element-wise ops are
+                                           interpretable end-to-end.
+core.atomic.atomicValueIsProperlyAligned  discovered by this guard, not
+!(...) / atomicPtrIsProperlyAligned!(...) previously in §9.10; plain D bit
+                                           arithmetic, no asm, despite living
+                                           beside core.internal.atomic's real
+                                           asm primitives. Retire once
+                                           interpreter values carry real
+                                           addresses (value.md native
+                                           layout).
+core.internal.atomic.atomicFetchSub!(...) discovered by this guard, not
+/ atomicStore!(...)                       previously in §9.10; each forwards
+                                           in one line to a sibling
+                                           primitive (atomicFetchAdd /
+                                           atomicExchange) that contains the
+                                           real asm, so the asm-body check
+                                           (which only inspects the callee's
+                                           own body) misses them. Retire with
+                                           the rest of the AtomicHook family.
+tryInterpreterBuiltin's matched set:       discovered by this guard, not
+std.math.algebraic.fabs/sqrt,             previously in §9.10; dmd's own
+std.math.exponential.pow,                 `isBuiltin()` recognises these by
+std.math.traits.isInfinity, and (via a    module+identifier for its CTFE
+bare-identifier fallback with no          builtin table regardless of body,
+`BUILTIN` entry) std.math.traits.signbit  so quickbite's reuse of that table
+                                           inherits the same body-
+                                           independence. The `signbit`
+                                           fallback is also an unreported
+                                           latent bug in its own right (no
+                                           module check, so it would misfire
+                                           on an unrelated user `signbit`).
+                                           Retire once `InterpreterBuiltin`
+                                           computes each from the value's
+                                           real representation in a native-
+                                           layout world.
+```
+
+Every entry above except `emplaceRef` and `std.conv.text` was unknown before
+this guard existed — the guard's own construction is what surfaced them,
+exactly per §8's intent: the list is finite, visible, and shrinks, rather
+than growing silent shims. None of them changed behaviour; the guard adds
+enforcement and an explicit inventory only.
 
 ## 9. The rungs (ordered by leverage)
 

@@ -295,3 +295,30 @@
   worktree also publishes every other matching local branch — including the
   user's unpushed local `master`. Always push explicitly:
   `git push origin <branch>` (with `--force-with-lease` after a rebase).
+
+- dmd's own AST visitor classes (`Visitor`, `SemanticTimePermissiveVisitor`,
+  `StatementRewriteWalker`, etc.) are `extern (C++)`. A subclass written to
+  override one of their `visit(...)` overloads must also be declared
+  `extern (C++)` — a plain D subclass does not share the Itanium-ABI vtable
+  layout, so dmd rejects the override with "does not override any function,
+  did you mean to override alias ...", even though the exact same override
+  compiles fine once `extern (C++)` is added.
+
+- Quickbite runs the dmd frontend with no attached backend
+  (`-version=NoBackend`). Anything whose resolution is deferred to codegen
+  never happens: an `asm { ... }` block's individual instructions stay `null`
+  placeholders inside its `CompoundAsmStatement.statements` even after
+  `functionSemantic3` — check for the `CompoundAsmStatement` node itself
+  (present from parse time), not for `AsmStatement`/`InlineAsmStatement`
+  leaves, when detecting "this function's body is inline asm" in this
+  codebase.
+
+- Before assuming a druntime/Phobos function referenced by name (e.g. for an
+  interpreter/backend name-based special case) is a body-less `extern(C)`
+  prototype, check the actual vendored source. `core.stdc.math.fabs` is
+  body-less, but `std.math.algebraic.fabs`/`sqrt`, `std.math.exponential.pow`,
+  and `std.math.traits.isInfinity`/`signbit` — the versions dmd's own
+  `isBuiltin()` recognises via its `BUILTIN` enum — all have real D bodies.
+  Likewise `core.internal.atomic.atomicStore`/`atomicFetchSub` have D source
+  that just forwards to a sibling primitive (`atomicExchange`/
+  `atomicFetchAdd`) which contains the actual asm.
