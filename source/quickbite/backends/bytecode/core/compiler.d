@@ -313,6 +313,14 @@ private struct Compiler {
     private void compileStatement(Statement statement) {
         import std.conv: text;
 
+        // DMD's `scope(exit)`/`scope(success)` lowering (`Statement.scopeCode`)
+        // rewrites the original statement's slot in its enclosing
+        // `CompoundStatement` to `null`, moving its content into a
+        // `TryFinallyStatement` appended right after it; a null statement is
+        // that lowering's documented no-op placeholder, not an error.
+        if (statement is null)
+            return;
+
         if (auto scope_ = statement.isScopeStatement) {
             compileStatement(scope_.statement);
             return;
@@ -7337,15 +7345,17 @@ private struct Compiler {
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
         if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
-             returnTy != TY.Tfloat64 && returnTy != TY.Tvoid) ||
+             returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
+             returnTy != TY.Tpointer) ||
             call.arguments is null || call.arguments.length == 0)
             return null;
 
         const argumentArea = allocateNativeArgumentArea(call.arguments.length);
         auto argumentTypes = new Type[call.arguments.length];
         auto outParameterOffsets = new ushort[call.arguments.length];
-        // Every argument must be a scalar `int`/`long`, a string-literal
-        // `const(char)*`, or a `&local` out parameter; any other shape bails.
+        // Every argument must be a scalar `int`/`long`/`size_t`, a
+        // string-literal `const(char)*`, a `&local` out parameter, or a
+        // pointer local passed by value; any other shape bails.
         foreach (index; 0 .. call.arguments.length) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
@@ -7354,7 +7364,8 @@ private struct Compiler {
             outParameterOffsets[index] = noOutParameterOffset;
 
             const argumentTy = argument.type.toBasetype.ty;
-            if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64) {
+            if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64 ||
+                argumentTy == TY.Tuns64) {
                 emitCallArgument(slot, false, argument);
                 continue;
             }
@@ -7366,6 +7377,22 @@ private struct Compiler {
                     return null;
                 emitStringLiteralArgument(slot, string_);
                 continue;
+            }
+
+            // A pointer local passed by value (e.g. `free(ptr)`): distinct
+            // from the `&local` out-parameter shape below, which records a
+            // frame offset for writeback; this copies the local's own value
+            // (a native-memory address) into the argument slot.
+            if (argumentTy == TY.Tpointer) {
+                auto pointerVariable = argument.isVarExp;
+                auto pointerDeclaration = pointerVariable is null
+                    ? null
+                    : pointerVariable.var.isVarDeclaration;
+                if (pointerDeclaration !is null &&
+                    (pointerDeclaration in _pointerLocals) !is null) {
+                    emitCallArgument(slot, false, argument);
+                    continue;
+                }
             }
 
             // A `null` literal argument (e.g. `free(null)`) keeps its own
@@ -7445,8 +7472,12 @@ private struct Compiler {
         in ushort argumentArea,
         in ushort[] outParameterOffsets,
     ) {
-        const returnScalar =
-            scalarType(function_.type.toBasetype.nextOf.toBasetype);
+        import dmd.astenums: TY;
+
+        // `auto`, not `const`: `pointerElementScalar` below needs a mutable
+        // `Type` and DMD's `toBasetype`/`nextOf` are non-const methods.
+        auto returnType = function_.type.toBasetype.nextOf;
+        const returnScalar = scalarType(returnType.toBasetype);
         const destination = allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
         _program.nativeCalls ~=
@@ -7457,6 +7488,15 @@ private struct Compiler {
             argumentArea,
             destination,
         );
+        // A native-memory pointer return (e.g. `malloc`'s `void*`): mark the
+        // operand as a pointer holding a raw host address, matching every
+        // other pointer-valued operand's shape, so callers such as
+        // `compilePointerDeclaration` and pointer comparisons treat it as one.
+        if (returnType.toBasetype.ty == TY.Tpointer)
+            return new Operand(
+                destination, ScalarType.ulong_, false, true,
+                pointerElementScalar(returnType),
+            );
         return new Operand(destination, returnScalar);
     }
 

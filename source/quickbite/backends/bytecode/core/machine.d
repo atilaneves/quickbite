@@ -2654,8 +2654,8 @@ private final class BytecodeNativeMarshaller:
         const ty = type.toBasetype.ty;
         if (ty == TY.Tvoid)
             return direction == NativeMarshaller.Direction.fromNative;
-        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tfloat64 ||
-            ty == TY.Tpointer;
+        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tuns64 ||
+            ty == TY.Tfloat64 || ty == TY.Tpointer;
     }
 
     public bool canRepresentOutCell(Type pointedToType) {

@@ -1284,10 +1284,15 @@ execution). The current backlog for this track, in order:
    `TY.Tvoid`, `machine.d`'s `nativeResultSize` gained a `Tvoid` case, and
    `quickbite.ffi.callNative` (`callNativeImpl`) turned out to call
    `readResult` unconditionally even for a void-returning callee — not the
-   dead-code case this plan previously left unestablished. The remaining
-   `rt/cstdlib.d` rows (native `malloc`/`calloc`/`realloc` pointer returns
-   with native-memory identity; `div`/`ldiv` struct returns) remain
-   genuinely larger slices.
+   dead-code case this plan previously left unestablished.
+   `malloc.pointerRoundTrip` (a bare `void*` return, a `size_t` argument,
+   and a pointer local passed by value into `free`) turned out to be a
+   rung after all, not the larger slice this plan predicted — see the
+   entry below. What remains genuinely larger: `calloc`/`realloc`
+   fixtures that index through the returned pointer (`ptr[0] = ...`) or
+   pass a cast-converted pointer local (DMD wraps `ubyte*` -> `void*` in
+   a `CastExp` the narrow by-value argument shape does not match), and
+   `div`/`ldiv` struct returns.
 3. Slice 9, classes.
 4. Slice 11, prelude formatter execution — which re-earns the frozen
    `repl.d` display rows and deletes the interim display scaffolding
@@ -4676,3 +4681,143 @@ the long suite. Production diff for the whole branch vs `master`
 (`source/`) is 228 changed lines — over the 200-line cap, continued past
 it on explicit user direction rather than contorting the code to stay
 under it.
+
+`malloc.pointerRoundTrip` promoted to `BytecodeNewCore`, 2026-07-09:
+pre-approved `SystemLinker`-oracle-backed promotion of an existing
+`Interpreter`/`SystemLinker`/`LLVMJit` matrix row. Fixture: `auto ptr =
+malloc(8); assert(ptr !is null); free(ptr);` — a bare `void*` return, a
+`size_t` argument, and (new) a pointer local passed by value into a
+second native call.
+
+Consistency check first, before any production change: the negative
+`malloc.pointerReturn.nativeMemory` block (same file) still listed
+`BytecodeNewCore`. Its fixture differs in shape from the promoted one —
+`cast(ubyte*) malloc(8)`, a mid-block `scope(exit) free(ptr)`, and
+indexed writes/reads through the returned pointer (`ptr[0] = 0x11`) —
+so it was read, not assumed, to still exercise a genuinely different
+(and still unsupported) path.
+
+Red diagnostics, in the order hit:
+
+    object.Exception: `malloc` cannot be interpreted at compile time,
+    because it has no available source code
+
+Two independent compile-time gate gaps, both confirmed by reverting each
+production change individually and re-running the focused test:
+`tryCompileNativeCall`'s return-type gate (`compiler.d`) excluded
+`TY.Tpointer`, and its scalar-argument whitelist excluded `TY.Tuns64` —
+the literal `8` marshals as `size_t` for `malloc`'s parameter, not
+`int`/`long`. Widened both.
+
+    object.Exception: `free` cannot be interpreted at compile time,
+    because it has no available source code
+
+With `malloc`'s own gates open, `free(ptr)` exposed a fifth argument
+shape: `ptr` is a pointer *local* passed by value, distinct from the
+existing `&local` shape (which records an out-parameter frame offset,
+never reading the slot itself). Added a shape matching a bare `VarExp`
+of a declaration already tracked in `_pointerLocals`, reusing the
+existing `emitCallArgument` fallback (`compileExpression` + copy) to
+load the local's own 8-byte value — no new codegen needed, since a
+pointer local's `VarExp` operand already yields its frame offset holding
+the raw pointer value, established by reading `compileExpression`'s
+existing `_pointerLocals` case rather than assumed.
+
+    object.Exception: Unsupported pointer initializer in bytecode core:
+    ptr
+
+With both call sites compiling, `auto ptr = malloc(8);` still failed:
+`emitNativeCall` returned a plain scalar `Operand` for every native call,
+never setting `isPointer`/`pointerElement`, so
+`compilePointerDeclaration`'s `if (!pointer.isPointer) throw` rejected a
+native call's return value even though it now held a real pointer
+value. Fixed: `emitNativeCall` marks the returned `Operand` as a pointer
+(matching every other pointer-valued operand's shape) whenever the
+callee's return type is `TY.Tpointer`, using the existing
+`pointerElementScalar` helper for the stride metadata.
+
+    object.Exception: `malloc` cannot be interpreted at compile time,
+    because it has no available source code
+
+A fourth, runtime-side gap surfaced once all three compile-time gates
+were open: `BytecodeNativeMarshaller.canRepresent` (`machine.d`) — which
+`quickbite.ffi.core` consults before running the call — did not accept
+`TY.Tuns64`, so the compiled call still failed at VM execution time with
+the identical no-available-source message (thrown from the `nativeCall`
+opcode handler, not `tryCompileNativeCall`). Widened narrowly to admit
+`TY.Tuns64` in both directions; `nativeResultSize` and libffi's own
+`ffiTypeFor` already had `Tuns64`/`Tpointer` cases (established by
+reading `quickbite/ffi/core.d`, not touched).
+
+With all four gaps closed, `malloc.pointerRoundTrip.BytecodeNewCore`
+went green. Confirming the returned pointer is a real host address, not
+a VM-heap offset, needed no change: the bytecode core's pointer operand
+representation is already a raw `size_t` value regardless of origin, so
+storing a genuine `malloc` address in a frame slot and comparing it
+against a zeroed slot (`assert(ptr !is null)`, an existing generic
+pointer-identity path) worked unmodified.
+
+Rerunning `malloc.pointerReturn.nativeMemory.BytecodeNewCore` after the
+above (the consistency check) crashed the whole test binary — `SIGSEGV`,
+not a clean exception. Root cause (found via `gdb`, not guessed):
+`malloc`/`free` now compile far enough to reach `scope(exit) free(ptr);`
+followed by more statements. DMD's `scope(exit)` lowering
+(`Statement.scopeCode` in `dmd/statementsem.d`) rewrites the *original*
+scope-exit statement's slot in its enclosing `CompoundStatement` to
+`null`, moving its content into a `TryFinallyStatement` appended right
+after — a documented no-op placeholder, not an error. No BytecodeNewCore
+fixture had ever reached a mid-block `scope(exit)` before (every such
+fixture failed earlier, at the native-call gate), so `compileStatement`'s
+unconditional `compileStatement(child)` over a `CompoundStatement`'s
+children had never been handed that placeholder. Fixed with a one-line
+null guard at the top of `compileStatement`, matching the convention
+every other caller of it already follows (`tryFinally._body`/
+`finalbody` are null-checked before the call). This is a general
+statement-compilation fix, not a native-memory one — confirmed by
+`ct/arrays` and `ct/expressions`, whose `BytecodeNewCore` rows are
+unaffected.
+
+With the crash fixed, `malloc.pointerReturn.nativeMemory.BytecodeNewCore`
+still fails, but now on a different, later diagnostic: `` `free` cannot
+be interpreted... `` instead of `` `malloc` ``. Its `free(ptr)` argument
+is `ptr: ubyte*` implicitly converted to `free`'s `void*` parameter; DMD
+wraps that conversion in a `CastExp`, which the new by-value argument
+shape does not match (it matches only a bare `VarExp`) — correctly,
+since no approved test needs the cast-wrapped shape, and matching it
+would let compilation reach the fixture's indexed writes through native
+memory (`ptr[0] = 0x11`), an unimplemented and unverified shape. The
+pinned `` `malloc` `` diagnostic is therefore false for `BytecodeNewCore`
+now (malloc genuinely has available source); narrowed that block's
+`AliasSeq` from `Bytecode, BytecodeNewCore, IR` to `Bytecode, IR`, per
+the `free.null.voidReturn` precedent, with a comment explaining why.
+
+The same shape collision — a `void*`/`size_t` return-and-argument shape
+identical to `malloc`/`free`'s — invalidated two more negative blocks
+that happen to share it: `calloc(size_t, size_t) -> void*` and
+`realloc(void*, size_t) -> void*`. `calloc.multiArg.zeroedNativeMemory`
+and `realloc.null.pointerArgPointerReturn` (one shared `AliasSeq` block)
+and `realloc.grow.preservesNativeMemory` (a separate block whose fixture
+leads with a `cast(ubyte*) malloc(...)` leaf) were all confirmed, by
+running each focused test, to still fail honestly — just past their
+pinned function name, on the same `free`/`realloc` `CastExp`-argument
+gap. Narrowed both blocks' `AliasSeq` the same way. `div`/`ldiv`'s
+struct-return negative block was confirmed unaffected (struct returns
+stay excluded from the return-type gate) by running it unchanged.
+
+No production code changed to chase any of the four negative blocks
+further; native-memory *indexing* (reading/writing through a returned
+pointer, e.g. `ptr[0] = ...`), `calloc`/`realloc`'s own native-call
+support, cast-converted pointer arguments, and any GC/ownership model
+for VM-tracked native allocations all remain unimplemented — genuinely
+larger slices than this rung, matching the corrected forward-looking
+bullet above.
+
+Verification: `ninja bin/ut`; the full `rt/cstdlib.d` module (87 tests, 0
+failed); the `BytecodeNewCore` rows of `ct/arrays` (289 tests, 0 failed)
+and `ct/expressions` (297 tests, 0 failed, 5 failing as expected) as a
+regression check on the shared `compileStatement`/native-call path.
+`bin/ut --random` was not run; the orchestrator runs the long suite.
+Production diff for this rung (`source/`) is 56 changed lines;
+for the whole branch vs `master` (`source/`), 276 changed lines — over
+the 200-line cap, continued past it on explicit user direction rather
+than contorting the code to stay under it.
