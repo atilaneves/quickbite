@@ -1373,8 +1373,6 @@ optional, and each lands under the §8 approval rule. Classification:
 ```text
 ratchet fixtures (green today, pin oracle behaviour, protect the shim->real
 migration — a fixture asserts behaviour, so it survives the shim's deletion):
-- lazyForwardedAssertionThunkRunsExpression        (lazy thunks, surface)
-- decodeLazyForwardedRangeErrorSeesReaderState     (lazy state, surface)
 - classReferencePassedByValueMutatesObject         (shim-backed, behaviour
                                                     correct for this shape)
 - appenderClearKeepsPointerSliceBackingAllocation  (pointerSlice allocation
@@ -1401,6 +1399,66 @@ they document what the shims get wrong and what native layout must re-earn):
 - assumeSafeAppend/capacity through an interior pointer (getUsed offset
   defect)
 ```
+
+**Landed (2026-07-09).** `lazyForwardedAssertionThunkRunsExpression`
+(ct/cerealed.d) reconstructed red-first per the procedure above: applied
+alone on the parent of fix commit `7f09bd67` (parent `ee3594a9`, "interpreter:
+handle GC array capacity hooks"), it fails on `Interpreter` with the exact
+diagnostic `Unsupported eval call.` and passes on `SystemLinker`. Carried
+forward onto this branch (after `7f09bd67`), it is green on
+`Ctfe, Interpreter, SystemLinker, LLVMJit`. `BytecodeNewCore` is omitted:
+lazy parameters are not yet implemented there (`Unsupported call in bytecode
+core: expression()`).
+
+**Blocked, not landed (2026-07-09).**
+`decodeLazyForwardedRangeErrorSeesReaderState` was reconstructed red-first
+as drafted: applied alone on the parent of fix commit `bf9d6836` (parent
+`833c560c`, "interpreter: preserve pointer slice allocations" — the tip of
+the `7f09bd67` lazy-thunk work), it fails on `Interpreter` with
+`false != true` (the `RangeError` expectation does not fire) and passes on
+`SystemLinker`, matching the "lazy-state wrong answer" class the handoff
+predicted.
+
+Carrying it forward past `bf9d6836` onto this branch's HEAD does **not**
+turn it green: `Interpreter` still fails, now with
+`index [0] is out of bounds for array of length 0`. Minimal-repro isolation
+(scratch fixtures, not committed) narrowed the cause to something well
+outside forwarding or UFCS: any dynamic-array **local** — no struct, no
+member call, no forwarding — read from inside a lazy argument's generated
+DMD wrapper comes back as a zero-length array, e.g.
+
+```d
+void runIt(lazy ubyte expression) { expression; }
+
+unittest {
+    ubyte[] bytes = [1, 2, 3];
+    runIt(bytes[1]);  // green on SystemLinker; Interpreter: index [1] is
+                       // out of bounds for array of length 0
+}
+```
+
+A plain `int` local captured the same way (`scratchLazyDebugC`) round-trips
+correctly, and a struct's scalar field (`scratchLazyDebugD`, a `Counter`)
+captures its initial value correctly but loses the mutation on write-back
+(`10 != 11`) — a second, narrower defect. Root suspect for the array case:
+`bindLazyFunctionParameter`'s captured-locals snapshot
+(`lazyArgumentLocals[parameter] = locals.dup`) is a plain
+`Value[VarDeclaration]` dup and does not carry the parallel array-tracking
+state (`arrayAllocations`, `arrayAllocationAliases`, etc.) that a dynamic
+array's backing storage lives in outside the `Value` itself — a
+representation-ceiling defect per §8's triage rule, not something
+`bf9d6836` was scoped to fix. `bf9d6836` fixed wrapper *invocation*; it did
+not fix array identity across that invocation's captured environment, nor
+mutation write-back out of it.
+
+This fixture is **not landed**. It cannot honestly be pinned green (it would
+misrepresent fixed behaviour), and per the triage rule it is not simply an
+"omit Interpreter" gap fixture either, since its own name commits to testing
+state visibility across forwarded lazy calls — diluting it to something that
+passes would stop exercising the construct it names. It stays owed pending a
+decision on scope: either fix the array-capture/write-back gap first (two
+distinct defects, above) and then land this fixture, or split it into a
+narrower fixture that matches whatever slice of this is fixed next.
 
 ## 10. Done
 

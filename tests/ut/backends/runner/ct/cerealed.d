@@ -1197,3 +1197,34 @@ static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, L
         });
     }
 }
+
+// BytecodeNewCore omitted: lazy parameters are not yet implemented there
+// ("Unsupported call in bytecode core: expression()").
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("lazyForwardedAssertionThunkRunsExpression." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool threw(lazy int expression) {
+                try {
+                    expression;
+                    return false;
+                } catch (Exception) {
+                    return true;
+                }
+            }
+
+            void shouldThrow(lazy int expression) {
+                assert(threw(expression));
+            }
+
+            int fail() {
+                throw new Exception("expected");
+            }
+
+            unittest {
+                shouldThrow(fail);
+            }
+        });
+    }
+}
