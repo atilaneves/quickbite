@@ -354,3 +354,19 @@ unittest {
     foreach (byte_; array.block.bytes[liveBytes .. $])
         byte_.should == 0;
 }
+
+
+@("NativeArray.reserve.overflowingLengthTimesStrideThrows")
+unittest {
+    // An 8-byte element type (`tint64`) and 3 elements means 24 live bytes.
+    // This `n` wraps `n * stride` to exactly 24 -- the same live byte
+    // count -- so a raw (unchecked) multiply would let `reserve` silently
+    // "succeed" with a block no bigger than the one it already has, while
+    // the caller believes it reserved room for size_t.max/2 elements.
+    // `reserve` reuses the same overflow-checked `byteLength` helper as
+    // `allocate`, so it throws instead.
+    auto array = NativeArray.allocate(Type.tint64, 3);
+    const n = size_t.max / 2 + 4;
+
+    array.reserve(n).shouldThrow!Exception;
+}
