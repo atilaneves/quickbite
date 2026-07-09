@@ -51,11 +51,111 @@ public bool normalizeDuplicateUndefinedGlobals(ubyte[] objectBytes) {
     return changed;
 }
 
-public bool normalizeDuplicateUndefinedGlobalsInFile(in string path) {
+// dmd gives every object its own `DW.ref.*` unwind indirection cell as a weak,
+// hidden object, and references it from `.eh_frame` with a PC-relative 32-bit
+// fixup. JITLink admits the first object's copy into the JITDylib and
+// externalizes every later object's duplicate weak definition, so a later
+// graph's fixup targets the first graph's slab; when the two slabs land more
+// than 2 GiB apart the Delta32 fixup is out of range and the object is
+// rejected. Resolving object B's reference to object A's hidden weak definition
+// is legal ELF — `STV_HIDDEN` bounds visibility at the linked component, not
+// at the object — which is why the same dedup is right for hidden COMDAT
+// template bodies. What makes it wrong here is only the distance: `ld` resolves
+// it inside one image, JITLink across two mmap'd slabs. Repointing each
+// reference at the defining section's local SECTION symbol is safe because
+// every object's cell is content-identical (one 64-bit relocation to the same
+// personality symbol), so the local copy holds the same value at a reachable
+// address. The symbol's value moves into the addend, since the addend now
+// measures from the section start rather than from the symbol.
+public bool localizeUnwindCellReferences(ubyte[] objectBytes) @safe {
+    auto elf = Elf64(objectBytes);
+    const symtabIndex = elf.singleSectionOfType(SectionType.symtab);
+    const symtab = elf.section(symtabIndex);
+    const stringTable = elf.sectionBytes(symtab.link);
+    const symbols = elf.symbols(symtab);
+
+    uint[uint] sectionSymbolFor;
+    foreach (index, symbol; symbols)
+        if (symbol.type == SymbolType.section)
+            sectionSymbolFor[symbol.sectionIndex] = cast(uint) index;
+
+    // What a relocation naming this symbol must say instead: the local SECTION
+    // symbol, and the value the symbol used to contribute to the addend.
+    static struct Localized {
+        uint sectionSymbol;
+        ulong value;
+    }
+
+    // The name settles it: dmd emits these cells hidden, but a non-hidden one
+    // would be externalized across graphs just the same, and repointing is
+    // address-preserving either way, so visibility is not worth a branch.
+    Localized[uint] localizedFor;
+    foreach (index, symbol; symbols) {
+        if (symbol.sectionIndex == SectionIndex.undefined)
+            continue;
+        if (!isUnwindIndirectionCell(symbolName(stringTable, symbol.name)))
+            continue;
+        if (auto sectionSymbol = symbol.sectionIndex in sectionSymbolFor)
+            localizedFor[cast(uint) index] = Localized(
+                *sectionSymbol,
+                symbol.value,
+            );
+    }
+
+    if (localizedFor.length == 0)
+        return false;
+
+    bool changed;
+    foreach (section; elf.sections) {
+        if (section.type != SectionType.rela || section.link != symtabIndex)
+            continue;
+        foreach (offset; elf.relocationInfoOffsets(section)) {
+            const info = elf.readU64(offset);
+            // Not `const`: an associative-array `in` takes its key as an
+            // lvalue, and a const key there is deprecated on the way to
+            // becoming `@system`, which this function is not.
+            auto symbolIndex = cast(uint)(info >> 32);
+            const localized = symbolIndex in localizedFor;
+            if (localized is null)
+                continue;
+            // The relocation type lives in the low half of r_info and must
+            // survive: a zeroed type is R_X86_64_NONE, i.e. a fixup silently
+            // never applied.
+            elf.writeU64(
+                offset,
+                (cast(ulong) localized.sectionSymbol << 32)
+                    | (info & uint.max),
+            );
+            const addendOffset = offset + 8;
+            elf.writeU64(
+                addendOffset,
+                elf.readU64(addendOffset) + localized.value,
+            );
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+// The only definitions dmd both emits per-object and references PC-relatively.
+// Widening this to every hidden symbol would suppress the legitimate
+// cross-object dedup of hidden COMDAT template bodies, whose copies are not
+// interchangeable the way these content-identical cells are.
+private bool isUnwindIndirectionCell(in string name) @safe @nogc nothrow pure {
+    enum prefix = "DW.ref.";
+    return name.length > prefix.length && name[0 .. prefix.length] == prefix;
+}
+
+// Every rewrite the object needs before JITLink sees it, because JITLink is
+// strict where `ld` is lenient.
+public bool normalizeObjectFile(in string path) {
     import std.file: read, write;
 
     auto objectBytes = cast(ubyte[]) read(path);
-    if (!normalizeDuplicateUndefinedGlobals(objectBytes))
+    const duplicatesCoalesced = normalizeDuplicateUndefinedGlobals(objectBytes);
+    const cellsLocalized = localizeUnwindCellReferences(objectBytes);
+    if (!duplicatesCoalesced && !cellsLocalized)
         return false;
     write(path, objectBytes);
     return true;
@@ -76,6 +176,10 @@ private enum SymbolBinding: ubyte {
     weak = 2,
 }
 
+private enum SymbolType: ubyte {
+    section = 3,
+}
+
 private struct SectionHeader {
     SectionType type;
     ulong offset;
@@ -88,9 +192,14 @@ private struct Symbol {
     uint name;
     ubyte info;
     SectionIndex sectionIndex;
+    ulong value;
 
     @property SymbolBinding binding() const @safe @nogc nothrow pure {
         return cast(SymbolBinding)(info >> 4);
+    }
+
+    @property SymbolType type() const @safe @nogc nothrow pure {
+        return cast(SymbolType)(info & 0xf);
     }
 }
 
@@ -151,6 +260,7 @@ private struct Elf64 {
                 readU32(offset),
                 readU8(offset + 4),
                 cast(SectionIndex) readU16(offset + 6),
+                readU64(offset + 8),
             );
         }
         return values;

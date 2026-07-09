@@ -256,11 +256,11 @@ private void addObjectFile(
         LLVMCreateMemoryBufferWithContentsOfFile,
         LLVMMemoryBufferRef,
         LLVMOrcLLJITAddObjectFile;
-    import orc.elf: normalizeDuplicateUndefinedGlobalsInFile;
+    import orc.elf: normalizeObjectFile;
     import std.conv: text;
     import std.string: fromStringz, toStringz;
 
-    normalizeDuplicateUndefinedGlobalsInFile(objPath);
+    normalizeObjectFile(objPath);
 
     LLVMMemoryBufferRef buffer;
     char* message;
