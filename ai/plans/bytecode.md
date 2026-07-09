@@ -327,7 +327,7 @@ Before creating or handing off a PR, check the PR diff against `master`.
 Production bytecode changes must be paired with relevant `tests/` changes,
 and the production-code diff should stay below 200 changed lines. If the diff
 is too small and still under that limit, continue with another block from
-this track's backlog (see "Current Next Step") — not with `repl.d` display
+this track's backlog (see "Post-Flip Backlog") — not with `repl.d` display
 promotion — instead of opening a tiny PR.
 
 ### Slice roadmap
@@ -336,10 +336,9 @@ existing discipline: red test (or an already-green matrix behaviour moved to
 the new core), minimal implementation, green suite, benchmark checkpoint.
 
 **Superseded as a work order (2026-07-09).** The slices below record the
-design, not what to do next. Every remaining slice is deferred behind
-deleting the old core — see "Current Next Step". Only the three
-null-class-reference diagnostics of slice 9 and the `pow` intrinsic of
-slice 1's math surface are in scope before the flip.
+design, not what to do next. The pre-flip diagnostic and `pow` intrinsic
+items were completed before the default flip; every remaining slice now lives
+in "Post-Flip Backlog".
 
 1. Scalar core: typed frames, specialised arithmetic/comparison opcodes,
    locals, calls, returns, assert diagnostics, and minimal scalar `Value`
@@ -385,10 +384,11 @@ slice 1's math surface are in scope before the flip.
     building, and whatever Phobos surface the formatter's body demands.
     Entry criteria (sharpened 2026-07-07): at minimum, associative arrays
     (slice 7) and the Phobos string-building surface the formatter's body
-    uses must execute on the new core — i.e. Current Next Step backlog
-    item 1 is closed. Starting before items 2-3 (FFI bridge, classes) is a
+    uses must execute on the new core — i.e. the post-flip associative-array
+    backlog item is closed. Starting before the FFI bridge and classes is a
     judgment call on what the formatter body actually demands; starting
-    before item 1 is not. Exit criteria: `BytecodeNewCore` overrides
+    before associative arrays is not. Exit criteria: `BytecodeNewCore`
+    overrides
     `supportsReplPreludeFormatter()` to `true`, the frozen `repl.d` display
     rows are re-earned through the formatter, and the deletion inventory
     (Core Architecture) is deleted in the same slice. This is the only
@@ -1187,12 +1187,15 @@ dual-mode model and the `ExecutionMode` enum have been removed
 (`ai/plans/single-oracle.md`); the VM targets full D against the
 `SystemLinker` oracle.
 
-## Current Next Step: flip the default, delete the old core
+## Completed Default Flip
 
 Re-scoped 2026-07-09.
 
-**The single goal is deleting the old core. Do not start any other bytecode
-work before the flip lands.**
+Completed 2026-07-09.
+
+**Historical status:** this section records the pre-flip decision and work
+order that led to deleting the old core. It is no longer the current next
+step; remaining live work is tracked in "Post-Flip Backlog" below.
 
 The overriding goal of this project is unittest latency (`AGENTS.md`). The
 old core buys none of it and costs a second engine to keep green. The
@@ -1249,39 +1252,38 @@ it on native-layout frames means per-slot initialization state and a checked
 load on the hot path. Removed slice 2 was exactly that machinery, and it was
 removed with the CTFE-replacement goal.
 
-**Action: narrow the block to `AliasSeq!(Ctfe)`**, with a comment naming the
-divergence, per `single-oracle.md`'s explicit rule for divergent rows. The
-fixture body does not change. This is a test change and needs owner approval
-before the edit. Do **not** implement uninitialized-read detection in the
-new core to satisfy it.
+**Completed action:** the block was narrowed to `AliasSeq!(Ctfe)`, with a
+comment naming the divergence, per `single-oracle.md`'s explicit rule for
+divergent rows. The fixture body did not change. No uninitialized-read
+detection was added to the new core to satisfy it.
 
 Owner decision (2026-07-09): quickbite's value proposition is speed, not UB
 detection. If a definite-assignment lint is ever wanted it is a compile-time
 check applied uniformly across every backend, with its own plan entry — not
 runtime tagging in one engine, and not a reason to delay the flip.
 
-### Work order
+### Completed Work Order
 
 1. Null-class-reference diagnostics on the new core (3 rows).
 2. `pow` float intrinsic on the new core (1 row).
-3. Narrow the `= void` row to `AliasSeq!(Ctfe)` (owner approval required).
-4. **The flip, one change**: `Bytecode`'s default constructor selects
-   `Engine.typedFrames`; delete the `BytecodeNewCore` handle class; delete
-   the old core (`backends/bytecode/{compiler,vm,builtins,instructions}.d`);
-   leave `malloc.pointerReturn.nativeMemory` unpromoted while preserving the
-   three promoted `rt/cstdlib.d` native-memory rows; rename the
-   `.BytecodeNewCore` matrix rows to `.Bytecode`. The legacy-core entry in
-   the Deletion Inventory (enum member-name and struct-literal display in
-   `bytecode/compiler.d`) dies here too.
+3. Narrow the `= void` row to `AliasSeq!(Ctfe)`.
+4. **The flip, one change**: `Bytecode`'s default constructor selected
+   `Engine.typedFrames`; the `BytecodeNewCore` handle class was deleted; the
+   old core (`backends/bytecode/{compiler,vm,builtins,instructions}.d`) was
+   deleted; `malloc.pointerReturn.nativeMemory` stayed unpromoted while the
+   promoted `rt/cstdlib.d` native-memory rows stayed covered; the
+   `.BytecodeNewCore` matrix rows were renamed to `.Bytecode`. The
+   legacy-core entry in the Deletion Inventory (enum member-name and
+   struct-literal display in `bytecode/compiler.d`) died here too.
 
-Nothing else gates the flip. The old core has **no production consumers**:
-outside its own package, only the separately-doomed `executors/` tree names
-`Bytecode`, and `Bytecode()` is constructed only by the test matrix.
+Nothing else gated the flip. The old core had **no production consumers**:
+outside its own package, only the separately-doomed `executors/` tree named
+`Bytecode`, and `Bytecode()` was constructed only by the test matrix.
 
-### Explicitly deferred until after the flip
+### Moved To Post-Flip Backlog
 
-None of these are behaviours the old core has, so none of them shortens the
-path to deleting it. Do not start them first:
+None of these were behaviours the old core had, so none of them shortened the
+path to deleting it. They now remain in the post-flip backlog:
 
 - The rest of slice 8 (indexing through a returned pointer and `div`/`ldiv`
   struct returns). These are *refusals* on the old core.
@@ -1298,9 +1300,9 @@ production consumers, the blast radius is tests.
 
 ## Post-Flip Backlog
 
-Everything below is deferred until the old core is deleted (see "Current
-Next Step"). It records what the new core has already re-earned, and what
-comes after the flip. It is not a work order for the next agent.
+Everything below was deferred until the old core was deleted. It records what
+the new core has already re-earned, and what comes after the flip. It is the
+live backlog for future bytecode work.
 
 `eval.d` (module order 1), `rt/cstdlib.d` (2), `integrals.d` (3),
 `logic.d` (4), `results.d` (5), `diagnostics.d` (6), `math.d` (7),
@@ -4418,7 +4420,7 @@ are re-earned in slice 11 by executing the prelude formatter, not by
 extending `ResultType`/`reify.d` display metadata. The non-display failures
 from the sweep (`moduleLevelVariablesAreVisibleToFunctions`, Phobos
 import/range/`ref`-argument execution) are this track's language-feature
-backlog — see "Current Next Step".
+backlog — see "Post-Flip Backlog".
 
 Module-level scalar assignment first rung, 2026-07-07: the new core now
 allocates VM-owned mutable module data for scalar `VarDeclaration`s, emits
