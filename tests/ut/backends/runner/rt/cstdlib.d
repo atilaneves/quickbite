@@ -298,10 +298,9 @@ enum reallocNullSource = q{
     }
 };
 
-// Bytecode is omitted: `calloc`/`realloc` share malloc's promoted shape (two
-// `size_t`/`void*` args, a `void*` return), so both now compile past the leaf
-// this block pins - they fail later instead, honestly, on the same
-// `free(ptr)` CastExp-argument gap as malloc.pointerReturn above.
+// IR is still pinned at the native leaf. Bytecode has real rows below:
+// `calloc` and `realloc(null, size)` now cross the same libc bridge shape as
+// `malloc` (`size_t`/`void*` args, `void*` return) and free the result.
 static foreach (backend; AliasSeq!(IR)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
@@ -367,10 +366,8 @@ enum reallocGrowSource = q{
     }
 };
 
-// IR fails at the first malloc leaf; the Interpreter reaches realloc.
-// Bytecode is omitted: malloc's promoted shape makes the leaf this block
-// pins compile now; it fails later instead, honestly, on the same
-// `free(ptr)`/`realloc(ptr, ...)` CastExp-argument gap as the blocks above.
+// IR fails at the first malloc leaf; the Interpreter and Bytecode reach
+// `realloc`, and both have real rows below.
 static foreach (backend; AliasSeq!(IR)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
