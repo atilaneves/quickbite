@@ -633,10 +633,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// SystemLinker deliberately excluded: reading a void-initialized scalar is a
-// CTFE-only diagnostic; compiled code just reads whatever is in the slot
-// (ai/plans/dmd-backend.md, slice 3).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+// Ctfe diverges from SystemLinker/compiled D here: reading a
+// void-initialized scalar is a CTFE-only diagnostic, while compiled code just
+// reads whatever is in the slot.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
     unittest {
         const message = collectExceptionMsg!Exception(

@@ -5001,3 +5001,10 @@ reports a diagnostic and preserves session state." Re-earning that
 coverage on the new core is owed future work, using a cell the new core
 still genuinely cannot execute — e.g. a `div`/`ldiv` struct return, per
 the still-deferred rows above — rather than `malloc`.
+
+`voidInitializedScalarReadReportsUninitialized` narrowed to `Ctfe` only,
+2026-07-09: completed work-order item 3. The fixture body and CTFE
+diagnostic assertion are unchanged; the row now characterizes the
+`Ctfe`/`SystemLinker` compiled-D divergence instead of requiring
+`Interpreter`, `Bytecode`, or `IR` to emulate CTFE uninitialized-read
+tracking. No `BytecodeNewCore` uninitialized-read detection was added.
