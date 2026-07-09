@@ -1193,12 +1193,30 @@ dual-mode model and the `ExecutionMode` enum have been removed
 `expressions.d` (12), and `cerealed.d` (13) are now complete or explicitly
 reconciled on the new core (see Rewrite Coverage State).
 
-`rt/cstdlib.d` deliberately promotes only the Bytecode/IR no-source
-diagnostic cases. Runtime libc behaviours such as `atoi`, `strtol`,
-`malloc.pointerRoundTrip`, `calloc`, `realloc`, `div`/`ldiv`, `abs`/`labs`,
-`ctype`, `atof`, and `strtod` stay on `Interpreter`, `SystemLinker`, and
-`LLVMJit` until the new core has a real outbound host FFI bridge. Promoting
-those value cases now would assert native-call support that does not exist.
+`rt/cstdlib.d` has promoted `atoi.value`, `strtol.endptr`,
+`free.null.voidReturn`, `malloc.pointerRoundTrip`, `abs.scalar`,
+`labs.widerScalar`, `ctype.toupperTolower`, `atof.floatReturn`, and
+`strtod.floatReturn.endptr` to `BytecodeNewCore` (across #383 and this
+branch) now that the outbound native libc-call bridge covers arity-N
+arguments, out-parameter write-back, void returns, and pointer returns.
+Still deferred on `BytecodeNewCore`: `div.structReturn` and
+`ldiv.structReturn.longArgs` keep their own pinned no-source-diagnostic
+refusal row on `BytecodeNewCore` itself (struct returns stay excluded from
+the return-type gate). `calloc.multiArg.zeroedNativeMemory`,
+`realloc.null.pointerArgPointerReturn`,
+`realloc.grow.preservesNativeMemory`, and
+`malloc.pointerReturn.nativeMemory` have no `BytecodeNewCore` row at all —
+`BytecodeNewCore` is excluded from those blocks' `AliasSeq` (pinned as
+refusals on `Bytecode`/`IR` only) because they share `malloc`/`free`'s
+promoted `void*`/`size_t` shape and would compile past the pinned leaf
+without actually working: `malloc.pointerReturn.nativeMemory` indexes
+through the returned pointer (`ptr[0] = ...`) rather than just
+round-tripping it, and all four still fail honestly on a
+`CastExp`-wrapped pointer argument to `free`/`realloc`. These value rows
+stay on `Interpreter`, `SystemLinker`, and `LLVMJit` until `calloc`/
+`realloc` get their own native-call support, cast-converted pointer
+arguments are handled, and a GC/ownership model exists for VM-tracked
+native allocations.
 
 The next concrete module candidate per
 `ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
@@ -4824,3 +4842,23 @@ Production diff for this rung (`source/`) is 56 changed lines;
 for the whole branch vs `master` (`source/`), 276 changed lines — over
 the 200-line cap, continued past it on explicit user direction rather
 than contorting the code to stay under it.
+
+## Coverage loss: runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState
+
+The full `bin/ut --random` suite (not the focused per-rung runs above)
+caught a regression this branch's `malloc.pointerRoundTrip` promotion
+introduced: `repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState`
+in `tests/ut/bin/repl.d` submits `auto ptr = malloc(42);` and asserts it
+throws the no-available-source diagnostic. Once `malloc` compiled and ran
+natively on `BytecodeNewCore`, that cell stopped throwing, so the pinned
+refusal was false. Per the omit-don't-pin convention already applied four
+times to `rt/cstdlib.d`'s negative blocks in this branch, that block's
+`AliasSeq` was narrowed from `Ctfe, BytecodeNewCore` to `Ctfe`, leaving the
+fixture body and expected message untouched — `malloc` is still genuinely
+refused on `Ctfe`.
+
+Consequence: no `BytecodeNewCore` row currently covers "a failed REPL cell
+reports a diagnostic and preserves session state." Re-earning that
+coverage on the new core is owed future work, using a cell the new core
+still genuinely cannot execute — e.g. a `div`/`ldiv` struct return, per
+the still-deferred rows above — rather than `malloc`.
