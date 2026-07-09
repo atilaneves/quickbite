@@ -1461,6 +1461,17 @@ runMemcpyCall (impl.d, pre-#386)      same category; already         same as gc_
                                       intrinsics-layer candidate
 ```
 
+Not representation debt but known-defective, same guard commit
+(`c7c78c69`): `tryInterpreterBuiltin`'s bare-identifier `signbit` fallback
+(`interception_guard.d:199-206`) matches on the identifier `signbit` alone,
+with no module check, so a user or library function literally named
+`signbit` would be silently intercepted and given
+`std.math.traits.signbit`'s behaviour instead of its own. This is a
+language-surface bug per §8's triage rule — fixable at the root by adding a
+module check, not representation debt deferred to `value.md` — surfaced and
+documented by the guard's own commit but deliberately not fixed there (that
+commit's remit was enforcement, not behaviour change).
+
 **Resolved (2026-07-09, follow-up session).** The `nativeExceptionRoot` defect
 noted here (classifying `Error` vs `Exception` by name prefix
 (`core.exception.*`/`object.*` + `Error` suffix), and fabricating a type-name
@@ -1572,12 +1583,15 @@ lazy parameters are not yet implemented there (`Unsupported call in bytecode
 core: expression()`).
 
 **Resolved (2026-07-09, follow-up session).** The captured-locals snapshot
-defect above was reproduced and fixed. Red-first evidence, reconfirmed on
-this branch: applying `decodeLazyForwardedRangeErrorSeesReaderState` alone
-at `833c560c` (parent of fix commit `bf9d6836`) still fails on `Interpreter`
-with `false != true` and passes on `SystemLinker`, as previously recorded.
-The minimal repro from the previous handoff was re-run against this
-branch's pre-fix `HEAD` (`aee073a5`) and fails exactly as described:
+defect above was reproduced and fixed. Red-first evidence, reproved directly
+on this branch: applying `decodeLazyForwardedRangeErrorSeesReaderState`
+alone at this branch's pre-fix `aee073a5` (parent of the fix commit
+`674e76a2` that actually makes it green here) fails on `Interpreter` with
+`false != true` and passes on `SystemLinker`. This matches the `#386`-era
+history recorded against `833c560c` (parent of fix commit `bf9d6836`), kept
+here as context rather than as the proof, since that lineage predates this
+branch. The minimal repro from the previous handoff was independently
+re-run against `aee073a5` and fails exactly as described:
 
 ```d
 void runIt(lazy ubyte expression) { expression; }

@@ -44,12 +44,20 @@ public bool isLegalInterception(
 ) {
     import quickbite.frontend.dmd.functions: hasNoAvailableSource;
 
+    // Ordered cheapest-first so `||`'s short-circuiting skips the expensive
+    // disjuncts whenever a cheaper one already decides the outcome:
+    // `hasNoAvailableSource` is an `is null` check, `isExemptInterception` is
+    // a handful of string comparisons against a pretty-printed name, and
+    // `bodyContainsAsm` walks the callee's entire statement tree. The common
+    // case -- a body-ful, exempt shim like `emplaceRef` or the AA hooks --
+    // would otherwise pay for a full-body walk just to fall through to the
+    // name check that was going to accept it anyway.
     return
         function_ !is null &&
         (
             hasNoAvailableSource(function_) ||
-            bodyContainsAsm(function_) ||
-            isExemptInterception(function_)
+            isExemptInterception(function_) ||
+            bodyContainsAsm(function_)
         );
 }
 
