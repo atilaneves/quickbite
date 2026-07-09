@@ -54,6 +54,9 @@ private enum LoopControl {
     continue_,
 }
 
+private enum nativeExceptionObjectPointerField =
+    "__quickbiteNativeThrowableObjectPointer";
+
 private struct ArrayElementAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t index;
@@ -434,7 +437,7 @@ private struct Walker {
         if (catch_.var is null)
             return;
 
-        locals[catch_.var] = object;
+        locals[catch_.var] = nativeExceptionCatchObject(catch_, object);
         uninitializedLocals.remove(catch_.var);
     }
 
@@ -468,6 +471,7 @@ private struct Walker {
         auto object = nativeExceptionBaseObject(
             exception.msg,
             exception.className,
+            exception.nativeThrowableObjectPointer,
         );
         if (exception.chainedNext !is null)
             object = object.withClassFieldNamed(
@@ -481,12 +485,16 @@ private struct Walker {
     private Value nativeExceptionBaseObject(
         in string message,
         in string className,
+        in const(void)* nativeObjectPointer = null,
     ) {
         if (auto class_ = dynamicClassDeclarationByName(className))
-            return classDefaultValue(class_)
-                .withClassFieldNamed("msg", Value(message));
+            return withNativeExceptionObjectPointer(
+                classDefaultValue(class_)
+                    .withClassFieldNamed("msg", Value(message)),
+                nativeObjectPointer,
+            );
 
-        return nativeExceptionValue(message, className);
+        return nativeExceptionValue(message, className, nativeObjectPointer);
     }
 
     // Build a native exception object with the full Throwable field layout so
@@ -494,18 +502,22 @@ private struct Walker {
     // keeping the thrown class's type names so a catch on a dependency subclass
     // still matches. Falls back to the message-only object if the frontend has
     // not recorded the Exception declaration.
-    private Value nativeExceptionValue(in string message, in string className) const {
+    private Value nativeExceptionValue(
+        in string message,
+        in string className,
+        in const(void)* nativeObjectPointer,
+    ) const {
         import quickbite.frontend.dmd.values: defaultValue;
         import dmd.dclass: ClassDeclaration;
 
         auto class_ = ClassDeclaration.exception;
         if (class_ is null)
-            return Value.classValue(
+            return withNativeExceptionObjectPointer(Value.classValue(
                 className,
                 nativeExceptionTypeNames(className),
                 ["msg"],
                 [Value(message)],
-            );
+            ), nativeObjectPointer);
 
         string[] fieldNames;
         Value[] fields;
@@ -514,12 +526,75 @@ private struct Walker {
             fields ~= defaultValue(field.type);
         }
 
-        return Value.classValue(
+        return withNativeExceptionObjectPointer(Value.classValue(
             className,
             nativeExceptionTypeNames(className),
             fieldNames,
             fields,
-        ).withClassFieldNamed("msg", Value(message));
+        ).withClassFieldNamed("msg", Value(message)), nativeObjectPointer);
+    }
+
+    private Value nativeExceptionCatchObject(
+        imported!"dmd.statement".Catch catch_,
+        in Value object,
+    ) {
+        if (!object.hasClassFieldNamed(nativeExceptionObjectPointerField))
+            return object;
+
+        auto classType = catch_.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return object;
+
+        const pointer = object
+            .classFieldNamed(nativeExceptionObjectPointerField)
+            .asNativePointer;
+        string[] fieldNames;
+        Value[] fields;
+        foreach (field; classFields(classType.sym)) {
+            const name = variableName(field);
+            fieldNames ~= name;
+            fields ~= object.hasClassFieldNamed(name)
+                ? object.classFieldNamed(name)
+                : nativeClassFieldValue(field, pointer);
+        }
+
+        return withNativeExceptionObjectPointer(Value.classValue(
+            classInfoName(classType.sym),
+            classTypeNames(classType.sym),
+            fieldNames,
+            fields,
+        ), pointer);
+    }
+
+    private Value nativeClassFieldValue(
+        imported!"dmd.declaration".VarDeclaration field,
+        const(void)* objectPointer,
+    ) {
+        import quickbite.backends.interpreter.ffi_marshal: unmarshalNative;
+
+        return unmarshalNative(
+            field.type.toBasetype,
+            cast(void*) (cast(ubyte*) objectPointer + field.offset),
+        );
+    }
+
+    private Value withNativeExceptionObjectPointer(
+        in Value object,
+        in const(void)* nativeObjectPointer,
+    ) const {
+        if (nativeObjectPointer is null)
+            return object;
+
+        if (object.hasClassFieldNamed(nativeExceptionObjectPointerField))
+            return object.withClassFieldNamed(
+                nativeExceptionObjectPointerField,
+                Value.nativePointerValue(cast(void*) nativeObjectPointer),
+            );
+
+        return object.withAppendedClassField(
+            nativeExceptionObjectPointerField,
+            Value.nativePointerValue(cast(void*) nativeObjectPointer),
+        );
     }
 
     private Value chainExceptionObject(in Value thrown, in Value next) const {

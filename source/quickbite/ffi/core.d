@@ -60,13 +60,21 @@ private imported!"dmd.mtype".Type uncrossableAssocArray(
 
 public class NativeCallException: Exception {
     public string className;
+    public Throwable nativeThrowable;
+    public const(void)* nativeThrowableObjectPointer;
     // The native Throwable.next link, captured as another NativeCallException
     // so the backend can rebuild the chain (ffi.md §34.13). Null at the tail.
     public NativeCallException chainedNext;
 
-    public this(in string message, in string className) {
+    public this(
+        in string message,
+        in string className,
+        Throwable nativeThrowable,
+    ) {
         super(message);
         this.className = className;
+        this.nativeThrowable = nativeThrowable;
+        this.nativeThrowableObjectPointer = cast(const(void)*) nativeThrowable;
     }
 }
 
@@ -871,7 +879,11 @@ private bool canRepresentCall(
 // the backend can rebuild the interpreted chain (ffi.md §34.13). Only Exception
 // is caught at the call site; Error stays fatal.
 private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
-    auto result = new NativeCallException(throwable.msg, throwable.classinfo.name);
+    auto result = new NativeCallException(
+        throwable.msg,
+        throwable.classinfo.name,
+        throwable,
+    );
     if (throwable.next !is null)
         result.chainedNext = nativeCallExceptionFrom(throwable.next);
     return result;

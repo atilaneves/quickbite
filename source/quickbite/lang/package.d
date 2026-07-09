@@ -1400,6 +1400,34 @@ public struct Value {
         );
     }
 
+    public Value withAppendedClassField(
+        in string name,
+        in Value value,
+    ) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) {
+                string[] fieldNames = object.fieldNames.dup;
+                Value[] values;
+                foreach (field; object.fields)
+                    values ~= field.value;
+                fieldNames ~= name;
+                values ~= value;
+                return Value.classValue(
+                    object.typeName,
+                    object.typeNames,
+                    fieldNames,
+                    values,
+                );
+            },
+            (_) {
+                throw new Exception("Expected class object.");
+                return Value.void_;
+            },
+        );
+    }
+
     public Value withAppendedArrayElement(in Value element) const pure {
         import std.sumtype: match;
 

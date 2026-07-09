@@ -2210,7 +2210,7 @@ Inc  Contract                                          Track  Status   Ref
 22  delegates / callbacks / closures: reverse bridge    AB    done*    §34.16
 23  extern(C++) function and member ABI                 A     done     §34.17
 24  seam v2: pointer-handing crossing + CIF cache       A     done     §35.1
-25  native Throwable crossing as rooted reference       A     open     §35.3
+25  native Throwable crossing as rooted reference       A     done     §35.3
 ```
 
 `done*` = landed with residuals tracked in the rung's own still-todo text
@@ -3334,8 +3334,8 @@ closed.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
-**Status: open — ladder rung 25 (§34.3, 2026-07-08). Ordered after the
-Interpreter dub-coverage items (§34.3 work order); sequenced with
+**Status: done 2026-07-09 — ladder rung 25 (§34.3, 2026-07-08). Ordered
+after the Interpreter dub-coverage items (§34.3 work order); sequenced with
 `bytecode.md`'s exception-fidelity work.**
 
 **Claim.** §12: the exception guard "survives for every backend regardless of
@@ -3367,6 +3367,19 @@ today.
 `Interpreter`; the caught `Throwable` pointer is carried in
 `NativeCallException` and rooted for its lifetime; and the §30/§31/§34.14
 exception fixtures stay green.
+
+**Done 2026-07-09.** Added
+`dependencyImage.nativeCustomExceptionField.Interpreter`, with
+`SystemLinker` as the oracle, for a dependency exception subclass whose
+`code` field is set in native code and read after an interpreted catch.
+`NativeCallException` now carries the caught native `Throwable` reference
+plus its object pointer; the reference roots the object for the wrapper's
+lifetime. The boxed Interpreter keeps rebuilding an interpreted exception
+object for catch matching and `msg`/`next`, attaches the native pointer as
+internal metadata, and when binding the catch variable expands the boxed
+object to the catch type, filling missing fields from the native object by
+DMD field offset. This lands only subclass-field reads; stack traces and
+native rethrow identity remain out of scope here.
 
 ### 35.4 Durable inbound trampolines have no owner
 

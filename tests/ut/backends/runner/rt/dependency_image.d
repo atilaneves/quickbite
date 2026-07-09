@@ -794,6 +794,84 @@ unittest {
     }
 }
 
+@("dependencyImage.nativeCustomExceptionField.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_custom_exception_field_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_custom_exception_field_fixture;
+
+            class DependencyException: Exception {
+                int code;
+
+                this(string msg, int code) {
+                    super(msg);
+                    this.code = code;
+                }
+            }
+
+            void dependencyThrowCustomField() {
+                throw new DependencyException("dependency failed", 73);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_custom_exception_field_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_custom_exception_field_fixture;
+
+            class DependencyException: Exception {
+                int code;
+                this(string msg, int code);
+            }
+
+            void dependencyThrowCustomField();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_custom_exception_field_fixture;
+
+                unittest {
+                    try {
+                        dependencyThrowCustomField();
+                        assert(false);
+                    } catch (DependencyException caught) {
+                        assert(caught.msg == "dependency failed");
+                        assert(caught.code == 73);
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.nativeChainedException.Interpreter")
 @Tags("Interpreter")
 unittest {
