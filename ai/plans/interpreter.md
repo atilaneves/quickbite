@@ -2162,6 +2162,24 @@ The current first visible mismatch is now the signed-byte/value frontier:
 Expected: [1, 3, 254, 5, 252]
 ```
 
+**Reviewer Finding 2 resolved (2026-07-09).** The standalone
+`stdConvTextRendersCharArrayExpressionRaw` fixture now pins the direct
+`e.msg.array.dup.text`-style call path in `ct/cerealed.d`. Red evidence from a
+detached worktree at pre-fix commit `17a1dde7`: `SystemLinker` passed, while
+`Interpreter` failed with the rendered message
+`[c, e, r, e, a, l, e, d,  , b, y, t, e, s]`. Current HEAD green evidence:
+
+```text
+ninja bin/ut
+bin/ut <stdConvTextRendersCharArrayExpressionRaw.SystemLinker>
+bin/ut <stdConvTextRendersCharArrayExpressionRaw.Interpreter>
+bin/ut --random
+```
+
+Both focused fixture runs pass on current HEAD, directly covering the
+`rawStringArguments` path the reviewer called out. The randomized suite also
+passed 2822 tests, with 6 expected failures, using seed `1255702531`.
+
 `bin/ut --random` ran 2975 tests with seed `3364058692` and failed one
 unrelated order-sensitive `LLVMJit` struct test,
 `ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`

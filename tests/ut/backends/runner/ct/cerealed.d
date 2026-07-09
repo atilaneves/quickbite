@@ -1115,6 +1115,27 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("stdConvTextRendersCharArrayExpressionRaw." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.array: array;
+            import std.conv: text;
+
+            unittest {
+                try {
+                    throw new Exception("cerealed bytes".idup);
+                } catch (Exception exception) {
+                    const rendered = exception.msg.array.dup.text;
+
+                    assert(rendered == "cerealed bytes", rendered);
+                }
+            }
+        });
+    }
+}
+
 
 
 /++
