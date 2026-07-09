@@ -1451,15 +1451,10 @@ optional, and each lands under the §8 approval rule. Classification:
 ```text
 ratchet fixtures (green today, pin oracle behaviour, protect the shim->real
 migration — a fixture asserts behaviour, so it survives the shim's deletion):
-- emplaceRefWritesArrayElement                     (shim-backed; scalar
-                                                    elements only, where the
-                                                    shim is provably
-                                                    equivalent)
+(none outstanding)
 
 gap fixtures (red on Interpreter, land with Interpreter OMITTED per §8 —
 they document what the shims get wrong and what native layout must re-earn):
-- emplaceRef with a postblit or copy-constructor struct element (the shim
-  skips construction side effects)
 - gc_reserveArrayCapacity contract fixture: MUST assert oracle-agreeing
   behaviour (e.g. capacity >= request after reserve), NOT the shim's echo —
   the drafted gcReserveArrayCapacityHookReturnsRequestedBytes name pins the
@@ -1724,6 +1719,85 @@ Both fixtures' green matrix was re-verified on this branch's `HEAD`
 (`fb92e785` plus the lazy-argument frame-capture change `674e76a2`, not
 present at master when the red-first proofs above were originally run),
 confirming the fix and matrix still hold with that change in place.
+
+**Landed (2026-07-09, owed-fixtures follow-up).** The last owed §9.10
+`emplaceRef` fixtures — one ratchet, three gap — were reconstructed
+red-first (procedure per the 2026-07-09 handoff above) and landed in
+`ct/cerealed.d`. This discharges the `emplaceRefWritesArrayElement` line
+from §9.10's owed ratchet list, and the "emplaceRef with a postblit or
+copy-constructor struct element" line from the owed gap list — both
+lists above are now empty.
+
+`emplaceRefWritesArrayElement` is the ratchet fixture: it pins the
+`runEmplaceRefCall`/`isEmplaceRef` shim's behaviour for the one case
+§9.10 says it is provably equivalent to real semantics — a scalar
+(`char`) array element, where a plain value write is the whole of
+`emplaceRef`'s job (no construction side effect to skip). Applied alone
+at fix commit `bce523cc`'s parent (`7f09bd67`, the commit immediately
+before "interpreter: handle emplaceRef writes"), `Interpreter` fails
+with the exact diagnostic `` cannot read uninitialized variable
+`.trustedMoveImpl.result` in ctfe ``; `SystemLinker` is green. Matrix
+verified green at this branch's `HEAD`: `Ctfe, Interpreter, SystemLinker,
+LLVMJit`. `BytecodeNewCore` is omitted for an unrelated reason: its
+`_d_assert_fail` cannot render a `char[]`-vs-string-literal `==`
+comparison (`Unsupported comparison assert in bytecode core:
+_d_assert_fail("==", message, "ok")`), confirmed independent of
+`emplaceRef` — a probe with no `emplaceRef` call at all fails
+identically, and an `emplaceRef`-using probe that asserts via scalar
+comparisons instead passes on `BytecodeNewCore`.
+
+The three gap fixtures document what the shim gets wrong, each landing
+with `Interpreter` omitted per §8 (the omission is the documentation):
+
+- `emplaceRefSkipsPostblitForStructElement`: a struct element with a
+  postblit. Green on `Ctfe, SystemLinker, LLVMJit` (`SystemLinker`
+  confirms the real semantics run the postblit exactly once, via
+  `emplaceRef`'s "conversions" branch, a struct assignment that blits
+  then postblits the destination). `Interpreter` red with `0 != 1`: the
+  shim's raw `runExpression` + `writeLocation` moves the correct bits
+  (`counters[0].value == 42` passes) but never runs the postblit
+  (`counters[0].postblitCount` stays `0`). `BytecodeNewCore` omitted for
+  an unrelated reason: passing a struct by value through a `ref`
+  array-element argument (here, `emplaceRef`'s generated wrapper
+  constructor) is only partially supported there (`Unsupported variable
+  in bytecode core: source`), confirmed by a second, `emplaceRef`-free
+  probe (a plain `ref` function assigning a by-value struct parameter to
+  an array element) that fails on `BytecodeNewCore` with the sibling
+  diagnostic `Unsupported ref argument in bytecode core: counters[0]`.
+- `emplaceRefRefusesZeroArgDefaultInit`: the 0-arg (default-init) form.
+  Green on `Ctfe, SystemLinker, LLVMJit`. `Interpreter` red with
+  `Unsupported eval call.` — `runEmplaceRefCall` throws whenever
+  `call.arguments.length != 2`, and the 1-argument `emplaceRef(chunk)`
+  overload never reaches the shim's 2-arg path. `BytecodeNewCore`
+  omitted for the same unrelated ref-array-element gap:
+  `Unsupported ref argument in bytecode core: message[0]`.
+- `emplaceRefRefusesMultiArgConstructor`: the multi-arg (constructor)
+  form. Green on `Ctfe, SystemLinker, LLVMJit`. `Interpreter` red with
+  `Unsupported eval call.` — 3 call arguments (`chunk, 1, 2`) also fail
+  the shim's `!= 2` check. `BytecodeNewCore` is omitted here for a
+  distinct reason: it does not refuse cleanly like the sibling gap
+  fixtures above, it **segfaults** — exit code 139 (SIGSEGV), no
+  exception text at all. This is a pre-existing, unrelated
+  `BytecodeNewCore` crash (no `emplaceRef`-specific code path is
+  involved), out of this task's scope to fix. Recorded as a
+  **cross-track observation** for `ai/plans/bytecode.md` (owned by that
+  track, not edited here): `BytecodeNewCore` segfaults on `emplaceRef`
+  with a multi-arg constructor call.
+
+All four fixtures were verified at this branch's `HEAD` (`5130ea5a`,
+after the exception-classification fix `5130ea5a` and the lazy-argument
+frame-capture change `674e76a2`, neither present at master when the
+scratchpad proofs were originally run): every diagnostic above was
+re-confirmed verbatim by temporarily widening each fixture's matrix
+(adding `Interpreter` to the three gap fixtures, and `BytecodeNewCore` to
+all four) and running them focused — no deviation from the original
+proofs. Full `ct/cerealed.d` regression: 144 tests, 0 failed, 1 expected
+failure (pre-existing, unrelated).
+
+These three gap fixtures are the acceptance criteria for deleting the
+`runEmplaceRefCall`/`isEmplaceRef` shim: when `value.md`'s native-layout
+track lands, all three must go green with `Interpreter` added to their
+matrices, and `emplaceRefWritesArrayElement` must stay green throughout.
 
 ## 10. Done
 

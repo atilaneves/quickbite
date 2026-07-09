@@ -1374,3 +1374,160 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// The owed §9.10 ratchet fixture: `emplaceRef` on a *scalar* array element is
+// exactly the case §9.10 says the `runEmplaceRefCall`/`isEmplaceRef` shim
+// (impl.d) is provably equivalent to the real semantics — a plain value
+// write is the whole of `emplaceRef`'s job for a scalar, so there is no
+// construction side effect to skip. Red-first proof: applied alone at
+// `bce523cc^` (the parent of fix commit `bce523cc`, "interpreter: handle
+// emplaceRef writes"), `Interpreter` fails with `cannot read uninitialized
+// variable `.trustedMoveImpl.result` in ctfe` and `SystemLinker` is green.
+// BytecodeNewCore omitted for an unrelated reason: its `_d_assert_fail`
+// cannot render a `char[]`-vs-string-literal `==` comparison
+// ("Unsupported comparison assert in bytecode core: _d_assert_fail(...)"),
+// confirmed independent of `emplaceRef` by a probe with no `emplaceRef` call
+// at all that fails identically, and by an `emplaceRef`-using probe that
+// asserts via scalar comparisons instead, which passes on BytecodeNewCore.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("emplaceRefWritesArrayElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            unittest {
+                char[] message;
+                message.length = 2;
+
+                emplaceRef(message[0], 'o');
+                emplaceRef(message[1], 'k');
+
+                assert(message == "ok");
+            }
+        });
+    }
+}
+
+// The owed §9.10 gap fixture: `emplaceRef` on a struct element with a
+// postblit must run it exactly once, matching real construction semantics.
+// The `runEmplaceRefCall`/`isEmplaceRef` shim (impl.d) writes the field via
+// a raw `runExpression` + `writeLocation`, skipping the postblit entirely —
+// this is one of the two documented shim defects.
+// Interpreter omitted per §8: the omission is the documentation of this
+// construction-side-effect gap. Verbatim red: `assert(counters[0].value ==
+// 42)` passes (the shim moves the correct bits) but
+// `assert(counters[0].postblitCount == 1)` fails with `0 != 1` — the
+// postblit body never runs. Retire the omission when value.md's
+// native-layout track lands and the shim is deleted (§9.10).
+// BytecodeNewCore omitted for an unrelated reason: passing a struct by
+// value through a `ref` array-element argument (here, `emplaceRef`'s
+// generated wrapper constructor) is only partially supported there
+// ("Unsupported variable in bytecode core: source"), confirmed by a
+// second, `emplaceRef`-free probe (a plain `ref` function assigning a
+// by-value struct parameter to an array element) that fails on
+// BytecodeNewCore with the sibling diagnostic "Unsupported ref argument
+// in bytecode core: counters[0]".
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+    @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            struct Counter {
+                int value;
+                int postblitCount;
+
+                this(this) {
+                    postblitCount++;
+                }
+            }
+
+            unittest {
+                Counter[] counters;
+                counters.length = 1;
+
+                Counter source;
+                source.value = 42;
+
+                emplaceRef(counters[0], source);
+
+                assert(counters[0].value == 42);
+                assert(counters[0].postblitCount == 1);
+            }
+        });
+    }
+}
+
+// The owed §9.10 gap fixture: `emplaceRef`'s 0-arg (default-init) form must
+// overwrite the destination with `T.init`. The `runEmplaceRefCall` shim
+// (impl.d) throws `Unsupported eval call.` whenever the call has other than
+// exactly 2 arguments, so the 1-argument `emplaceRef(chunk)` overload never
+// reaches its 2-arg path — this is the first half of the shim's documented
+// refusal.
+// Interpreter omitted per §8: the omission is the documentation of this
+// refusal. Verbatim red: `Unsupported eval call.`
+// BytecodeNewCore omitted for the same unrelated ref-array-element gap
+// noted above: `Unsupported ref argument in bytecode core: message[0]`.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+    @("emplaceRefRefusesZeroArgDefaultInit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            unittest {
+                char[] message;
+                message.length = 1;
+                message[0] = 'x';
+
+                emplaceRef(message[0]);
+
+                assert(message[0] == char.init);
+            }
+        });
+    }
+}
+
+// The owed §9.10 gap fixture: `emplaceRef`'s multi-arg (constructor) form
+// must forward its arguments to the destination's constructor. Same shim
+// refusal as above, other direction: 3 call arguments (chunk, 1, 2) also
+// fails `runEmplaceRefCall`'s `!= 2` check — the second half of the shim's
+// documented refusal.
+// Interpreter omitted per §8: the omission is the documentation of this
+// refusal. Verbatim red: `Unsupported eval call.`
+// BytecodeNewCore omitted: unlike the sibling gap fixtures above, this
+// shape does not refuse cleanly — it crashes (SIGSEGV, exit code 139, no
+// exception text at all). This is a distinct, pre-existing, unrelated
+// BytecodeNewCore crash, not an `emplaceRef` defect; recorded as a
+// cross-track observation for ai/plans/bytecode.md (not fixed here).
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+    @("emplaceRefRefusesMultiArgConstructor." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            struct Point {
+                int x;
+                int y;
+
+                this(int x_, int y_) {
+                    x = x_;
+                    y = y_;
+                }
+            }
+
+            unittest {
+                Point[] points;
+                points.length = 1;
+
+                emplaceRef(points[0], 1, 2);
+
+                assert(points[0].x == 1);
+                assert(points[0].y == 2);
+            }
+        });
+    }
+}
