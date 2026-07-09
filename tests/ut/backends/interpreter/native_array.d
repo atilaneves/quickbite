@@ -100,8 +100,9 @@ unittest {
     auto array = NativeArray.allocate(Type.tint64, 4);
     array.element(1)[0] = 42;
 
-    // index * stride wraps to 8 == element 1's byte offset; today this
-    // silently returns element 1's bytes instead of failing.
+    // without the bounds check, index * stride wraps to 8 == element 1's
+    // byte offset, and this silently returned element 1's bytes instead of
+    // failing.
     const wrappingIndex = size_t.max / 8 + 2;
 
     array.element(wrappingIndex).shouldThrow;

@@ -28,7 +28,10 @@ public size_t typeByteSize(imported!"dmd.mtype".Type type) @safe {
 
 // `dmd.typesem.size` is not @safe/pure/nothrow; this is the @trusted
 // boundary -- it only reads DMD's own computed size, no arithmetic of our
-// own.
+// own. The error path also trusts `Type.toChars` to return a
+// NUL-terminated string from DMD's arena (DMD's `OutBuffer.extractChars`
+// appends the terminator before returning); `fromStringz.idup` copies it
+// into GC memory immediately, so nothing dangles.
 private size_t typeByteSizeImpl(imported!"dmd.mtype".Type type) @trusted {
     import dmd.mtype: SIZE_INVALID;
     import dmd.typesem: size;
