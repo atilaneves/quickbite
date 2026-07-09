@@ -9,7 +9,7 @@ private:
 
 @("NativeBlock.allocate.hasRequestedByteLength")
 unittest {
-    auto block = NativeBlock.allocate(4);
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
 
     block.byteLength.should == 4;
 }
@@ -17,7 +17,7 @@ unittest {
 
 @("NativeBlock.allocate.isZeroInitialised")
 unittest {
-    auto block = NativeBlock.allocate(4);
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
 
     foreach (byte_; block.bytes)
         byte_.should == 0;
@@ -26,7 +26,7 @@ unittest {
 
 @("NativeBlock.allocate.addressIsStableAcrossCopies")
 unittest {
-    auto block = NativeBlock.allocate(4);
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
     NativeBlock[] copies;
     copies ~= block;
     auto copy = copies[0];
@@ -37,7 +37,7 @@ unittest {
 
 @("NativeBlock.allocate.mutationThroughOneCopyIsVisibleThroughAnother")
 unittest {
-    auto block = NativeBlock.allocate(4);
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
     NativeBlock[] copies;
     copies ~= block;
     auto copy = copies[0];
@@ -72,7 +72,7 @@ unittest {
 
 @("NativeBlock.allocate.reportsOwnedOwnership")
 unittest {
-    auto block = NativeBlock.allocate(4);
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
 
     block.ownership.should == NativeBlock.Ownership.owned;
 }
@@ -80,7 +80,7 @@ unittest {
 
 @("NativeBlock.allocate.zeroLengthIsLegal")
 unittest {
-    auto block = NativeBlock.allocate(0);
+    auto block = NativeBlock.allocate(0, NativeBlock.Scan.no);
 
     block.byteLength.should == 0;
 }

@@ -29,13 +29,18 @@ public struct NativeBlock {
     private Ownership _ownership;
 
     // Zero-initialised GC memory the interpreter owns, allocated with the
-    // requested scan policy (default `no`). D's GC is non-moving, so the
-    // address is stable for as long as any handle can reach it. There is
-    // no registration token and no destruction hook: the scan policy is an
-    // allocation attribute, chosen once and never revisited.
+    // required scan policy. D's GC is non-moving, so the address is stable
+    // for as long as any handle can reach it. There is no registration
+    // token and no destruction hook: the scan policy is an allocation
+    // attribute, chosen once and never revisited. No default: `no` is the
+    // dangerous choice (an under-scanned block holding guest pointers is a
+    // use-after-free once the GC can no longer see what it points to), so a
+    // forgotten argument must not silently pick it. `Scan` over `bool`
+    // because the call site reads as `Scan.conservative`/`Scan.no`, not an
+    // unlabelled `true`/`false`.
     public static NativeBlock allocate(
         in size_t byteLength,
-        in Scan scan = Scan.no,
+        in Scan scan,
     ) pure nothrow @safe {
         return NativeBlock(allocateBytes(byteLength, scan), Ownership.owned);
     }

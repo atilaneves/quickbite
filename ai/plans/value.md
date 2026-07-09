@@ -421,6 +421,10 @@ guest pointers was invisible to the GC and its targets could be collected
 out from under it) and through `NativeArray.allocate`, which picks the
 policy from the element type. `GC.addRange` remains the right tool only
 for borrowed, non-GC-owned memory, which still registers nothing.
+`NativeBlock.allocate`'s scan parameter takes no default: under-scanning
+is the unsafe direction (a missed-scan block holding guest pointers is a
+use-after-free), so a forgotten argument must never silently choose it --
+every caller now states `Scan.no`/`Scan.conservative` explicitly.
 
 ## Audit findings (June 2026)
 
