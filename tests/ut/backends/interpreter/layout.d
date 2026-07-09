@@ -26,6 +26,15 @@ unittest {
 }
 
 
+@("typeByteSize.unsizedTypeThrowsMessageNamesTheType")
+unittest {
+    typeByteSize(Type.terror).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.layout.typeByteSize: no size "
+        ~ "for type `_error_`",
+    );
+}
+
+
 @("typeHasPointers.pointerTypeReportsPointers")
 unittest {
     typeHasPointers(Type.tvoidptr).should == true;

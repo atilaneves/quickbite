@@ -22,12 +22,13 @@ public size_t typeByteSize(imported!"dmd.mtype".Type type) @safe {
 private size_t typeByteSizeImpl(imported!"dmd.mtype".Type type) @trusted {
     import dmd.mtype: SIZE_INVALID;
     import dmd.typesem: size;
+    import std.string: fromStringz;
 
     const bytes = type.size;
     if (bytes == SIZE_INVALID)
         throw new Exception(
             "quickbite.backends.interpreter.layout.typeByteSize: no size "
-            ~ "for type",
+            ~ "for type `" ~ type.toChars.fromStringz.idup ~ "`",
         );
 
     return cast(size_t) bytes;
