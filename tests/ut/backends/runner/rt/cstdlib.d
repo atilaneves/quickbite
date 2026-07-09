@@ -380,7 +380,7 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)
