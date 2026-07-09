@@ -4029,3 +4029,180 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+// A native call site only ever catches `Exception` at the FFI boundary
+// (ffi/core.d: "Only Exception is caught at the call site; Error stays
+// fatal."), so an Error can only reach `nativeExceptionRoot` (interpreter.md
+// §9.10) indirectly, via the `.next` chain of a caught Exception (ffi.md
+// §34.13's chainedNext recursion follows `.next` regardless of its dynamic
+// type). The chained class's fully-qualified name does not match
+// "core.exception."/"object." + "Error", so the name-prefix heuristic
+// misclassifies it as Exception, and catch(Error) on the rethrown link
+// wrongly misses it.
+@("dependencyImage.nativeChainedErrorSubclass.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_chained_error_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_chained_error_fixture;
+
+            class DependencyError : Error {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            void dependencyThrowChainedError() {
+                auto inner = new DependencyError("root cause");
+                auto outer = new Exception("outer failure");
+                outer.next = inner;
+                throw outer;
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_chained_error_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_chained_error_fixture;
+
+            class DependencyError : Error {
+                this(string msg);
+            }
+
+            void dependencyThrowChainedError();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_chained_error_fixture;
+
+                unittest {
+                    try {
+                        dependencyThrowChainedError();
+                        assert(false);
+                    } catch (Exception caught) {
+                        assert(caught.msg == "outer failure");
+                        try {
+                            throw caught.next;
+                        } catch (Error rethrown) {
+                            assert(rethrown.msg == "root cause");
+                        }
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// A natively-thrown class two levels below Exception (interpreter.md §9.10's
+// nativeExceptionRoot defect): the fabricated type-name list jumps straight
+// from the thrown class to its root, omitting the intermediate base, so
+// catch(DependencyBaseException) wrongly misses a DependencyException.
+@("dependencyImage.nativeIntermediateBaseException.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_intermediate_exception_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_intermediate_exception_fixture;
+
+            class DependencyBaseException : Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            class DependencyException : DependencyBaseException {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            void dependencyThrowIntermediate() {
+                throw new DependencyException("dependency failed");
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_intermediate_exception_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_intermediate_exception_fixture;
+
+            class DependencyBaseException : Exception {
+                this(string msg);
+            }
+
+            class DependencyException : DependencyBaseException {
+                this(string msg);
+            }
+
+            void dependencyThrowIntermediate();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_intermediate_exception_fixture;
+
+                unittest {
+                    try {
+                        dependencyThrowIntermediate();
+                        assert(false);
+                    } catch (DependencyBaseException caught) {
+                        assert(caught.msg == "dependency failed");
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}

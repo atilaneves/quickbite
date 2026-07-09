@@ -3389,6 +3389,12 @@ object to the catch type, filling missing fields from the native object by
 DMD field offset. This lands only subclass-field reads; stack traces and
 native rethrow identity remain out of scope here.
 
+Future deletion: remove the boxed native-exception field-preservation shim
+(`isSyntheticNativeExceptionField`) when `value.md`'s native-layout
+class/object work reaches exceptions. At that point exception field access
+should use the same native object representation as ordinary class objects,
+not a reconstructed boxed `Value` plus native-pointer side metadata.
+
 ### 35.4 Durable inbound trampolines have no owner
 
 **Claim.** §34.16 lands the reverse bridge with call-scoped closures and

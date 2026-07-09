@@ -507,8 +507,106 @@ interpreter or value-model gap to fix at the root, never to special-case.
 The #386 `emplaceRef` intercept violates this and is tracked for deletion
 in §9.10; `std.conv.text` is the one pre-existing, deliberate exemption
 (perf scaffolding, already scheduled for removal by `value.md` remaining
-work item 1). A mechanical guard enforcing this at the dispatcher
-chokepoint is a planned follow-up code change.
+work item 1).
+
+**Mechanical guard (landed, owed-fixtures follow-up).** The chokepoint is
+`Walker.runCallExpression` (impl.d). Every name-based intercept there —
+`tryInterpreterBuiltin`, `isDruntimeArrayOpAddAssign`, the `memcpy` name
+check, `isEmplaceRef`, `tryGCArrayHook`, `tryAssocArrayHook`, `tryAtomicHook`,
+`isStringForeachApplyCall`, `isStdConvText`, and the raw-function-pointer
+`enforceRawArraysConformableNogc` special case — now calls
+`enforceInterceptionPolicy(callee, interceptorName)`
+(`source/quickbite/backends/interpreter/interception_guard.d`) immediately
+before running its handler. The guard's predicate,
+`isLegalInterception`, accepts a callee when `fd.fbody is null`
+(`hasNoAvailableSource`), or the body is/contains a `CompoundAsmStatement`
+(a recursive walk using dmd's own `StatementRewriteWalker`, overriding
+`visit(CompoundStatement)` — quickbite runs dmd frontend-only, so the
+individual `AsmStatement`/`InlineAsmStatement` instructions inside an asm
+block are never resolved past `null` placeholders; only the
+`CompoundAsmStatement` wrapper node itself is reliably present, from parse
+time onward), or the callee is on the exemption list below. Any other
+body-ful, non-asm callee fails an `assert` naming the intercept and the
+callee's `toPrettyChars` — deliberately an `AssertError`
+(a `Throwable`, not `Exception`) rather than a thrown `Exception`, so it
+cannot be swallowed by an interpreted `catch (Exception)` or by
+unit-threaded's `shouldThrow`, and fails the enclosing unittest outright.
+The check runs only on the already-rare path where some intercept has
+matched, so it carries no hot-path cost worth gating behind `debug`.
+Predicate unit tests live in
+`tests/ut/backends/interpreter/interception_guard.d` (body-ful/non-exempt
+rejected, body-less accepted, asm-bodied accepted, and the assert fires).
+
+Exemption list (`isExemptInterception`), each with its retirement condition:
+
+```text
+core.internal.lifetime.emplaceRef!(...)   §9.10 tracked violation; retire
+                                           once the value model sees
+                                           cast-aliasing, or native layout
+                                           lands, and the real body runs.
+std.conv.text                             §8's pre-existing deliberate
+                                           exemption; retire per value.md
+                                           remaining work item 1.
+core.internal.array.operations.arrayOp!(  discovered by this guard, not
+...)                                      previously in §9.10; retire with
+                                           §9.10's native-layout-aggregates
+                                           item.
+core.internal.newaa._d_aa*!(...),         discovered by this guard, not
+object.dup/keys/values!(...),             previously in §9.10; retire when
+_d_aaApply2!(...)                         the AA representation moves to
+                                           native layout (§9.10).
+rt.aApply's _aApplycd1/_aApplywd1/        discovered by this guard, not
+_aApplydc1/_aApplyRwd1                    previously in §9.10; extern(C)-
+                                           mangled but D-bodied; retire when
+                                           string/array native layout lands.
+core.internal.util.array.                 discovered by this guard, not
+enforceRawArraysConformableNogc           previously in §9.10; the worst of
+                                           this batch — the shim fakes a
+                                           `bool` return for a `void`-
+                                           returning function. Retire by
+                                           executing the real body once
+                                           static-array element-wise ops are
+                                           interpretable end-to-end.
+core.atomic.atomicValueIsProperlyAligned  discovered by this guard, not
+!(...) / atomicPtrIsProperlyAligned!(...) previously in §9.10; plain D bit
+                                           arithmetic, no asm, despite living
+                                           beside core.internal.atomic's real
+                                           asm primitives. Retire once
+                                           interpreter values carry real
+                                           addresses (value.md native
+                                           layout).
+core.internal.atomic.atomicFetchSub!(...) discovered by this guard, not
+/ atomicStore!(...)                       previously in §9.10; each forwards
+                                           in one line to a sibling
+                                           primitive (atomicFetchAdd /
+                                           atomicExchange) that contains the
+                                           real asm, so the asm-body check
+                                           (which only inspects the callee's
+                                           own body) misses them. Retire with
+                                           the rest of the AtomicHook family.
+tryInterpreterBuiltin's matched set:       discovered by this guard, not
+std.math.algebraic.fabs/sqrt,             previously in §9.10; dmd's own
+std.math.exponential.pow,                 `isBuiltin()` recognises these by
+std.math.traits.isInfinity, and (via a    module+identifier for its CTFE
+bare-identifier fallback with no          builtin table regardless of body,
+`BUILTIN` entry) std.math.traits.signbit  so quickbite's reuse of that table
+                                           inherits the same body-
+                                           independence. The `signbit`
+                                           fallback is also an unreported
+                                           latent bug in its own right (no
+                                           module check, so it would misfire
+                                           on an unrelated user `signbit`).
+                                           Retire once `InterpreterBuiltin`
+                                           computes each from the value's
+                                           real representation in a native-
+                                           layout world.
+```
+
+Every entry above except `emplaceRef` and `std.conv.text` was unknown before
+this guard existed — the guard's own construction is what surfaced them,
+exactly per §8's intent: the list is finite, visible, and shrinks, rather
+than growing silent shims. None of them changed behaviour; the guard adds
+enforcement and an explicit inventory only.
 
 ## 9. The rungs (ordered by leverage)
 
@@ -1338,10 +1436,15 @@ Aliases (builtins.d, impl.d)          returns 0 on failure;          hooks becom
                                       shrinkUsed always true;        body-less FFI leaves
                                       getUsed rebuilds from the
                                       incoming pointer, not the
-                                      block base (interior pointers
-                                      get offset 0). The side-
-                                      channel pattern-matches the
-                                      current source shape of
+                                      block base, so it loops the
+                                      full backing-block length
+                                      while indexing from the
+                                      interior offset and throws
+                                      before the loop completes
+                                      (corrected 2026-07-09: not a
+                                      silent offset-0 read). The
+                                      side-channel pattern-matches
+                                      the current source shape of
                                       core.internal.array.capacity.
 reinterpretLocalPointerLoad +         blesses exactly two cast       native layout makes all
 floatBits/doubleBits (impl.d)         shapes (float->uint,           reinterpret loads
@@ -1358,12 +1461,101 @@ runMemcpyCall (impl.d, pre-#386)      same category; already         same as gc_
                                       intrinsics-layer candidate
 ```
 
-Not representation debt but known-defective, same PR:
-`nativeExceptionRoot` classifies `Error` vs `Exception` by name prefix
-(`core.exception.*`/`object.*` + `Error` suffix), so a user or third-party
-class deriving `Error` is misclassified as `Exception`. Fix via the frontend's
-`ClassDeclaration` base-class chain (druntime is semantically analyzed by
-dmd-as-a-library); this is an ordinary language-surface bug, not deferred.
+Not representation debt but known-defective, same guard commit
+(`c7c78c69`): `tryInterpreterBuiltin`'s bare-identifier `signbit` fallback
+(`interception_guard.d:199-206`) matches on the identifier `signbit` alone,
+with no module check, so a user or library function literally named
+`signbit` would be silently intercepted and given
+`std.math.traits.signbit`'s behaviour instead of its own. This is a
+language-surface bug per §8's triage rule — fixable at the root by adding a
+module check, not representation debt deferred to `value.md` — surfaced and
+documented by the guard's own commit but deliberately not fixed there (that
+commit's remit was enforcement, not behaviour change).
+
+**Resolved (2026-07-09, follow-up session).** The `nativeExceptionRoot` defect
+noted here (classifying `Error` vs `Exception` by name prefix
+(`core.exception.*`/`object.*` + `Error` suffix), and fabricating a type-name
+list that jumps straight from the thrown class to its root, omitting
+intermediate bases) was fixed at the root.
+
+`errorIsNotCaughtByExceptionHandler` (`ct/exceptions.d`) does **not** cover
+this: it does `throw new Error("fatal")` from interpreted code, which goes
+through `runNewClassExpression`/`classDefaultValue` using the real
+`ClassDeclaration` dmd already resolved for the `new` expression — it never
+calls `nativeExceptionBaseObject`/`nativeExceptionRoot` at all. Only two call
+sites reach that heuristic: `throwRangeError` (a hardcoded
+`"core.exception.RangeError"` literal, always correctly classified by the
+prefix pattern) and `nativeExceptionObject` (FFI-caught native throwables,
+`className` from the real `throwable.classinfo.name`).
+
+Reproducing defect 1 (Error misclassification) needed care: `ffi/core.d`'s
+native call site only ever `catch (Exception exception)`s ("Error stays
+fatal" per its own comment), so a natively-thrown `Error` subclass can *not*
+reach `nativeExceptionRoot` as the directly-thrown object — it propagates as
+a raw, uncaught native `Throwable` straight through the whole interpreter
+call stack (confirmed: a first fixture that threw a dependency-image `Error`
+subclass directly crashed the whole `bin/ut` process with a native
+backtrace, not a graceful `TestResult` failure — a real but separate,
+out-of-scope bug). The reachable route is `nativeCallExceptionFrom`'s
+`.next`-chain recursion (`ffi.md` §34.13), which follows `.next` regardless
+of its dynamic type: a native `Exception` (caught normally) chained to an
+`Error` via `.next` carries that `Error`'s `classinfo.name` into
+`nativeExceptionBaseObject` when the interpreted code reads and rethrows
+`caught.next`.
+
+Red-first evidence (both added to `tests/ut/backends/runner/rt/
+dependency_image.d`, `SystemLinker` oracle vs `Interpreter`, pre-fix):
+
+- `dependencyImage.nativeChainedErrorSubclass.Interpreter` (defect 1): a
+  dependency image throws `Exception("outer failure")` chained
+  (`.next`) to `DependencyError : Error` ("root cause"). Interpreted code
+  catches the outer `Exception`, then rethrows `caught.next` and expects
+  `catch (Error)` to match. Oracle: passed. Interpreter (pre-fix): failed —
+  `Expected: true / Got: false` on `interpreted[0].passed`, because
+  `nativeExceptionRoot("dep_image_chained_error_fixture.DependencyError")`
+  doesn't match `"core.exception."`/`"object."` prefix, so root is wrongly
+  `"Exception"` and the rethrown value's fabricated type names omit
+  `"Error"`.
+- `dependencyImage.nativeIntermediateBaseException.Interpreter` (defect 2):
+  a dependency image throws `DependencyException : DependencyBaseException :
+  Exception`; interpreted code catches `DependencyBaseException`. Oracle:
+  passed. Interpreter (pre-fix): failed — `interpreted[0].message` was
+  `"dependency failed"` (the uncaught exception's own message), because the
+  fabricated type-name list jumps straight from `DependencyException` to
+  `"Exception"`, omitting the intermediate `DependencyBaseException`.
+
+**The fix.** `nativeExceptionBaseObject` (`impl.d`) gained a second
+resolution attempt between the existing lexical-scope search
+(`dynamicClassDeclarationByName`) and the string-heuristic fallback: a new
+free function `classDeclarationByQualifiedName` searches every module
+`Module.amodules` the frontend has semantically analysed (druntime/Phobos
+modules the source imports are analysed by dmd-as-a-library, so this reaches
+classes outside the lexical scope chain) for an exact `classInfoName` match,
+reusing the existing `classDeclarationByNameInScope` walk (its dual
+`className`/`classInfoName` match cannot misfire here: a fully-qualified name
+can never equal a bare identifier). When found, the real `ClassDeclaration`
+feeds the already-correct `classDefaultValue`/`classTypeNames`/
+`classHierarchy` path — the true base chain, including intermediate bases and
+interfaces — instead of `nativeExceptionRoot`'s name-prefix guess. The string
+heuristic remains only as the last-resort fallback for classes the frontend
+genuinely does not know (e.g. one defined solely inside a loaded shared
+library with no corresponding import in the interpreted source).
+
+`throwRangeError` is not regressed:
+`decodeLazyForwardedRangeErrorSeesReaderState` (`ct/cerealed.d`) explicitly
+`import`s `core.exception : RangeError;` and `catch (RangeError)`s, so with
+this fix `core.exception.RangeError` now resolves via the new
+qualified-module search (previously it happened to be correctly classified
+by the string heuristic instead); it stays green.
+
+Matrix: `dependencyImage.nativeChainedErrorSubclass.Interpreter` and
+`dependencyImage.nativeIntermediateBaseException.Interpreter` land
+`Interpreter`-only (matching this file's existing dependency-image
+convention of an inline `SystemLinker` oracle rather than a
+`static foreach` backend matrix — other backends have no dlopen'd
+dependency-image FFI machinery to exercise). Full regression sweep after the
+fix: `ct/exceptions.d`, `ct/cerealed.d`, and `rt/dependency_image.d` together
+— 314 tests, 0 failed, 1 expected failure.
 
 **Owed fixtures (work item, 2026-07-09).** #386 landed its fixes without the
 §8 red-first fixtures; the drafts and reconstruction procedure are in the
@@ -1373,34 +1565,468 @@ optional, and each lands under the §8 approval rule. Classification:
 ```text
 ratchet fixtures (green today, pin oracle behaviour, protect the shim->real
 migration — a fixture asserts behaviour, so it survives the shim's deletion):
-- lazyForwardedAssertionThunkRunsExpression        (lazy thunks, surface)
-- decodeLazyForwardedRangeErrorSeesReaderState     (lazy state, surface)
-- classReferencePassedByValueMutatesObject         (shim-backed, behaviour
-                                                    correct for this shape)
-- appenderClearKeepsPointerSliceBackingAllocation  (pointerSlice allocation
-                                                    identity — a genuine boxed-
-                                                    model fix, not a shim)
-- emplaceRefWritesArrayElement                     (shim-backed; scalar
-                                                    elements only, where the
-                                                    shim is provably
-                                                    equivalent)
-- char integer-compatibility and float/double reinterpret-load fixtures
-  (the §9.7 2026-07-08 handoff's split-by-root pair)
-- native RangeError-is-an-Error fixture (verify the existing
-  exception.errorIsNotCaughtByExceptionHandler covers it; add narrow
-  fixture if not)
+(none outstanding)
 
 gap fixtures (red on Interpreter, land with Interpreter OMITTED per §8 —
 they document what the shims get wrong and what native layout must re-earn):
-- emplaceRef with a postblit or copy-constructor struct element (the shim
-  skips construction side effects)
-- gc_reserveArrayCapacity contract fixture: MUST assert oracle-agreeing
-  behaviour (e.g. capacity >= request after reserve), NOT the shim's echo —
-  the drafted gcReserveArrayCapacityHookReturnsRequestedBytes name pins the
-  shim's wrong answer and must not land in that form
-- assumeSafeAppend/capacity through an interior pointer (getUsed offset
-  defect)
+(none outstanding)
 ```
+
+**Landed (2026-07-09).** `lazyForwardedAssertionThunkRunsExpression`
+(ct/cerealed.d) reconstructed red-first per the procedure above: applied
+alone on the parent of fix commit `7f09bd67` (parent `ee3594a9`, "interpreter:
+handle GC array capacity hooks"), it fails on `Interpreter` with the exact
+diagnostic `Unsupported eval call.` and passes on `SystemLinker`. Carried
+forward onto this branch (after `7f09bd67`), it is green on
+`Ctfe, Interpreter, SystemLinker, LLVMJit`. `BytecodeNewCore` is omitted:
+lazy parameters are not yet implemented there (`Unsupported call in bytecode
+core: expression()`).
+
+**Resolved (2026-07-09, follow-up session).** The captured-locals snapshot
+defect above was reproduced and fixed. Red-first evidence, reproved directly
+on this branch: applying `decodeLazyForwardedRangeErrorSeesReaderState`
+alone at this branch's pre-fix `aee073a5` (parent of the fix commit
+`674e76a2` that actually makes it green here) fails on `Interpreter` with
+`false != true` and passes on `SystemLinker`. This matches the `#386`-era
+history recorded against `833c560c` (parent of fix commit `bf9d6836`), kept
+here as context rather than as the proof, since that lineage predates this
+branch. The minimal repro from the previous handoff was independently
+re-run against `aee073a5` and fails exactly as described:
+
+```d
+void runIt(lazy ubyte expression) { expression; }
+
+unittest {
+    ubyte[] bytes = [1, 2, 3];
+    runIt(bytes[1]);
+}
+// Interpreter: index [1] is out of bounds for array of length 0
+// SystemLinker: passes
+```
+
+as does the struct-field-mutation companion repro:
+
+```d
+struct Counter { int value; }
+void bump(lazy int expression) { expression; }
+
+unittest {
+    Counter counter;
+    counter.value = 10;
+    bump(counter.value = counter.value + 1);
+    assert(counter.value == 11);
+}
+// Interpreter: 10 != 11
+// SystemLinker: passes
+```
+
+**Root cause (corrected).** The previous handoff's hypothesis — that the
+defect is a representation-ceiling gap because the snapshot doesn't carry
+`arrayAllocations`/`arrayAllocationAliases` — does not hold up. A dynamic
+array's backing storage lives inside `Value.Array` itself (`elements`,
+`allocation`: real D slices), which already round-trips correctly through
+an ordinary `Value[VarDeclaration]` dup; no parallel allocation-id map is
+involved in a plain local read. The actual bug is simpler and is an
+ordinary language-surface defect: `bindLazyFunctionParameter` runs as a
+method of the **callee's** `Walker` (`child`, constructed in `runFunction`/
+`runMemberFunction`/the ref-return call-location helpers), so its
+`locals.dup` captured `child.locals` — for a non-nested plain call this is
+just `datasegLocals` (globals only) — instead of the **caller's** real
+frame, which is a different `Walker` instance entirely and was never
+threaded through `bindFunctionParameters`. The caller's dynamic-array local
+was therefore simply absent from the captured map, so reading it fell back
+to a default (empty) array. This also explains the struct-mutation defect:
+even had the snapshot been of the right frame, mutating a *dup* of it during
+`runLazyArgument` never wrote anywhere the caller could see after the call
+returned — the snapshot was disconnected in both directions.
+
+**Triage classification: language-surface, not representation-ceiling.**
+Per §8's triage rule, "lazy-parameter semantics" is explicitly called out
+as language-surface (a missing/incorrect language behaviour any
+representation needs), and that is what this is: a `lazy` parameter is a
+delegate over the caller's live frame in real D, not a value snapshot taken
+at an arbitrary (and here, wrong) point. The fix does not touch value
+representation, boxing, or allocation identity at all — it corrects *which*
+environment gets captured and how mutations flow back through it. Per §8,
+this is fixed at the root with a red-first fixture, not shimmed or deferred
+to `value.md`.
+
+**The fix.** Two changes, both confined to the lazy-argument path:
+
+1. `bindFunctionParameters` and `bindLazyFunctionParameter` gained an
+   explicit `callerLocals` parameter, threaded from every call site that
+   constructs a callee `Walker` and calls `child.bindFunctionParameters(...)`
+   (`impl.d`, five sites — the two `new_.member` constructor-call sites are
+   unchanged: a constructor with a `lazy` parameter already throws
+   `Unsupported interpreter call arguments.` before reaching the capture
+   line, since those two sites never build an `argumentExpressions` array).
+   Each site passes its own `locals` (unqualified, i.e. `this.locals` — the
+   real caller's frame) rather than leaving the callee to capture its own,
+   nearly-empty one.
+2. The capture, the same-parameter forward (`bindLazyFunctionParameter`'s
+   already-lazy-argument branch), and the substitution in `runLazyArgument`
+   all dropped their `.dup`. `Value[VarDeclaration]` is a D associative
+   array — a reference to a heap hash table, not a value type — so storing
+   `callerLocals` without duplicating it makes the captured environment
+   literally the *same* table the caller's `locals` field still points at.
+   Evaluating the thunk swaps `locals` to that table (no dup), so any
+   mutation performed while evaluating it (e.g. a forwarded range's cursor
+   advancing) mutates the caller's real frame directly and is visible the
+   moment the call returns — matching a genuine closure with no separate
+   write-back step, and correctly compounding across forwarding: each hop's
+   `child.locals` for its own declared parameters stays independently
+   `.dup`'d as before, only the lazy-capture table itself is shared.
+
+This is the frame-reference fix, not a snapshot widened with more parallel
+maps: no new tracking map was added, and `arrayAllocations` et al. were
+never the problem.
+
+**On the #386 drafts.** The unshipped `writeBackLazyArgumentSideEffects` in
+the 2026-07-09 drafts (`386-drafts.patch`) was a snapshot-plus-explicit-
+write-back scheme: dup the caller's locals at capture time, diff the
+before/after snapshot inside `runLazyArgument`, fold changed keys into the
+callee's own `locals`, then fold *that* into the true caller's `locals` on
+function return via a new helper gated on "does this function have any
+lazy parameter." Re-derivation for this fix confirms that design would
+only propagate a mutation up exactly one call level per return, so a
+value forwarded through two or more hops (as
+`decodeLazyForwardedRangeErrorSeesReaderState` requires) would stall at
+the first intermediate frame that doesn't already hold the mutated
+variable as an existing key — it was never actually exercised end-to-end,
+which is why the earlier "lazy-state wrong answer" note in this plan
+overstated what `#386` had proven. It is superseded by the no-dup,
+shared-table design above and was not landed in any form.
+
+**Fixtures landed.**
+- `decodeLazyForwardedRangeErrorSeesReaderState` (ct/cerealed.d): the owed
+  fixture, unchanged from the draft body. Green on `Interpreter,
+  SystemLinker` after the fix above.
+- `lazyArgumentReadsCallerDynamicArray` (ct/cerealed.d): new, narrow
+  standalone fixture for the dynamic-array-local read repro. Green on
+  `Interpreter, SystemLinker`.
+
+Both fixtures omit `BytecodeNewCore` (lazy parameters unsupported there —
+consistent with `lazyForwardedAssertionThunkRunsExpression` above) and
+`Ctfe`/`LLVMJit` (not exercised by this rung; the existing lazy fixture in
+this file already covers those backends for the simpler thunk-invocation
+case). Full `ct/` and `rt/` suites re-run clean after the change (2422
+tests, 0 failed, 6 pre-existing expected failures).
+
+**Landed (2026-07-09, owed-fixtures follow-up).** The char
+integer-compatibility and float/double reinterpret-load fixtures owed
+above were reconstructed red-first and landed in `ct/expressions.d`:
+`pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible`,
+`pointer.floatBitsThroughUintPointerAreRawBits`, and
+`pointer.doubleBitsThroughUlongPointerAreRawBits`.
+
+Red-first evidence: applied alone at fix commit `82297fe9`'s parent
+(`bf9d6836`, "interpreter: invoke lazy wrapper thunks"), `Interpreter`
+fails all three, with `SystemLinker` green in every case (confirming a
+genuine oracle-agreeing D construct, not UB):
+
+- `dcharCompoundAssignThroughUintPointerIsIntegerCompatible`: refusal,
+  `Expected integer-compatible scalar.`
+- `floatBitsThroughUintPointerAreRawBits`: **wrong answer**, not a
+  refusal — `1 != 1069547520` (`0x3FC00000`). The pre-fix path truncated
+  `cast(uint)(1.5f)` to `1` via `Value.castTo!uint`'s numeric-conversion
+  branch instead of reinterpreting the raw IEEE-754 bits.
+- `doubleBitsThroughUlongPointerAreRawBits`: **wrong answer** —
+  `1 != 4609434218613702656` (`0x3FF8000000000000`), same truncating-cast
+  mechanism.
+
+The two reinterpret fixtures being silent wrong answers rather than
+diagnosed refusals makes them §7's most urgent class: an unguarded
+representation gap that produces plausible-looking incorrect results
+instead of failing loudly.
+
+Backend matrix, verified green at this branch's HEAD:
+- Fixture 1 (`dchar`): `Ctfe, Interpreter, SystemLinker, LLVMJit`.
+  `Bytecode`/`BytecodeNewCore`/`IR` omitted (address-of-local and this
+  compound-assignment shape are unimplemented gaps there, unrelated to
+  this bug class).
+- Fixtures 2a/2b (`float`/`double`): `Interpreter, BytecodeNewCore,
+  SystemLinker, LLVMJit`. `Ctfe` omitted: real dmd CTFE has no
+  byte-level memory model for floating-point locals and permanently
+  refuses `cast(uint*)&floatLocal` (`cannot convert '&float' to 'uint*'
+  at compile time`) — this is dmd's own restriction, not an
+  in-development gap, but the fixtures merely omit it rather than pin
+  the refusal. `Bytecode`/`IR` omitted (address-of-local unimplemented).
+
+Bonus finding confirmed: `Ctfe` *does* support same-size integer-family
+pointer reinterpretation (hence its presence in fixture 1's matrix, and
+absence from 2a/2b — this is not an oversight, it is dmd CTFE's actual,
+type-family-dependent behaviour).
+
+Non-obvious construction finding, load-bearing for reproduction: a
+`char`/`ubyte*` version of fixture 1 does **not** reproduce the bug —
+DMD's frontend inserts an implicit promoting `CastExp` for sub-`int`-
+sized operands in compound-assignment lowering, which re-masks the gap
+before the interpreter's `asLong`/`castTo` ever runs. `dchar`/`uint*`
+(4 bytes, already int-rank) is the necessary representative of the
+char/wchar/dchar family — not an arbitrary substitution, since the
+production fix treats all three identically via a single
+`isSomeChar!T` branch. More generally, every "natural" D operator
+context that reaches a scalar `Value` (shift, bitwise-assign, array
+index, unary complement, case-range dispatch) already carries an
+`int`/`ulong`-tagged `Value` by the time it matters, because DMD
+inserts a promoting cast; the one place that does not is a pointer
+dereference cast to a *different, same-size* type than the pointee's
+declared type — the frontend's static type of `*p` already matches the
+pointer's declared pointee type, so no further cast node is inserted,
+and the interpreter itself must reinterpret the raw bits. This is
+exactly cerealed's `grainReinterpret` shape: same-size pointer casts are
+what it actually does, so this construction is the faithful standalone
+proof, not a contrivance.
+
+Cross-reference to §9.10's shim inventory above:
+`reinterpretLocalPointerLoad` + `floatBits`/`doubleBits` remain listed
+representation debt — they bless exactly two cast shapes (float->uint,
+double->ulong) and every other reinterpret is still wrong or refused.
+These three fixtures are the ratchet: they must stay green through the
+eventual native-layout replacement of that shim, at which point the
+shim itself is deleted per its retirement condition.
+
+The remaining two owed ratchet fixtures,
+`appenderClearKeepsPointerSliceBackingAllocation` and
+`classReferencePassedByValueMutatesObject`, were reconstructed red-first
+(procedure per the 2026-07-09 handoff above) and landed in `ct/cerealed.d`.
+
+`appenderClearKeepsPointerSliceBackingAllocation` uses `std.array.appender`
+(Phobos) rather than a hand-rolled pointer-slice snippet: the bug is
+specifically in `Value.pointerSlice`'s handling of `Appender.clear`'s
+`_data.arr = _data.arr.ptr[0 .. 0]` followed by regrowth via
+`arr.ptr[0 .. len + 1]` inside `Appender.put`, and only `Appender`'s exact
+clear/grow sequence exercises it. Applied alone at `833c560c`'s parent
+(the pointer-slice fix's own parent, `ca901fd9` — the class-reference fix
+just prior), `Interpreter` fails with the exact diagnostic the plan
+predicted: `` pointer slice `[0..1]` exceeds allocated memory block
+`[0..0]` ``; `SystemLinker` is green. This is "a genuine boxed-model fix,
+not a shim" (per the classification above), so the fixture asserts
+allocation-identity behaviour outright, with no shim cross-reference.
+Verified green at this branch's `HEAD` on `Ctfe, Interpreter, SystemLinker,
+LLVMJit`. `BytecodeNewCore` is omitted, genuinely red, not a pinned
+refusal: `Unsupported expression in bytecode core: & arr` — that backend
+does not yet support taking the address of a local array, an
+unimplemented-construct gap unrelated to the fix being proven.
+
+**2026-07-09 follow-up: fixture rewritten as a raw pointer-slice
+reproduction, Phobos `Appender` dropped.** The full-suite `bin/ut --random`
+flake investigation (cross-track observation below) traced a recurring
+`struct.staticArrayCopyRunsPostblitAndDtors.LLVMJit` failure to template
+instances named `emplaceInitializer!(std.array.Appender!(ubyte[]).Data)`
+leaking into an unrelated fixture's link set — the documented
+process-global pollution class in `link-set-pollution.md`. This fixture's
+`std.array.appender!(ubyte[])` instantiation was the suite's only use of
+`Appender!(ubyte[])`, so it was the source. The fixture's body is now a
+hand-written pointer-slice reproduction with no Phobos import:
+
+```d
+unittest {
+    ubyte[] arr = [1, 2, 3, 4];
+    auto shrunk = arr.ptr[0 .. 0];
+    auto regrown = shrunk.ptr[0 .. 1];
+    assert(regrown[0] == 1);
+}
+```
+
+This distils the same construct `Appender.clear` + `put` relies on — a
+pointer slice shrunk to `[0 .. 0]` must retain its backing allocation so a
+regrow through `.ptr` still sees the original storage — without
+instantiating Phobos' `Appender`. Applied alone at `833c560c`'s parent
+(`ca901fd9`), `Interpreter` re-fails with the same diagnostic the original
+proof recorded: `` pointer slice `[0..1]` exceeds allocated memory block
+`[0..0]` ``; `SystemLinker` is green. Verified green at this branch's
+`HEAD` on `Ctfe, Interpreter, SystemLinker, LLVMJit` (`BytecodeNewCore`
+still omitted, per the existing exclusion above).
+
+`classReferencePassedByValueMutatesObject` reproduces a class reference
+passed by value to a function that mutates a field, asserting the caller
+observes the mutation. Applied alone at `ca901fd9`'s parent (`bce523cc`,
+"interpreter: handle emplaceRef writes" — the true parent of the
+class-reference-writeback fix), `Interpreter` fails with `0 != 42` (the
+caller sees the default field value instead of the callee's mutation);
+`SystemLinker` is green. This fixture is shim-backed by
+`writeBackByValueClassArguments` (§9.10 deletion inventory above): the
+shim models reference semantics by post-call value diffing rather than
+first-class object references. The fixture pins observable *behaviour*,
+not the shim's mechanism, so it is a valid ratchet fixture that must stay
+green once §9.10's native-layout object model replaces the shim with
+first-class object references. Verified green at this branch's `HEAD` on
+`Ctfe, Interpreter, SystemLinker, LLVMJit`. `BytecodeNewCore` is omitted,
+genuinely red: `Unsupported assignment in bytecode core: box.value = 42`
+— that backend does not yet support class-field assignment at all, an
+unimplemented-construct gap unrelated to this fixture's target behaviour.
+
+Both fixtures' green matrix was re-verified on this branch's `HEAD`
+(`fb92e785` plus the lazy-argument frame-capture change `674e76a2`, not
+present at master when the red-first proofs above were originally run),
+confirming the fix and matrix still hold with that change in place.
+
+**Cross-track observation (2026-07-09): Phobos `Appender` instantiation
+and the `bin/ut --random` flake rate.** Not owned by this plan — recorded
+here per `AGENTS.md`'s cross-track rule, with a reference to
+`ai/plans/link-set-pollution.md` rather than an edit to it. Full-suite
+`bin/ut --random` measurements found this branch failing 3/7 runs versus
+master's 0/10, always as
+`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors.LLVMJit`,
+with a failed-to-materialize error naming
+`emplaceInitializer!(std.array.Appender!(ubyte[]).Data)` — a REPL
+eval-snippet symbol unrelated to the failing test. The root cause is
+`link-set-pollution.md`'s process-global DMD template-instance pollution:
+some other module's instantiation of that template leaks into this
+fixture's link set. `appenderClearKeepsPointerSliceBackingAllocation`'s
+`std.array.appender!(ubyte[])` call was the entire `tests/` tree's only
+`Appender!(ubyte[])` instantiation, so it was feeding the pollution, not
+causing it. Rewriting the fixture as the raw pointer-slice reproduction
+above (dropping the Phobos import) removes that instantiation, which is a
+mitigation of exposure, not a fix of the root — the underlying process-
+global pollution mechanism is untouched and can still be fed by some other
+template instantiation elsewhere in the suite. The small-n rate
+measurements (0/10, 3/7) are suggestive, not conclusive, of causation on
+their own; the decisive evidence is the symbol identity in the failure
+message together with this fixture being the suite's unique
+`Appender!(ubyte[])` instantiator.
+
+**Landed (2026-07-09, owed-fixtures follow-up).** The last owed §9.10
+`emplaceRef` fixtures — one ratchet, three gap — were reconstructed
+red-first (procedure per the 2026-07-09 handoff above) and landed in
+`ct/cerealed.d`. This discharges the `emplaceRefWritesArrayElement` line
+from §9.10's owed ratchet list, and the "emplaceRef with a postblit or
+copy-constructor struct element" line from the owed gap list — both
+lists above are now empty.
+
+`emplaceRefWritesArrayElement` is the ratchet fixture: it pins the
+`runEmplaceRefCall`/`isEmplaceRef` shim's behaviour for the one case
+§9.10 says it is provably equivalent to real semantics — a scalar
+(`char`) array element, where a plain value write is the whole of
+`emplaceRef`'s job (no construction side effect to skip). Applied alone
+at fix commit `bce523cc`'s parent (`7f09bd67`, the commit immediately
+before "interpreter: handle emplaceRef writes"), `Interpreter` fails
+with the exact diagnostic `` cannot read uninitialized variable
+`.trustedMoveImpl.result` in ctfe ``; `SystemLinker` is green. Matrix
+verified green at this branch's `HEAD`: `Ctfe, Interpreter, SystemLinker,
+LLVMJit`. `BytecodeNewCore` is omitted for an unrelated reason: its
+`_d_assert_fail` cannot render a `char[]`-vs-string-literal `==`
+comparison (`Unsupported comparison assert in bytecode core:
+_d_assert_fail("==", message, "ok")`), confirmed independent of
+`emplaceRef` — a probe with no `emplaceRef` call at all fails
+identically, and an `emplaceRef`-using probe that asserts via scalar
+comparisons instead passes on `BytecodeNewCore`.
+
+The three gap fixtures document what the shim gets wrong, each landing
+with `Interpreter` omitted per §8 (the omission is the documentation):
+
+- `emplaceRefSkipsPostblitForStructElement`: a struct element with a
+  postblit. Green on `Ctfe, SystemLinker, LLVMJit` (`SystemLinker`
+  confirms the real semantics run the postblit exactly once, via
+  `emplaceRef`'s "conversions" branch, a struct assignment that blits
+  then postblits the destination). `Interpreter` red with `0 != 1`: the
+  shim's raw `runExpression` + `writeLocation` moves the correct bits
+  (`counters[0].value == 42` passes) but never runs the postblit
+  (`counters[0].postblitCount` stays `0`). `BytecodeNewCore` omitted for
+  an unrelated reason: passing a struct by value through a `ref`
+  array-element argument (here, `emplaceRef`'s generated wrapper
+  constructor) is only partially supported there (`Unsupported variable
+  in bytecode core: source`), confirmed by a second, `emplaceRef`-free
+  probe (a plain `ref` function assigning a by-value struct parameter to
+  an array element) that fails on `BytecodeNewCore` with the sibling
+  diagnostic `Unsupported ref argument in bytecode core: counters[0]`.
+- `emplaceRefRefusesZeroArgDefaultInit`: the 0-arg (default-init) form.
+  Green on `Ctfe, SystemLinker, LLVMJit`. `Interpreter` red with
+  `Unsupported eval call.` — `runEmplaceRefCall` throws whenever
+  `call.arguments.length != 2`, and the 1-argument `emplaceRef(chunk)`
+  overload never reaches the shim's 2-arg path. `BytecodeNewCore`
+  omitted for the same unrelated ref-array-element gap:
+  `Unsupported ref argument in bytecode core: message[0]`.
+- `emplaceRefRefusesMultiArgConstructor`: the multi-arg (constructor)
+  form. Green on `Ctfe, SystemLinker, LLVMJit`. `Interpreter` red with
+  `Unsupported eval call.` — 3 call arguments (`chunk, 1, 2`) also fail
+  the shim's `!= 2` check. `BytecodeNewCore` is omitted here for a
+  distinct reason: it does not refuse cleanly like the sibling gap
+  fixtures above, it **segfaults** — exit code 139 (SIGSEGV), no
+  exception text at all. This is a pre-existing, unrelated
+  `BytecodeNewCore` crash (no `emplaceRef`-specific code path is
+  involved), out of this task's scope to fix. Recorded as a
+  **cross-track observation** for `ai/plans/bytecode.md` (owned by that
+  track, not edited here): `BytecodeNewCore` segfaults on `emplaceRef`
+  with a multi-arg constructor call.
+
+All four fixtures were verified at this branch's `HEAD` (`5130ea5a`,
+after the exception-classification fix `5130ea5a` and the lazy-argument
+frame-capture change `674e76a2`, neither present at master when the
+scratchpad proofs were originally run): every diagnostic above was
+re-confirmed verbatim by temporarily widening each fixture's matrix
+(adding `Interpreter` to the three gap fixtures, and `BytecodeNewCore` to
+all four) and running them focused — no deviation from the original
+proofs. Full `ct/cerealed.d` regression: 144 tests, 0 failed, 1 expected
+failure (pre-existing, unrelated).
+
+These three gap fixtures are the acceptance criteria for deleting the
+`runEmplaceRefCall`/`isEmplaceRef` shim: when `value.md`'s native-layout
+track lands, all three must go green with `Interpreter` added to their
+matrices, and `emplaceRefWritesArrayElement` must stay green throughout.
+
+**Landed (2026-07-09, owed-fixtures follow-up).** The last two owed §9.10
+gap fixtures — both naming the `tryGCArrayHook`/`runGCArrayHookCall` +
+`lastGCArrayUsedAllocation` shim — were reconstructed and landed in
+`ct/arrays.d`. This discharges both remaining lines from §9.10's owed gap
+list, which is now empty:
+
+- `dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate`: asserts
+  the oracle's real `reserve` contract (`arr.reserve(8)` then filling to 8
+  elements does not move `arr.ptr`), not the shim's echoed return value.
+  The plan's own warning that the drafted
+  `gcReserveArrayCapacityHookReturnsRequestedBytes` name pinned the
+  shim's wrong answer and must not land in that form was honoured: the
+  landed fixture never calls the raw `extern(C)` hook and never asserts
+  the echoed capacity number, only the public `reserve`/`.ptr`/`~=`
+  surface and the pointer-stability guarantee `SystemLinker` actually
+  provides. Matrix: `SystemLinker, LLVMJit`. `Interpreter` omitted (red:
+  `` const(Pointer)([0, 1, ..., 7], 1, 0) !is const(Pointer)([], 1, 0) ``
+  — `gc_reserveArrayCapacity` fabricates a capacity number without
+  growing the value model's backing allocation, so `arr.ptr` before vs.
+  after the fill differs in `target` even though the allocation id is
+  unchanged). `Ctfe` omitted (pointer-identity `is` on a GC-backed slice
+  lowers to an address cast CTFE refuses at compile time — no
+  reserve/capacity/pointer-identity support for this construct, not an
+  in-development gap). `BytecodeNewCore` omitted (`.ptr` of an array is
+  unimplemented there, unrelated to this shim).
+- `dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace`: takes an
+  interior slice (`tail = arr[2 .. $]`), calls `assumeSafeAppend` on it,
+  and asserts the following append lands in place (`tail.ptr` unchanged,
+  `tail[2] == 99`) — the oracle's contract, not a stub value. Matrix:
+  `SystemLinker, LLVMJit`. `Interpreter` omitted (red: `` pointer index
+  `2` exceeds allocated memory block `[-2..2]` ``). `Ctfe` omitted
+  (`gc_getArrayUsed` has no D source at all, so `Ctfe` cannot intercept
+  it — no support to begin with, not a refusal to pin). `BytecodeNewCore`
+  omitted (same `.ptr`-of-array gap as above).
+
+**Correction to the shim inventory above.** The `gc_*` hooks table entry
+stated the `getUsed` interior-pointer defect as "interior pointers get
+offset 0" — a silent wrong answer. Building the second fixture showed
+this is not what happens: it **throws**, ``pointer index `2` exceeds
+allocated memory block `[-2..2]` ``, because `gcArrayUsed` loops
+`pointer.pointerLength()` (the full backing-block length) while indexing
+from the interior `offset`, so it overruns and throws before the loop
+can complete for any `offset > 0` — it never reaches a point where it
+could substitute offset 0. The stated root cause ("rebuilds from the
+incoming pointer, not the block base") was correct; only the described
+symptom was wrong. The table above has been corrected to describe the
+throw instead of a silent offset-0 read.
+
+Both fixtures were verified at this branch's `HEAD` (`11250c93`): built
+with `ninja bin/ut`, then run focused (`SystemLinker`/`LLVMJit`, both
+green), then temporarily widened to add `Interpreter` and re-run to
+reconfirm the exact diagnostics above verbatim (no deviation from the
+prior investigation), then reverted to the landed `SystemLinker,
+LLVMJit` matrix. Full `ct/arrays.d` regression after landing: 293 tests,
+0 failed.
+
+These two gap fixtures are, together with the three `emplaceRef` gap
+fixtures above, acceptance criteria for deleting the
+`tryGCArrayHook`/`runGCArrayHookCall`/`lastGCArrayUsedAllocation` shims:
+when interpreted arrays become native-layout GC allocations, both must
+go green with `Interpreter` added to their matrices.
 
 ## 10. Done
 

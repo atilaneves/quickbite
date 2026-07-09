@@ -24,7 +24,7 @@ package(quickbite.backends.bytecode) RunResult run(
 ) {
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo, Op, noCatchObjectField, noExceptionClass,
-        size, sliceDescriptorSize, stringSliceSize;
+        noOutParameterOffset, size, sliceDescriptorSize, stringSliceSize;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -1341,15 +1341,21 @@ package(quickbite.backends.bytecode) RunResult run(
                 auto native = program.nativeCalls[instruction.a];
                 auto marshaller = new BytecodeNativeMarshaller(
                     stack,
-                    base,
-                    native.argumentOffsets,
+                    base + instruction.b,
                     base + instruction.c,
+                    base,
+                    native.outParameterOffsets,
                 );
+                bool[] addressOfLocalArguments;
+                addressOfLocalArguments.length = native.outParameterOffsets.length;
+                foreach (index, offset; native.outParameterOffsets)
+                    addressOfLocalArguments[index] =
+                        offset != noOutParameterOffset;
                 if (!callNative(
                     native.function_,
                     marshaller,
                     native.argumentTypes,
-                    native.addressOfLocalArguments,
+                    addressOfLocalArguments,
                 ))
                     throw new Exception(noAvailableSourceMessage(
                         native.function_,
@@ -2629,27 +2635,32 @@ private final class BytecodeNativeMarshaller:
     import quickbite.ffi: NativeMarshaller;
 
     private ubyte[] _stack;
-    private size_t _base;
-    private ushort[] _argumentOffsets;
+    private size_t _argument;
     private size_t _destination;
+    private size_t _base;
+    private const(ushort)[] _outParameterOffsets;
 
     public this(
         ubyte[] stack,
-        in size_t base,
-        ushort[] argumentOffsets,
+        in size_t argument,
         in size_t destination,
+        in size_t base,
+        in ushort[] outParameterOffsets,
     ) {
         _stack = stack;
-        _base = base;
-        _argumentOffsets = argumentOffsets;
+        _argument = argument;
         _destination = destination;
+        _base = base;
+        _outParameterOffsets = outParameterOffsets;
     }
 
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
         import dmd.astenums: TY;
         const ty = type.toBasetype.ty;
-        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tfloat64 ||
-            ty == TY.Tpointer;
+        if (ty == TY.Tvoid)
+            return direction == NativeMarshaller.Direction.fromNative;
+        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tuns64 ||
+            ty == TY.Tfloat64 || ty == TY.Tpointer;
     }
 
     public bool canRepresentOutCell(Type pointedToType) {
@@ -2668,16 +2679,40 @@ private final class BytecodeNativeMarshaller:
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
-        // `buffer` is sized to the argument type's native ABI width (4 bytes
-        // for `int`, 8 for a pointer); copy exactly that many, not a fixed 8.
-        const argument = _base + _argumentOffsets[index];
-        buffer[] = _stack[argument .. argument + buffer.length];
+        import quickbite.backends.bytecode.core.program:
+            nativeArgumentSlotSize;
+
+        // The argument area is N contiguous fixed-stride slots (see
+        // `nativeArgumentSlotSize` in program.d, established by
+        // `allocateNativeArgumentArea` in compiler.d); argument `index` lives
+        // at `_argument + index * nativeArgumentSlotSize` regardless of its
+        // own width. `buffer` is sized to the argument type's native ABI
+        // width (4 bytes for `int`, 8 for a pointer); copy exactly that many,
+        // not a fixed 8.
+        const slot = _argument + index * nativeArgumentSlotSize;
+        buffer[] = _stack[slot .. slot + buffer.length];
     }
 
     // @trusted: the stack reserve at run start prevents reallocation while the
-    // native call is active, so this frame-slot pointer stays valid for libffi.
+    // native call is active, so these frame-slot pointers stay valid for
+    // libffi. Out parameters point directly at the target local; ordinary
+    // arguments point at their fixed-stride argument slot.
     public const(void)* argumentAddress(in size_t index, Type type) @trusted {
-        return &_stack[_base + _argumentOffsets[index]];
+        import quickbite.backends.bytecode.core.program:
+            nativeArgumentSlotSize, noOutParameterOffset;
+
+        const outParameter = _outParameterOffsets[index];
+        if (outParameter != noOutParameterOffset)
+            return null;
+
+        const slot = _argument + index * nativeArgumentSlotSize;
+        if (isPointerToPointer(type)) {
+            auto target = *cast(void**) &_stack[slot];
+            if (target !is null)
+                return target;
+        }
+
+        return &_stack[slot];
     }
 
     public void readResult(Type type, in ubyte[] buffer) {
@@ -2703,6 +2738,10 @@ private final class BytecodeNativeMarshaller:
     private static size_t nativeResultSize(Type type) {
         import dmd.astenums: TY;
         switch (type.toBasetype.ty) with (TY) {
+            case Tvoid:
+                // `callNativeImpl` (ffi/core.d) calls `readResult` even for a
+                // void-returning callee; there is no result to copy back.
+                return 0;
             case Tint32:
                 return int.sizeof;
             case Tint64:
@@ -2716,6 +2755,14 @@ private final class BytecodeNativeMarshaller:
         }
     }
 
+    private static bool isPointerToPointer(Type type) {
+        import dmd.astenums: TY;
+
+        auto basetype = type.toBasetype;
+        return basetype.ty == TY.Tpointer &&
+            basetype.nextOf.toBasetype.ty == TY.Tpointer;
+    }
+
     public void fillReceiver(ubyte[] buffer, Type type, in bool stableString,
         ref const(char)*[] keepAlive, ref ubyte[][] keepAliveBuffers)
     { unsupportedNativeCall; }
@@ -2724,14 +2771,34 @@ private final class BytecodeNativeMarshaller:
         ref const(char)*[] keepAlive, ref ubyte[][] keepAliveBuffers)
     { unsupportedNativeCall; }
 
+    // Write the callee's out-cell bytes back into the pointed-to local's
+    // frame slot (`_outParameterOffsets[index]`, set by `emitNativeCall`).
     public void writeOutParameter(in size_t index, Type pointedToType,
         in ubyte[] cell)
-    { unsupportedNativeCall; }
+    {
+        const slot = _base + outParameterOffset(index);
+        _stack[slot .. slot + cell.length] = cell[];
+    }
 
+    // Seed the out cell with the pointed-to local's current value (ffi.md
+    // §35.6), e.g. `endptr`'s null pre-call value, which strtod ignores.
     public void fillOutParameterCell(ubyte[] cell, Type pointedToType,
         in size_t index, in bool stableString, ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers)
-    { unsupportedNativeCall; }
+    {
+        const slot = _base + outParameterOffset(index);
+        cell[] = _stack[slot .. slot + cell.length];
+    }
+
+    // `noOutParameterOffset` marks an argument that isn't an out parameter;
+    // used as a frame offset it would silently corrupt the stack.
+    private size_t outParameterOffset(in size_t index) {
+        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
+
+        if (_outParameterOffsets[index] == noOutParameterOffset)
+            unsupportedNativeCall;
+        return _outParameterOffsets[index];
+    }
 
     public const(void)* receiverObjectPointer() {
         return null;

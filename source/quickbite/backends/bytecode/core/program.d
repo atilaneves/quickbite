@@ -116,6 +116,18 @@ package(quickbite.backends.bytecode) enum stringSliceSize = 8;
 package(quickbite.backends.bytecode) enum sliceDescriptorSize =
     2 * size_t.sizeof;
 
+// A native (libc) call's argument area is N contiguous slots of this
+// stride, one per argument, laid out at
+// `argumentArea + index * nativeArgumentSlotSize` regardless of each
+// argument's own width: the stride is a fixed native-word slot, not the
+// argument's own width, so the marshaller can locate argument `index`
+// without knowing the widths of the arguments before it. Invariant: the
+// stride must be at least as wide as the widest scalar argument the bridge
+// accepts (an 8-byte `long` on a hypothetical 32-bit target, where
+// `size_t.sizeof == 4`, would not fit).
+package(quickbite.backends.bytecode) enum nativeArgumentSlotSize =
+    size_t.sizeof;
+
 // Sentinel for an instruction operand that would otherwise carry an optional
 // catch-object frame offset or exception class id.
 package(quickbite.backends.bytecode) enum noCatchObjectField = ushort.max;
@@ -563,9 +575,15 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
 package(quickbite.backends.bytecode) struct NativeCall {
     imported!"dmd.func".FuncDeclaration function_;
     imported!"dmd.mtype".Type[] argumentTypes;
-    ushort[] argumentOffsets;
-    bool[] addressOfLocalArguments;
+    // Per-argument frame offset of the pointed-to local for an out-parameter
+    // argument (e.g. strtod's `&endptr`); `noOutParameterOffset` marks an
+    // argument that is not one.
+    ushort[] outParameterOffsets;
 }
+
+// Sentinel `NativeCall.outParameterOffsets` entry for an argument that is not
+// an out parameter.
+package(quickbite.backends.bytecode) enum noOutParameterOffset = ushort.max;
 
 // How to render a failed assertion: read both operands from the frame and
 // format them per their static type around the inverted operator.

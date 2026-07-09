@@ -35,8 +35,8 @@ private struct Compiler {
         Instruction, NativeCall, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
         VirtualFunction, isSigned,
-        noCatchObjectField, noExceptionClass, size, sliceDescriptorSize,
-        stringSliceSize;
+        nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
+        noOutParameterOffset, size, sliceDescriptorSize, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
@@ -312,6 +312,14 @@ private struct Compiler {
 
     private void compileStatement(Statement statement) {
         import std.conv: text;
+
+        // DMD's `scope(exit)`/`scope(success)` lowering (`Statement.scopeCode`)
+        // rewrites the original statement's slot in its enclosing
+        // `CompoundStatement` to `null`, moving its content into a
+        // `TryFinallyStatement` appended right after it; a null statement is
+        // that lowering's documented no-op placeholder, not an error.
+        if (statement is null)
+            return;
 
         if (auto scope_ = statement.isScopeStatement) {
             compileStatement(scope_.statement);
@@ -2694,11 +2702,22 @@ private struct Compiler {
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
-        if (initializer is null)
-            throw new Exception(text(
-                "Unsupported initializer in bytecode core: ",
-                declarationChars(variable),
-            ));
+
+        // No initializer, or an explicit `= null` (`NullExp`, typed
+        // `typeof(null)` not `T*`): allocate a zeroed native-word slot,
+        // taking the element scalar from the declared type.
+        if (initializer is null ||
+            initializerExpression(initializer.exp).isNullExp !is null) {
+            _locals[variable] = offset;
+            _pointerLocals[variable] = pointerElementScalar(variable.type);
+            _code ~= Instruction(
+                Op.loadConstant,
+                offset,
+                constantIndex(0),
+                cast(ushort) size_t.sizeof,
+            );
+            return;
+        }
 
         const pointer =
             compileExpression(initializerExpression(initializer.exp));
@@ -7320,6 +7339,9 @@ private struct Compiler {
         return Operand(destination, returnType.scalar, returnType.isString);
     }
 
+    // A null return always falls through to the call site's unconditional
+    // no-available-source throw, never a different path, so it is safe to
+    // emit earlier arguments before a later one turns out unsupported.
     private Operand* tryCompileNativeCall(
         CallExp call,
         FuncDeclaration function_,
@@ -7328,102 +7350,148 @@ private struct Compiler {
         import dmd.astenums: TY;
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
-        if (returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
-            returnTy != TY.Tfloat64)
+        if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
+             returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
+             returnTy != TY.Tpointer) ||
+            call.arguments is null || call.arguments.length == 0)
             return null;
 
-        if (call.arguments is null)
-            return null;
+        const argumentArea = allocateNativeArgumentArea(call.arguments.length);
+        auto argumentTypes = new Type[call.arguments.length];
+        auto outParameterOffsets = new ushort[call.arguments.length];
+        // Every argument must be a scalar `int`/`long`/`size_t`, a
+        // string-literal `const(char)*`, a `&local` out parameter, or a
+        // pointer local passed by value; any other shape bails.
+        foreach (index; 0 .. call.arguments.length) {
+            auto argument = (*call.arguments)[index];
+            const slot = cast(ushort)
+                (argumentArea + index * nativeArgumentSlotSize);
+            argumentTypes[index] = argument.type.toBasetype;
+            outParameterOffsets[index] = noOutParameterOffset;
 
-        Type[] argumentTypes;
-        ushort[] argumentOffsets;
-        bool[] addressOfLocalArguments;
-        foreach (argument; *call.arguments) {
-            const argumentOffset = compileNativeArgument(argument);
-            if (argumentOffset is null)
-                return null;
-            argumentTypes ~= argument.type.toBasetype;
-            argumentOffsets ~= *argumentOffset;
-            addressOfLocalArguments ~= isAddressOfLocal(argument);
+            const argumentTy = argument.type.toBasetype.ty;
+            if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64 ||
+                argumentTy == TY.Tuns64) {
+                emitCallArgument(slot, false, argument);
+                continue;
+            }
+
+            if (argumentTy == TY.Tpointer &&
+                argument.type.toBasetype.nextOf.toBasetype.ty == TY.Tchar) {
+                auto string_ = stringLiteralOf(argument);
+                if (string_ is null)
+                    return null;
+                emitStringLiteralArgument(slot, string_);
+                continue;
+            }
+
+            // A pointer local passed by value (e.g. `free(ptr)`): distinct
+            // from the `&local` out-parameter shape below, which records a
+            // frame offset for writeback; this copies the local's own value
+            // (a native-memory address) into the argument slot.
+            if (argumentTy == TY.Tpointer) {
+                auto pointerVariable = argument.isVarExp;
+                auto pointerDeclaration = pointerVariable is null
+                    ? null
+                    : pointerVariable.var.isVarDeclaration;
+                if (pointerDeclaration !is null &&
+                    (pointerDeclaration in _pointerLocals) !is null) {
+                    emitCallArgument(slot, false, argument);
+                    continue;
+                }
+            }
+
+            // A `null` literal argument (e.g. `free(null)`) keeps its own
+            // `typeof(null)` static type, not the declared pointer type
+            // (compilePointerDeclaration's `= null` finding applies here
+            // too); take the pointer type from the callee's own parameter
+            // instead, and emit a zeroed slot.
+            if (argument.isNullExp !is null) {
+                auto parameterList =
+                    function_.type.toBasetype.isTypeFunction.parameterList;
+                auto parameter = parameterList[index];
+                if (parameter is null ||
+                    parameter.type.toBasetype.ty != TY.Tpointer)
+                    return null;
+                argumentTypes[index] = parameter.type.toBasetype;
+                _code ~= Instruction(
+                    Op.loadConstant, slot, constantIndex(0),
+                    cast(ushort) nativeArgumentSlotSize,
+                );
+                continue;
+            }
+
+            // `&local` out parameter: `SymOffExp` (as `tryAddressOfSymbol`
+            // also matches), zero offset, tracked pointer local. Slot is
+            // never read (ffi.md §34.8: type is unconditionally an out
+            // parameter); only the frame offset is recorded.
+            emitCallArgument(slot, false, argument);
+            auto outLocal = addressOfLocalOffset(argument);
+            if (outLocal !is null)
+                outParameterOffsets[index] = *outLocal;
         }
 
         return emitNativeCall(
-            function_,
-            argumentTypes,
-            argumentOffsets,
-            addressOfLocalArguments,
+            function_, argumentTypes, argumentArea, outParameterOffsets,
         );
     }
 
-    private ushort* compileNativeArgument(Expression argument) {
-        import dmd.astenums: TY;
-        import quickbite.frontend.dmd.string_literals: stringChars;
-        import std.conv: text;
-
-        // A scalar `int`/`long` argument passed by value: evaluate it into an
-        // argument slot sized to its native width; the marshaller copies
-        // exactly those bytes.
-        const argumentTy = argument.type.toBasetype.ty;
-        if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64) {
-            const width = argumentTy == TY.Tint64 ? long.sizeof : int.sizeof;
-            const argumentArea = allocateBytes(width, width);
-            emitCallArgument(argumentArea, false, argument);
-            return new ushort(argumentArea);
-        }
-
-        if (argument.type.toBasetype.ty != TY.Tpointer)
-            return null;
-
-        if (argument.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar) {
-            const argumentArea = allocateBytes(
-                cast(uint) size_t.sizeof,
-                size_t.sizeof,
-            );
-            emitCallArgument(argumentArea, false, argument);
-            return new ushort(argumentArea);
-        }
-
-        const argumentArea = allocateBytes(size_t.sizeof, size_t.sizeof);
-        auto string_ = stringLiteralOf(argument);
-        if (string_ !is null) {
-            const bytes = cast(const(ubyte)[]) stringChars(string_);
-            const dataOffset = _program.data.length;
-            if (dataOffset > ushort.max || bytes.length + 1 > ushort.max)
-                throw new Exception(text(
-                    "String literal too large for bytecode core: ",
-                    expressionChars(string_),
-                ));
-            _program.data ~= bytes;
-            _program.data ~= 0;
-            _code ~= Instruction(
-                Op.loadDataPointer, argumentArea, cast(ushort) dataOffset,
-            );
-        } else
-            emitCallArgument(argumentArea, false, argument);
-
-        return new ushort(argumentArea);
-    }
-
-    private bool isAddressOfLocal(Expression argument) {
+    private ushort* addressOfLocalOffset(Expression argument) {
         auto target = argument;
         while (auto cast_ = target.isCastExp)
             target = cast_.e1;
 
-        if (auto address = target.isAddrExp)
-            target = address.e1;
-        else if (auto symOff = target.isSymOffExp)
-            return (symOff.var.isVarDeclaration in _locals) !is null;
-        else
-            return false;
+        if (auto symOff = target.isSymOffExp) {
+            if (symOff.offset != 0)
+                return null;
+            auto declaration = symOff.var.isVarDeclaration;
+            return declaration is null ? null : declaration in _locals;
+        }
 
+        auto address = target.isAddrExp;
+        if (address is null)
+            return null;
+
+        target = address.e1;
         while (auto cast_ = target.isCastExp)
             target = cast_.e1;
 
-        if (auto variable = target.isVarExp) {
-            auto declaration = variable.var.isVarDeclaration;
-            return declaration !is null && declaration in _locals;
-        }
-        return false;
+        auto variable = target.isVarExp;
+        auto declaration = variable is null
+            ? null
+            : variable.var.isVarDeclaration;
+        return declaration is null ? null : declaration in _locals;
+    }
+
+    // Emit a string literal's bytes plus a NUL terminator into the data
+    // segment, and a `loadDataPointer` instruction pointing `slot` at them.
+    private void emitStringLiteralArgument(in ushort slot, StringExp string_) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length + 1 > ushort.max)
+            throw new Exception(text(
+                "String literal too large for bytecode core: ",
+                expressionChars(string_),
+            ));
+        _program.data ~= bytes;
+        _program.data ~= 0;
+        _code ~= Instruction(Op.loadDataPointer, slot, cast(ushort) dataOffset);
+    }
+
+    // A native call's argument area is N contiguous fixed-stride slots (see
+    // `nativeArgumentSlotSize` in program.d), one per argument, regardless of
+    // each argument's own width: argument `index` always lives at
+    // `argumentArea + index * nativeArgumentSlotSize`.
+    private ushort allocateNativeArgumentArea(in size_t argumentCount)
+        @safe pure
+    {
+        return allocateBytes(
+            cast(uint) (argumentCount * nativeArgumentSlotSize),
+            nativeArgumentSlotSize,
+        );
     }
 
     // Emit the native-call table entry and instruction shared by every native
@@ -7431,25 +7499,34 @@ private struct Compiler {
     private Operand* emitNativeCall(
         FuncDeclaration function_,
         Type[] argumentTypes,
-        ushort[] argumentOffsets,
-        bool[] addressOfLocalArguments,
+        in ushort argumentArea,
+        in ushort[] outParameterOffsets,
     ) {
-        const returnScalar =
-            scalarType(function_.type.toBasetype.nextOf.toBasetype);
+        import dmd.astenums: TY;
+
+        // `auto`, not `const`: `pointerElementScalar` below needs a mutable
+        // `Type` and DMD's `toBasetype`/`nextOf` are non-const methods.
+        auto returnType = function_.type.toBasetype.nextOf;
+        const returnScalar = scalarType(returnType.toBasetype);
         const destination = allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
-        _program.nativeCalls ~= NativeCall(
-            function_,
-            argumentTypes,
-            argumentOffsets,
-            addressOfLocalArguments,
-        );
+        _program.nativeCalls ~=
+            NativeCall(function_, argumentTypes, outParameterOffsets.dup);
         _code ~= Instruction(
             Op.nativeCall,
             cast(ushort) nativeIndex,
-            0,
+            argumentArea,
             destination,
         );
+        // A native-memory pointer return (e.g. `malloc`'s `void*`): mark the
+        // operand as a pointer holding a raw host address, matching every
+        // other pointer-valued operand's shape, so callers such as
+        // `compilePointerDeclaration` and pointer comparisons treat it as one.
+        if (returnType.toBasetype.ty == TY.Tpointer)
+            return new Operand(
+                destination, ScalarType.ulong_, false, true,
+                pointerElementScalar(returnType),
+            );
         return new Operand(destination, returnScalar);
     }
 
