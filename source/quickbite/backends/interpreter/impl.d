@@ -486,6 +486,19 @@ private struct Walker {
             return classDefaultValue(class_)
                 .withClassFieldNamed("msg", Value(message));
 
+        // Fully-qualified name (e.g. a native throw's `classinfo.name`) may
+        // not be lexically visible from the current call frame but still be
+        // known to the frontend, since druntime/Phobos modules the source
+        // imports are semantically analysed by dmd-as-a-library. Reusing
+        // classDefaultValue/classTypeNames here (rather than the string
+        // heuristic below) gives the real base-class chain: correct
+        // Error-vs-Exception classification and intermediate bases, instead
+        // of `nativeExceptionRoot`'s name-prefix guess (interpreter.md
+        // §9.10).
+        if (auto class_ = classDeclarationByQualifiedName(className))
+            return classDefaultValue(class_)
+                .withClassFieldNamed("msg", Value(message));
+
         return nativeExceptionValue(message, className);
     }
 
@@ -1579,7 +1592,7 @@ private struct Walker {
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(call.f, arguments, argumentExpressions);
+        child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(call.f.fbody);
@@ -1949,6 +1962,11 @@ private struct Walker {
                 call.arguments !is null &&
                 call.arguments.length == interpreterBuiltinArgumentCount(builtin)
             ) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "tryInterpreterBuiltin");
+
                 with (InterpreterBuiltin) final switch (builtin) {
                     case fabs:
                     case isInfinity:
@@ -1969,22 +1987,42 @@ private struct Walker {
             }
         }
 
-        if (call.f !is null && isDruntimeArrayOpAddAssign(call.f))
+        if (call.f !is null && isDruntimeArrayOpAddAssign(call.f)) {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+
+            enforceInterceptionPolicy(call.f, "isDruntimeArrayOpAddAssign");
             return runArrayOpAddAssignCall(call);
+        }
 
-        if (call.f !is null && functionName(call.f) == "memcpy")
+        if (call.f !is null && functionName(call.f) == "memcpy") {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+
+            enforceInterceptionPolicy(call.f, "memcpy");
             return runMemcpyCall(call);
+        }
 
-        if (call.f !is null && isEmplaceRef(call.f))
+        if (call.f !is null && isEmplaceRef(call.f)) {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+
+            enforceInterceptionPolicy(call.f, "isEmplaceRef");
             return runEmplaceRefCall(call);
+        }
 
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
                 GCArrayHook, tryGCArrayHook;
 
             GCArrayHook gcArrayHook;
-            if (tryGCArrayHook(call.f, gcArrayHook))
+            if (tryGCArrayHook(call.f, gcArrayHook)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "tryGCArrayHook");
                 return runGCArrayHookCall(call, gcArrayHook);
+            }
         }
 
         if (call.f !is null) {
@@ -1992,8 +2030,13 @@ private struct Walker {
                 AssocArrayHook, tryAssocArrayHook;
 
             AssocArrayHook assocArrayHook;
-            if (tryAssocArrayHook(call.f, assocArrayHook))
+            if (tryAssocArrayHook(call.f, assocArrayHook)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "tryAssocArrayHook");
                 return runAssocArrayHookCall(call, assocArrayHook);
+            }
         }
 
         if (call.f !is null) {
@@ -2001,8 +2044,13 @@ private struct Walker {
                 AtomicHook, tryAtomicHook;
 
             AtomicHook atomicHook;
-            if (tryAtomicHook(call.f, atomicHook))
+            if (tryAtomicHook(call.f, atomicHook)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "tryAtomicHook");
                 return runAtomicHookCall(call, atomicHook);
+            }
         }
 
         auto stringForeachApply = call.f is null
@@ -2011,8 +2059,16 @@ private struct Walker {
         if (
             stringForeachApply !is null &&
             isStringForeachApplyCall(stringForeachApply)
-        )
+        ) {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+
+            enforceInterceptionPolicy(
+                stringForeachApply,
+                "isStringForeachApplyCall",
+            );
             return runStringForeachApplyCall(call, stringForeachApply);
+        }
 
         Value[] arguments;
         Expression[] argumentExpressions;
@@ -2034,8 +2090,13 @@ private struct Walker {
             import quickbite.backends.interpreter.builtins:
                 isStdConvText, stdConvTextCall;
 
-            if (isStdConvText(call.f))
+            if (isStdConvText(call.f)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "isStdConvText");
                 return stdConvTextCall(arguments);
+            }
         }
 
         if (auto dot = call.e1.isDotVarExp) {
@@ -2240,8 +2301,16 @@ private struct Walker {
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
             if (isZeroFormalCall(function_) && arguments.length == 5) {
-                if (functionName(function_) == "enforceRawArraysConformableNogc")
+                if (functionName(function_) == "enforceRawArraysConformableNogc") {
+                    import quickbite.backends.interpreter.interception_guard:
+                        enforceInterceptionPolicy;
+
+                    enforceInterceptionPolicy(
+                        function_,
+                        "enforceRawArraysConformableNogc",
+                    );
                     return Value(false);
+                }
 
                 throw new Exception("Unsupported eval call.");
             }
@@ -3051,7 +3120,7 @@ private struct Walker {
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(function_, arguments, argumentExpressions);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(function_.fbody);
@@ -3125,7 +3194,7 @@ private struct Walker {
             child.thisValue = receiver;
         }
         child.hasThis = true;
-        child.bindFunctionParameters(function_, arguments, argumentExpressions);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(function_.fbody);
@@ -3390,6 +3459,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions = null,
+        Value[VarDeclaration] callerLocals = null,
     ) {
         if (arguments.length == 0) {
             if (function_.parameters !is null && function_.parameters.length != 0)
@@ -3410,6 +3480,7 @@ private struct Walker {
                     index < argumentExpressions.length
                         ? argumentExpressions[index]
                         : null,
+                    callerLocals,
                 );
                 continue;
             }
@@ -3425,9 +3496,20 @@ private struct Walker {
         }
     }
 
+    // A `lazy` parameter is a delegate over the *caller's live frame*, not a
+    // value captured at call time (ai/plans/interpreter.md §9.10). `locals`
+    // is a D associative array: a reference to a heap-allocated hash table.
+    // Storing `callerLocals` here without `.dup` (and forwarding it without
+    // `.dup` below, and substituting it without `.dup` in `runLazyArgument`)
+    // makes the captured environment the *same* table the caller's `locals`
+    // still points at, so any mutation performed while evaluating the lazy
+    // expression (e.g. a forwarded range's cursor advancing) is visible to
+    // the declaring frame immediately, exactly as it is for a real D
+    // closure — no separate write-back step is needed.
     private void bindLazyFunctionParameter(
         VarDeclaration parameter,
         Expression argumentExpression,
+        Value[VarDeclaration] callerLocals,
     ) {
         locals[parameter] = Value.undisplayable;
 
@@ -3435,7 +3517,7 @@ private struct Walker {
             if (auto expression = variable in lazyArgumentExpressions) {
                 lazyArgumentExpressions[parameter] = *expression;
                 if (auto captured = variable in lazyArgumentLocals)
-                    lazyArgumentLocals[parameter] = (*captured).dup;
+                    lazyArgumentLocals[parameter] = *captured;
                 return;
             }
         }
@@ -3444,7 +3526,7 @@ private struct Walker {
             throw new Exception("Unsupported interpreter call arguments.");
 
         lazyArgumentExpressions[parameter] = argumentExpression;
-        lazyArgumentLocals[parameter] = locals.dup;
+        lazyArgumentLocals[parameter] = callerLocals;
     }
 
     private Value runLazyArgument(VarDeclaration variable) {
@@ -3459,10 +3541,10 @@ private struct Walker {
         auto savedLocals = locals;  // mutated below while evaluating the thunk
         scope(exit) locals = savedLocals;
 
-        locals = (*captured).dup;
-        const result = runLazyArgumentExpression(*expression);
-        lazyArgumentLocals[variable] = locals.dup;
-        return result;
+        // No `.dup`: see the comment on `bindLazyFunctionParameter`. `locals`
+        // becomes the caller's own live table for the duration of the thunk.
+        locals = *captured;
+        return runLazyArgumentExpression(*expression);
     }
 
     private Value runLazyArgumentExpression(Expression expression) {
@@ -4303,7 +4385,7 @@ private struct Walker {
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
         child.hasThis = true;
-        child.bindFunctionParameters(function_, arguments, argumentExpressions);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(function_.fbody);
@@ -4384,7 +4466,7 @@ private struct Walker {
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(call.f, arguments, argumentExpressions);
+        child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(call.f.fbody);
@@ -6610,6 +6692,26 @@ private imported!"dmd.dclass".ClassDeclaration classDeclarationByNameInScope(
     });
 
     return found;
+}
+
+
+// Unlike dynamicClassDeclarationByName's lexical-scope walk (rooted at the
+// current call frame), this searches every module the frontend has
+// semantically analysed -- covering a native throw's class even when it
+// lives in an imported (not lexically enclosing) module. classInfoName
+// equality is unambiguous here: a fully-qualified name (e.g. a native
+// `classinfo.name`) can never equal a bare identifier, so reusing
+// classDeclarationByNameInScope's dual match cannot misfire.
+private imported!"dmd.dclass".ClassDeclaration classDeclarationByQualifiedName(
+    in string name,
+) {
+    import dmd.dmodule: Module;
+
+    foreach (module_; Module.amodules)
+        if (auto class_ = classDeclarationByNameInScope(module_, name))
+            return class_;
+
+    return null;
 }
 
 

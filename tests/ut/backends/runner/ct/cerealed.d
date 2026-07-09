@@ -1197,3 +1197,338 @@ static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, L
         });
     }
 }
+
+// BytecodeNewCore omitted: lazy parameters are not yet implemented there
+// ("Unsupported call in bytecode core: expression()").
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("lazyForwardedAssertionThunkRunsExpression." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool threw(lazy int expression) {
+                try {
+                    expression;
+                    return false;
+                } catch (Exception) {
+                    return true;
+                }
+            }
+
+            void shouldThrow(lazy int expression) {
+                assert(threw(expression));
+            }
+
+            int fail() {
+                throw new Exception("expected");
+            }
+
+            unittest {
+                shouldThrow(fail);
+            }
+        });
+    }
+}
+
+// A `lazy` parameter is a delegate over the caller's live frame: reading a
+// dynamic-array local from inside the thunk must see the caller's actual
+// backing storage, not an empty default (ai/plans/interpreter.md §9.10).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("lazyArgumentReadsCallerDynamicArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte runIt(lazy ubyte expression) { return expression; }
+
+            unittest {
+                ubyte[] bytes = [1, 2, 3];
+                assert(runIt(bytes[1]) == 2);
+            }
+        });
+    }
+}
+
+// The owed §9.10 fixture: a `lazy` argument forwarded through two more
+// layers, evaluated multiple times, over a struct-typed caller local whose
+// scalar field (`index`) mutates between evaluations. Each mutation must be
+// visible to the *next* evaluation, matching a `lazy` parameter's real
+// closure-over-the-caller-frame semantics.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("decodeLazyForwardedRangeErrorSeesReaderState." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception : RangeError;
+
+            void shouldNotThrow(lazy ulong expression) {
+                try {
+                    expression;
+                } catch (Throwable throwable) {
+                    assert(false, throwable.msg);
+                }
+            }
+
+            void shouldThrowRangeError(lazy ubyte expression) {
+                assert(forwardedShouldThrowRangeError(expression));
+            }
+
+            bool forwardedShouldThrowRangeError(lazy ubyte expression) {
+                try {
+                    expression;
+                } catch (RangeError) {
+                    return true;
+                }
+
+                return false;
+            }
+
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                ulong read64() {
+                    ulong encoded;
+
+                    foreach (_; 0 .. ulong.sizeof) {
+                        encoded <<= 8;
+                        encoded |= bytes[index++];
+                    }
+
+                    return encoded;
+                }
+
+                ubyte readByte() {
+                    return bytes[index++];
+                }
+            }
+
+            unittest {
+                auto reader = Reader([
+                    0x3f, 0xf0, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,
+                    0x40, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,
+                ]);
+
+                shouldNotThrow(reader.read64);
+                shouldNotThrow(reader.read64);
+                shouldThrowRangeError(reader.readByte);
+            }
+        });
+    }
+}
+
+// The owed §9.10 fixture, distilled to a raw pointer-slice reproduction: a
+// pointer slice shrunk to `[0 .. 0]` must retain its backing allocation, so
+// a regrow through `.ptr` still sees the original storage rather than a
+// stale empty block. This is exactly what `std.array.Appender.clear`
+// (`_data.arr = _data.arr.ptr[0 .. 0]`) followed by `put`'s regrowth
+// (`arr.ptr[0 .. len + 1]`) does, but the fixture deliberately avoids
+// instantiating Phobos' `Appender`: that instantiation was the suite's
+// only `Appender!(ubyte[])` use and the sole source of the
+// `emplaceInitializer!(Appender!(ubyte[]).Data)` template instances that fed
+// the `link-set-pollution.md` flake (see the cross-track observation in
+// §9.10 below).  The raw construct also runs on `BytecodeNewCore`, which the
+// Phobos-based body could not express, so the matrix widens by one backend.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+    @("appenderClearKeepsPointerSliceBackingAllocation." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] arr = [1, 2, 3, 4];
+                auto shrunk = arr.ptr[0 .. 0];
+                auto regrown = shrunk.ptr[0 .. 1];
+                assert(regrown[0] == 1);
+            }
+        });
+    }
+}
+
+// The owed §9.10 fixture: a class reference passed by value to a function
+// that mutates a field must leave the mutation visible to the caller, since
+// a class is a reference type. Shim-backed by `writeBackByValueClassArguments`
+// (§9.10 deletion inventory) — this fixture pins the observable behaviour,
+// not the shim's mechanism, and must stay green once the native-layout
+// object model replaces it.
+// BytecodeNewCore omitted: class-field assignment is not yet implemented
+// there ("Unsupported assignment in bytecode core: box.value = 42").
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("classReferencePassedByValueMutatesObject." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Box {
+                int value;
+            }
+
+            void fill(Box box) {
+                box.value = 42;
+            }
+
+            unittest {
+                auto box = new Box;
+
+                fill(box);
+
+                assert(box.value == 42);
+            }
+        });
+    }
+}
+
+// The owed §9.10 ratchet fixture: `emplaceRef` on a *scalar* array element is
+// exactly the case §9.10 says the `runEmplaceRefCall`/`isEmplaceRef` shim
+// (impl.d) is provably equivalent to the real semantics — a plain value
+// write is the whole of `emplaceRef`'s job for a scalar, so there is no
+// construction side effect to skip. Red-first proof: applied alone at
+// `bce523cc^` (the parent of fix commit `bce523cc`, "interpreter: handle
+// emplaceRef writes"), `Interpreter` fails with `cannot read uninitialized
+// variable `.trustedMoveImpl.result` in ctfe` and `SystemLinker` is green.
+// BytecodeNewCore omitted for an unrelated reason: its `_d_assert_fail`
+// cannot render a `char[]`-vs-string-literal `==` comparison
+// ("Unsupported comparison assert in bytecode core: _d_assert_fail(...)"),
+// confirmed independent of `emplaceRef` by a probe with no `emplaceRef` call
+// at all that fails identically, and by an `emplaceRef`-using probe that
+// asserts via scalar comparisons instead, which passes on BytecodeNewCore.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("emplaceRefWritesArrayElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            unittest {
+                char[] message;
+                message.length = 2;
+
+                emplaceRef(message[0], 'o');
+                emplaceRef(message[1], 'k');
+
+                assert(message == "ok");
+            }
+        });
+    }
+}
+
+// The owed §9.10 gap fixture: `emplaceRef` on a struct element with a
+// postblit must run it exactly once, matching real construction semantics.
+// The `runEmplaceRefCall`/`isEmplaceRef` shim (impl.d) writes the field via
+// a raw `runExpression` + `writeLocation`, skipping the postblit entirely —
+// this is one of the two documented shim defects.
+// Interpreter omitted per §8: the omission is the documentation of this
+// construction-side-effect gap. Verbatim red: `assert(counters[0].value ==
+// 42)` passes (the shim moves the correct bits) but
+// `assert(counters[0].postblitCount == 1)` fails with `0 != 1` — the
+// postblit body never runs. Retire the omission when value.md's
+// native-layout track lands and the shim is deleted (§9.10).
+// BytecodeNewCore omitted for an unrelated reason: passing a struct by
+// value through a `ref` array-element argument (here, `emplaceRef`'s
+// generated wrapper constructor) is only partially supported there
+// ("Unsupported variable in bytecode core: source"), confirmed by a
+// second, `emplaceRef`-free probe (a plain `ref` function assigning a
+// by-value struct parameter to an array element) that fails on
+// BytecodeNewCore with the sibling diagnostic "Unsupported ref argument
+// in bytecode core: counters[0]".
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+    @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            struct Counter {
+                int value;
+                int postblitCount;
+
+                this(this) {
+                    postblitCount++;
+                }
+            }
+
+            unittest {
+                Counter[] counters;
+                counters.length = 1;
+
+                Counter source;
+                source.value = 42;
+
+                emplaceRef(counters[0], source);
+
+                assert(counters[0].value == 42);
+                assert(counters[0].postblitCount == 1);
+            }
+        });
+    }
+}
+
+// The owed §9.10 gap fixture: `emplaceRef`'s 0-arg (default-init) form must
+// overwrite the destination with `T.init`. The `runEmplaceRefCall` shim
+// (impl.d) throws `Unsupported eval call.` whenever the call has other than
+// exactly 2 arguments, so the 1-argument `emplaceRef(chunk)` overload never
+// reaches its 2-arg path — this is the first half of the shim's documented
+// refusal.
+// Interpreter omitted per §8: the omission is the documentation of this
+// refusal. Verbatim red: `Unsupported eval call.`
+// BytecodeNewCore omitted for the same unrelated ref-array-element gap
+// noted above: `Unsupported ref argument in bytecode core: message[0]`.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+    @("emplaceRefRefusesZeroArgDefaultInit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            unittest {
+                char[] message;
+                message.length = 1;
+                message[0] = 'x';
+
+                emplaceRef(message[0]);
+
+                assert(message[0] == char.init);
+            }
+        });
+    }
+}
+
+// The owed §9.10 gap fixture: `emplaceRef`'s multi-arg (constructor) form
+// must forward its arguments to the destination's constructor. Same shim
+// refusal as above, other direction: 3 call arguments (chunk, 1, 2) also
+// fails `runEmplaceRefCall`'s `!= 2` check — the second half of the shim's
+// documented refusal.
+// Interpreter omitted per §8: the omission is the documentation of this
+// refusal. Verbatim red: `Unsupported eval call.`
+// BytecodeNewCore omitted: unlike the sibling gap fixtures above, this
+// shape does not refuse cleanly — it crashes (SIGSEGV, exit code 139, no
+// exception text at all). This is a distinct, pre-existing, unrelated
+// BytecodeNewCore crash, not an `emplaceRef` defect; recorded as a
+// cross-track observation for ai/plans/bytecode.md (not fixed here).
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+    @("emplaceRefRefusesMultiArgConstructor." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            struct Point {
+                int x;
+                int y;
+
+                this(int x_, int y_) {
+                    x = x_;
+                    y = y_;
+                }
+            }
+
+            unittest {
+                Point[] points;
+                points.length = 1;
+
+                emplaceRef(points[0], 1, 2);
+
+                assert(points[0].x == 1);
+                assert(points[0].y == 2);
+            }
+        });
+    }
+}

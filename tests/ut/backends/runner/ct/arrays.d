@@ -1567,3 +1567,67 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
         });
     }
 }
+
+// Owed §9.10 gap fixture (ai/plans/interpreter.md): the oracle's real
+// `reserve` contract, not the gc_reserveArrayCapacity shim's echoed return
+// value. Interpreter omitted: the shim fabricates a capacity number without
+// growing the value model's backing allocation, so `arr.ptr` before and
+// after filling to the reserved capacity compares unequal (representation
+// debt, retires with value.md's native-layout track). Ctfe omitted:
+// pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE
+// refuses at compile time. BytecodeNewCore omitted: `.ptr` of an array is
+// not yet implemented there.
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+    @("dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] arr;
+                const reserved = arr.reserve(8);
+                assert(reserved >= 8);
+
+                auto ptr = arr.ptr;
+                foreach (i; 0 .. 8)
+                    arr ~= i;
+
+                assert(arr.ptr is ptr);
+            }
+        });
+    }
+}
+
+// Owed §9.10 gap fixture (ai/plans/interpreter.md): `assumeSafeAppend`
+// through an interior pointer (a slice that does not start at its backing
+// block's base). Interpreter omitted: `gc_getArrayUsed` rebuilds its walk
+// from the incoming pointer's offset but loops the full backing-block
+// length, so it overruns and throws for any interior pointer
+// (representation debt, retires with value.md's native-layout track). Ctfe
+// omitted: `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at
+// all. BytecodeNewCore omitted: same `.ptr`-of-array gap as above.
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+    @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] arr;
+                arr.reserve(8);
+                arr ~= 1;
+                arr ~= 2;
+                arr ~= 3;
+                arr ~= 4;
+
+                auto tail = arr[2 .. $];
+                tail.assumeSafeAppend();
+                auto tailPtr = tail.ptr;
+                tail ~= 99;
+
+                assert(tail.ptr is tailPtr);
+                assert(tail[2] == 99);
+            }
+        });
+    }
+}
