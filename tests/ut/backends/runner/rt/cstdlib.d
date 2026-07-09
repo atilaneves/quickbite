@@ -328,7 +328,9 @@ static foreach (backend; AliasSeq!(
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+)) {
 
     @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
     @Tags(backend.stringof)

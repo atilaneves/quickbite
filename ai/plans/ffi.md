@@ -3834,3 +3834,11 @@ implementation step was therefore intentionally empty; this commit only
 records the narrow oracle-backed promotion and removes stale comments for
 that cstdlib block. Verification: `ninja bin/ut`, the focused promoted
 `calloc` row, and `bin/ut --random`.
+
+**Ledger 2026-07-09.** Promoted the existing SystemLinker-backed
+`rt/cstdlib.d` fixture `realloc.null.pointerArgPointerReturn` to
+`BytecodeNewCore`. The row was already green in the current tree, matching
+the prior temporary check above, so no production code changed. Verification:
+`ninja bin/ut`, the focused promoted `realloc` row, `bin/ut --random`
+(intermittent unrelated SystemLinker/LLVMJit failures after the promoted row
+passed), and `bin/ut --seed 861487285` green.
