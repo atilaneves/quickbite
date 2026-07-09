@@ -53,7 +53,7 @@ unittest {
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
 
-    array.ownership.should == array.block.ownership;
+    array.ownership.should == NativeBlock.Ownership.owned;
 }
 
 
@@ -89,11 +89,23 @@ unittest {
 
 @("NativeArray.element.outOfRangeIndexThrows")
 unittest {
-    import core.exception: ArraySliceError;
-
     auto array = NativeArray.allocate(Type.tint32, 3);
 
-    array.element(3).shouldThrow!ArraySliceError;
+    array.element(3).shouldThrow!Exception;
+}
+
+
+@("NativeArray.element.wrappingIndexThrowsInsteadOfAliasingAnotherElement")
+unittest {
+    auto array = NativeArray.allocate(Type.tint64, 4);
+    array.element(1)[0] = 42;
+
+    // without the bounds check, index * stride wraps to 8 == element 1's
+    // byte offset, and this silently returned element 1's bytes instead of
+    // failing.
+    const wrappingIndex = size_t.max / 8 + 2;
+
+    array.element(wrappingIndex).shouldThrow;
 }
 
 

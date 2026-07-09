@@ -400,6 +400,26 @@ still owed: capacity through real storage, then the struct phase, then
 class objects -- and the actual interpreter call site that gives any of
 these types somewhere to be used.
 
+Progress 2026-07-09 (post-merge review fix): the paragraph above's claim
+that `element` fails an out-of-range index via "ordinary D slice bounds
+checking" was wrong. `index * stride` is computed before slicing, and
+that multiply is itself unchecked -- a large enough `index` (verified
+with the same `size_t.max / 8 + 2` shape as the `allocate` overflow
+regression test) wraps the product back inside the block and returns a
+different, real element's bytes instead of failing. `element` now checks
+`index < length` first and throws `Exception` on failure, matching
+`allocate`/`byteLength`/`typeByteSize`'s existing failure style. That
+check is also what makes the subsequent multiply provably wrap-free:
+`allocate` already rejected any `length * stride` that overflows
+`size_t`, so once `index < length` holds, `index * stride < length *
+stride` can't overflow either -- no second `mulu` needed. Whether the
+eventual Walker call site should re-throw this as a `RangeError` for
+compiled-D parity (`arr[i]` throws `core.exception.RangeError`, an
+`Error`, not an `Exception`) is that call site's decision when it wires
+up, not this container's. `layout.d` also now asserts a 64-bit host at
+compile time, since DMD reports type sizes as 64-bit `uinteger_t`
+values that the module narrows to `size_t`.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
