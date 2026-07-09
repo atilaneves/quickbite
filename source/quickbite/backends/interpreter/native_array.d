@@ -37,7 +37,7 @@ public struct NativeArray {
     // overflowing `length * stride` throws rather than silently wrapping
     // to a too-small block underneath a handle that still claims `length`.
     public static NativeArray allocate(
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         in size_t length,
     ) @safe {
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
@@ -54,7 +54,7 @@ public struct NativeArray {
         );
     }
 
-    public inout(imported!"dmd.mtype".Type) elementType() inout pure nothrow @nogc @safe {
+    public inout(Type) elementType() inout pure nothrow @nogc @safe {
         return _elementType;
     }
 
