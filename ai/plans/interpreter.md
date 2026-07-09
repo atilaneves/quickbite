@@ -1358,12 +1358,90 @@ runMemcpyCall (impl.d, pre-#386)      same category; already         same as gc_
                                       intrinsics-layer candidate
 ```
 
-Not representation debt but known-defective, same PR:
-`nativeExceptionRoot` classifies `Error` vs `Exception` by name prefix
-(`core.exception.*`/`object.*` + `Error` suffix), so a user or third-party
-class deriving `Error` is misclassified as `Exception`. Fix via the frontend's
-`ClassDeclaration` base-class chain (druntime is semantically analyzed by
-dmd-as-a-library); this is an ordinary language-surface bug, not deferred.
+**Resolved (2026-07-09, follow-up session).** The `nativeExceptionRoot` defect
+noted here (classifying `Error` vs `Exception` by name prefix
+(`core.exception.*`/`object.*` + `Error` suffix), and fabricating a type-name
+list that jumps straight from the thrown class to its root, omitting
+intermediate bases) was fixed at the root.
+
+`errorIsNotCaughtByExceptionHandler` (`ct/exceptions.d`) does **not** cover
+this: it does `throw new Error("fatal")` from interpreted code, which goes
+through `runNewClassExpression`/`classDefaultValue` using the real
+`ClassDeclaration` dmd already resolved for the `new` expression — it never
+calls `nativeExceptionBaseObject`/`nativeExceptionRoot` at all. Only two call
+sites reach that heuristic: `throwRangeError` (a hardcoded
+`"core.exception.RangeError"` literal, always correctly classified by the
+prefix pattern) and `nativeExceptionObject` (FFI-caught native throwables,
+`className` from the real `throwable.classinfo.name`).
+
+Reproducing defect 1 (Error misclassification) needed care: `ffi/core.d`'s
+native call site only ever `catch (Exception exception)`s ("Error stays
+fatal" per its own comment), so a natively-thrown `Error` subclass can *not*
+reach `nativeExceptionRoot` as the directly-thrown object — it propagates as
+a raw, uncaught native `Throwable` straight through the whole interpreter
+call stack (confirmed: a first fixture that threw a dependency-image `Error`
+subclass directly crashed the whole `bin/ut` process with a native
+backtrace, not a graceful `TestResult` failure — a real but separate,
+out-of-scope bug). The reachable route is `nativeCallExceptionFrom`'s
+`.next`-chain recursion (`ffi.md` §34.13), which follows `.next` regardless
+of its dynamic type: a native `Exception` (caught normally) chained to an
+`Error` via `.next` carries that `Error`'s `classinfo.name` into
+`nativeExceptionBaseObject` when the interpreted code reads and rethrows
+`caught.next`.
+
+Red-first evidence (both added to `tests/ut/backends/runner/rt/
+dependency_image.d`, `SystemLinker` oracle vs `Interpreter`, pre-fix):
+
+- `dependencyImage.nativeChainedErrorSubclass.Interpreter` (defect 1): a
+  dependency image throws `Exception("outer failure")` chained
+  (`.next`) to `DependencyError : Error` ("root cause"). Interpreted code
+  catches the outer `Exception`, then rethrows `caught.next` and expects
+  `catch (Error)` to match. Oracle: passed. Interpreter (pre-fix): failed —
+  `Expected: true / Got: false` on `interpreted[0].passed`, because
+  `nativeExceptionRoot("dep_image_chained_error_fixture.DependencyError")`
+  doesn't match `"core.exception."`/`"object."` prefix, so root is wrongly
+  `"Exception"` and the rethrown value's fabricated type names omit
+  `"Error"`.
+- `dependencyImage.nativeIntermediateBaseException.Interpreter` (defect 2):
+  a dependency image throws `DependencyException : DependencyBaseException :
+  Exception`; interpreted code catches `DependencyBaseException`. Oracle:
+  passed. Interpreter (pre-fix): failed — `interpreted[0].message` was
+  `"dependency failed"` (the uncaught exception's own message), because the
+  fabricated type-name list jumps straight from `DependencyException` to
+  `"Exception"`, omitting the intermediate `DependencyBaseException`.
+
+**The fix.** `nativeExceptionBaseObject` (`impl.d`) gained a second
+resolution attempt between the existing lexical-scope search
+(`dynamicClassDeclarationByName`) and the string-heuristic fallback: a new
+free function `classDeclarationByQualifiedName` searches every module
+`Module.amodules` the frontend has semantically analysed (druntime/Phobos
+modules the source imports are analysed by dmd-as-a-library, so this reaches
+classes outside the lexical scope chain) for an exact `classInfoName` match,
+reusing the existing `classDeclarationByNameInScope` walk (its dual
+`className`/`classInfoName` match cannot misfire here: a fully-qualified name
+can never equal a bare identifier). When found, the real `ClassDeclaration`
+feeds the already-correct `classDefaultValue`/`classTypeNames`/
+`classHierarchy` path — the true base chain, including intermediate bases and
+interfaces — instead of `nativeExceptionRoot`'s name-prefix guess. The string
+heuristic remains only as the last-resort fallback for classes the frontend
+genuinely does not know (e.g. one defined solely inside a loaded shared
+library with no corresponding import in the interpreted source).
+
+`throwRangeError` is not regressed:
+`decodeLazyForwardedRangeErrorSeesReaderState` (`ct/cerealed.d`) explicitly
+`import`s `core.exception : RangeError;` and `catch (RangeError)`s, so with
+this fix `core.exception.RangeError` now resolves via the new
+qualified-module search (previously it happened to be correctly classified
+by the string heuristic instead); it stays green.
+
+Matrix: `dependencyImage.nativeChainedErrorSubclass.Interpreter` and
+`dependencyImage.nativeIntermediateBaseException.Interpreter` land
+`Interpreter`-only (matching this file's existing dependency-image
+convention of an inline `SystemLinker` oracle rather than a
+`static foreach` backend matrix — other backends have no dlopen'd
+dependency-image FFI machinery to exercise). Full regression sweep after the
+fix: `ct/exceptions.d`, `ct/cerealed.d`, and `rt/dependency_image.d` together
+— 314 tests, 0 failed, 1 expected failure.
 
 **Owed fixtures (work item, 2026-07-09).** #386 landed its fixes without the
 §8 red-first fixtures; the drafts and reconstruction procedure are in the
@@ -1377,9 +1455,6 @@ migration — a fixture asserts behaviour, so it survives the shim's deletion):
                                                     elements only, where the
                                                     shim is provably
                                                     equivalent)
-- native RangeError-is-an-Error fixture (verify the existing
-  exception.errorIsNotCaughtByExceptionHandler covers it; add narrow
-  fixture if not)
 
 gap fixtures (red on Interpreter, land with Interpreter OMITTED per §8 —
 they document what the shims get wrong and what native layout must re-earn):

@@ -486,6 +486,19 @@ private struct Walker {
             return classDefaultValue(class_)
                 .withClassFieldNamed("msg", Value(message));
 
+        // Fully-qualified name (e.g. a native throw's `classinfo.name`) may
+        // not be lexically visible from the current call frame but still be
+        // known to the frontend, since druntime/Phobos modules the source
+        // imports are semantically analysed by dmd-as-a-library. Reusing
+        // classDefaultValue/classTypeNames here (rather than the string
+        // heuristic below) gives the real base-class chain: correct
+        // Error-vs-Exception classification and intermediate bases, instead
+        // of `nativeExceptionRoot`'s name-prefix guess (interpreter.md
+        // §9.10).
+        if (auto class_ = classDeclarationByQualifiedName(className))
+            return classDefaultValue(class_)
+                .withClassFieldNamed("msg", Value(message));
+
         return nativeExceptionValue(message, className);
     }
 
@@ -6623,6 +6636,26 @@ private imported!"dmd.dclass".ClassDeclaration classDeclarationByNameInScope(
     });
 
     return found;
+}
+
+
+// Unlike dynamicClassDeclarationByName's lexical-scope walk (rooted at the
+// current call frame), this searches every module the frontend has
+// semantically analysed -- covering a native throw's class even when it
+// lives in an imported (not lexically enclosing) module. classInfoName
+// equality is unambiguous here: a fully-qualified name (e.g. a native
+// `classinfo.name`) can never equal a bare identifier, so reusing
+// classDeclarationByNameInScope's dual match cannot misfire.
+private imported!"dmd.dclass".ClassDeclaration classDeclarationByQualifiedName(
+    in string name,
+) {
+    import dmd.dmodule: Module;
+
+    foreach (module_; Module.amodules)
+        if (auto class_ = classDeclarationByNameInScope(module_, name))
+            return class_;
+
+    return null;
 }
 
 
