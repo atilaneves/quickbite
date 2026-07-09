@@ -2227,9 +2227,15 @@ private struct Walker {
             if (isStdConvText(call.f)) {
                 import quickbite.backends.interpreter.interception_guard:
                     enforceInterceptionPolicy;
+                import quickbite.frontend.dmd.types: isCharacterArrayType;
 
                 enforceInterceptionPolicy(call.f, "isStdConvText");
-                return stdConvTextCall(arguments);
+                bool[] rawStringArguments;
+                foreach (argumentExpression; argumentExpressions)
+                    rawStringArguments ~= isCharacterArrayType(
+                        argumentExpression.type,
+                    );
+                return stdConvTextCall(arguments, rawStringArguments);
             }
         }
 

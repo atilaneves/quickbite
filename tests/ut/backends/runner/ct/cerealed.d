@@ -1075,6 +1075,46 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("arrayTooShortExceptionMessageIncludesBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.conv: text;
+
+            void failIfTooShort(ubyte[] bytes, ulong length) {
+                const needed = length;
+                if (needed > bytes.length)
+                    throw new Exception(text(
+                        "Not enough bytes left to decerealise ubyte[] of ",
+                        length,
+                        " elements\n",
+                        "Bytes left: ",
+                        bytes.length,
+                        ", Needed: ",
+                        needed,
+                        ", bytes: ",
+                        bytes,
+                    ));
+            }
+
+            unittest {
+                try {
+                    failIfTooShort([1, 2], 8);
+                    assert(false);
+                } catch (Exception exception) {
+                    assert(
+                        exception.msg ==
+                        "Not enough bytes left to decerealise ubyte[] of 8 elements\n" ~
+                        "Bytes left: 2, Needed: 8, bytes: [1, 2]",
+                        exception.msg,
+                    );
+                }
+            }
+        });
+    }
+}
+
 
 
 /++

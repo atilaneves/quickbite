@@ -2094,6 +2094,58 @@ path,
 `.Interpreter`, with `SystemLinker` reporting
 `unittest symbol not found in shared library` during that test's setup.
 
+**Landed (2026-07-09, `std.conv.text` string-array rendering).** The
+approved `arrayTooShortExceptionMessageIncludesBytes` fixture was added to
+`ct/cerealed.d` before production changes. Red-first evidence: `SystemLinker`
+passed, while `Interpreter` failed with quoted fragments in the message:
+
+```text
+""Not enough bytes left to decerealise ubyte[] of "8" elements
+""Bytes left: "2", Needed: "8", bytes: "[1, 2]"
+```
+
+The first local fix made the fixture pass but did not clear the package rung:
+the real cerealed path builds the expected message with
+`shouldThrowWithMessage`, where `e.msg.array.dup.text` passed a `char[]` to
+`std.conv.text`. The interpreter was rendering that character array as a
+normal range, producing `[N, o, t, ...]`.
+
+The fix keeps the `std.conv.text` interception local. It renders operands raw
+when their expression type is a character array, and still uses normal array
+display for non-string arrays such as the fixture's `ubyte[]` payload.
+Existing string-display values remain raw through the same helper.
+
+Verification after the fix:
+
+```text
+ninja bin/ut
+bin/ut <arrayTooShortExceptionMessageIncludesBytes.SystemLinker>
+bin/ut <arrayTooShortExceptionMessageIncludesBytes.Interpreter>
+```
+
+The focused oracle and interpreter fixture are both green. The cerealed package
+remeasure used both backends:
+
+```text
+bin/bench.sh -b system-linker -b interpreter --dub cerealed
+```
+
+It prepared 32/32 modules and the previous
+`Not enough bytes left to decerealise ubyte[] of 8 elements` mismatch is gone.
+The current first visible mismatch is now the signed-byte/value frontier:
+
+```text
+Expected: [1, 3, 254, 5, 252]
+```
+
+`bin/ut --random` ran 2975 tests with seed `3364058692` and failed one
+unrelated order-sensitive `LLVMJit` struct test,
+`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`.LLVMJit`. The required seed check, `bin/ut --seed 3364058692`, failed one
+unrelated `SystemLinker` struct test,
+`ut.backends.runner.ct.structs.struct.scalarFieldReadWrite.SystemLinker`,
+because `mold` could not open a temporary object file under `/tmp`.
+
 ## 10. Done
 
 ```text
