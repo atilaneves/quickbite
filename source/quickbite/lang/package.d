@@ -978,6 +978,19 @@ public struct Value {
         );
     }
 
+    public string[] classTypeNames() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) => object.typeNames.dup,
+            (_) {
+                throw new Exception("Expected class object.");
+                string[] empty;
+                return empty;
+            },
+        );
+    }
+
     public bool isArray() const @safe pure nothrow {
         import std.sumtype: match;
 

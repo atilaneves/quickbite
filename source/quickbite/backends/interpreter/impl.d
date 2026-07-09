@@ -89,6 +89,8 @@ private struct Walker {
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
 
+    private Throwable[const(void)*] nativeThrowableRoots;
+
     private Value[VarDeclaration] locals;
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
@@ -459,7 +461,19 @@ private struct Walker {
     private void throwNativeException(
         imported!"quickbite.ffi".NativeCallException exception,
     ) {
+        rootNativeException(exception);
         throw new InterpretedException(nativeExceptionObject(exception));
+    }
+
+    private void rootNativeException(
+        imported!"quickbite.ffi".NativeCallException exception,
+    ) {
+        if (exception.nativeThrowableObjectPointer !is null)
+            nativeThrowableRoots[exception.nativeThrowableObjectPointer] =
+                exception.nativeThrowable;
+
+        if (exception.chainedNext !is null)
+            rootNativeException(exception.chainedNext);
     }
 
     // Rebuild the captured native exception chain as linked interpreted
@@ -545,12 +559,22 @@ private struct Walker {
         if (classType is null || classType.sym is null)
             return object;
 
+        return nativeExceptionObjectWithClassFields(classType.sym, object);
+    }
+
+    private Value nativeExceptionObjectWithClassFields(
+        imported!"dmd.dclass".ClassDeclaration class_,
+        in Value object,
+    ) {
+        if (!object.hasClassFieldNamed(nativeExceptionObjectPointerField))
+            return object;
+
         const pointer = object
             .classFieldNamed(nativeExceptionObjectPointerField)
             .asNativePointer;
         string[] fieldNames;
         Value[] fields;
-        foreach (field; classFields(classType.sym)) {
+        foreach (field; classFields(class_)) {
             const name = variableName(field);
             fieldNames ~= name;
             fields ~= object.hasClassFieldNamed(name)
@@ -559,8 +583,8 @@ private struct Walker {
         }
 
         return withNativeExceptionObjectPointer(Value.classValue(
-            classInfoName(classType.sym),
-            classTypeNames(classType.sym),
+            object.classTypeName,
+            object.classTypeNames,
             fieldNames,
             fields,
         ), pointer);
@@ -5382,7 +5406,7 @@ private struct Walker {
             throw new Exception("Unsupported class cast target.");
 
         return value.classHasType(className(classType.sym))
-            ? value
+            ? nativeExceptionObjectWithClassFields(classType.sym, value)
             : Value.null_;
     }
 
