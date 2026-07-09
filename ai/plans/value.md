@@ -426,6 +426,30 @@ is the unsafe direction (a missed-scan block holding guest pointers is a
 use-after-free), so a forgotten argument must never silently choose it --
 every caller now states `Scan.no`/`Scan.conservative` explicitly.
 
+Progress 2026-07-09 (dynamic-array slice header): `NativeArray` can now
+materialise its elements as a real D dynamic-array slice header --
+`{ size_t length; void* ptr; }` -- via `NativeArray.writeSliceHeader`,
+written into any caller-supplied `ubyte[]` destination (for now; the guest
+`T[]` variable's storage becomes the real destination once this wires into
+the interpreter). The write *aliases* the element block; it is not a
+snapshot -- writing through the reinterpreted slice is visible via
+`NativeArray.element` and vice versa, proven against the host D compiler's
+own slice layout by reinterpreting the written bytes as a real `int[]` and
+checking length, pointer identity, aliasing, and index separation all
+agree. The D slice ABI fact (length first, pointer second, `2 * size_t`
+bytes total) is stated once as a `static assert` pinning `(void[]).sizeof`,
+guarded by the host compiler rather than hand-rolled; element stride is
+still only ever `layout.typeByteSize`, never recomputed. A destination that
+is not exactly the header size throws before writing anything, rather than
+truncating or overwriting adjacent bytes. Landed on `NativeArray` itself
+(not a new module): a slice header is a fact about one array handle's
+materialisation, with no state or lifecycle of its own to justify a
+separate module. No shim is retired and no backend behaviour changed;
+nothing outside `native_array.d` and its test references the new method.
+Still missing, per the "Next PR" list: the static-vs-dynamic distinction on
+the handle, static-array inline blocks wired to a call site, capacity
+through real storage, and the struct phase.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

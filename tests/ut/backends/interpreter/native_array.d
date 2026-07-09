@@ -125,3 +125,87 @@ unittest {
 
     (attr & GC.BlkAttr.NO_SCAN).should == GC.BlkAttr.NO_SCAN;
 }
+
+
+@("NativeArray.writeSliceHeader.reinterpretedSliceHasElementCountAndBlockAddress")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    slice.length.should == 3;
+    (cast(void*) slice.ptr).should == array.block.address;
+}
+
+
+@("NativeArray.writeSliceHeader.reinterpretedSliceAliasesElementStorage")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    slice[1] = 42;
+
+    (*cast(int*) array.element(1).ptr).should == 42;
+}
+
+
+@("NativeArray.writeSliceHeader.elementWriteIsVisibleThroughReinterpretedSlice")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    *cast(int*) array.element(2).ptr = 7;
+
+    slice[2].should == 7;
+}
+
+
+@("NativeArray.writeSliceHeader.distinctElementsThroughReinterpretedSlice")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    slice[0] = 1;
+    slice[1] = 2;
+
+    slice[0].should == 1;
+    slice[1].should == 2;
+}
+
+
+@("NativeArray.writeSliceHeader.zeroLengthArrayWritesZeroLength")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    slice.length.should == 0;
+}
+
+
+@("NativeArray.writeSliceHeader.wrongDestinationLengthThrowsWithoutCorruptingAdjacentBytes")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    ubyte[NativeArray.sliceHeaderByteLength + 2] buffer;
+    buffer[] = 0xAA;
+
+    array.writeSliceHeader(buffer[1 .. $ - 2]).shouldThrow!Exception;
+
+    foreach (b; buffer)
+        b.should == 0xAA;
+}

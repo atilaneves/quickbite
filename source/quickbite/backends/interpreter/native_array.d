@@ -4,6 +4,14 @@ module quickbite.backends.interpreter.native_array;
 private:
 
 
+// A D dynamic array's runtime representation is `{ size_t length; T* ptr; }`
+// -- length at offset 0, pointer at offset `size_t.sizeof`. This is a
+// language ABI fact, not a per-type layout fact DMD exposes as offsets, so
+// it is stated once here and guarded by the host compiler's own slice
+// layout rather than hand-rolled.
+static assert((void[]).sizeof == 2 * size_t.sizeof);
+
+
 // The array-native block handle skeleton (ai/plans/value.md item 7's
 // "Next PR"): an interpreter-owned array value carrying a stable block, the
 // DMD element type, length, and stride. GC root state is a later commit --
@@ -70,4 +78,43 @@ public struct NativeArray {
         const start = index * _stride;
         return _block.bytes[start .. start + _stride];
     }
+
+    // The byte length of a D dynamic-array slice header (`{ length, ptr }`):
+    // `writeSliceHeader`'s destination must be exactly this many bytes.
+    public enum size_t sliceHeaderByteLength = (void[]).sizeof;
+
+    // Writes this array's slice header -- `{ length, ptr }` -- into `dest`,
+    // the storage location of the guest's `T[]` variable (the destination
+    // aliases the element block; it is not a snapshot). `dest` must be
+    // exactly `sliceHeaderByteLength` bytes; a mismatched length throws
+    // rather than truncating into, or overwriting past, `dest`. The written
+    // `ptr` is the element block's address (legitimately `null` for a
+    // zero-length array, see `NativeBlock.allocate(0)`); the written
+    // `length` is the element count, not a byte length.
+    public void writeSliceHeader(ubyte[] dest) const @safe {
+        if (dest.length != sliceHeaderByteLength)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "writeSliceHeader: destination must be exactly "
+                ~ "sliceHeaderByteLength bytes",
+            );
+
+        writeSliceHeaderBytes(dest, _length, _block.address);
+    }
+}
+
+// Writing a raw pointer's bit pattern into a byte range is not @safe; this
+// is the @trusted boundary. `memcpy` (rather than a pointer-typed store)
+// avoids relying on `dest` being size_t-aligned, which a caller-supplied
+// `ubyte[]` is not guaranteed to be.
+private void writeSliceHeaderBytes(
+    ubyte[] dest,
+    in size_t length,
+    const(void)* ptr,
+) @trusted
+in (dest.length == NativeArray.sliceHeaderByteLength) {
+    import core.stdc.string: memcpy;
+
+    memcpy(dest.ptr, &length, size_t.sizeof);
+    memcpy(dest.ptr + size_t.sizeof, &ptr, (void*).sizeof);
 }
