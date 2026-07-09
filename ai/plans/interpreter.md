@@ -2028,6 +2028,19 @@ fixtures above, acceptance criteria for deleting the
 when interpreted arrays become native-layout GC allocations, both must
 go green with `Interpreter` added to their matrices.
 
+**Fresh baseline (2026-07-09).** On current branch `HEAD` `1a430048`,
+after the owed-fixtures work, `ninja bin/ut` built successfully before
+the bench run. `bin/bench.sh -b interpreter --dub cerealed` then
+discovered/prepared 32/32 modules and skipped at the next visible
+interpreter frontier:
+
+```text
+Unsupported cast to bool from Array
+```
+
+Build generation and the bench needed escalation only because `~/.dub`
+writes are outside the sandbox.
+
 ## 10. Done
 
 ```text
