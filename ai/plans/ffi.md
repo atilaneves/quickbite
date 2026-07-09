@@ -2209,8 +2209,8 @@ Inc  Contract                                          Track  Status   Ref
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.15
 22  delegates / callbacks / closures: reverse bridge    AB    done*    §34.16
 23  extern(C++) function and member ABI                 A     done     §34.17
-24  seam v2: pointer-handing crossing + CIF cache       A     open     §35.1
-25  native Throwable crossing as rooted reference       A     open     §35.3
+24  seam v2: pointer-handing crossing + CIF cache       A     done     §35.1
+25  native Throwable crossing as rooted reference       A     done     §35.3
 ```
 
 `done*` = landed with residuals tracked in the rung's own still-todo text
@@ -2240,13 +2240,11 @@ dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
 sort by consumer need, not table position:
 
 ```text
-1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
-   write rung, the module-ctor-at-dlopen pin, the TLS-default rung, the
-   struct-global read+field-write rung, the slice-global read rung, the
-   slice-global writeback rung, the struct-global whole-value rebind rung, and
-   cross-image module-ctor ORDERING are DONE. What remains is the case where
-   load order is NOT specified by the caller (DT_NEEDED-driven ordering, where
-   the dynamic loader decides) and TLS-in-dependency-image edge cases
+1. §35.2: data symbols + dependency-image init — DONE, including the §35.2a
+   read rung, write rung, struct-global read+field-write rung, slice-global
+   read rung, slice-global writeback rung, struct-global whole-value rebind
+   rung, cross-image and DT_NEEDED module-ctor ORDERING, and DT_NEEDED
+   TLS-in-dependency-image read/write.
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -2364,6 +2362,16 @@ with no production change: the caller specifies load order and the loader
 honours it. What genuinely remains is DT_NEEDED-driven ordering where the caller
 does NOT specify load order (the dynamic loader picks it) and TLS-in-dependency-
 image edge cases.
+DONE: §35.2 DT_NEEDED TLS-default global read/write —
+dependencyImage.dtNeededTlsGlobalReadWrite. The caller names only image B, B has
+a DT_NEEDED edge to image A, and A owns the default TLS global. Both the
+SystemLinker oracle and the Interpreter observe A's initializer, an interpreted
+write-through, and B's native mutation through the same TLS instance after
+dlopen(B) loads A. This closed the TLS-in-dependency-image edge case and
+therefore §35.2. The fixture also required the SystemLinker oracle to allow
+shared-library-only links to resolve direct references through the dependency
+image's DT_NEEDED closure at load time; `-z defs` remains in force for empty,
+object, and archive link sets.
 ```
 
 An agent asked to "work on ffi.md" starts at the top of this list, not at
@@ -3055,9 +3063,9 @@ block the terminal goal (§34.1) for the two backends.
 
 ### 35.1 Seam v2: no identity crossing, no CIF cache
 
-**Status: open — ladder rung 24 (§34.3, 2026-07-08). Ordered after the
-Interpreter dub-coverage items (§34.3 work order); sequenced with
-`bytecode.md`'s FFI-latency work.**
+**Status: landed — ladder rung 24 (§34.3, 2026-07-09).**
+Pointer-handing through the live BytecodeNewCore call site is green, and the
+non-variadic CIF cache subitem is landed.
 
 **Claim.** §5/§23: for a native-layout backend `materialize`/`reify` is the
 identity — "there is no marshalling for this backend to own". §1/§4/§24.1:
@@ -3095,8 +3103,8 @@ a. pointer-handing seam variant: optional NativeMarshaller methods
    back to today's buffer copies. When the backend supplies addresses the
    core puts them straight into avalue[] / passes them as the sret
    destination; no per-argument allocation.
-b. reinstate the per-callable CIF cache for non-variadic calls, keyed by the
-   resolved FuncDeclaration; variadic calls keep per-call ffi_prep_cif_var
+b. DONE: reinstate the per-callable CIF cache for non-variadic calls, keyed
+   by the resolved FuncDeclaration; variadic calls keep per-call ffi_prep_cif_var
    (§34.15).
 c. second-consumer neutrality proof: the narrowest REAL bytecode call site
    crossing by address — the live machine.d callNative site switched to hand
@@ -3113,6 +3121,41 @@ the real call site with zero per-argument copies, proven by an oracle-backed
 fixture; the CIF cache's correctness is the existing suite staying green and
 its benefit is a bench delta (per-call `ffi_prep_cif` gone), not a mock
 assertion; every existing Interpreter fixture stays green.
+
+**Progress 2026-07-09.** Promoted the existing SystemLinker-backed
+`rt/cstdlib.d` fixture `strtol.endptr.BytecodeNewCore`. The red first
+failed at the BytecodeNewCore no-source gate; the implementation widened the
+bytecode native-call descriptor from one argument to source-order argument
+arrays, added optional `NativeMarshaller.argumentAddress` /
+`resultAddress` hooks with Interpreter `null` fallbacks, and taught the
+Bytecode marshaller to hand libffi stable frame-slot addresses for arguments
+and results. For `strtol("123xyz".ptr, &endptr, 10)`, the `char**` argument
+is now the frame slot containing the `&endptr` pointer value, so libc writes
+directly into the local and `*endptr == 'x'` reads back through the normal
+pointer machinery. A small pointer-local metadata fix records a pointer local's
+declared element type, so a native write into an initially-null `char*` local
+still dereferences as `char*` afterward.
+
+**Progress 2026-07-09 (result-slot safety).** Direct result-slot handoff is
+limited to return types whose native result size is at least `ffi_arg.sizeof`.
+Narrow returns such as `int` use the core-owned padded result buffer, then the
+bytecode marshaller copies back exactly the native result size. This preserves
+zero-copy handoff for ABI-safe naturally wide slots while avoiding libffi
+overwriting adjacent frame bytes when an ABI path stores a full `ffi_arg` for a
+narrow integer return.
+
+At this point the non-variadic CIF cache had deliberately been left for the
+next §35.1 slice: that commit proved the real call-site pointer-handing seam
+and kept the backend-neutral core fallback for existing Interpreter paths.
+
+**Progress 2026-07-09 (CIF cache).** Landed the remaining §35.1b subitem in
+`quickbite.ffi.core`: non-variadic outbound calls now cache the prepared
+`ffi_cif` and the owned `ffi_type*[]` storage it references per resolved
+`FuncDeclaration` plus hidden-receiver/ref-return shape. Variadic calls still
+use per-call `ffi_prep_cif_var`, and native delegate calls without a resolved
+`FuncDeclaration` keep the previous stack-local prep path. No test fixture was
+added; the correctness gate remains the existing native-call suite staying
+green.
 
 ### 35.2 Data symbols and dependency-image initialization are missing
 
@@ -3268,10 +3311,39 @@ honours it. What genuinely remains for §35.2 is DT_NEEDED-driven ordering where
 the caller does NOT specify load order (the dynamic loader picks it) and
 TLS-in-dependency-image edge cases. Green-as-pin.
 
+**Status: DT_NEEDED-driven module-ctor ORDERING rung LANDED (§35.2).**
+`dependencyImage.dtNeededCtorOrdering` pins the case where the caller supplies
+only image B, but B was linked against image A and therefore carries a
+dynamic-loader dependency on it. The SystemLinker oracle and Interpreter both
+load only B; `dlopen(B)` follows the DT_NEEDED edge, loads A first, runs A's
+module ctor (`dtNeededSeed = 20`), then runs B's module ctor
+(`derived = dtNeededSeed + 4`). `readDerived` returns 24 for both backends. No
+production change was needed: the existing `RTLD_NOW | RTLD_GLOBAL` load path
+already lets the platform loader honour DT_NEEDED constructor ordering.
+Green-as-pin. The remaining §35.2 surface was TLS-in-dependency-image edge
+cases, now closed below.
+
+**Status: DT_NEEDED TLS-default global read/write LANDED (§35.2 closed).**
+`dependencyImage.dtNeededTlsGlobalReadWrite` pins the case where the caller
+supplies only image B, B was linked against image A, and A owns a default
+thread-local D global. B imports A's declaration so its native functions and
+the interpreted source both name A's TLS symbol; `dlopen(B)` follows the
+DT_NEEDED edge to A. The oracle and Interpreter both observe A's initializer
+(`30`), an interpreted write-through (`7`, seen by B), and B's native mutation
+(`+2`, read back as `9`) through the same thread's TLS instance. No
+Interpreter change was needed: `resolveDataSymbol`/`dlsym(RTLD_DEFAULT, ...)`
+already sees the transitive image after B loads. The SystemLinker oracle needed
+a narrow native-linker adjustment: when all explicit link inputs are shared
+libraries, it omits `-z defs` so direct references from the generated test
+module may be resolved by the dynamic loader through those images' DT_NEEDED
+closure at load time. Empty, object, and archive link sets still use `-z defs`.
+With this, the §35.2 data-symbol and dependency-image initialization surface is
+closed.
+
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
-**Status: open — ladder rung 25 (§34.3, 2026-07-08). Ordered after the
-Interpreter dub-coverage items (§34.3 work order); sequenced with
+**Status: done 2026-07-09 — ladder rung 25 (§34.3, 2026-07-08). Ordered
+after the Interpreter dub-coverage items (§34.3 work order); sequenced with
 `bytecode.md`'s exception-fidelity work.**
 
 **Claim.** §12: the exception guard "survives for every backend regardless of
@@ -3303,6 +3375,25 @@ today.
 `Interpreter`; the caught `Throwable` pointer is carried in
 `NativeCallException` and rooted for its lifetime; and the §30/§31/§34.14
 exception fixtures stay green.
+
+**Done 2026-07-09.** Added
+`dependencyImage.nativeCustomExceptionField.Interpreter`, with
+`SystemLinker` as the oracle, for a dependency exception subclass whose
+`code` field is set in native code and read after an interpreted catch.
+`NativeCallException` now carries the caught native `Throwable` reference
+plus its object pointer; the reference roots the object for the wrapper's
+lifetime. The boxed Interpreter keeps rebuilding an interpreted exception
+object for catch matching and `msg`/`next`, attaches the native pointer as
+internal metadata, and when binding the catch variable expands the boxed
+object to the catch type, filling missing fields from the native object by
+DMD field offset. This lands only subclass-field reads; stack traces and
+native rethrow identity remain out of scope here.
+
+Future deletion: remove the boxed native-exception field-preservation shim
+(`isSyntheticNativeExceptionField`) when `value.md`'s native-layout
+class/object work reaches exceptions. At that point exception field access
+should use the same native object representation as ordinary class objects,
+not a reconstructed boxed `Value` plus native-pointer side metadata.
 
 ### 35.4 Durable inbound trampolines have no owner
 
@@ -3643,7 +3734,7 @@ class. This is the same "class cleared, tests proceed deeper" pattern as the
 `{byte[N] __size, integer __align}` union shape and are handled by the same
 fix (no extra work). The §35.10 corpus gate is met.
 
-### 35.11 `getrandom` scalar-buffer fill misreads `&(scalar)` as a slice base (handed off 2026-07-08)
+### 35.11 `getrandom` scalar-buffer fill over `&(scalar)` (done 2026-07-09)
 
 Handed off from `interpreter.md` Rung 9 (§9.9). Once that rung's fix
 (`resolveNonRootInitializer`) resolves std.internal.entropy's non-root
@@ -3670,9 +3761,17 @@ bytes into it, and reflect those bytes back into the `uint` local.
 *scalar* local viewed as a byte buffer filled by `getrandom` is a new
 shape, and the `getrandom` leaf marshalling belongs to this lane.
 
-Exposing fixture already landed (green on the native backends,
-documenting the target): `rt/random.d`
-`random.unpredictableSeedReadsNonRootInitializer` — `SystemLinker` +
-`LLVMJit`, with `Interpreter` omitted per `interpreter.md` §8 pending this
-item. When worked, add the scalar-buffer-fill rt/ repro and promote
-`Interpreter` onto that fixture.
+**Done 2026-07-09.** Promoted the existing oracle-backed
+`rt/random.d` fixture
+`random.unpredictableSeedReadsNonRootInitializer` to `Interpreter`. The
+red was the expected `Expected pointer.` at `Value.pointerSlice` over a
+`LocalPointer`. The Interpreter now materialises a scalar local when its
+address is sliced, exposes that scalar as an allocation-backed byte slice,
+preserves the allocation alias when the slice is forwarded through
+`void[]` parameters, and writes native byte-buffer mutations back into the
+scalar local. The same path also needed switch case matching to compare
+integer-compatible values by their underlying integer so Phobos'
+`EntropySource.tryAll` reaches the supported Linux source case.
+
+Verification: `ninja bin/ut`, the focused promoted Interpreter fixture, and
+`bin/ut -- ut.backends.runner.rt.random` were green before this ledger update.

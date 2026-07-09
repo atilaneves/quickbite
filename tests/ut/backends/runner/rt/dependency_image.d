@@ -794,6 +794,262 @@ unittest {
     }
 }
 
+@("dependencyImage.nativeCustomExceptionField.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_custom_exception_field_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_custom_exception_field_fixture;
+
+            class DependencyException: Exception {
+                int code;
+
+                this(string msg, int code) {
+                    super(msg);
+                    this.code = code;
+                }
+            }
+
+            void dependencyThrowCustomField() {
+                throw new DependencyException("dependency failed", 73);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_custom_exception_field_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_custom_exception_field_fixture;
+
+            class DependencyException: Exception {
+                int code;
+                this(string msg, int code);
+            }
+
+            void dependencyThrowCustomField();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_custom_exception_field_fixture;
+
+                unittest {
+                    try {
+                        dependencyThrowCustomField();
+                        assert(false);
+                    } catch (DependencyException caught) {
+                        assert(caught.msg == "dependency failed");
+                        assert(caught.code == 73);
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+@("dependencyImage.nativeCustomExceptionFieldViaBaseCatch.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_custom_exception_base_catch_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_custom_exception_base_catch_fixture;
+
+            class DependencyException: Exception {
+                int code;
+
+                this(string msg, int code) {
+                    super(msg);
+                    this.code = code;
+                }
+            }
+
+            void dependencyThrowCustomField() {
+                throw new DependencyException("dependency failed", 73);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_custom_exception_base_catch_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_custom_exception_base_catch_fixture;
+
+            class DependencyException: Exception {
+                int code;
+                this(string msg, int code);
+            }
+
+            void dependencyThrowCustomField();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import core.memory;
+                import dep_image_custom_exception_base_catch_fixture;
+
+                unittest {
+                    try {
+                        dependencyThrowCustomField();
+                        assert(false);
+                    } catch (Exception caught) {
+                        GC.collect;
+                        auto dependency = cast(DependencyException) caught;
+                        assert(dependency !is null);
+                        assert(dependency.msg == "dependency failed");
+                        assert(dependency.code == 73);
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+@("dependencyImage.nativeCustomExceptionFieldAcrossHelperCatch.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_custom_exception_helper_catch_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_custom_exception_helper_catch_fixture;
+
+            __gshared int dependencyFinalized;
+
+            class DependencyException: Exception {
+                int code;
+
+                this(string msg, int code) {
+                    super(msg);
+                    this.code = code;
+                }
+
+                ~this() {
+                    dependencyFinalized = 1;
+                }
+            }
+
+            void dependencyThrowCustomField() {
+                dependencyFinalized = 0;
+                throw new DependencyException("dependency failed", 73);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_custom_exception_helper_catch_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_custom_exception_helper_catch_fixture;
+
+            class DependencyException: Exception {
+                int code;
+                this(string msg, int code);
+            }
+
+            extern __gshared int dependencyFinalized;
+
+            void dependencyThrowCustomField();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import core.memory;
+                import dep_image_custom_exception_helper_catch_fixture;
+
+                void helper() {
+                    dependencyThrowCustomField();
+                }
+
+                unittest {
+                    try {
+                        helper();
+                        assert(false);
+                    } catch (Exception caught) {
+                        GC.collect;
+                        assert(dependencyFinalized == 0);
+                        auto dependency = cast(DependencyException) caught;
+                        assert(dependency !is null);
+                        assert(dependency.msg == "dependency failed");
+                        assert(dependency.code == 73);
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.nativeChainedException.Interpreter")
 @Tags("Interpreter")
 unittest {
@@ -3510,6 +3766,194 @@ unittest {
         oracle[0].passed.should == true;
 
         const interpreted = (new Interpreter([imageAPath, imageBPath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Pins §35.2 DT_NEEDED-driven dependency-image initialization ordering: the
+// caller only names image B. B has a dynamic-loader dependency on A, so dlopen(B)
+// must load A first, run A's module ctor, then run B's module ctor.
+@("dependencyImage.dtNeededCtorOrdering.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+
+        const depAPath = buildPath(importPath, "dep_image_dtneeded_a.d");
+        writeFile(depAPath, q{
+            module dep_image_dtneeded_a;
+
+            extern(C) __gshared int dtNeededSeed;
+
+            static this() {
+                dtNeededSeed = 20;
+            }
+        });
+        const imageAPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_dtneeded_a",
+            [depAPath],
+        );
+
+        const depBPath = buildPath(importPath, "dep_image_dtneeded_b.d");
+        writeFile(depBPath, q{
+            module dep_image_dtneeded_b;
+
+            extern(C) extern __gshared int dtNeededSeed;
+            __gshared int derived;
+
+            static this() {
+                derived = dtNeededSeed + 4;
+            }
+
+            int readDerived() {
+                return derived;
+            }
+        });
+
+        const imageBPath =
+            inSandboxPath("libdep_image_dtneeded_b.so");
+        const buildB = execute([
+            "dmd",
+            "-shared",
+            "-fPIC",
+            "-defaultlib=libphobos2.so",
+            "-of=" ~ imageBPath,
+            inSandboxPath(depBPath),
+            imageAPath,
+        ]);
+        buildB.status.should == 0;
+
+        writeFile(depBPath, q{
+            module dep_image_dtneeded_b;
+
+            int readDerived();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_dtneeded_b;
+
+                unittest {
+                    assert(readDerived() == 24);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imageBPath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imageBPath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
+// Pins §35.2 TLS through a DT_NEEDED dependency image: the caller only loads
+// image B, but B depends on image A. A owns a default thread-local D global;
+// interpreted direct reads/writes and native B calls must all observe the same
+// TLS instance after dlopen(B) loads A.
+@("dependencyImage.dtNeededTlsGlobalReadWrite.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+
+        const depAPath = buildPath(importPath, "dep_image_dtneeded_tls_a.d");
+        writeFile(depAPath, q{
+            module dep_image_dtneeded_tls_a;
+
+            int dtNeededTlsCounter = 30;
+        });
+        const imageAPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_dtneeded_tls_a",
+            [depAPath],
+        );
+
+        const depBPath = buildPath(importPath, "dep_image_dtneeded_tls_b.d");
+        writeFile(depBPath, q{
+            module dep_image_dtneeded_tls_b;
+
+            import dep_image_dtneeded_tls_a: dtNeededTlsCounter;
+
+            int readTlsFromB() {
+                return dtNeededTlsCounter;
+            }
+
+            void bumpTlsFromB() {
+                dtNeededTlsCounter += 2;
+            }
+        });
+
+        const imageBPath = inSandboxPath("libdep_image_dtneeded_tls_b.so");
+        const buildB = execute([
+            "dmd",
+            "-shared",
+            "-fPIC",
+            "-defaultlib=libphobos2.so",
+            "-I=" ~ inSandboxPath(importPath),
+            "-of=" ~ imageBPath,
+            inSandboxPath(depBPath),
+            imageAPath,
+        ]);
+        buildB.status.should == 0;
+
+        writeFile(depAPath, q{
+            module dep_image_dtneeded_tls_a;
+
+            extern int dtNeededTlsCounter;
+        });
+        writeFile(depBPath, q{
+            module dep_image_dtneeded_tls_b;
+
+            int readTlsFromB();
+            void bumpTlsFromB();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_dtneeded_tls_a;
+                import dep_image_dtneeded_tls_b;
+
+                unittest {
+                    assert(dtNeededTlsCounter == 30);
+                    assert(readTlsFromB == 30);
+                    dtNeededTlsCounter = 7;
+                    assert(readTlsFromB == 7);
+                    bumpTlsFromB;
+                    assert(dtNeededTlsCounter == 9);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imageBPath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imageBPath]))
             .runTests(moduleResult.module_);
         interpreted.length.should == 1;
         interpreted[0].passed.should == true;

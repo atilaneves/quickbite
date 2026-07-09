@@ -1460,6 +1460,38 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+enum pointerSliceArgumentEvaluatesPointerOnceSource = q{
+    unittest {
+        char[2] first = ['a', 'b'];
+        char[2] second = ['c', 'd'];
+        int calls;
+
+        char* getPointer() {
+            ++calls;
+            return calls == 1 ? first.ptr : second.ptr;
+        }
+
+        char readFirst(char[] slice) {
+            return slice[0];
+        }
+
+        char value = readFirst(getPointer()[0 .. 1]);
+
+        assert(calls == 1);
+        assert(value == 'a');
+    }
+};
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.sliceArgumentEvaluatesPointerOnce." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(
+            pointerSliceArgumentEvaluatesPointerOnceSource,
+        );
+    }
+}
+
 // Bytecode cannot take the address of a static array yet; pin its
 // structured diagnostic rather than dropping it from the matrix.
 static foreach (backend; AliasSeq!(Bytecode)) {
