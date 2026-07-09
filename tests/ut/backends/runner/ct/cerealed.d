@@ -1447,6 +1447,40 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("dynamicArrayTruthinessControlsEnforceFallback." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int classify(ubyte[] bytes) {
+                int result;
+
+                if (bytes)
+                    result += 1;
+                else
+                    result += 10;
+
+                result += bytes ? 2 : 20;
+
+                if (!bytes)
+                    result += 100;
+
+                return result;
+            }
+
+            unittest {
+                ubyte[] nullBytes;
+                ubyte[] emptyBytes = [];
+                ubyte[] fullBytes = [cast(ubyte) 42];
+
+                assert(classify(nullBytes) == 130);
+                assert(classify(emptyBytes) == 130);
+                assert(classify(fullBytes) == 3);
+            }
+        });
+    }
+}
+
 // The owed §9.10 ratchet fixture: `emplaceRef` on a *scalar* array element is
 // exactly the case §9.10 says the `runEmplaceRefCall`/`isEmplaceRef` shim
 // (impl.d) is provably equivalent to the real semantics — a plain value

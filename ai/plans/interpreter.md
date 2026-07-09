@@ -2066,6 +2066,30 @@ The fix is intentionally local to interpreter control-flow truthiness in
 `Value.castTo!bool` remains unchanged. This covers `if`, loop conditions,
 logical expressions, `assert`, and `?:` without adding a broad cast shim.
 
+**Reviewer Finding 1 resolved (2026-07-09).** The original
+`grainBitsBoolWritesScalar` fixture did not directly pin the package failure,
+so the follow-up fixture
+`dynamicArrayTruthinessControlsEnforceFallback` now exercises dynamic-array
+truthiness directly in interpreter control-flow contexts: `if`, `?:`, and
+`!`. It is standalone in `ct/cerealed.d`, backed by `SystemLinker`, and covers
+compiled D's null/empty false and non-empty true rule.
+
+Red/green evidence:
+
+```text
+# 705cd1ed + fixture only, parent of the production truthiness fix:
+dynamicArrayTruthinessControlsEnforceFallback.SystemLinker
+# 1 test(s) run, 0 failed.
+dynamicArrayTruthinessControlsEnforceFallback.Interpreter
+# Unsupported cast to bool from Array
+
+# current HEAD:
+dynamicArrayTruthinessControlsEnforceFallback.SystemLinker
+# 1 test(s) run, 0 failed.
+dynamicArrayTruthinessControlsEnforceFallback.Interpreter
+# 1 test(s) run, 0 failed.
+```
+
 Verification after the fix:
 
 ```text
