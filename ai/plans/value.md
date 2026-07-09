@@ -387,6 +387,21 @@ grows no second set of D layout rules. `typeByteSize` throws on DMD's
 interpreter call sites. Next: the array-native block handle skeleton per
 the "Next PR" description above.
 
+Progress 2026-07-09 (cont'd again): landed the array-native block handle
+skeleton, `source/quickbite/backends/interpreter/native_array.d`'s
+`NativeArray` struct -- a `NativeBlock` holding the elements, the DMD
+element `Type`, the element count, and the stride, plus interior element
+views. `allocate` computes the stride once via `layout.typeByteSize` and
+caches it on the handle; nothing recomputes layout elsewhere. `element`
+returns a `ubyte[]` sub-slice of `block.bytes` at `index * stride ..
+(index + 1) * stride` -- an out-of-range index fails through ordinary D
+slice bounds checking (`core.exception.ArraySliceError`), not a
+hand-rolled check. Still missing, per the "Next PR" list: GC root state
+(deliberately left off this handle -- next commit), static-array inline
+blocks, dynamic-array slice headers, capacity through real storage, and
+struct/class layout. No shim is retired and no backend behaviour changed;
+nothing outside `native_array.d` and its test references the new type.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
