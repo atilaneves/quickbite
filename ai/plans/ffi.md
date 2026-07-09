@@ -3144,9 +3144,9 @@ zero-copy handoff for ABI-safe naturally wide slots while avoiding libffi
 overwriting adjacent frame bytes when an ABI path stores a full `ffi_arg` for a
 narrow integer return.
 
-The non-variadic CIF cache was deliberately left for the next §35.1 slice:
-this commit proves the real call-site pointer-handing seam and keeps the
-backend-neutral core fallback for existing Interpreter paths.
+At this point the non-variadic CIF cache had deliberately been left for the
+next §35.1 slice: that commit proved the real call-site pointer-handing seam
+and kept the backend-neutral core fallback for existing Interpreter paths.
 
 **Progress 2026-07-09 (CIF cache).** Landed the remaining §35.1b subitem in
 `quickbite.ffi.core`: non-variadic outbound calls now cache the prepared

@@ -3167,6 +3167,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
+        child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.locals = (captureLocals || function_.isNested)
             ? locals.dup
             : datasegLocals;
@@ -3219,6 +3220,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
+        child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.locals = locals.dup;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
@@ -3292,6 +3294,7 @@ private struct Walker {
         ref Walker child,
         in bool captureLocals = false,
     ) {
+        mergeNativeThrowableRoots(child);
         nextLocalPointerId = child.nextLocalPointerId;
         mergeReturnedLocalPointer(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
@@ -3320,6 +3323,7 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
     ) {
+        mergeNativeThrowableRoots(child);
         nextLocalPointerId = child.nextLocalPointerId;
         mergeReturnedLocalPointer(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
@@ -3341,6 +3345,11 @@ private struct Walker {
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
+    }
+
+    private void mergeNativeThrowableRoots(ref Walker child) {
+        foreach (pointer, throwable; child.nativeThrowableRoots)
+            nativeThrowableRoots[pointer] = throwable;
     }
 
     private void writeBackNestedLocals(

@@ -954,6 +954,102 @@ unittest {
     }
 }
 
+@("dependencyImage.nativeCustomExceptionFieldAcrossHelperCatch.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_custom_exception_helper_catch_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_custom_exception_helper_catch_fixture;
+
+            __gshared int dependencyFinalized;
+
+            class DependencyException: Exception {
+                int code;
+
+                this(string msg, int code) {
+                    super(msg);
+                    this.code = code;
+                }
+
+                ~this() {
+                    dependencyFinalized = 1;
+                }
+            }
+
+            void dependencyThrowCustomField() {
+                dependencyFinalized = 0;
+                throw new DependencyException("dependency failed", 73);
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_custom_exception_helper_catch_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_custom_exception_helper_catch_fixture;
+
+            class DependencyException: Exception {
+                int code;
+                this(string msg, int code);
+            }
+
+            extern __gshared int dependencyFinalized;
+
+            void dependencyThrowCustomField();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import core.memory;
+                import dep_image_custom_exception_helper_catch_fixture;
+
+                void helper() {
+                    dependencyThrowCustomField();
+                }
+
+                unittest {
+                    try {
+                        helper();
+                        assert(false);
+                    } catch (Exception caught) {
+                        GC.collect;
+                        assert(dependencyFinalized == 0);
+                        auto dependency = cast(DependencyException) caught;
+                        assert(dependency !is null);
+                        assert(dependency.msg == "dependency failed");
+                        assert(dependency.code == 73);
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.nativeChainedException.Interpreter")
 @Tags("Interpreter")
 unittest {
