@@ -1,0 +1,225 @@
+module ut.backends.interpreter.native_array;
+
+
+import ut;
+import quickbite.backends.interpreter.native_array: NativeArray;
+import quickbite.backends.interpreter.native_block: NativeBlock;
+import dmd.mtype: Type;
+
+private:
+
+
+@("NativeArray.allocate.strideFollowsElementTypeInt32")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.stride.should == 4;
+}
+
+
+@("NativeArray.allocate.strideFollowsElementTypeInt64")
+unittest {
+    auto array = NativeArray.allocate(Type.tint64, 3);
+
+    array.stride.should == 8;
+}
+
+
+@("NativeArray.allocate.blockByteLengthIsLengthTimesStride")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.block.byteLength.should == 12;
+}
+
+
+@("NativeArray.allocate.reportsRequestedLength")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.length.should == 3;
+}
+
+
+@("NativeArray.allocate.reportsElementType")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    (array.elementType is Type.tint32).should == true;
+}
+
+
+@("NativeArray.allocate.reportsOwnedOwnership")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.ownership.should == array.block.ownership;
+}
+
+
+@("NativeArray.allocate.elementsAreZeroInitialised")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    foreach (i; 0 .. array.length)
+        foreach (byte_; array.element(i))
+            byte_.should == 0;
+}
+
+
+@("NativeArray.element.writeIsVisibleReadingSameIndexBack")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.element(1)[0] = 42;
+
+    array.element(1)[0].should == 42;
+}
+
+
+@("NativeArray.element.writeDoesNotDisturbNextElement")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.element(1)[0] = 42;
+
+    array.element(2)[0].should == 0;
+}
+
+
+@("NativeArray.element.outOfRangeIndexThrows")
+unittest {
+    import core.exception: ArraySliceError;
+
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.element(3).shouldThrow!ArraySliceError;
+}
+
+
+@("NativeArray.allocate.zeroLengthArrayIsLegal")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+
+    array.length.should == 0;
+    array.block.byteLength.should == 0;
+}
+
+
+@("NativeArray.allocate.overflowingLengthTimesStrideThrows")
+unittest {
+    // An 8-byte element type (`tint64`) and this count wraps
+    // `length * stride` to 8 -- a tiny block that would otherwise allocate
+    // silently under a handle that claims a huge `length`.
+    const count = size_t.max / 8 + 2;
+
+    NativeArray.allocate(Type.tint64, count).shouldThrow!Exception;
+}
+
+
+@("NativeArray.allocate.pointerBearingElementTypeYieldsScannedBlock")
+unittest {
+    import core.memory: GC;
+
+    auto array = NativeArray.allocate(Type.tvoidptr, 3);
+    const attr = GC.getAttr(GC.addrOf(array.block.address));
+
+    (attr & GC.BlkAttr.NO_SCAN).should == 0;
+    array.scan.should == NativeBlock.Scan.conservative;
+}
+
+
+@("NativeArray.allocate.nonPointerElementTypeYieldsNoScanBlock")
+unittest {
+    import core.memory: GC;
+
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    const attr = GC.getAttr(GC.addrOf(array.block.address));
+
+    (attr & GC.BlkAttr.NO_SCAN).should == GC.BlkAttr.NO_SCAN;
+    array.scan.should == NativeBlock.Scan.no;
+}
+
+
+@("NativeArray.writeSliceHeader.reinterpretedSliceHasElementCountAndBlockAddress")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    slice.length.should == 3;
+    (cast(void*) slice.ptr).should == array.block.address;
+}
+
+
+@("NativeArray.writeSliceHeader.reinterpretedSliceAliasesElementStorage")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    slice[1] = 42;
+
+    (*cast(int*) array.element(1).ptr).should == 42;
+}
+
+
+@("NativeArray.writeSliceHeader.elementWriteIsVisibleThroughReinterpretedSlice")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    *cast(int*) array.element(2).ptr = 7;
+
+    slice[2].should == 7;
+}
+
+
+@("NativeArray.writeSliceHeader.distinctElementsThroughReinterpretedSlice")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    slice[0] = 1;
+    slice[1] = 2;
+
+    slice[0].should == 1;
+    slice[1].should == 2;
+}
+
+
+@("NativeArray.writeSliceHeader.zeroLengthArrayWritesZeroLength")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+
+    array.writeSliceHeader(header[]);
+    auto slice = *cast(int[]*) header.ptr;
+
+    slice.length.should == 0;
+}
+
+
+@("NativeArray.writeSliceHeader.wrongDestinationLengthThrowsWithoutCorruptingAdjacentBytes")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    ubyte[NativeArray.sliceHeaderByteLength + 2] buffer;
+    buffer[] = 0xAA;
+
+    array.writeSliceHeader(buffer[1 .. $ - 2]).shouldThrow!Exception;
+
+    foreach (b; buffer)
+        b.should == 0xAA;
+}

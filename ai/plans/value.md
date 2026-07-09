@@ -352,6 +352,54 @@ interpreter arrays are not addressable GC blocks. Consequences:
   native-layout aggregates/arrays behind a handle reusing DMD offsets.
   See remaining-work item 7.
 
+Progress 2026-07-09: item 7's "Next PR" list is started with an
+interpreter-internal native-layout array skeleton, landed but not wired
+into anything else. `native_block.d`'s `NativeBlock` is a stable,
+non-moving byte range: a nested `Ownership` enum (`owned`/`borrowed`), an
+`allocate` factory that zeroes the range via `GC.calloc` under an explicit,
+never-defaulted `Scan` policy (`no`/`conservative`), a `borrow` factory for
+memory owned elsewhere, and an `address` accessor that is the only place a
+raw `void*` escapes -- `borrow` is `@system`, not `@safe`, since it
+fabricates a slice from a caller-supplied pointer/length it cannot itself
+verify; that `@trusted` boundary belongs to whichever future FFI seam
+vouches for the pointer, not to the block. `layout.d` adds `typeByteSize`
+and `typeHasPointers`, thin `@safe` wrappers over DMD's own
+`dmd.typesem.size`/`dmd.typesem.hasPointers` behind small `@trusted`
+boundaries -- the module computes nothing itself, every number is DMD's
+own verbatim. (Alignment is not exported yet -- it has no reader until the
+struct phase lays out fields, so it is added when that reader exists, not
+before.) `native_array.d`'s `NativeArray` combines a
+block with the DMD element `Type`, a length, and a stride cached once from
+`layout.typeByteSize`; `element` returns an interior `ubyte[]` view with
+ordinary D slice bounds checking, and `writeSliceHeader` materialises a
+real D dynamic-array slice header (`{ size_t length; void* ptr; }`) into a
+caller-supplied destination, aliasing the element block rather than
+snapshotting it. A `static assert` pins only the total header size
+(`2 * size_t` bytes); field order (`length` first, `ptr` second) is
+pinned separately, at runtime, by the `writeSliceHeader` tests, which
+write a header and read it back against the host compiler's own slice
+layout. The block (and so the
+array handle) now records its scan policy, making the handle
+self-describing rather than requiring a question to the GC.
+
+One real bug was fixed on the way: `new ubyte[](n)` is always `NO_SCAN`, so
+a block holding guest pointers would have been invisible to the GC and its
+targets collectible out from under it. Blocks are now allocated with an
+explicit scan policy chosen from `layout.typeHasPointers` on the element
+type, and the parameter takes no default -- under-scanning is the unsafe
+direction, so a forgotten argument must never silently choose it. An
+overflowing `length * stride` product (checked with `core.checkedint.
+mulu`) is rejected at allocation rather than wrapping to a too-small
+block, so a handle's `length` is always consistent with its block.
+
+None of this is wired in yet: no `impl.d`/`Walker`/`Value` integration, no
+display change, no FFI change, no `interpreter.md` §9.10 shim retired, no
+capacity/growth, no struct field offsets, no class objects. The
+interpreter still boxes arrays exactly as before. Per the "Next PR" list,
+still owed: capacity through real storage, then the struct phase, then
+class objects -- and the actual interpreter call site that gives any of
+these types somewhere to be used.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -680,13 +728,20 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      reallocates, the owning slice header is updated and stale addresses go
      stale exactly as compiled D loses append capacity — no boxed value is ever
      copied back as the authority.
-   - **GC roots.** A block is either `NO_SCAN` or scan-registered. Start
-     conservative: `GC.addRange` over the whole byte range while the handle is
-     live, removed on handle destruction or replacement. Frames record the
-     ranges they own and unregister on unwind. Precise pointer-bearing
-     subranges are a later optimization, not a prerequisite. Handles that
-     borrow FFI or host memory register nothing; they only keep a
-     Quickbite-owned source owner live for the duration of the borrow.
+   - **GC roots.** (Corrected 2026-07-09 -- see Status.) An owned block is
+     a GC allocation whose scan attribute (`NO_SCAN` vs conservatively
+     scanned) is chosen once, at allocation, from whether the element type
+     carries pointers. `NativeBlock` is a value struct copied freely --
+     copies share one address but have no single owner -- so there is no
+     registration token and no destruction hook to get wrong: an
+     allocation attribute cannot be double-freed or unregistered out from
+     under a still-live copy. The GC then conservatively scans the whole
+     byte range for exactly as long as the block is reachable, which is
+     the conservative policy this item asks for. Precise pointer-bearing
+     subranges are a later optimization, not a prerequisite. `GC.addRange`
+     is reserved for memory the GC does not own: handles that borrow FFI
+     or host memory register nothing; they only keep a Quickbite-owned
+     source owner live for the duration of the borrow.
    - **Ownership and writeback.** Whether a block is owned or borrowed, and
      whether writes through it reach an external owner, is explicit metadata on
      the handle. It is never inferred by diffing a pre-call boxed aggregate
@@ -730,11 +785,18 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    array should observe, and whether that deserves a diagnostic rather than
    compiled D's silent staleness; unions and overlapping fields, which the
    conservative whole-range root policy handles but the layout model does not
-   yet describe; and class object bodies, deferred wholesale.
+   yet describe; class object bodies, deferred wholesale; and a
+   scanned-destination contract for `writeSliceHeader`. A GC-owned pointer
+   written into a destination the collector never scans -- a `NO_SCAN` block,
+   or borrowed non-GC memory -- is invisible to the GC, exactly the hazard
+   `NativeBlock.Scan` exists to avoid for the block itself. `writeSliceHeader`
+   takes a bare `ubyte[]` today and enforces nothing about what that `ubyte[]`
+   is backed by; it needs a real contract once its destination is a genuine
+   frame location instead of a test-supplied buffer.
 
    Next PR: the array-native block handle skeleton — an interpreter-owned array
-   value carrying a stable block, `Type*`, length, stride, ownership, and root
-   state, with no user-visible display or FFI change and no shim retired. Then
+   value carrying a stable block, `Type*`, length, stride, ownership, and scan
+   policy, with no user-visible display or FFI change and no shim retired. Then
    static arrays inline, dynamic-array slice headers, interior addresses,
    conservative roots, and capacity through real storage, in that order.
    Latency is measured only once the array and struct correctness gates are
