@@ -60,13 +60,21 @@ private imported!"dmd.mtype".Type uncrossableAssocArray(
 
 public class NativeCallException: Exception {
     public string className;
+    public Throwable nativeThrowable;
+    public const(void)* nativeThrowableObjectPointer;
     // The native Throwable.next link, captured as another NativeCallException
     // so the backend can rebuild the chain (ffi.md §34.13). Null at the tail.
     public NativeCallException chainedNext;
 
-    public this(in string message, in string className) {
+    public this(
+        in string message,
+        in string className,
+        Throwable nativeThrowable,
+    ) {
         super(message);
         this.className = className;
+        this.nativeThrowable = nativeThrowable;
+        this.nativeThrowableObjectPointer = cast(const(void)*) nativeThrowable;
     }
 }
 
@@ -107,6 +115,14 @@ public interface NativeMarshaller {
         ref ubyte[][] keepAliveBuffers,
     );
 
+    // Optional zero-copy seam (§35.1): a native-layout backend can return the
+    // stable address of the argument slot containing ABI bytes. Returning null
+    // keeps the boxed Interpreter on the existing core-owned buffer path.
+    const(void)* argumentAddress(
+        in size_t index,
+        imported!"dmd.mtype".Type type,
+    );
+
     void fillReceiver(
         ubyte[] buffer,
         imported!"dmd.mtype".Type type,
@@ -116,6 +132,10 @@ public interface NativeMarshaller {
     );
 
     void readResult(imported!"dmd.mtype".Type type, in ubyte[] buffer);
+
+    // Optional zero-copy result slot. Returning null keeps today's return
+    // buffer plus readResult copy-out behavior.
+    void* resultAddress(imported!"dmd.mtype".Type type);
 
     void writeRefResult(
         imported!"dmd.mtype".Type type,
@@ -237,6 +257,7 @@ public bool callNativeDelegate(
         return false;
 
     return callViaLibffi(
+        null,
         LINK.d,
         type,
         funcptr,
@@ -309,6 +330,21 @@ private struct NativeThis {
     }
 }
 
+private struct NativeCifCacheKey {
+    private const(void)* function_;
+    private bool hasReceiver;
+    private RefReturnMode refReturnMode;
+}
+
+private struct CachedNativeCif {
+    private imported!"quickbite.ffi.libffi".ffi_cif cif;
+    private imported!"quickbite.ffi.libffi".ffi_type* returnFfi;
+    private imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
+    private imported!"quickbite.ffi.libffi".ffi_type*[] abiArgumentFfiTypes;
+}
+
+private CachedNativeCif*[NativeCifCacheKey] _nativeCifCache;
+
 private bool callNativeImpl(
     imported!"dmd.func".FuncDeclaration function_,
     NativeThis receiver,
@@ -347,6 +383,7 @@ private bool callNativeImpl(
         );
 
     return callViaLibffi(
+        function_,
         function_._linkage,
         type,
         symbol,
@@ -442,6 +479,7 @@ private bool isSupportedNativeLinkage(
 // signature shape not yet modelled, preserving the caller's no-available-source
 // diagnostic.
 private bool callViaLibffi(
+    imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.astenums".LINK linkage,
     imported!"dmd.mtype".TypeFunction type,
     const void* symbol,
@@ -518,37 +556,61 @@ private bool callViaLibffi(
         if (isOutPointer(parameter))
             hasOutPointer = true;
 
-    // Per-call CIF: a variadic call needs ffi_prep_cif_var with the fixed/total
-    // split and cannot share the non-variadic prep (§34.14).
+    // A variadic call needs ffi_prep_cif_var with the fixed/total split and
+    // cannot share a non-variadic prep (§34.14). Non-variadic calls cache the
+    // CIF and the ffi_type* arrays it points at by resolved callable (§35.1).
     ffi_cif cif;
-    const prepStatus = isVariadic
-        ? ffi_prep_cif_var(
+    ffi_cif* cifPointer;
+    auto preparedReturnFfi = returnFfi;
+    auto preparedArgumentFfiTypes = argumentFfiTypes;
+    if (isVariadic) {
+        const prepStatus = ffi_prep_cif_var(
             &cif,
             FFI_DEFAULT_ABI,
             cast(uint) (hiddenNargs + fixedNargs),
             cast(uint) totalNargs,
             returnFfi,
             abiArgumentFfiTypes.ptr,
-        )
-        : ffi_prep_cif(
+        );
+        if (prepStatus != ffi_status.FFI_OK)
+            return false;
+        cifPointer = &cif;
+    } else if (function_ is null) {
+        const prepStatus = ffi_prep_cif(
             &cif,
             FFI_DEFAULT_ABI,
             cast(uint) totalNargs,
             returnFfi,
             abiArgumentFfiTypes.ptr,
         );
-    if (prepStatus != ffi_status.FFI_OK)
-        return false;
+        if (prepStatus != ffi_status.FFI_OK)
+            return false;
+        cifPointer = &cif;
+    } else {
+        auto cachedCif = cachedNativeCif(
+            function_,
+            receiver,
+            refReturnMode,
+            returnFfi,
+            argumentFfiTypes,
+            abiArgumentFfiTypes,
+        );
+        if (cachedCif is null)
+            return false;
+        cifPointer = &cachedCif.cif;
+        preparedReturnFfi = cachedCif.returnFfi;
+        preparedArgumentFfiTypes = cachedCif.argumentFfiTypes;
+    }
 
     // libffi fills in struct ffi_type sizes during prep; cross-check against
     // DMD's computed layout (ffi.md §24.3). ffiTypeFor only claims layouts
     // libffi reproduces exactly (ffi.md §35.7), so a mismatch is a mapper bug.
     if (!returnsRef && returnType.ty == TY.Tstruct)
-        assert(returnFfi.size == cast(size_t) size(returnType),
+        assert(preparedReturnFfi.size == cast(size_t) size(returnType),
             "libffi/DMD return struct layout mismatch (ffi.md §24.3)");
     foreach (index; 0 .. nargs)
         if (parameterTypes[index].ty == TY.Tstruct)
-            assert(argumentFfiTypes[index].size ==
+            assert(preparedArgumentFfiTypes[index].size ==
                 cast(size_t) size(parameterTypes[index]),
                 "libffi/DMD argument struct layout mismatch (ffi.md §24.3)");
 
@@ -598,12 +660,16 @@ private bool callViaLibffi(
         ffi_closure_free(closure);
 
     foreach (index; 0 .. nargs) {
-        argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
-
         const addressOfLocal =
             index < addressOfLocalArguments.length &&
             addressOfLocalArguments[index];
-        if (isDelegateParameter(parameterTypes[index])) {
+        if (auto address = marshaller.argumentAddress(
+            index,
+            parameterTypes[index],
+        )) {
+            argumentValues[index] = cast(void*) address;
+        } else if (isDelegateParameter(parameterTypes[index])) {
+            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
             // Build a native trampoline whose calls re-enter the backend to run
             // the interpreted closure, and write the {context, funcptr} delegate
             // into the argument buffer.
@@ -615,7 +681,9 @@ private bool callViaLibffi(
                 closuresToFree,
                 closureContexts,
             );
+            argumentValues[index] = argumentBuffers[index].ptr;
         } else if (isOutParameter(parameterTypes[index], addressOfLocal)) {
+            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
             // Allocate a host cell sized to the pointed-to type, marshal the
             // argument's current value into it (ffi.md §35.6), pass its
             // address as the out parameter, and reify the written value
@@ -632,7 +700,9 @@ private bool callViaLibffi(
             );
             *cast(void**) argumentBuffers[index].ptr =
                 outParameterCells[index].ptr;
+            argumentValues[index] = argumentBuffers[index].ptr;
         } else {
+            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
             marshaller.fillArgument(
                 argumentBuffers[index],
                 parameterTypes[index],
@@ -641,9 +711,8 @@ private bool callViaLibffi(
                 keepAlive,
                 keepAliveBuffers,
             );
+            argumentValues[index] = argumentBuffers[index].ptr;
         }
-
-        argumentValues[index] = argumentBuffers[index].ptr;
     }
     auto abiArgumentValues = new void*[](totalNargs);
     if (receiver.enabled)
@@ -655,7 +724,9 @@ private bool callViaLibffi(
     // The return buffer must be at least ffi_arg-wide (8 bytes) and aligned,
     // even for narrow returns.
     const returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
-    auto returnBuffer = new ubyte[](returnSize);
+    auto returnSlot = returnsRef ? null : marshaller.resultAddress(returnType);
+    auto returnBuffer = returnSlot is null ? new ubyte[](returnSize) : null;
+    auto returnAddress = returnSlot is null ? returnBuffer.ptr : returnSlot;
 
     // Pin the marshalled C-string buffers so a collection triggered by a D
     // allocation cannot reclaim them while the native call reads through them.
@@ -668,9 +739,9 @@ private bool callViaLibffi(
     alias CFunction = extern(C) void function();
     try {
         ffi_call(
-            &cif,
+            cifPointer,
             cast(CFunction) symbol,
-            returnBuffer.ptr,
+            returnAddress,
             abiArgumentValues.ptr,
         );
     } catch (Exception exception) {
@@ -706,9 +777,47 @@ private bool callViaLibffi(
             );
         }
     } else {
-        marshaller.readResult(returnType, returnBuffer);
+        if (returnSlot is null)
+            marshaller.readResult(returnType, returnBuffer);
     }
     return true;
+}
+
+private CachedNativeCif* cachedNativeCif(
+    imported!"dmd.func".FuncDeclaration function_,
+    NativeThis receiver,
+    in RefReturnMode refReturnMode,
+    imported!"quickbite.ffi.libffi".ffi_type* returnFfi,
+    imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes,
+    imported!"quickbite.ffi.libffi".ffi_type*[] abiArgumentFfiTypes,
+) {
+    import quickbite.ffi.libffi: ffi_prep_cif, ffi_status, FFI_DEFAULT_ABI;
+
+    const key = NativeCifCacheKey(
+        cast(const(void)*) function_,
+        receiver.enabled,
+        refReturnMode,
+    );
+    if (auto existing = key in _nativeCifCache)
+        return *existing;
+
+    auto result = new CachedNativeCif;
+    result.returnFfi = returnFfi;
+    result.argumentFfiTypes = argumentFfiTypes.dup;
+    result.abiArgumentFfiTypes = abiArgumentFfiTypes.dup;
+
+    const prepStatus = ffi_prep_cif(
+        &result.cif,
+        FFI_DEFAULT_ABI,
+        cast(uint) result.abiArgumentFfiTypes.length,
+        result.returnFfi,
+        result.abiArgumentFfiTypes.ptr,
+    );
+    if (prepStatus != ffi_status.FFI_OK)
+        return null;
+
+    _nativeCifCache[key] = result;
+    return result;
 }
 
 private const(ubyte)[] nativeBytes(
@@ -770,7 +879,11 @@ private bool canRepresentCall(
 // the backend can rebuild the interpreted chain (ffi.md §34.13). Only Exception
 // is caught at the call site; Error stays fatal.
 private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
-    auto result = new NativeCallException(throwable.msg, throwable.classinfo.name);
+    auto result = new NativeCallException(
+        throwable.msg,
+        throwable.classinfo.name,
+        throwable,
+    );
     if (throwable.next !is null)
         result.chainedNext = nativeCallExceptionFrom(throwable.next);
     return result;

@@ -54,6 +54,9 @@ private enum LoopControl {
     continue_,
 }
 
+private enum nativeExceptionObjectPointerField =
+    "__quickbiteNativeThrowableObjectPointer";
+
 private struct ArrayElementAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t index;
@@ -85,6 +88,8 @@ private struct Walker {
     import dmd.statement: Statement;
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
+
+    private Throwable[const(void)*] nativeThrowableRoots;
 
     private Value[VarDeclaration] locals;
     private VarDeclaration[size_t] localPointers;
@@ -434,7 +439,7 @@ private struct Walker {
         if (catch_.var is null)
             return;
 
-        locals[catch_.var] = object;
+        locals[catch_.var] = nativeExceptionCatchObject(catch_, object);
         uninitializedLocals.remove(catch_.var);
     }
 
@@ -456,7 +461,19 @@ private struct Walker {
     private void throwNativeException(
         imported!"quickbite.ffi".NativeCallException exception,
     ) {
+        rootNativeException(exception);
         throw new InterpretedException(nativeExceptionObject(exception));
+    }
+
+    private void rootNativeException(
+        imported!"quickbite.ffi".NativeCallException exception,
+    ) {
+        if (exception.nativeThrowableObjectPointer !is null)
+            nativeThrowableRoots[exception.nativeThrowableObjectPointer] =
+                exception.nativeThrowable;
+
+        if (exception.chainedNext !is null)
+            rootNativeException(exception.chainedNext);
     }
 
     // Rebuild the captured native exception chain as linked interpreted
@@ -468,6 +485,7 @@ private struct Walker {
         auto object = nativeExceptionBaseObject(
             exception.msg,
             exception.className,
+            exception.nativeThrowableObjectPointer,
         );
         if (exception.chainedNext !is null)
             object = object.withClassFieldNamed(
@@ -481,10 +499,14 @@ private struct Walker {
     private Value nativeExceptionBaseObject(
         in string message,
         in string className,
+        in const(void)* nativeObjectPointer = null,
     ) {
         if (auto class_ = dynamicClassDeclarationByName(className))
-            return classDefaultValue(class_)
-                .withClassFieldNamed("msg", Value(message));
+            return withNativeExceptionObjectPointer(
+                classDefaultValue(class_)
+                    .withClassFieldNamed("msg", Value(message)),
+                nativeObjectPointer,
+            );
 
         // Fully-qualified name (e.g. a native throw's `classinfo.name`) may
         // not be lexically visible from the current call frame but still be
@@ -496,10 +518,13 @@ private struct Walker {
         // of `nativeExceptionRoot`'s name-prefix guess (interpreter.md
         // §9.10).
         if (auto class_ = classDeclarationByQualifiedName(className))
-            return classDefaultValue(class_)
-                .withClassFieldNamed("msg", Value(message));
+            return withNativeExceptionObjectPointer(
+                classDefaultValue(class_)
+                    .withClassFieldNamed("msg", Value(message)),
+                nativeObjectPointer,
+            );
 
-        return nativeExceptionValue(message, className);
+        return nativeExceptionValue(message, className, nativeObjectPointer);
     }
 
     // Build a native exception object with the full Throwable field layout so
@@ -507,18 +532,22 @@ private struct Walker {
     // keeping the thrown class's type names so a catch on a dependency subclass
     // still matches. Falls back to the message-only object if the frontend has
     // not recorded the Exception declaration.
-    private Value nativeExceptionValue(in string message, in string className) const {
+    private Value nativeExceptionValue(
+        in string message,
+        in string className,
+        in const(void)* nativeObjectPointer,
+    ) const {
         import quickbite.frontend.dmd.values: defaultValue;
         import dmd.dclass: ClassDeclaration;
 
         auto class_ = ClassDeclaration.exception;
         if (class_ is null)
-            return Value.classValue(
+            return withNativeExceptionObjectPointer(Value.classValue(
                 className,
                 nativeExceptionTypeNames(className),
                 ["msg"],
                 [Value(message)],
-            );
+            ), nativeObjectPointer);
 
         string[] fieldNames;
         Value[] fields;
@@ -527,12 +556,95 @@ private struct Walker {
             fields ~= defaultValue(field.type);
         }
 
-        return Value.classValue(
+        return withNativeExceptionObjectPointer(Value.classValue(
             className,
             nativeExceptionTypeNames(className),
             fieldNames,
             fields,
-        ).withClassFieldNamed("msg", Value(message));
+        ).withClassFieldNamed("msg", Value(message)), nativeObjectPointer);
+    }
+
+    private Value nativeExceptionCatchObject(
+        imported!"dmd.statement".Catch catch_,
+        in Value object,
+    ) {
+        if (!object.hasClassFieldNamed(nativeExceptionObjectPointerField))
+            return object;
+
+        auto classType = catch_.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return object;
+
+        return nativeExceptionObjectWithClassFields(classType.sym, object);
+    }
+
+    private Value nativeExceptionObjectWithClassFields(
+        imported!"dmd.dclass".ClassDeclaration class_,
+        in Value object,
+    ) {
+        if (!object.hasClassFieldNamed(nativeExceptionObjectPointerField))
+            return object;
+
+        const pointer = object
+            .classFieldNamed(nativeExceptionObjectPointerField)
+            .asNativePointer;
+        string[] fieldNames;
+        Value[] fields;
+        foreach (field; classFields(class_)) {
+            const name = variableName(field);
+            fieldNames ~= name;
+            fields ~= isSyntheticNativeExceptionField(name) &&
+                object.hasClassFieldNamed(name)
+                ? object.classFieldNamed(name)
+                : nativeClassFieldValue(field, pointer);
+        }
+
+        return withNativeExceptionObjectPointer(Value.classValue(
+            object.classTypeName,
+            object.classTypeNames,
+            fieldNames,
+            fields,
+        ), pointer);
+    }
+
+    // Delete this with value.md's native-layout class/object work. It only
+    // keeps the boxed native-exception shim from reading interpreter-owned
+    // exception metadata as if it were native object storage.
+    private bool isSyntheticNativeExceptionField(in string name)
+        @safe @nogc nothrow pure const
+    {
+        return name == "msg" || name == "_nextInChainPtr";
+    }
+
+    private Value nativeClassFieldValue(
+        imported!"dmd.declaration".VarDeclaration field,
+        const(void)* objectPointer,
+    ) {
+        import quickbite.backends.interpreter.ffi_marshal: unmarshalNative;
+
+        return unmarshalNative(
+            field.type.toBasetype,
+            cast(void*) (cast(ubyte*) objectPointer + field.offset),
+        );
+    }
+
+    private Value withNativeExceptionObjectPointer(
+        in Value object,
+        in const(void)* nativeObjectPointer,
+    ) const {
+        if (nativeObjectPointer is null)
+            return object;
+
+        if (object.hasClassFieldNamed(nativeExceptionObjectPointerField))
+            return object.withClassFieldNamed(
+                nativeExceptionObjectPointerField,
+                Value.nativePointerValue(cast(void*) nativeObjectPointer),
+            );
+
+        return object.withAppendedClassField(
+            nativeExceptionObjectPointerField,
+            Value.nativePointerValue(cast(void*) nativeObjectPointer),
+        );
     }
 
     private Value chainExceptionObject(in Value thrown, in Value next) const {
@@ -803,8 +915,14 @@ private struct Walker {
         imported!"dmd.statement".CaseStatement case_,
         in Value condition,
     ) {
-        if (case_.exp !is null && runExpression(case_.exp) == condition)
-            return true;
+        if (case_.exp !is null) {
+            const candidate = runExpression(case_.exp);
+            if (candidate.isIntegerCompatibleScalar &&
+                condition.isIntegerCompatibleScalar)
+                return candidate.asLong == condition.asLong;
+            if (candidate == condition)
+                return true;
+        }
 
         auto range = case_.statement is null
             ? null
@@ -1914,6 +2032,37 @@ private struct Walker {
         arrayAllocations[variable] = ++allocationCount;
         arrayAllocationVariables[arrayAllocations[variable]] = variable;
         return arrayAllocations[variable];
+    }
+
+    private Value localPointerByteSlice(
+        in Value pointer,
+        in size_t lower,
+        in size_t upper,
+    ) {
+        import std.conv: text;
+
+        auto variable = pointer.localPointerId in localPointers;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter pointer target.");
+
+        if ((*variable in locals) is null)
+            locals[*variable] = defaultValue(*variable);
+
+        const allocation = scalarBytes((*variable).type, localPointerTarget(pointer));
+        if (lower > upper || upper > allocation.length)
+            throw new Exception(text(
+                "pointer slice `[", lower, "..", upper,
+                "]` exceeds allocated memory block `[0..",
+                allocation.length,
+                "]`",
+            ));
+
+        return Value.arraySliceValue(
+            allocation[lower .. upper],
+            allocation,
+            lower,
+            allocationId(*variable),
+        );
     }
 
     private Value runConditionalExpression(
@@ -3101,6 +3250,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
+        child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.locals = (captureLocals || function_.isNested)
             ? locals.dup
             : datasegLocals;
@@ -3153,6 +3303,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
+        child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.locals = locals.dup;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
@@ -3226,6 +3377,7 @@ private struct Walker {
         ref Walker child,
         in bool captureLocals = false,
     ) {
+        mergeNativeThrowableRoots(child);
         nextLocalPointerId = child.nextLocalPointerId;
         mergeReturnedLocalPointer(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
@@ -3254,6 +3406,7 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
     ) {
+        mergeNativeThrowableRoots(child);
         nextLocalPointerId = child.nextLocalPointerId;
         mergeReturnedLocalPointer(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
@@ -3275,6 +3428,11 @@ private struct Walker {
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
+    }
+
+    private void mergeNativeThrowableRoots(ref Walker child) {
+        foreach (pointer, throwable; child.nativeThrowableRoots)
+            nativeThrowableRoots[pointer] = throwable;
     }
 
     private void writeBackNestedLocals(
@@ -3592,11 +3750,13 @@ private struct Walker {
             ? null
             : argumentExpression.isSliceExp;
         if (slice is null || !argument.isArray) {
+            recordForwardedArrayAllocationAlias(parameter, argumentExpression);
             sliceAliases.remove(parameter);
             return;
         }
 
         if (isPointerType(slice.e1.type)) {
+            recordPointerSliceAllocationAlias(parameter, argument);
             sliceAliases.remove(parameter);
             return;
         }
@@ -3618,6 +3778,45 @@ private struct Walker {
             sourceAlias is null ? source : sourceAlias.source,
             argument.arrayAllocationOffset,
         );
+    }
+
+    private void recordPointerSliceAllocationAlias(
+        VarDeclaration parameter,
+        in Value argument,
+    ) {
+        if (argument.arrayAllocationId == 0) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        arrayAllocationAliases[parameter] = argument.arrayAllocationId;
+    }
+
+    private void recordForwardedArrayAllocationAlias(
+        VarDeclaration parameter,
+        imported!"dmd.expression".Expression argumentExpression,
+    ) {
+        auto var = argumentExpression is null
+            ? null
+            : argumentExpression.isVarExp;
+        if (var is null) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        auto source = var.var.isVarDeclaration;
+        if (source is null) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        auto alias_ = source in arrayAllocationAliases;
+        if (alias_ is null) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        arrayAllocationAliases[parameter] = *alias_;
     }
 
     private void writeBackRefArguments(
@@ -4520,6 +4719,64 @@ private struct Walker {
         return backendCastValue(value, target);
     }
 
+    private Value[] scalarBytes(
+        imported!"dmd.mtype".Type type,
+        in Value value,
+    ) {
+        import dmd.typesem: size;
+
+        const byteCount = cast(size_t) size(type);
+        const bits = cast(ulong) value.asLong;
+        Value[] bytes;
+        foreach (index; 0 .. byteCount)
+            bytes ~= Value(cast(ubyte) (bits >> (index * 8)));
+        return bytes;
+    }
+
+    private Value scalarWithByte(
+        imported!"dmd.mtype".Type type,
+        in Value current,
+        in size_t index,
+        in Value byte_,
+    ) {
+        import std.conv: text;
+
+        auto bytes = scalarBytes(type, current);
+        if (index >= bytes.length)
+            throw new Exception(text("Scalar byte index out of bounds: ", index));
+
+        bytes[index] = Value(cast(ubyte) byte_.asLong);
+        return scalarFromBytes(type, bytes);
+    }
+
+    private Value scalarFromBytes(
+        imported!"dmd.mtype".Type type,
+        in Value[] bytes,
+    ) {
+        import dmd.astenums: TY;
+
+        ulong bits;
+        foreach (index, byte_; bytes)
+            bits |= cast(ulong) cast(ubyte) byte_.asLong << (index * 8);
+
+        switch (type.toBasetype.ty) with (TY) {
+            case Tbool:   return Value(bits != 0);
+            case Tchar:   return Value(cast(char) bits);
+            case Twchar:  return Value(cast(wchar) bits);
+            case Tdchar:  return Value(cast(dchar) bits);
+            case Tint8:   return Value(cast(byte) bits);
+            case Tuns8:   return Value(cast(ubyte) bits);
+            case Tint16:  return Value(cast(short) bits);
+            case Tuns16:  return Value(cast(ushort) bits);
+            case Tint32:  return Value(cast(int) bits);
+            case Tuns32:  return Value(cast(uint) bits);
+            case Tint64:  return Value(cast(long) bits);
+            case Tuns64:  return Value(cast(ulong) bits);
+            default:
+                throw new Exception("Unsupported scalar byte writeback.");
+        }
+    }
+
     // Apply the elements a native call wrote through pointers into
     // interpreter-managed arrays (e.g. posix read filling `buf.ptr + n`)
     // back into the arrays the pointers came from.
@@ -4543,6 +4800,18 @@ private struct Walker {
         auto current = *variable in locals;
         if (current is null)
             return false;
+
+        if (!current.isArray) {
+            locals[*variable] = scalarWithByte(
+                (*variable).type,
+                *current,
+                cast(size_t) pointer.pointerElementOffset,
+                value,
+            );
+            arrayPointerWritebacks[*variable] = true;
+            uninitializedLocals.remove(*variable);
+            return true;
+        }
 
         locals[*variable] = current.withArrayElement(
             cast(size_t) pointer.pointerElementOffset,
@@ -5235,7 +5504,7 @@ private struct Walker {
             throw new Exception("Unsupported class cast target.");
 
         return value.classHasType(className(classType.sym))
-            ? value
+            ? nativeExceptionObjectWithClassFields(classType.sym, value)
             : Value.null_;
     }
 
@@ -5392,6 +5661,9 @@ private struct Walker {
                     );
                 return Value.arrayValue(elements);
             }
+
+            if (source.isLocalPointer)
+                return localPointerByteSlice(source, lower, upper);
 
             return source.pointerSlice(lower, upper);
         }

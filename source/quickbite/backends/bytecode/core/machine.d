@@ -24,7 +24,7 @@ package(quickbite.backends.bytecode) RunResult run(
 ) {
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo, Op, noCatchObjectField, noExceptionClass,
-        size, sliceDescriptorSize, stringSliceSize;
+        noOutParameterOffset, size, sliceDescriptorSize, stringSliceSize;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -1346,11 +1346,16 @@ package(quickbite.backends.bytecode) RunResult run(
                     base,
                     native.outParameterOffsets,
                 );
+                bool[] addressOfLocalArguments;
+                addressOfLocalArguments.length = native.outParameterOffsets.length;
+                foreach (index, offset; native.outParameterOffsets)
+                    addressOfLocalArguments[index] =
+                        offset != noOutParameterOffset;
                 if (!callNative(
                     native.function_,
                     marshaller,
                     native.argumentTypes,
-                    [],
+                    addressOfLocalArguments,
                 ))
                     throw new Exception(noAvailableSourceMessage(
                         native.function_,
@@ -2688,6 +2693,28 @@ private final class BytecodeNativeMarshaller:
         buffer[] = _stack[slot .. slot + buffer.length];
     }
 
+    // @trusted: the stack reserve at run start prevents reallocation while the
+    // native call is active, so these frame-slot pointers stay valid for
+    // libffi. Out parameters point directly at the target local; ordinary
+    // arguments point at their fixed-stride argument slot.
+    public const(void)* argumentAddress(in size_t index, Type type) @trusted {
+        import quickbite.backends.bytecode.core.program:
+            nativeArgumentSlotSize, noOutParameterOffset;
+
+        const outParameter = _outParameterOffsets[index];
+        if (outParameter != noOutParameterOffset)
+            return null;
+
+        const slot = _argument + index * nativeArgumentSlotSize;
+        if (isPointerToPointer(type)) {
+            auto target = *cast(void**) &_stack[slot];
+            if (target !is null)
+                return target;
+        }
+
+        return &_stack[slot];
+    }
+
     public void readResult(Type type, in ubyte[] buffer) {
         // `buffer` is padded to at least ffi_arg width (8 bytes); copy exactly
         // the return type's native size (4 for `int`, 8 for `long`), not a
@@ -2695,6 +2722,17 @@ private final class BytecodeNativeMarshaller:
         const resultSize = nativeResultSize(type);
         _stack[_destination .. _destination + resultSize] =
             buffer[0 .. resultSize];
+    }
+
+    // @trusted: for direct handoff, libffi writes no more than the result slot
+    // can hold. Narrow results use the core's padded buffer and copy-out path.
+    public void* resultAddress(Type type) @trusted {
+        import quickbite.ffi.libffi: ffi_arg;
+
+        if (nativeResultSize(type) < ffi_arg.sizeof)
+            return null;
+
+        return &_stack[_destination];
     }
 
     private static size_t nativeResultSize(Type type) {
@@ -2715,6 +2753,14 @@ private final class BytecodeNativeMarshaller:
             default:
                 throw new Exception("Unsupported native result type.");
         }
+    }
+
+    private static bool isPointerToPointer(Type type) {
+        import dmd.astenums: TY;
+
+        auto basetype = type.toBasetype;
+        return basetype.ty == TY.Tpointer &&
+            basetype.nextOf.toBasetype.ty == TY.Tpointer;
     }
 
     public void fillReceiver(ubyte[] buffer, Type type, in bool stableString,

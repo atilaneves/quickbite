@@ -23,6 +23,8 @@ pragma(lib, "ffi");
 
 public:
 
+alias ffi_arg = ulong;
+
 extern(C):
 
 struct ffi_type {

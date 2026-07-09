@@ -2695,6 +2695,7 @@ private struct Compiler {
     }
 
     private void compilePointerDeclaration(VarDeclaration variable) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -2727,7 +2728,12 @@ private struct Compiler {
             ));
 
         _locals[variable] = offset;
-        _pointerLocals[variable] = pointer.pointerElement;
+        auto declaredElement = variable.type.toBasetype.nextOf;
+        _pointerLocals[variable] =
+            declaredElement !is null &&
+            declaredElement.toBasetype.ty == TY.Tdelegate
+            ? pointer.pointerElement
+            : pointerElementScalar(variable.type);
         // A `S* p = new S(...)` pointer addresses a heap struct block; record the
         // struct declaration so `p.field` resolves through the pointer.
         if (auto structDeclaration = structPointerDeclaration(variable.type))
@@ -7419,18 +7425,42 @@ private struct Compiler {
             // also matches), zero offset, tracked pointer local. Slot is
             // never read (ffi.md §34.8: type is unconditionally an out
             // parameter); only the frame offset is recorded.
-            auto symOff = argument.isSymOffExp;
-            auto declaration = symOff is null ? null : symOff.var.isVarDeclaration;
-            auto outLocal = declaration is null ? null : declaration in _locals;
-            if (symOff is null || symOff.offset != 0 || outLocal is null ||
-                (declaration in _pointerLocals) is null)
-                return null;
-            outParameterOffsets[index] = *outLocal;
+            emitCallArgument(slot, false, argument);
+            auto outLocal = addressOfLocalOffset(argument);
+            if (outLocal !is null)
+                outParameterOffsets[index] = *outLocal;
         }
 
         return emitNativeCall(
             function_, argumentTypes, argumentArea, outParameterOffsets,
         );
+    }
+
+    private ushort* addressOfLocalOffset(Expression argument) {
+        auto target = argument;
+        while (auto cast_ = target.isCastExp)
+            target = cast_.e1;
+
+        if (auto symOff = target.isSymOffExp) {
+            if (symOff.offset != 0)
+                return null;
+            auto declaration = symOff.var.isVarDeclaration;
+            return declaration is null ? null : declaration in _locals;
+        }
+
+        auto address = target.isAddrExp;
+        if (address is null)
+            return null;
+
+        target = address.e1;
+        while (auto cast_ = target.isCastExp)
+            target = cast_.e1;
+
+        auto variable = target.isVarExp;
+        auto declaration = variable is null
+            ? null
+            : variable.var.isVarDeclaration;
+        return declaration is null ? null : declaration in _locals;
     }
 
     // Emit a string literal's bytes plus a NUL terminator into the data
@@ -9729,6 +9759,8 @@ private struct Compiler {
         if (element.toBasetype.ty == TY.Tsarray)
             element = element.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tstruct)
+            return ScalarType.void_;
+        if (element.toBasetype.ty == TY.Tdelegate)
             return ScalarType.void_;
         if (element.toBasetype.ty == TY.Tfunction)
             return ScalarType.void_;

@@ -410,6 +410,10 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         );
     }
 
+    public override const(void)* argumentAddress(in size_t index, Type type) {
+        return null;
+    }
+
     public override void fillReceiver(
         ubyte[] buffer,
         Type type,
@@ -431,6 +435,10 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
 
     public override void readResult(Type type, in ubyte[] buffer) {
         _result = unmarshalValue(type, buffer);
+    }
+
+    public override void* resultAddress(Type type) {
+        return null;
     }
 
     public override void writeRefResult(
