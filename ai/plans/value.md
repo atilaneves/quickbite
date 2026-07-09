@@ -372,6 +372,21 @@ raw pointer and length that it cannot itself verify, so its
 future FFI seam that hands `borrow` a pointer is that boundary; it
 alone can vouch for the pointer/length pair.
 
+Progress 2026-07-09 (cont'd): added the layout facts the handle needs next,
+in `source/quickbite/backends/interpreter/layout.d`: `typeByteSize`,
+`typeAlignment`, and `typeHasPointers`, three thin `@safe` wrappers over
+`dmd.typesem.size`/`Type.alignsize`/`dmd.typesem.hasPointers` behind small
+`@trusted` boundaries (those DMD calls are not `@safe`/pure/nothrow). The
+module computes nothing itself -- no rounding, no padding arithmetic, no
+offsets -- every number is DMD's own, verbatim, per this item's guardrail
+that DMD-derived layout facts stay the source of truth and the interpreter
+grows no second set of D layout rules. `typeByteSize` throws on DMD's
+`SIZE_INVALID` sentinel (an honest failure for an unsized type, e.g.
+`Type.terror`) rather than inventing a size. Still nothing wired up: no
+`Type*` on a handle, no stride, no struct offsets, no GC roots, no
+interpreter call sites. Next: the array-native block handle skeleton per
+the "Next PR" description above.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
