@@ -420,6 +420,25 @@ up, not this container's. `layout.d` also now asserts a 64-bit host at
 compile time, since DMD reports type sizes as 64-bit `uinteger_t`
 values that the module narrows to `size_t`.
 
+Progress 2026-07-09 (capacity through real storage): an array's element
+capacity is now read from the GC rather than tracked in a field of our
+own. `NativeBlock` gains `trueByteSize`, which returns `core.memory.GC.
+sizeOf` on the block's address -- the GC's own bin size for the
+allocation, not a number this module invents or caches. A *borrowed*
+block honestly reports 0 (it is never GC memory), and a *zero-length*
+block also reports 0 (its address is null); both are real, expected
+zeros per `GC.sizeOf`'s own contract, not something papered over.
+`NativeArray` gains `capacity`, derived as `block.trueByteSize / stride`
+-- again derived, not stored -- so an owned array's capacity is `>=
+length` (the GC's bin size rounds up from the requested bytes) and a
+borrowed or zero-length array's capacity is 0. This is the first step
+toward retiring `interpreter.md` §9.10's `gc_*` capacity-hook shims
+(`tryGCArrayHook`/`runGCArrayHookCall`/`lastGCArrayUsedAllocation`),
+which exist only because boxed interpreter arrays were never
+addressable GC blocks; now that a block is a real allocation, no shim
+is retired yet and nothing is wired in -- this is only the fact
+becoming readable.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

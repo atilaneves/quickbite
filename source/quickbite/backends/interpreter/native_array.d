@@ -124,6 +124,19 @@ public struct NativeArray {
 
         writeSliceHeaderBytes(dest, _length, _block.address);
     }
+
+    // How many `_stride`-sized elements the block's true GC allocation
+    // could hold, derived from `NativeBlock.trueByteSize` rather than
+    // stored -- the GC already knows this fact, so a separate `_capacity`
+    // field would be a second, driftable copy of it (item 7's guardrail).
+    // For an owned array this is `>= length` (the GC's bin size rounds up
+    // from the requested `length * stride`); for a borrowed or
+    // zero-length array `_block.trueByteSize` is 0, so this is 0 too. No
+    // stride-is-zero guard: `allocate` already throws for an unsized
+    // element type before a zero stride could ever reach here.
+    public size_t capacity() const nothrow @nogc @safe {
+        return _block.trueByteSize / _stride;
+    }
 }
 
 // `length * stride` computed with overflow checking: an overflowing

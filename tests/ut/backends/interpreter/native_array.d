@@ -235,3 +235,19 @@ unittest {
     foreach (b; buffer)
         b.should == 0xAA;
 }
+
+
+@("NativeArray.allocate.capacityIsAtLeastLength")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    (array.capacity >= array.length).should == true;
+}
+
+
+@("NativeArray.allocate.zeroLengthCapacityIsZero")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+
+    array.capacity.should == 0;
+}

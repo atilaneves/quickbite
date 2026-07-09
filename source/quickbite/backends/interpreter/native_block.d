@@ -90,6 +90,25 @@ public struct NativeBlock {
     public inout(void)* address() inout pure nothrow @nogc @safe {
         return blockAddress(_bytes);
     }
+
+    // The true byte size of this block's underlying GC allocation, read
+    // from `core.memory.GC.sizeOf` -- the GC's own bin size, not a size we
+    // invent or cache ourselves (item 7's guardrail: layout facts stay the
+    // GC/DMD's single source of truth, never a second copy of our own).
+    // Per `GC.sizeOf`'s own doc comment (core/memory.d, ~line 721): memory
+    // not allocated by this GC, the interior of a block, or a null
+    // pointer, all honestly report 0. That makes this 0 for a *borrowed*
+    // block (never GC memory) and for a *zero-length* block (its `address`
+    // is null, since `GC.calloc(0, ...)` returns null) -- both are real,
+    // expected zeros, not something to paper over. Not `pure`: the
+    // `const scope void*` overload of `GC.sizeOf` used below (see
+    // `trueByteSizeOf`) is itself not `pure` (druntime marks it
+    // `/* FIXME pure */`); reaching the other, `pure`, `void*` overload
+    // would need casting away `address`'s constness, which would fake a
+    // purity this function doesn't have.
+    public size_t trueByteSize() const nothrow @nogc @safe {
+        return trueByteSizeOf(address);
+    }
 }
 
 // Building a slice view over caller-owned memory needs raw pointer
@@ -118,4 +137,15 @@ private ubyte[] allocateBytes(in size_t byteLength, in NativeBlock.Scan scan) pu
 // past-the-end pointer for an empty slice); contain that here.
 private inout(void)* blockAddress(inout(ubyte)[] bytes) pure nothrow @nogc @trusted {
     return bytes.ptr;
+}
+
+// `GC.sizeOf` takes a raw, unbounded pointer; this is the @trusted
+// boundary. Uses the `const scope void*` overload rather than the `pure`
+// `void*` one: `NativeBlock.address` returns `inout(void)*`, which resolves
+// to `const(void)*` from a `const` method, matching this parameter exactly
+// with no cast needed.
+private size_t trueByteSizeOf(const scope void* ptr) nothrow @nogc @trusted {
+    import core.memory: GC;
+
+    return GC.sizeOf(ptr);
 }

@@ -132,3 +132,29 @@ unittest {
 
     block.scan.should == NativeBlock.Scan.no;
 }
+
+
+@("NativeBlock.allocate.trueByteSizeIsAtLeastRequestedByteLength")
+unittest {
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
+
+    (block.trueByteSize >= block.byteLength).should == true;
+}
+
+
+@("NativeBlock.borrow.trueByteSizeIsZero")
+@system
+unittest {
+    ubyte[4] callerOwned = [1, 2, 3, 4];
+    auto block = NativeBlock.borrow(callerOwned.ptr, callerOwned.length);
+
+    block.trueByteSize.should == 0;
+}
+
+
+@("NativeBlock.allocate.zeroLengthTrueByteSizeIsZero")
+unittest {
+    auto block = NativeBlock.allocate(0, NativeBlock.Scan.no);
+
+    block.trueByteSize.should == 0;
+}
