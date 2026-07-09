@@ -1376,6 +1376,37 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("grainBitsBoolWritesScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reader {
+                uint next;
+
+                void grainBits(ref uint value, int bits) {
+                    value = next;
+                }
+            }
+
+            void grainBitsT(C, T)(ref C cereal, ref T value, int bits) {
+                uint realValue = value;
+                cereal.grainBits(realValue, bits);
+                value = cast(T) realValue;
+            }
+
+            unittest {
+                auto reader = Reader(1);
+                bool value;
+
+                grainBitsT(reader, value, 1);
+
+                assert(value == true);
+            }
+        });
+    }
+}
+
 // The owed §9.10 ratchet fixture: `emplaceRef` on a *scalar* array element is
 // exactly the case §9.10 says the `runEmplaceRefCall`/`isEmplaceRef` shim
 // (impl.d) is provably equivalent to the real semantics — a plain value

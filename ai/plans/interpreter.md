@@ -2041,6 +2041,59 @@ Unsupported cast to bool from Array
 Build generation and the bench needed escalation only because `~/.dub`
 writes are outside the sandbox.
 
+**Landed (2026-07-09, conditional array truthiness).** The approved
+`grainBitsBoolWritesScalar` fixture was added to `ct/cerealed.d` before
+production changes, but it did not reproduce the package failure: both
+oracle and interpreter were already green in focused runs:
+
+```text
+bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.SystemLinker
+bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.Interpreter
+```
+
+The red signal for this rung therefore stayed the package bench above:
+`bin/bench.sh -b interpreter --dub cerealed` skipped with
+`Unsupported cast to bool from Array`. Temporary probes showed the failing
+value was not the `grainBitsT` scalar `uint` path. It was Phobos
+`std.exception.enforce`: cerealed passes a lazy string diagnostic to
+`enforce`, then `bailOut` evaluates `msg ? msg.idup : ...`. D accepts an
+array in a condition even though explicit `cast(bool) array` is rejected.
+A small compiled-D check confirmed the conditional rule: null and empty
+dynamic arrays are false, non-empty arrays are true.
+
+The fix is intentionally local to interpreter control-flow truthiness in
+`impl.d`: `Value.Array` is truthy when `length != 0`, while explicit
+`Value.castTo!bool` remains unchanged. This covers `if`, loop conditions,
+logical expressions, `assert`, and `?:` without adding a broad cast shim.
+
+Verification after the fix:
+
+```text
+ninja bin/ut
+bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.SystemLinker
+bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.Interpreter
+bin/bench.sh -b interpreter --dub cerealed
+```
+
+The cerealed bench advanced past `Unsupported cast to bool from Array` and
+now reaches the next visible frontier, an expected-message mismatch beginning
+with:
+
+```text
+Expected: "Not enough bytes left to decerealise ubyte[] of 8 elements
+```
+
+`bin/ut --random` was also attempted. It ran 2973 tests and failed one
+unrelated, order-sensitive `LLVMJit` test:
+`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`.LLVMJit`.
+The same test passed when rerun focused. The required seed check was then
+run with `bin/ut --seed 3098732115`; it failed a different unrelated runner
+path,
+`ut.backends.runner.rt.dependency_image.dependencyImage.pointerGlobalRead`
+`.Interpreter`, with `SystemLinker` reporting
+`unittest symbol not found in shared library` during that test's setup.
+
 ## 10. Done
 
 ```text

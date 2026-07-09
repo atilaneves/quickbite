@@ -347,8 +347,6 @@ private struct Walker {
         }
 
         if (auto if_ = statement.isIfStatement) {
-            import quickbite.backends.interpreter.messages: isTruthy;
-
             if (isTruthy(runExpression(if_.condition)))
                 runStatement(if_.ifbody);
             else
@@ -940,8 +938,6 @@ private struct Walker {
         imported!"dmd.statement".ForStatement for_,
         in string label = null,
     ) {
-        import quickbite.backends.interpreter.messages: isTruthy;
-
         runStatement(for_._init);
 
         while (
@@ -971,8 +967,6 @@ private struct Walker {
         imported!"dmd.statement".DoStatement do_,
         in string label = null,
     ) {
-        import quickbite.backends.interpreter.messages: isTruthy;
-
         do {
             runStatement(do_._body);
             if (returned)
@@ -1043,8 +1037,7 @@ private struct Walker {
 
         if (auto assert_ = expression.isAssertExp) {
             import quickbite.backends.interpreter.messages:
-                assertFailureMessage,
-                isTruthy;
+                assertFailureMessage;
 
             if (!isTruthy(runExpression(assert_.e1)))
                 throw new Exception(
@@ -1054,8 +1047,6 @@ private struct Walker {
         }
 
         if (auto not = expression.isNotExp) {
-            import quickbite.backends.interpreter.messages: isTruthy;
-
             return Value(!isTruthy(runExpression(not.e1)));
         }
 
@@ -1431,8 +1422,6 @@ private struct Walker {
     private Value runLogicalAndExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
-        import quickbite.backends.interpreter.messages: isTruthy;
-
         const left = isTruthy(runExpression(logical.e1));
         if (!left)
             return Value(false);
@@ -1444,8 +1433,6 @@ private struct Walker {
     private Value runLogicalOrExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
-        import quickbite.backends.interpreter.messages: isTruthy;
-
         const left = isTruthy(runExpression(logical.e1));
         if (left)
             return Value(true);
@@ -2068,8 +2055,6 @@ private struct Walker {
     private Value runConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
-        import quickbite.backends.interpreter.messages: isTruthy;
-
         return isTruthy(runExpression(conditional.econd)) ?
             runExpression(conditional.e1) :
             runExpression(conditional.e2);
@@ -6748,6 +6733,28 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
         return null;
 
     return receiver.type.toBasetype.isTypeStruct;
+}
+
+
+private bool isTruthy(in imported!"quickbite.lang".Value value) {
+    import quickbite.lang: Value;
+
+    if (value == Value.null_)
+        return false;
+
+    if (value.isPointer)
+        return true;
+
+    if (value.isArray)
+        return value.length != 0;
+
+    if (value == Value(false))
+        return false;
+
+    if (value == Value(true))
+        return true;
+
+    return value.castTo!bool == Value(true);
 }
 
 
