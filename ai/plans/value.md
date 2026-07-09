@@ -352,103 +352,44 @@ interpreter arrays are not addressable GC blocks. Consequences:
   native-layout aggregates/arrays behind a handle reusing DMD offsets.
   See remaining-work item 7.
 
-Progress 2026-07-09: item 7's "Next PR" list is started. Landed only the
-native block itself (`source/quickbite/backends/interpreter/native_block.d`):
-a `NativeBlock` struct wrapping a stable byte range, with a nested
-`Ownership` enum (`owned`/`borrowed`), `allocate`/`borrow` factories,
-`byteLength`/`ownership`/`bytes` accessors, and an `address` accessor that
-is the only place a raw `void*` escapes. Copying the handle copies the
-slice header, not the bytes, so every copy observes the same address.
-Nothing else from the design sketch is wired up yet: no `Type*`, no
-stride/mutability, no GC root registration, no element addressing, no
-slice headers, and no interpreter call sites use it. The interpreter still
-boxes arrays exactly as before; this commit only proves out the block
-primitive the handle will sit on. Next: give the array value a handle
-carrying `Type*`, length, stride, and root state per the "Next PR"
-description, still with no shim retired. `NativeBlock.borrow` is
-`@system`, not `@safe`: it fabricates a slice from a caller-supplied
-raw pointer and length that it cannot itself verify, so its
-`@trusted` boundary belongs to its caller, not to the block. The
-future FFI seam that hands `borrow` a pointer is that boundary; it
-alone can vouch for the pointer/length pair.
+Progress 2026-07-09: item 7's "Next PR" list is started with an
+interpreter-internal native-layout array skeleton, landed but not wired
+into anything else. `native_block.d`'s `NativeBlock` is a stable,
+non-moving byte range: a nested `Ownership` enum (`owned`/`borrowed`), an
+`allocate` factory that zeroes the range via `GC.calloc` under an explicit,
+never-defaulted `Scan` policy (`no`/`conservative`), a `borrow` factory for
+memory owned elsewhere, and an `address` accessor that is the only place a
+raw `void*` escapes -- `borrow` is `@system`, not `@safe`, since it
+fabricates a slice from a caller-supplied pointer/length it cannot itself
+verify; that `@trusted` boundary belongs to whichever future FFI seam
+vouches for the pointer, not to the block. `layout.d` adds `typeByteSize`,
+`typeAlignment`, and `typeHasPointers`, thin `@safe` wrappers over DMD's
+own `dmd.typesem.size`/`Type.alignsize`/`dmd.typesem.hasPointers` behind
+small `@trusted` boundaries -- the module computes nothing itself, every
+number is DMD's own verbatim. `native_array.d`'s `NativeArray` combines a
+block with the DMD element `Type`, a length, and a stride cached once from
+`layout.typeByteSize`; `element` returns an interior `ubyte[]` view with
+ordinary D slice bounds checking, and `writeSliceHeader` materialises a
+real D dynamic-array slice header (`{ size_t length; void* ptr; }`) into a
+caller-supplied destination, aliasing the element block rather than
+snapshotting it -- proven against the host compiler's own slice layout,
+with the ABI fact (`length` first, `ptr` second, `2 * size_t` bytes)
+pinned by a `static assert` rather than hand-rolled.
 
-Progress 2026-07-09 (cont'd): added the layout facts the handle needs next,
-in `source/quickbite/backends/interpreter/layout.d`: `typeByteSize`,
-`typeAlignment`, and `typeHasPointers`, three thin `@safe` wrappers over
-`dmd.typesem.size`/`Type.alignsize`/`dmd.typesem.hasPointers` behind small
-`@trusted` boundaries (those DMD calls are not `@safe`/pure/nothrow). The
-module computes nothing itself -- no rounding, no padding arithmetic, no
-offsets -- every number is DMD's own, verbatim, per this item's guardrail
-that DMD-derived layout facts stay the source of truth and the interpreter
-grows no second set of D layout rules. `typeByteSize` throws on DMD's
-`SIZE_INVALID` sentinel (an honest failure for an unsized type, e.g.
-`Type.terror`) rather than inventing a size. Still nothing wired up: no
-`Type*` on a handle, no stride, no struct offsets, no GC roots, no
-interpreter call sites. Next: the array-native block handle skeleton per
-the "Next PR" description above.
+One real bug was fixed on the way: `new ubyte[](n)` is always `NO_SCAN`, so
+a block holding guest pointers would have been invisible to the GC and its
+targets collectible out from under it. Blocks are now allocated with an
+explicit scan policy chosen from `layout.typeHasPointers` on the element
+type, and the parameter takes no default -- under-scanning is the unsafe
+direction, so a forgotten argument must never silently choose it.
 
-Progress 2026-07-09 (cont'd again): landed the array-native block handle
-skeleton, `source/quickbite/backends/interpreter/native_array.d`'s
-`NativeArray` struct -- a `NativeBlock` holding the elements, the DMD
-element `Type`, the element count, and the stride, plus interior element
-views. `allocate` computes the stride once via `layout.typeByteSize` and
-caches it on the handle; nothing recomputes layout elsewhere. `element`
-returns a `ubyte[]` sub-slice of `block.bytes` at `index * stride ..
-(index + 1) * stride` -- an out-of-range index fails through ordinary D
-slice bounds checking (`core.exception.ArraySliceError`), not a
-hand-rolled check. Still missing, per the "Next PR" list: GC root state
-(deliberately left off this handle -- next commit), static-array inline
-blocks, dynamic-array slice headers, capacity through real storage, and
-struct/class layout. No shim is retired and no backend behaviour changed;
-nothing outside `native_array.d` and its test references the new type.
-
-Progress 2026-07-09 (correction): the "GC roots" bullet's `GC.addRange`/
-`removeRange` sketch is wrong for owned blocks and is corrected in place
-above. `NativeBlock` is a value struct copied freely so that every copy
-shares one stable address -- by design it has no single owner, so a
-destructor-based `removeRange` would unregister the range while other
-copies were still alive, or run more than once for the same range. The
-registration lifecycle also turns out to be unnecessary: an owned block is
-GC memory, so it can simply be allocated `NO_SCAN` or conservatively
-scanned according to `layout.typeHasPointers` on the element type, and the
-GC then scans it for exactly as long as it stays reachable -- the same
-conservative, whole-range policy the sketch asked for, with no
-registration state and no destruction hook to get wrong. Landed as
-`NativeBlock.Scan` (`no`/`conservative`), threaded through
-`NativeBlock.allocate`'s `GC.calloc` call (which also fixes a real bug:
-the prior `new ubyte[]` allocation was always `NO_SCAN`, so a block holding
-guest pointers was invisible to the GC and its targets could be collected
-out from under it) and through `NativeArray.allocate`, which picks the
-policy from the element type. `GC.addRange` remains the right tool only
-for borrowed, non-GC-owned memory, which still registers nothing.
-`NativeBlock.allocate`'s scan parameter takes no default: under-scanning
-is the unsafe direction (a missed-scan block holding guest pointers is a
-use-after-free), so a forgotten argument must never silently choose it --
-every caller now states `Scan.no`/`Scan.conservative` explicitly.
-
-Progress 2026-07-09 (dynamic-array slice header): `NativeArray` can now
-materialise its elements as a real D dynamic-array slice header --
-`{ size_t length; void* ptr; }` -- via `NativeArray.writeSliceHeader`,
-written into any caller-supplied `ubyte[]` destination (for now; the guest
-`T[]` variable's storage becomes the real destination once this wires into
-the interpreter). The write *aliases* the element block; it is not a
-snapshot -- writing through the reinterpreted slice is visible via
-`NativeArray.element` and vice versa, proven against the host D compiler's
-own slice layout by reinterpreting the written bytes as a real `int[]` and
-checking length, pointer identity, aliasing, and index separation all
-agree. The D slice ABI fact (length first, pointer second, `2 * size_t`
-bytes total) is stated once as a `static assert` pinning `(void[]).sizeof`,
-guarded by the host compiler rather than hand-rolled; element stride is
-still only ever `layout.typeByteSize`, never recomputed. A destination that
-is not exactly the header size throws before writing anything, rather than
-truncating or overwriting adjacent bytes. Landed on `NativeArray` itself
-(not a new module): a slice header is a fact about one array handle's
-materialisation, with no state or lifecycle of its own to justify a
-separate module. No shim is retired and no backend behaviour changed;
-nothing outside `native_array.d` and its test references the new method.
-Still missing, per the "Next PR" list: the static-vs-dynamic distinction on
-the handle, static-array inline blocks wired to a call site, capacity
-through real storage, and the struct phase.
+None of this is wired in yet: no `impl.d`/`Walker`/`Value` integration, no
+display change, no FFI change, no `interpreter.md` §9.10 shim retired, no
+capacity/growth, no struct field offsets, no class objects. The
+interpreter still boxes arrays exactly as before. Per the "Next PR" list,
+still owed: capacity through real storage, then the struct phase, then
+class objects -- and the actual interpreter call site that gives any of
+these types somewhere to be used.
 
 ## Audit findings (June 2026)
 

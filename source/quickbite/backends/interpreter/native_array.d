@@ -14,8 +14,10 @@ static assert((void[]).sizeof == 2 * size_t.sizeof);
 
 // The array-native block handle skeleton (ai/plans/value.md item 7's
 // "Next PR"): an interpreter-owned array value carrying a stable block, the
-// DMD element type, length, and stride. GC root state is a later commit --
-// deliberately absent here.
+// DMD element type, length, and stride. `allocate` picks the block's GC scan
+// policy from whether the element type carries pointers; there is no
+// separate root-registration token or lifecycle to track (see
+// `NativeBlock.Scan` and ai/plans/value.md's "GC roots" note).
 public struct NativeArray {
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import dmd.mtype: Type;
