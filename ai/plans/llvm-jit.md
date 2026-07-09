@@ -742,20 +742,17 @@ Original design (kept for reference):
 - **Timing comparability**: both native rows now include executor spawn; note
   it in `bench.md` when flipping the Phase 2′ clause so nobody reads the LDC
   rows as pure link cost.
-- **eh_frame Delta32 range** (pre-existing, found during slice 2): a rare
+- **eh_frame Delta32 range** (pre-existing, found during slice 2): a
   `bin/ut --random` flake — JITLink rejects the object with "section
   .eh_frame: relocation target (DW.ref.__dmd_personality_v0) is out of range
-  of Delta32 fixup" when the interposed host copy of that symbol lands more
-  than 2 GiB from the JIT allocation. Address-space roulette, not
-  order-determinism: seed 660421069 failed once and passed on same-seed
-  re-run; master fails the same way (~1 in 5 runs either side of the slice-2
-  refactor, always `staticArrayCopyRunsPostblitAndDtors.LLVMJit` so far).
-  Likely fix when it graduates from flake to blocker: exclude `DW.ref.*`
-  from host-symbol interposition so the fixup targets the object's own
-  adjacent indirection cell (which itself points at the host personality via
-  a 64-bit relocation). **Superseded (2026-07-07): at ~1-in-5 it already is a
-  blocker — slice A of the critique execution plan below implements exactly
-  this fix, with a deterministic policy-level test.**
+  of Delta32 fixup". Address-space roulette, not order-determinism: seed
+  660421069 failed once and passed on same-seed re-run; always
+  `staticArrayCopyRunsPostblitAndDtors.LLVMJit` so far. **Resolved
+  (2026-07-09) — see slice A below.** The original guess recorded here (that
+  *host-symbol interposition* substitutes a far-away copy of the cell) was
+  wrong: `DW.ref.*` is `STV_HIDDEN`, is in no `.dynsym`, and `dlsym` never
+  finds it, so `defineHostSymbols` cannot interpose it. The real cause is
+  cross-*object* weak-definition externalization inside JITLink.
 
 ## Non-goals
 
@@ -802,68 +799,101 @@ shape than specified is a STOP.
   (bench-exec ORC mode). The upstream JITLink duplicate-`UND` repro remains a
   separate open item.
 
-## Slice A — interposition policy: extract the predicate, exclude `DW.ref.*`, kill the Delta32 flake
+## Slice A — keep hidden unwind cells in their own graph ✅ DONE
 
 **Why first:** every later slice's gate includes `bin/ut --random`, and the
-eh_frame Delta32 flake (see the watch item above) fails it roughly 1 run in
-5 on master — every subsequent gate is untrustworthy until this lands.
+eh_frame Delta32 flake fails it about 1 run in 4 on master — every subsequent
+gate is untrustworthy until this lands. Measured on `1a430048`: 2 of 8 isolated
+full-suite `--random` runs red, every failure the same test,
+`ct.structs.struct.staticArrayCopyRunsPostblitAndDtors.LLVMJit`. The
+`Failed to materialize symbols` wall of text is the downstream cascade of the
+one `JIT session error`, not a second flake.
 
-**Context.** `defineHostSymbols` (`orc/loader.d`) interposes every object
-symbol the host also exports, with no exclusion policy. That is correct for
-its purpose (degenerate weak COMDAT bodies whose real copies live in
-libphobos2.so) but wrong for `DW.ref.__dmd_personality_v0`: an
-unwind-machinery indirection cell that `.eh_frame` references via a
-PC-relative 32-bit (Delta32) fixup. The object's own copy is by construction
-within range; interposing it swaps in an arbitrary host address and creates
-the >2 GiB exposure. The flake is not address-space bad luck; it is a policy
-hole, and the policy is deterministic and testable even though the flake is
-not.
+**The original diagnosis in this slice was wrong** (recorded so nobody
+re-derives it). It blamed `defineHostSymbols` for interposing
+`DW.ref.__dmd_personality_v0` with a far-away host address, and prescribed a
+`shouldInterpose` predicate excluding `DW.ref.*`. But that symbol is
+`STV_HIDDEN`: it appears in the `.dynsym` of neither `bin/ut` nor
+`libphobos2.so`, so `dlsym(RTLD_DEFAULT, "DW.ref.__dmd_personality_v0")`
+returns null and the interposition loop skips it. The exclusion would have been
+a no-op that looked like a fix.
 
-**Decision.** Extract the interposition predicate as a pure function and
-exclude `DW.ref.*` — the one category with an observed failure. The other
-category concerns from the critique (hardcoded `callable` flag on data
-symbols, TLS symbols, `UND` interposition pre-empting the static-archive
-generator, duplicate pairs in one `AbsoluteSymbols` unit, unmeasured `dlsym`
-sweep cost) are **watch items**, parked per adopt-on-evidence — their
-exposing tests are recorded at the end of this slice for when evidence
-arrives. Do not implement them now.
+**Actual cause** (`readelf` on the emitted `obj_0.o` / `obj_1.o` of the failing
+fixture). Every object dmd emits defines `DW.ref.__dmd_personality_v0` as a
+`WEAK HIDDEN OBJECT` in its own `.data.DW.ref.*` section, and references it
+from `.eh_frame` with `R_X86_64_PC32`. JITLink admits the first object's copy
+into the JITDylib and **externalizes every later object's duplicate weak
+definition**, so `obj_1`'s `.eh_frame` fixup targets `obj_0`'s slab. When the
+two slabs land more than 2 GiB apart the Delta32 fixup overflows (observed
+distance: 2.05 GiB). `SystemLinker` never hits it because `dmd -shared` merges
+everything into one image first.
 
-**Work.**
+**Decision.** Fix it in the ELF surgery that already exists for JITLink's other
+strictness (`orc/elf.d`), not in the interposition policy: repoint each
+relocation naming a defined `DW.ref.*` symbol at the defining section's
+local `SECTION` symbol, moving the symbol's value into the addend. Section
+symbols cannot be externalized, so the edge can never leave its own graph.
 
-1. `orc/loader.d`: add `public bool shouldInterpose(in char[] symbolName)
-   @safe @nogc nothrow pure` — false for names starting `DW.ref.`, true
-   otherwise, with a comment carrying the category rationale (the predicate
-   is the single place this knowledge accumulates). `defineHostSymbols`
-   consults it before the `dlsym` probe.
-2. Unit test (new focused module alongside the ELF normalizer tests; `orc/`
-   is frontend-free so no fixture is needed):
+Note what the justification is *not*. Resolving object B's reference to object
+A's hidden weak definition is legal ELF: `STV_HIDDEN` bounds visibility at the
+linked component, not at the object, which is exactly why the same dedup is
+right for hidden COMDAT template bodies. What makes it wrong here is only the
+distance — `ld` resolves it inside one image, JITLink across two mmap'd slabs.
+Repointing is safe because every object's `DW.ref.*` cell is content-identical
+(one 64-bit relocation to the same personality symbol), so the local copy holds
+the same value at a reachable address. Scope therefore stays at `DW.ref.*` per
+adopt-on-evidence; widening it to every hidden symbol would suppress the COMDAT
+dedup, whose copies are not interchangeable this way.
 
-```d
-@("interpose.excludesEhFrameIndirectionCells")
-unittest {
-    import orc.loader: shouldInterpose;
-    // .eh_frame references DW.ref.* cells via Delta32; the object's own
-    // adjacent cell must stay the fixup target (it reaches the host
-    // personality through its own 64-bit relocation). Interposing it with a
-    // host address >2 GiB away caused the Delta32 flake.
-    shouldInterpose("DW.ref.__dmd_personality_v0").should == false;
-    // The symbols interposition exists for keep being interposed: degenerate
-    // weak COMDAT stubs whose real bodies live in libphobos2.so (Step 1).
-    shouldInterpose("gc_malloc").should == true;
-    shouldInterpose("_D4core10checkedint__T4muluZQgFNaNbNiNfkkKbZk")
-        .should == true;
-}
-```
+Rejected alternative: `oneobj = true` in `generateCodeAndWrite` (one object per
+link, hence one graph, hence no cross-graph dedup at all). It kills the whole
+class rather than one symbol, but it changes the codegen path `SystemLinker`
+shares, and dmd's `oneobj` branch skips `obj_write_deferred`. Worth revisiting
+on its own merits (fewer objects, less link work), not as a flake fix.
 
+The other critique concerns (hardcoded `callable` flag on data symbols, TLS
+symbols, `UND` interposition pre-empting the static-archive generator,
+duplicate pairs in one `AbsoluteSymbols` unit, unmeasured `dlsym` sweep cost)
+remain **watch items**, parked per adopt-on-evidence — their exposing tests are
+recorded at the end of this slice for when evidence arrives. Note that the
+Delta32 flake is no longer evidence for any of them.
+
+**Upstream.** JITLink exporting and then externalizing a hidden weak definition
+across graphs looks like an LLVM bug: hidden visibility should keep the
+definition graph-local. Worth a minimal repro and report, alongside the
+existing duplicate-`UND` upstream item.
+
+**Work (landed).**
+
+1. `orc/elf.d`: `localizeUnwindCellReferences`, called from
+   `normalizeObjectFile` alongside the duplicate-`UND` coalescer (the
+   file-level entry point was renamed from
+   `normalizeDuplicateUndefinedGlobalsInFile`, which now does two transforms
+   rather than one).
+2. Deterministic pin: `elf.unwindCellRelocationsUseSectionSymbol` in
+   `tests/ut/backends/runner/rt/elf.d` — a synthetic object whose `.rela` entry
+   names a `DW.ref.*`; after the transform the entry must name the local
+   `SECTION` symbol with the addend shifted by the symbol's value and the
+   relocation type intact, while an undefined global and a hidden non-cell
+   symbol are both left untouched. Observed red before the fix.
+
+   The predicate gates on the name, not on `STV_HIDDEN`: dmd emits these cells
+   hidden, but a non-hidden one would be externalized across graphs just the
+   same, and repointing is address-preserving either way — so a visibility gate
+   would be a branch no object can exercise.
 3. End-to-end anchor: `staticArrayCopyRunsPostblitAndDtors.LLVMJit` — the
-   fixture that has carried every observed flake occurrence — stays green,
-   and its dtor/postblit unwinding still byte-matches `SystemLinker`. That is
-   the argument for why the exclusion is safe, turned into the regression
-   gate.
+   fixture that carried every observed occurrence — stays green, and its
+   dtor/postblit unwinding still byte-matches `SystemLinker`.
 
-**Verify:** the standard gate, with `bin/ut --random` run 5 times — flake
-absence is only demonstrable statistically; the unit test is the
-deterministic pin.
+**Verify:** the standard gate, plus `bin/ut --random` repeated — flake absence
+is only demonstrable statistically; the unit test is the deterministic pin.
+Measured: master 2 red in 8 runs; with the fix, 0 red in 32 runs.
+
+**Superseded work item (do not implement).** A `shouldInterpose` predicate in
+`orc/loader.d` excluding `DW.ref.*` from `defineHostSymbols`, with an
+`interpose.excludesEhFrameIndirectionCells` unit test. `dlsym` never returns
+those hidden symbols, so the predicate would exclude something the loop already
+skips.
 
 **Watch items (parked; do not implement without evidence).**
 
@@ -923,7 +953,7 @@ duplicate `UND GLOBAL` entries: a duplicate `UND WEAK` pair, or a mixed
 would zero-stub the referenced duplicate exactly as before (`rip = 0x0` in
 the JIT child, at package scale). GNU ld coalesces undefined weaks by name
 just as it does globals. Separately: the wrapper production actually calls
-(`normalizeDuplicateUndefinedGlobalsInFile`) and all rejection paths are
+(`normalizeObjectFile`) and all rejection paths are
 untested, and a rejection throws inside the JIT child, failing the whole
 `runTests` group — blast radius that deserves pins.
 
@@ -979,10 +1009,10 @@ unittest {
 unittest {
     with(immutable Sandbox()) {
         writeFile("dup.o", cast(const(char)[]) duplicateUndefinedGlobalObject);
-        normalizeDuplicateUndefinedGlobalsInFile(inSandboxPath("dup.o"))
+        normalizeObjectFile(inSandboxPath("dup.o"))
             .should == true;
         // second pass: already canonical, must be a no-op
-        normalizeDuplicateUndefinedGlobalsInFile(inSandboxPath("dup.o"))
+        normalizeObjectFile(inSandboxPath("dup.o"))
             .should == false;
     }
 }
