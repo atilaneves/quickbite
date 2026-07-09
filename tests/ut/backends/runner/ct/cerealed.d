@@ -1327,8 +1327,9 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // only `Appender!(ubyte[])` use and the sole source of the
 // `emplaceInitializer!(Appender!(ubyte[]).Data)` template instances that fed
 // the `link-set-pollution.md` flake (see the cross-track observation in
-// §9.10 below).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+// §9.10 below).  The raw construct also runs on `BytecodeNewCore`, which the
+// Phobos-based body could not express, so the matrix widens by one backend.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("appenderClearKeepsPointerSliceBackingAllocation." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
