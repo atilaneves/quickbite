@@ -82,10 +82,22 @@ public struct NativeArray {
     }
 
     // The bytes of element `index`: an interior view into the block at
-    // `index * stride .. (index + 1) * stride`. An out-of-range `index`
-    // fails via ordinary D slice bounds checking on `block.bytes`, not a
-    // hand-rolled check.
+    // `index * stride .. (index + 1) * stride`. `index` is checked against
+    // `_length` first, and only then multiplied by `_stride`: `allocate`
+    // already proved `_length * _stride` doesn't overflow `size_t`
+    // (`byteLength`'s `mulu` check), so once `index < _length` holds,
+    // `index * _stride < _length * _stride` is provably wrap-free too --
+    // there is no need for a second overflow check on the multiply itself.
+    // Without the bounds check first, a large enough `index` makes
+    // `index * _stride` wrap and land inside the block, silently aliasing
+    // a different element instead of failing.
     public inout(ubyte)[] element(in size_t index) inout pure @safe {
+        if (index >= _length)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "element: index out of range",
+            );
+
         const start = index * _stride;
         return _block.bytes[start .. start + _stride];
     }
