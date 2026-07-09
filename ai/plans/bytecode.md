@@ -1273,7 +1273,12 @@ execution). The current backlog for this track, in order:
    Throwable crossing) are climbed — they are ordered behind ffi.md's
    Interpreter dub-coverage items until then (ffi.md §34.3 work order).
    Until they land, correctness rows keep using the buffer path and no
-   boxed-vs-native FFI latency claim is valid.
+   boxed-vs-native FFI latency claim is valid. The native-call bridge's
+   argument plumbing is now arity-general (slot-indexed argument area,
+   `nativeArgumentSlotSize`-byte stride); `tryCompileNativeCall`'s call-site
+   acceptance gate is still arity-1. Active work: the `strtod`/`strtol`
+   `endptr` out-parameter rungs, which are the reason multiple arguments were
+   needed and are the next call sites to widen the acceptance gate for.
 3. Slice 9, classes.
 4. Slice 11, prelude formatter execution — which re-earns the frozen
    `repl.d` display rows and deletes the interim display scaffolding
@@ -4448,3 +4453,29 @@ oracle. Verification: `ninja bin/ut`, focused
 `abs.scalar`/`labs.widerScalar`/`ctype.toupperTolower`/`atoi.value`
 `.BytecodeNewCore` still green; `bin/ut --random` with seed `1023230401`
 reported the invariant `0 failed, 6/6 failing as expected`.
+
+Slice 8 native-call bridge made arity-general, 2026-07-09: pure refactor, no
+new test, no behaviour change. `strtod`/`strtol`'s `endptr` out-parameter
+rungs need more than one native-call argument; the bytecode-side plumbing was
+hardcoded to exactly one. `NativeCall`
+(`source/quickbite/backends/bytecode/core/program.d`) now carries
+`Type[] argumentTypes` instead of a single `argumentType`. The compiler
+(`compiler.d`) allocates a contiguous argument area of N fixed-stride slots via
+a new `allocateNativeArgumentArea`, each slot `nativeArgumentSlotSize`
+(`size_t.sizeof`, a new `program.d` constant) bytes and aligned to that stride
+regardless of the argument's own native width — argument `index` lives at
+`argumentArea + index * nativeArgumentSlotSize`. `emitNativeCall` now takes
+`Type[] argumentTypes`. `machine.d`'s `nativeCall` case passes
+`native.argumentTypes` straight to `quickbite.ffi.callNative` instead of
+wrapping a single type in a literal array. `BytecodeNativeMarshaller
+.fillArgument` now reads argument `index`'s slot (`_argument + index *
+nativeArgumentSlotSize`) instead of always reading from `_argument`, still
+copying exactly `buffer.length` bytes (the width-honesty fix from the `abs`
+rung). `tryCompileNativeCall`'s acceptance gate is unchanged and still bails
+out on `arguments.length != 1` — arity-general call-site acceptance is earned
+by the `strtod`/`strtol` out-parameter rung, not this commit. Verification:
+`ninja bin/ut`, focused `atoi.value`/`abs.scalar`/`labs.widerScalar`
+/`ctype.toupperTolower`/`atof.floatReturn` `.BytecodeNewCore` green, plus the
+remaining `cstdlib` `.BytecodeNewCore` rows (`free`, `malloc`, `calloc`,
+`realloc`, `div`, `ldiv`) also green (12 tests, 0 failed). `bin/ut --random`
+was not run for this refactor; the orchestrator runs the long suite.

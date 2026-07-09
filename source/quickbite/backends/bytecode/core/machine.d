@@ -1347,7 +1347,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 if (!callNative(
                     native.function_,
                     marshaller,
-                    [native.argumentType],
+                    native.argumentTypes,
                     [],
                 ))
                     throw new Exception(noAvailableSourceMessage(
@@ -2660,9 +2660,18 @@ private final class BytecodeNativeMarshaller:
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
-        // `buffer` is sized to the argument type's native ABI width (4 bytes
-        // for `int`, 8 for a pointer); copy exactly that many, not a fixed 8.
-        buffer[] = _stack[_argument .. _argument + buffer.length];
+        import quickbite.backends.bytecode.core.program:
+            nativeArgumentSlotSize;
+
+        // The argument area is N contiguous fixed-stride slots (see
+        // `nativeArgumentSlotSize` in program.d, established by
+        // `allocateNativeArgumentArea` in compiler.d); argument `index` lives
+        // at `_argument + index * nativeArgumentSlotSize` regardless of its
+        // own width. `buffer` is sized to the argument type's native ABI
+        // width (4 bytes for `int`, 8 for a pointer); copy exactly that many,
+        // not a fixed 8.
+        const slot = _argument + index * nativeArgumentSlotSize;
+        buffer[] = _stack[slot .. slot + buffer.length];
     }
 
     public void readResult(Type type, in ubyte[] buffer) {

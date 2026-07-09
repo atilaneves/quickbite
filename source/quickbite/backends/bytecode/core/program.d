@@ -116,6 +116,15 @@ package(quickbite.backends.bytecode) enum stringSliceSize = 8;
 package(quickbite.backends.bytecode) enum sliceDescriptorSize =
     2 * size_t.sizeof;
 
+// A native (libc) call's argument area is N contiguous slots of this
+// stride, one per argument, laid out at
+// `argumentArea + index * nativeArgumentSlotSize` regardless of each
+// argument's own width: the stride is a fixed native-word slot, not the
+// argument's own width, so the marshaller can locate argument `index`
+// without knowing the widths of the arguments before it.
+package(quickbite.backends.bytecode) enum nativeArgumentSlotSize =
+    size_t.sizeof;
+
 // Sentinel for an instruction operand that would otherwise carry an optional
 // catch-object frame offset or exception class id.
 package(quickbite.backends.bytecode) enum noCatchObjectField = ushort.max;
@@ -562,7 +571,7 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
 
 package(quickbite.backends.bytecode) struct NativeCall {
     imported!"dmd.func".FuncDeclaration function_;
-    imported!"dmd.mtype".Type argumentType;
+    imported!"dmd.mtype".Type[] argumentTypes;
 }
 
 // How to render a failed assertion: read both operands from the frame and

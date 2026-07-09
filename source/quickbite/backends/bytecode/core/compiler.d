@@ -35,8 +35,8 @@ private struct Compiler {
         Instruction, NativeCall, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
         VirtualFunction, isSigned,
-        noCatchObjectField, noExceptionClass, size, sliceDescriptorSize,
-        stringSliceSize;
+        nativeArgumentSlotSize, noCatchObjectField, noExceptionClass, size,
+        sliceDescriptorSize, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
@@ -7332,16 +7332,15 @@ private struct Compiler {
 
         auto argument = (*call.arguments)[0];
 
-        // A scalar `int`/`long` argument passed by value: evaluate it into an
-        // argument slot sized to its native width; the marshaller copies
-        // exactly those bytes.
+        // A scalar `int`/`long` argument passed by value: evaluate it into its
+        // slot in the (single-slot, for now) argument area; the marshaller
+        // copies exactly its native-width bytes back out.
         const argumentTy = argument.type.toBasetype.ty;
         if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64) {
-            const width = argumentTy == TY.Tint64 ? long.sizeof : int.sizeof;
-            const argumentArea = allocateBytes(width, width);
+            const argumentArea = allocateNativeArgumentArea(1);
             emitCallArgument(argumentArea, false, argument);
             return emitNativeCall(
-                function_, argument.type.toBasetype, argumentArea,
+                function_, [argument.type.toBasetype], argumentArea,
             );
         }
 
@@ -7362,13 +7361,26 @@ private struct Compiler {
             ));
         _program.data ~= bytes;
         _program.data ~= 0;
-        const argumentArea = allocateBytes(size_t.sizeof, size_t.sizeof);
+        const argumentArea = allocateNativeArgumentArea(1);
         _code ~= Instruction(
             Op.loadDataPointer, argumentArea, cast(ushort) dataOffset,
         );
 
         return emitNativeCall(
-            function_, argument.type.toBasetype, argumentArea,
+            function_, [argument.type.toBasetype], argumentArea,
+        );
+    }
+
+    // A native call's argument area is N contiguous fixed-stride slots (see
+    // `nativeArgumentSlotSize` in program.d), one per argument, regardless of
+    // each argument's own width: argument `index` always lives at
+    // `argumentArea + index * nativeArgumentSlotSize`.
+    private ushort allocateNativeArgumentArea(in size_t argumentCount)
+        @safe pure
+    {
+        return allocateBytes(
+            cast(uint) (argumentCount * nativeArgumentSlotSize),
+            nativeArgumentSlotSize,
         );
     }
 
@@ -7376,14 +7388,14 @@ private struct Compiler {
     // libc call shape: the argument bytes already live at `argumentArea`.
     private Operand* emitNativeCall(
         FuncDeclaration function_,
-        Type argumentType,
+        Type[] argumentTypes,
         in ushort argumentArea,
     ) {
         const returnScalar =
             scalarType(function_.type.toBasetype.nextOf.toBasetype);
         const destination = allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
-        _program.nativeCalls ~= NativeCall(function_, argumentType);
+        _program.nativeCalls ~= NativeCall(function_, argumentTypes);
         _code ~= Instruction(
             Op.nativeCall,
             cast(ushort) nativeIndex,
