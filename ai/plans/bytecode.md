@@ -1222,10 +1222,9 @@ The other five are not behaviours and need no new-core implementation:
 
 - `ct/diagnostics.d`: `voidInitializedScalarReadReportsUninitialized`. See
   "The `= void` row is a fossil" below — narrow it, do not implement it.
-- `rt/cstdlib.d`: `malloc.pointerReturn.nativeMemory` is a pinned refusal
-  rather than a behaviour the old core performs. Per the omit-don't-pin
-  convention it stays out of `Bytecode` until returned native-memory indexing
-  is implemented.
+- `rt/cstdlib.d`: `malloc.pointerReturn.nativeMemory` is not a behaviour the
+  old core performed. It is simply unpromoted in this incremental PR, not
+  blocked on a current native-memory indexing gap.
 
 ### The `= void` row is a fossil
 
@@ -1319,8 +1318,7 @@ returns, and these native-memory value rows. Still deferred on `Bytecode`:
 `div.structReturn` and `ldiv.structReturn.longArgs` keep their own pinned
 no-source-diagnostic refusal row (struct returns stay excluded from the
 return-type gate), and `malloc.pointerReturn.nativeMemory` still has no
-`Bytecode` row because it indexes through returned native memory rather than
-just round-tripping the pointer.
+`Bytecode` row because this incremental PR did not promote it.
 
 The next concrete module candidate per
 `ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
@@ -1486,8 +1484,7 @@ scalar calls, pointer/out-parameter calls, `free`, `malloc`,
 `calloc.multiArg.zeroedNativeMemory`,
 `realloc.null.pointerArgPointerReturn`, and
 `realloc.grow.preservesNativeMemory` now have real `Bytecode` rows.
-Struct-return calls (`div`, `ldiv`) and returned-native-memory indexing
-remain deferred.
+Struct-return calls (`div`, `ldiv`) remain deferred.
 
 ## math.d Promotion Analysis (BytecodeNewCore)
 
@@ -4902,18 +4899,18 @@ statement-compilation fix, not a native-memory one — confirmed by
 unaffected.
 
 With the crash fixed, `malloc.pointerReturn.nativeMemory.BytecodeNewCore`
-still fails, but now on a different, later diagnostic: `` `free` cannot
-be interpreted... `` instead of `` `malloc` ``. Its `free(ptr)` argument
-is `ptr: ubyte*` implicitly converted to `free`'s `void*` parameter; DMD
-wraps that conversion in a `CastExp`, which the new by-value argument
-shape does not match (it matches only a bare `VarExp`) — correctly,
-since no approved test needs the cast-wrapped shape, and matching it
-would let compilation reach the fixture's indexed writes through native
-memory (`ptr[0] = 0x11`), an unimplemented and unverified shape. The
-pinned `` `malloc` `` diagnostic is therefore false for `BytecodeNewCore`
-now (malloc genuinely has available source); narrowed that block's
-`AliasSeq` from `Bytecode, BytecodeNewCore, IR` to `Bytecode, IR`, per
-the `free.null.voidReturn` precedent, with a comment explaining why.
+still failed in that rung, but now on a different, later diagnostic:
+`` `free` cannot be interpreted... `` instead of `` `malloc` ``. At the
+time, its `free(ptr)` argument's implicit `ubyte*` -> `void*` conversion
+was an unimplemented `CastExp` wrapper. Later FFI-track promotions covered
+the returned-pointer cast/indexing shapes through the `calloc` and `realloc`
+rows, so this is no longer the current reason
+`malloc.pointerReturn.nativeMemory` lacks a `Bytecode` row; it is simply
+unpromoted in this incremental PR. The pinned `` `malloc` `` diagnostic was
+therefore false for `BytecodeNewCore` then (malloc genuinely had available
+source); narrowed that block's `AliasSeq` from
+`Bytecode, BytecodeNewCore, IR` to `Bytecode, IR`, per the
+`free.null.voidReturn` precedent.
 
 The same shape collision — a `void*`/`size_t` return-and-argument shape
 identical to `malloc`/`free`'s — invalidated two more negative blocks
@@ -4926,11 +4923,10 @@ FFI-track promotions: `calloc.multiArg.zeroedNativeMemory`,
 (struct returns stay excluded from the return-type gate) by running it
 unchanged.
 
-No production code changed to chase the remaining negative blocks further;
-native-memory *indexing* (reading/writing through a returned pointer, e.g.
-`ptr[0] = ...`) and any GC/ownership model for VM-tracked native allocations
-remain larger slices than this rung, matching the corrected forward-looking
-bullet above.
+No production code changed to chase the remaining negative blocks further.
+Later FFI-track promotions covered native-memory indexing in the `calloc` and
+`realloc` rows, so `malloc.pointerReturn.nativeMemory` is simply unpromoted in
+this incremental PR rather than blocked on that old gap.
 
 Verification: `ninja bin/ut`; the full `rt/cstdlib.d` module (87 tests, 0
 failed); the `BytecodeNewCore` rows of `ct/arrays` (289 tests, 0 failed)

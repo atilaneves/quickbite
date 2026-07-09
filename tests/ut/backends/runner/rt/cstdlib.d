@@ -209,12 +209,8 @@ static foreach (backend; AliasSeq!(IR)) {
     }
 }
 
-// Bytecode is omitted: promoting malloc.pointerRoundTrip (a `void*` return
-// with `size_t` args) made `malloc` itself compile, so this fixture no
-// longer fails on the malloc leaf pinned below. It still fails honestly -
-// now on `free(ptr)`'s implicit `ubyte*` -> `void*` conversion, a
-// CastExp-wrapped pointer argument the narrow gate does not match - but that
-// is a different diagnostic than this block pins.
+// Bytecode is omitted: this row is still unpromoted in the current
+// incremental PR, while the IR backend remains pinned at the malloc leaf.
 static foreach (backend; AliasSeq!(IR)) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
     unittest {
