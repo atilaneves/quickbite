@@ -3268,6 +3268,18 @@ honours it. What genuinely remains for §35.2 is DT_NEEDED-driven ordering where
 the caller does NOT specify load order (the dynamic loader picks it) and
 TLS-in-dependency-image edge cases. Green-as-pin.
 
+**Status: DT_NEEDED-driven module-ctor ORDERING rung LANDED (§35.2).**
+`dependencyImage.dtNeededCtorOrdering` pins the case where the caller supplies
+only image B, but B was linked against image A and therefore carries a
+dynamic-loader dependency on it. The SystemLinker oracle and Interpreter both
+load only B; `dlopen(B)` follows the DT_NEEDED edge, loads A first, runs A's
+module ctor (`dtNeededSeed = 20`), then runs B's module ctor
+(`derived = dtNeededSeed + 4`). `readDerived` returns 24 for both backends. No
+production change was needed: the existing `RTLD_NOW | RTLD_GLOBAL` load path
+already lets the platform loader honour DT_NEEDED constructor ordering.
+Green-as-pin. The remaining §35.2 surface is TLS-in-dependency-image edge
+cases.
+
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 
 **Status: open — ladder rung 25 (§34.3, 2026-07-08). Ordered after the

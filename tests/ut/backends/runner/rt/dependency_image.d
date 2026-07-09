@@ -3516,6 +3516,96 @@ unittest {
     }
 }
 
+// Pins §35.2 DT_NEEDED-driven dependency-image initialization ordering: the
+// caller only names image B. B has a dynamic-loader dependency on A, so dlopen(B)
+// must load A first, run A's module ctor, then run B's module ctor.
+@("dependencyImage.dtNeededCtorOrdering.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+
+        const depAPath = buildPath(importPath, "dep_image_dtneeded_a.d");
+        writeFile(depAPath, q{
+            module dep_image_dtneeded_a;
+
+            extern(C) __gshared int dtNeededSeed;
+
+            static this() {
+                dtNeededSeed = 20;
+            }
+        });
+        const imageAPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_dtneeded_a",
+            [depAPath],
+        );
+
+        const depBPath = buildPath(importPath, "dep_image_dtneeded_b.d");
+        writeFile(depBPath, q{
+            module dep_image_dtneeded_b;
+
+            extern(C) extern __gshared int dtNeededSeed;
+            __gshared int derived;
+
+            static this() {
+                derived = dtNeededSeed + 4;
+            }
+
+            int readDerived() {
+                return derived;
+            }
+        });
+
+        const imageBPath =
+            inSandboxPath("libdep_image_dtneeded_b.so");
+        const buildB = execute([
+            "dmd",
+            "-shared",
+            "-fPIC",
+            "-defaultlib=libphobos2.so",
+            "-of=" ~ imageBPath,
+            inSandboxPath(depBPath),
+            imageAPath,
+        ]);
+        buildB.status.should == 0;
+
+        writeFile(depBPath, q{
+            module dep_image_dtneeded_b;
+
+            int readDerived();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_dtneeded_b;
+
+                unittest {
+                    assert(readDerived() == 24);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imageBPath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imageBPath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 // Pins §35.2: reading a pointer-typed native global. The data-symbol path routes
 // through `unmarshalValue`'s `Tpointer` case, reifying `anchorPtr` as a non-null
 // native-pointer Value. To exercise the read without interpreted native-pointer
