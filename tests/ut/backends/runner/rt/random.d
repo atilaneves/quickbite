@@ -16,15 +16,8 @@ import ut.backends;
 // user imports are root-promoted and get semantic2, so this must lean on a real
 // archive (Phobos) module.
 //
-// Interpreter is omitted (its omission is the documentation, per plan §8): the
-// Rung 9 fix (resolveNonRootInitializer) resolves the initializer — the
-// `identifier` error is gone — but the entropy read then reaches the getrandom
-// scalar-buffer FFI fill (`buffer[0 .. length]` over `&(uint)`), which is a
-// deeper marshalling gap owned by ai/plans/ffi.md §35.11, not this rung. The
-// Rung 9 fix's own evidence is the cerealed re-measure (the 21x `identifier`
-// class is gone). Ctfe (no getrandom source) and BytecodeNewCore are likewise
-// omitted.
-static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+// Ctfe (no getrandom source) and BytecodeNewCore are omitted.
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit, Interpreter)) {
     @("random.unpredictableSeedReadsNonRootInitializer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

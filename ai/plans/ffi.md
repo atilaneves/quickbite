@@ -2241,12 +2241,10 @@ sort by consumer need, not table position:
 
 ```text
 1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
-   write rung, the module-ctor-at-dlopen pin, the TLS-default rung, the
-   struct-global read+field-write rung, the slice-global read rung, the
-   slice-global writeback rung, the struct-global whole-value rebind rung, and
-   cross-image module-ctor ORDERING are DONE. What remains is the case where
-   load order is NOT specified by the caller (DT_NEEDED-driven ordering, where
-   the dynamic loader decides) and TLS-in-dependency-image edge cases
+   write rung, the struct-global read+field-write rung, the slice-global read
+   rung, the slice-global writeback rung, the struct-global whole-value rebind
+   rung, and cross-image module-ctor ORDERING are DONE. What remains is
+   TLS-in-dependency-image edge cases
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -3655,7 +3653,7 @@ class. This is the same "class cleared, tests proceed deeper" pattern as the
 `{byte[N] __size, integer __align}` union shape and are handled by the same
 fix (no extra work). The §35.10 corpus gate is met.
 
-### 35.11 `getrandom` scalar-buffer fill misreads `&(scalar)` as a slice base (handed off 2026-07-08)
+### 35.11 `getrandom` scalar-buffer fill over `&(scalar)` (done 2026-07-09)
 
 Handed off from `interpreter.md` Rung 9 (§9.9). Once that rung's fix
 (`resolveNonRootInitializer`) resolves std.internal.entropy's non-root
@@ -3682,9 +3680,17 @@ bytes into it, and reflect those bytes back into the `uint` local.
 *scalar* local viewed as a byte buffer filled by `getrandom` is a new
 shape, and the `getrandom` leaf marshalling belongs to this lane.
 
-Exposing fixture already landed (green on the native backends,
-documenting the target): `rt/random.d`
-`random.unpredictableSeedReadsNonRootInitializer` — `SystemLinker` +
-`LLVMJit`, with `Interpreter` omitted per `interpreter.md` §8 pending this
-item. When worked, add the scalar-buffer-fill rt/ repro and promote
-`Interpreter` onto that fixture.
+**Done 2026-07-09.** Promoted the existing oracle-backed
+`rt/random.d` fixture
+`random.unpredictableSeedReadsNonRootInitializer` to `Interpreter`. The
+red was the expected `Expected pointer.` at `Value.pointerSlice` over a
+`LocalPointer`. The Interpreter now materialises a scalar local when its
+address is sliced, exposes that scalar as an allocation-backed byte slice,
+preserves the allocation alias when the slice is forwarded through
+`void[]` parameters, and writes native byte-buffer mutations back into the
+scalar local. The same path also needed switch case matching to compare
+integer-compatible values by their underlying integer so Phobos'
+`EntropySource.tryAll` reaches the supported Linux source case.
+
+Verification: `ninja bin/ut`, the focused promoted Interpreter fixture, and
+`bin/ut -- ut.backends.runner.rt.random` were green before this ledger update.

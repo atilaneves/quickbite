@@ -89,6 +89,19 @@ public struct Value {
         return Value(Array(elements));
     }
 
+    public static Value arraySliceValue(
+        in Value[] elements,
+        in Value[] allocation,
+        in size_t allocationOffset,
+    ) @safe pure {
+        return Value(Array(
+            elements,
+            ArrayDisplay.normal,
+            allocation,
+            allocationOffset,
+        ));
+    }
+
     public static Value stringValue(in char[] elements) @safe pure {
         Value[] values;
         foreach (element; elements)

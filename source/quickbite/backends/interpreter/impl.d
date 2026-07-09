@@ -790,8 +790,14 @@ private struct Walker {
         imported!"dmd.statement".CaseStatement case_,
         in Value condition,
     ) {
-        if (case_.exp !is null && runExpression(case_.exp) == condition)
-            return true;
+        if (case_.exp !is null) {
+            const candidate = runExpression(case_.exp);
+            if (candidate.isIntegerCompatibleScalar &&
+                condition.isIntegerCompatibleScalar)
+                return candidate.asLong == condition.asLong;
+            if (candidate == condition)
+                return true;
+        }
 
         auto range = case_.statement is null
             ? null
@@ -1901,6 +1907,36 @@ private struct Walker {
         arrayAllocations[variable] = ++allocationCount;
         arrayAllocationVariables[arrayAllocations[variable]] = variable;
         return arrayAllocations[variable];
+    }
+
+    private Value localPointerByteSlice(
+        in Value pointer,
+        in size_t lower,
+        in size_t upper,
+    ) {
+        import std.conv: text;
+
+        auto variable = pointer.localPointerId in localPointers;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter pointer target.");
+
+        if ((*variable in locals) is null)
+            locals[*variable] = defaultValue(*variable);
+
+        const allocation = scalarBytes((*variable).type, localPointerTarget(pointer));
+        if (lower > upper || upper > allocation.length)
+            throw new Exception(text(
+                "pointer slice `[", lower, "..", upper,
+                "]` exceeds allocated memory block `[0..",
+                allocation.length,
+                "]`",
+            ));
+
+        return Value.arraySliceValue(
+            allocation[lower .. upper],
+            allocation,
+            lower,
+        );
     }
 
     private Value runConditionalExpression(
@@ -3510,11 +3546,13 @@ private struct Walker {
             ? null
             : argumentExpression.isSliceExp;
         if (slice is null || !argument.isArray) {
+            recordForwardedArrayAllocationAlias(parameter, argumentExpression);
             sliceAliases.remove(parameter);
             return;
         }
 
         if (isPointerType(slice.e1.type)) {
+            recordPointerSliceAllocationAlias(parameter, slice);
             sliceAliases.remove(parameter);
             return;
         }
@@ -3536,6 +3574,52 @@ private struct Walker {
             sourceAlias is null ? source : sourceAlias.source,
             argument.arrayAllocationOffset,
         );
+    }
+
+    private void recordPointerSliceAllocationAlias(
+        VarDeclaration parameter,
+        imported!"dmd.expression".SliceExp slice,
+    ) {
+        const source = runExpression(slice.e1);
+        if (!source.isLocalPointer) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        auto variable = source.localPointerId in localPointers;
+        if (variable is null) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        arrayAllocationAliases[parameter] = allocationId(*variable);
+    }
+
+    private void recordForwardedArrayAllocationAlias(
+        VarDeclaration parameter,
+        imported!"dmd.expression".Expression argumentExpression,
+    ) {
+        auto var = argumentExpression is null
+            ? null
+            : argumentExpression.isVarExp;
+        if (var is null) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        auto source = var.var.isVarDeclaration;
+        if (source is null) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        auto alias_ = source in arrayAllocationAliases;
+        if (alias_ is null) {
+            arrayAllocationAliases.remove(parameter);
+            return;
+        }
+
+        arrayAllocationAliases[parameter] = *alias_;
     }
 
     private void writeBackRefArguments(
@@ -4438,6 +4522,64 @@ private struct Walker {
         return backendCastValue(value, target);
     }
 
+    private Value[] scalarBytes(
+        imported!"dmd.mtype".Type type,
+        in Value value,
+    ) {
+        import dmd.typesem: size;
+
+        const byteCount = cast(size_t) size(type);
+        const bits = cast(ulong) value.asLong;
+        Value[] bytes;
+        foreach (index; 0 .. byteCount)
+            bytes ~= Value(cast(ubyte) (bits >> (index * 8)));
+        return bytes;
+    }
+
+    private Value scalarWithByte(
+        imported!"dmd.mtype".Type type,
+        in Value current,
+        in size_t index,
+        in Value byte_,
+    ) {
+        import std.conv: text;
+
+        auto bytes = scalarBytes(type, current);
+        if (index >= bytes.length)
+            throw new Exception(text("Scalar byte index out of bounds: ", index));
+
+        bytes[index] = Value(cast(ubyte) byte_.asLong);
+        return scalarFromBytes(type, bytes);
+    }
+
+    private Value scalarFromBytes(
+        imported!"dmd.mtype".Type type,
+        in Value[] bytes,
+    ) {
+        import dmd.astenums: TY;
+
+        ulong bits;
+        foreach (index, byte_; bytes)
+            bits |= cast(ulong) cast(ubyte) byte_.asLong << (index * 8);
+
+        switch (type.toBasetype.ty) with (TY) {
+            case Tbool:   return Value(bits != 0);
+            case Tchar:   return Value(cast(char) bits);
+            case Twchar:  return Value(cast(wchar) bits);
+            case Tdchar:  return Value(cast(dchar) bits);
+            case Tint8:   return Value(cast(byte) bits);
+            case Tuns8:   return Value(cast(ubyte) bits);
+            case Tint16:  return Value(cast(short) bits);
+            case Tuns16:  return Value(cast(ushort) bits);
+            case Tint32:  return Value(cast(int) bits);
+            case Tuns32:  return Value(cast(uint) bits);
+            case Tint64:  return Value(cast(long) bits);
+            case Tuns64:  return Value(cast(ulong) bits);
+            default:
+                throw new Exception("Unsupported scalar byte writeback.");
+        }
+    }
+
     // Apply the elements a native call wrote through pointers into
     // interpreter-managed arrays (e.g. posix read filling `buf.ptr + n`)
     // back into the arrays the pointers came from.
@@ -4461,6 +4603,18 @@ private struct Walker {
         auto current = *variable in locals;
         if (current is null)
             return false;
+
+        if (!current.isArray) {
+            locals[*variable] = scalarWithByte(
+                (*variable).type,
+                *current,
+                cast(size_t) pointer.pointerElementOffset,
+                value,
+            );
+            arrayPointerWritebacks[*variable] = true;
+            uninitializedLocals.remove(*variable);
+            return true;
+        }
 
         locals[*variable] = current.withArrayElement(
             cast(size_t) pointer.pointerElementOffset,
@@ -5310,6 +5464,9 @@ private struct Walker {
                     );
                 return Value.arrayValue(elements);
             }
+
+            if (source.isLocalPointer)
+                return localPointerByteSlice(source, lower, upper);
 
             return source.pointerSlice(lower, upper);
         }
