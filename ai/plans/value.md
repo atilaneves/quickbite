@@ -318,6 +318,40 @@ building what the other deletes.
   `Value` scaffolding on the bytecode side. (This is the existing
   omit-don't-pin fixture convention applied to display rows.)
 
+Decision 2026-07-09: the correctness ceiling is empirically confirmed and
+the representation decision is **un-gated** from the latency measurement.
+The 2026-06-23 open question was gated on "cannot measure until real dub
+suites run"; that gate applies only to the latency A/B. The same decision
+text already named the real decider — the correctness ceiling (`&local`,
+unions, reinterpret casts, slices into locals) "which may decide the
+question independent of latency" — and PR #386 (the interpreter cerealed
+frontier) has now supplied the empirical confirmation: of its frontier
+advances, all but the lazy-parameter thunks and the exception-hierarchy
+classification were representation-induced shims sitting exactly on that
+ceiling list — float/double pointer reinterpret loads, `emplaceRef`'s
+`cast(S*) &chunk` aliasing (intercepted by name despite having D source),
+class-references-passed-by-value writeback, pointer-slice allocation
+identity, and the `gc_*` array-capacity hooks stubbed because boxed
+interpreter arrays are not addressable GC blocks. Consequences:
+
+- The decision is decided: recursive aggregate boxing cannot reach
+  `interpreter.md`'s terminal goal without accumulating name-based shims
+  and per-case writeback side-tables (the child `Walker` now duplicates
+  ~ten aliasing maps per call). The shims are inventoried as this track's
+  deletion obligations in `interpreter.md` §9.10.
+- Ordering correction (mirrored in `interpreter.md` §1/§4/§8): this track
+  no longer waits on cerealed-green to act. `interpreter.md` triages each
+  frontier class as language-surface (fixed there) vs representation-
+  ceiling (red fixture with Interpreter omitted, root deferred here);
+  cerealed's remaining ceiling classes wait on this plan, not the other
+  way around.
+- The unit of change stands per the 2026-06-23 measured result: not a
+  bolt-on marshaller, and not a VM rewrite (`bytecode.md` is unaffected
+  and remains the native-layout *execution* track). The experiment is the
+  survey's universal shape inside the tree-walker: boxed scalars,
+  native-layout aggregates/arrays behind a handle reusing DMD offsets.
+  See remaining-work item 7.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -607,6 +641,26 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    measure it on the tree-walker hot path, not the FFI seam. The `B*` rungs
    (§34.9/§34.10/§34.11) are landed as boxed marshalling, which is correct and
    keeps real dub tests runnable in the meantime.
+
+7. (2026-07-09, un-gated by the correctness-ceiling decision above.) Run the
+   native-layout-aggregates experiment in the tree-walker: boxed scalars stay,
+   aggregates/arrays live in native ABI layout behind a handle reusing DMD's
+   own field offsets; pointers become real addresses into that storage. This
+   is the interpreter-wide representation change the 2026-06-23 measured
+   result deferred to — the right unit of change, unlike the rejected bolt-on
+   marshaller. Success criteria, in order:
+   - the `interpreter.md` §9.10 shims are deleted one by one, each deletion
+     proven by its ratchet fixtures staying green through the real path
+     (`emplaceRef` executes its actual body; `memcpy` and the `gc_*` hooks
+     route through ordinary FFI);
+   - the parked representation-ceiling gap fixtures (§9.10 "gap fixtures")
+     re-earn `Interpreter` in their matrices;
+   - the cerealed frontier resumes on the new representation, and the
+     latency A/B (item 6's original question) is finally measured on real
+     suites once they run.
+   Design sketch first, as its own session: GC-root bookkeeping
+   (`addRange`/frame scanning), the handle type, and the migration order
+   (arrays first, then structs, then class objects) need a plan before code.
 
 ## Out of scope
 

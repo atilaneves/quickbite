@@ -36,6 +36,15 @@ runs green on `Interpreter` against the `SystemLinker` oracle. That same gate is
 the prerequisite `value.md` needs before it can measure any representation, so
 this plan unblocks the representation track as well as the FFI terminal goal.
 
+**Ordering correction (2026-07-09).** The paragraph above holds only for
+`value.md`'s *latency measurement*. Its representation *decision* is no longer
+gated on this plan: PR #386's frontier work empirically confirmed the
+correctness ceiling `value.md` (decision 2026-06-23) named as the decider, so
+the dependency now runs the other way for one class of gaps — frontier failure
+classes that are representation-induced defer to `value.md`'s native-layout
+track instead of being shimmed here. See the triage rule in §8 and the
+deletion inventory in §9.10.
+
 ## 2. Non-goals
 
 ```text
@@ -69,9 +78,15 @@ ffi.md §34     calls body-less native leaves. DONE and not on this plan's path
                for the failures in §7 (verified §5: the FFI chokepoint is never
                reached — the interpreter fails earlier, executing source).
 value.md       how the interpreter represents aggregate Values. Assumes
-               execution works; this plan delivers that assumption. The two meet
-               only where a missing feature is really a missing Value *kind*
-               (e.g. a first-class delegate value) — those are flagged per-rung.
+               execution works; this plan delivers that assumption FOR THE
+               LATENCY MEASUREMENT ONLY (corrected 2026-07-09). The meeting
+               surface is wider than "a missing Value kind": any frontier
+               class rooted in recursive aggregate boxing (synthetic
+               pointers, cast-aliasing, allocation identity, reinterpret
+               loads) is value.md's, handled per the §8 triage rule — red
+               fixture here, Interpreter omitted, root fix there. The #386
+               shims for such classes are tracked debt (§9.10), not
+               precedent.
 bytecode.md    a different backend; native-layout execution. Out of scope.
 ```
 
@@ -454,6 +469,46 @@ unsupported diagnostic with `shouldThrowWithMessage`, especially for
 backends still in development (`BytecodeNewCore`): such pins turn every
 feature landing into a test-update chore, and per §7's
 support-not-refusal directive a pinned refusal is never the end state.
+
+**Triage rule: language-surface vs representation-ceiling (added
+2026-07-09).** Before fixing a frontier class, classify its root:
+
+```text
+language-surface      the interpreter lacks a language behaviour any
+                      representation needs (a missing expression branch,
+                      lazy-parameter semantics, exception hierarchy,
+                      on-demand semantic2). Fix here, red fixture first,
+                      per the §8 loop.
+representation-       the root is recursive aggregate boxing: synthetic
+ceiling               (allocationId, offset) pointers instead of
+                      addresses, cast-aliasing the value model cannot
+                      see (`cast(S*) &chunk`), lost allocation identity,
+                      reinterpret loads, or a runtime hook whose contract
+                      is real memory (gc_*, memcpy). Write the standalone
+                      red fixture (the durable asset), OMIT `Interpreter`
+                      from its matrix per the rule above, and defer the
+                      root to value.md's native-layout track. Do not add
+                      a shim.
+```
+
+This does not contradict §7's support-not-refusal directive: support for
+ceiling classes arrives via the representation change, not via name-based
+shims that approximate it — a shim that skips construction semantics or
+fabricates a hook's return value is a silent wrong answer, the worst class
+in §7's own triage.
+
+**Interception policy (added 2026-07-09).** Name-based interception of a
+called function is reserved for functions the frontend has **no body** for
+(`extern(C)` prototypes such as `memcpy` and the `gc_*` hooks — verify:
+`fd.fbody is null` at the call site) or whose body is inline asm the
+walker cannot execute (`core.internal.atomic`). A function with
+interpretable D source must be executed; failure to execute it is an
+interpreter or value-model gap to fix at the root, never to special-case.
+The #386 `emplaceRef` intercept violates this and is tracked for deletion
+in §9.10; `std.conv.text` is the one pre-existing, deliberate exemption
+(perf scaffolding, already scheduled for removal by `value.md` remaining
+work item 1). A mechanical guard enforcing this at the dispatcher
+chokepoint is a planned follow-up code change.
 
 ## 9. The rungs (ordered by leverage)
 
@@ -1256,6 +1311,96 @@ progression (`identifier` → `Expected pointer` at the identical entropy
 site); the cerealed 21× `identifier` class converts to the same
 getrandom FFI class rather than disappearing, so it is `ffi.md` §35.11
 that finally clears it from the §7 inventory.
+
+### 9.10 Representation debt: the #386 shim deletion inventory (2026-07-09)
+
+PR #386 advanced the cerealed frontier past several representation-ceiling
+classes (§8 triage rule) with name-based shims. They were merged deliberately —
+each is load-bearing for the frontier state, and deleting one before its real
+replacement exists only re-masks the classes behind it — but they are **debt,
+not precedent**. Each entry names its defect and its retirement condition; the
+retirement trigger for all of them is `value.md`'s native-layout-aggregates
+experiment (its remaining-work item 7). A shim is deleted only when its
+fixtures stay green through the real path.
+
+```text
+shim                                  defect / divergence            retire when
+runEmplaceRefCall + isEmplaceRef      violates the §8 interception   the value model sees
+(impl.d)                              policy: emplaceRef has D       cast-aliasing (or native
+                                      source. Skips postblit/copy-   layout lands) and the
+                                      ctor for structs; refuses      real body executes
+                                      0-arg and multi-arg forms
+                                      with "Unsupported eval call."
+tryGCArrayHook / runGCArrayHookCall   stubs diverge from druntime    interpreted arrays are
++ lastGCArrayUsedAllocation           contracts: reserveCapacity     native-layout GC
+side-channel + arrayAllocation-       echoes the request and never   allocations; the gc_*
+Aliases (builtins.d, impl.d)          returns 0 on failure;          hooks become ordinary
+                                      shrinkUsed always true;        body-less FFI leaves
+                                      getUsed rebuilds from the
+                                      incoming pointer, not the
+                                      block base (interior pointers
+                                      get offset 0). The side-
+                                      channel pattern-matches the
+                                      current source shape of
+                                      core.internal.array.capacity.
+reinterpretLocalPointerLoad +         blesses exactly two cast       native layout makes all
+floatBits/doubleBits (impl.d)         shapes (float->uint,           reinterpret loads
+                                      double->ulong); every other    structural
+                                      reinterpret is still wrong
+                                      or refused
+writeBackByValueClassArguments        models reference semantics     first-class object
+(impl.d)                              by post-call value diffing     references (native-
+                                      (skips on type-name            layout object model)
+                                      mismatch, non-writable
+                                      locations)
+runMemcpyCall (impl.d, pre-#386)      same category; already         same as gc_* hooks
+                                      flagged in §9.7 as an
+                                      intrinsics-layer candidate
+```
+
+Not representation debt but known-defective, same PR:
+`nativeExceptionRoot` classifies `Error` vs `Exception` by name prefix
+(`core.exception.*`/`object.*` + `Error` suffix), so a user or third-party
+class deriving `Error` is misclassified as `Exception`. Fix via the frontend's
+`ClassDeclaration` base-class chain (druntime is semantically analyzed by
+dmd-as-a-library); this is an ordinary language-surface bug, not deferred.
+
+**Owed fixtures (work item, 2026-07-09).** #386 landed its fixes without the
+§8 red-first fixtures; the drafts and reconstruction procedure are in the
+2026-07-09 handoff above (§9.6/§9.7 ledger). Writing them is IN the plan, not
+optional, and each lands under the §8 approval rule. Classification:
+
+```text
+ratchet fixtures (green today, pin oracle behaviour, protect the shim->real
+migration — a fixture asserts behaviour, so it survives the shim's deletion):
+- lazyForwardedAssertionThunkRunsExpression        (lazy thunks, surface)
+- decodeLazyForwardedRangeErrorSeesReaderState     (lazy state, surface)
+- classReferencePassedByValueMutatesObject         (shim-backed, behaviour
+                                                    correct for this shape)
+- appenderClearKeepsPointerSliceBackingAllocation  (pointerSlice allocation
+                                                    identity — a genuine boxed-
+                                                    model fix, not a shim)
+- emplaceRefWritesArrayElement                     (shim-backed; scalar
+                                                    elements only, where the
+                                                    shim is provably
+                                                    equivalent)
+- char integer-compatibility and float/double reinterpret-load fixtures
+  (the §9.7 2026-07-08 handoff's split-by-root pair)
+- native RangeError-is-an-Error fixture (verify the existing
+  exception.errorIsNotCaughtByExceptionHandler covers it; add narrow
+  fixture if not)
+
+gap fixtures (red on Interpreter, land with Interpreter OMITTED per §8 —
+they document what the shims get wrong and what native layout must re-earn):
+- emplaceRef with a postblit or copy-constructor struct element (the shim
+  skips construction side effects)
+- gc_reserveArrayCapacity contract fixture: MUST assert oracle-agreeing
+  behaviour (e.g. capacity >= request after reserve), NOT the shim's echo —
+  the drafted gcReserveArrayCapacityHookReturnsRequestedBytes name pins the
+  shim's wrong answer and must not land in that form
+- assumeSafeAppend/capacity through an interior pointer (getUsed offset
+  defect)
+```
 
 ## 10. Done
 
