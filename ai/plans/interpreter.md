@@ -1809,6 +1809,36 @@ refusal: `Unsupported expression in bytecode core: & arr` — that backend
 does not yet support taking the address of a local array, an
 unimplemented-construct gap unrelated to the fix being proven.
 
+**2026-07-09 follow-up: fixture rewritten as a raw pointer-slice
+reproduction, Phobos `Appender` dropped.** The full-suite `bin/ut --random`
+flake investigation (cross-track observation below) traced a recurring
+`struct.staticArrayCopyRunsPostblitAndDtors.LLVMJit` failure to template
+instances named `emplaceInitializer!(std.array.Appender!(ubyte[]).Data)`
+leaking into an unrelated fixture's link set — the documented
+process-global pollution class in `link-set-pollution.md`. This fixture's
+`std.array.appender!(ubyte[])` instantiation was the suite's only use of
+`Appender!(ubyte[])`, so it was the source. The fixture's body is now a
+hand-written pointer-slice reproduction with no Phobos import:
+
+```d
+unittest {
+    ubyte[] arr = [1, 2, 3, 4];
+    auto shrunk = arr.ptr[0 .. 0];
+    auto regrown = shrunk.ptr[0 .. 1];
+    assert(regrown[0] == 1);
+}
+```
+
+This distils the same construct `Appender.clear` + `put` relies on — a
+pointer slice shrunk to `[0 .. 0]` must retain its backing allocation so a
+regrow through `.ptr` still sees the original storage — without
+instantiating Phobos' `Appender`. Applied alone at `833c560c`'s parent
+(`ca901fd9`), `Interpreter` re-fails with the same diagnostic the original
+proof recorded: `` pointer slice `[0..1]` exceeds allocated memory block
+`[0..0]` ``; `SystemLinker` is green. Verified green at this branch's
+`HEAD` on `Ctfe, Interpreter, SystemLinker, LLVMJit` (`BytecodeNewCore`
+still omitted, per the existing exclusion above).
+
 `classReferencePassedByValueMutatesObject` reproduces a class reference
 passed by value to a function that mutates a field, asserting the caller
 observes the mutation. Applied alone at `ca901fd9`'s parent (`bce523cc`,
@@ -1831,6 +1861,31 @@ Both fixtures' green matrix was re-verified on this branch's `HEAD`
 (`fb92e785` plus the lazy-argument frame-capture change `674e76a2`, not
 present at master when the red-first proofs above were originally run),
 confirming the fix and matrix still hold with that change in place.
+
+**Cross-track observation (2026-07-09): Phobos `Appender` instantiation
+and the `bin/ut --random` flake rate.** Not owned by this plan — recorded
+here per `AGENTS.md`'s cross-track rule, with a reference to
+`ai/plans/link-set-pollution.md` rather than an edit to it. Full-suite
+`bin/ut --random` measurements found this branch failing 3/7 runs versus
+master's 0/10, always as
+`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors.LLVMJit`,
+with a failed-to-materialize error naming
+`emplaceInitializer!(std.array.Appender!(ubyte[]).Data)` — a REPL
+eval-snippet symbol unrelated to the failing test. The root cause is
+`link-set-pollution.md`'s process-global DMD template-instance pollution:
+some other module's instantiation of that template leaks into this
+fixture's link set. `appenderClearKeepsPointerSliceBackingAllocation`'s
+`std.array.appender!(ubyte[])` call was the entire `tests/` tree's only
+`Appender!(ubyte[])` instantiation, so it was feeding the pollution, not
+causing it. Rewriting the fixture as the raw pointer-slice reproduction
+above (dropping the Phobos import) removes that instantiation, which is a
+mitigation of exposure, not a fix of the root — the underlying process-
+global pollution mechanism is untouched and can still be fed by some other
+template instantiation elsewhere in the suite. The small-n rate
+measurements (0/10, 3/7) are suggestive, not conclusive, of causation on
+their own; the decisive evidence is the symbol identity in the failure
+message together with this fixture being the suite's unique
+`Appender!(ubyte[])` instantiator.
 
 **Landed (2026-07-09, owed-fixtures follow-up).** The last owed §9.10
 `emplaceRef` fixtures — one ratchet, three gap — were reconstructed

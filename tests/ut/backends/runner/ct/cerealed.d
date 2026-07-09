@@ -1317,27 +1317,27 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// The owed §9.10 fixture: `Appender.clear` shrinks the backing slice to
-// `[0..0]` and a subsequent `put` regrows it via a fresh pointer slice
-// (`arr.ptr[0 .. len + 1]`); the pointer slice must still see the original
-// allocation's full capacity, not just the shrunk length.
-// BytecodeNewCore omitted: taking the address of a local array is not yet
-// implemented there ("Unsupported expression in bytecode core: & arr").
+// The owed §9.10 fixture, distilled to a raw pointer-slice reproduction: a
+// pointer slice shrunk to `[0 .. 0]` must retain its backing allocation, so
+// a regrow through `.ptr` still sees the original storage rather than a
+// stale empty block. This is exactly what `std.array.Appender.clear`
+// (`_data.arr = _data.arr.ptr[0 .. 0]`) followed by `put`'s regrowth
+// (`arr.ptr[0 .. len + 1]`) does, but the fixture deliberately avoids
+// instantiating Phobos' `Appender`: that instantiation was the suite's
+// only `Appender!(ubyte[])` use and the sole source of the
+// `emplaceInitializer!(Appender!(ubyte[]).Data)` template instances that fed
+// the `link-set-pollution.md` flake (see the cross-track observation in
+// §9.10 below).
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("appenderClearKeepsPointerSliceBackingAllocation." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import std.array : appender;
-
             unittest {
-                auto output = appender!(ubyte[]);
-
-                output.put(cast(ubyte) 1);
-                output.clear;
-                output.put(cast(ubyte) 9);
-
-                assert(output.data == [9]);
+                ubyte[] arr = [1, 2, 3, 4];
+                auto shrunk = arr.ptr[0 .. 0];
+                auto regrown = shrunk.ptr[0 .. 1];
+                assert(regrown[0] == 1);
             }
         });
     }
