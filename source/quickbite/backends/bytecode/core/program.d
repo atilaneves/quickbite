@@ -474,6 +474,8 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // selected function index. Looks up the object's dynamic class and writes
     // the overriding function index, or c when no override is registered.
     classVirtualFunction,
+    // a: class-object pointer slot, b: diagnostic data offset, c: data length.
+    throwIfNullClassReference,
     nativeCall, // a: native-call index, b: argument area, c: destination
     assertTrue, // a: condition frame offset, b: assert diagnostic index
     // a: condition frame offset, b: assert diagnostic index (verbatim message)

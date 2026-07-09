@@ -2427,6 +2427,14 @@ private struct Compiler {
                     expressionChars(typeid_),
                 ));
 
+            emitNullClassReferenceCheck(
+                object.offset,
+                text(
+                    "null pointer dereference evaluating typeid. `",
+                    expressionChars(expression),
+                    "` is `null`",
+                ),
+            );
             const offset = allocate(ScalarType.ulong_);
             _code ~= Instruction(
                 Op.pointerLoad8,
@@ -3444,8 +3452,13 @@ private struct Compiler {
 
         if (auto dot = call.e1.isDotVarExp) {
             const receiver = compileExpression(dot.e1);
-            if (receiver.isPointer)
+            if (receiver.isPointer) {
+                emitNullClassReferenceCheck(
+                    receiver.offset,
+                    "function call through null class reference `null`",
+                );
                 return receiver;
+            }
         }
 
         if (_hasClassThis)
@@ -3730,6 +3743,8 @@ private struct Compiler {
     }
 
     private ClassPointerField* tryClassPointerField(DotVarExp dot) {
+        import std.conv: text;
+
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             return null;
@@ -3738,6 +3753,13 @@ private struct Compiler {
         if (!receiver.isPointer)
             return null;
 
+        emitNullClassReferenceCheck(
+            receiver.offset,
+            text(
+                "class `", expressionChars(dot.e1),
+                "` is `null` and cannot be dereferenced",
+            ),
+        );
         auto result = new ClassPointerField;
         *result = ClassPointerField(
             receiver.offset, cast(ushort) field.offset, field.type,
@@ -3770,6 +3792,30 @@ private struct Compiler {
             Op.addInt8, fieldPointer, field.pointerSlot, fieldOffset,
         );
         return fieldPointer;
+    }
+
+    private void emitNullClassReferenceCheck(
+        in ushort pointerSlot,
+        in string message,
+    ) {
+        import std.conv: text;
+
+        const dataOffset = _program.data.length;
+        ubyte[] bytes;
+        foreach (character; message)
+            bytes ~= cast(ubyte) character;
+        if (dataOffset > ushort.max || bytes.length > ushort.max)
+            throw new Exception(text(
+                "Null class diagnostic too large for bytecode core: ",
+                message,
+            ));
+        _program.data ~= bytes;
+        _code ~= Instruction(
+            Op.throwIfNullClassReference,
+            pointerSlot,
+            cast(ushort) dataOffset,
+            cast(ushort) bytes.length,
+        );
     }
 
     // `new S(args)`: heap-allocate a single struct block, initialise it (run the
@@ -8741,6 +8787,11 @@ private struct Compiler {
                 op, (*call.arguments)[1], (*call.arguments)[2],
             );
 
+        if (op == "is" || op == "!is")
+            return compileScalarIdentityAssert(
+                op, (*call.arguments)[1], (*call.arguments)[2],
+            );
+
         switch (op) {
             case "==", "!=", "<", "<=", ">", ">=":
                 break;
@@ -9028,6 +9079,32 @@ private struct Compiler {
             false,
             isNullPointerAssertOperand(lhs),
             isNullPointerAssertOperand(rhs),
+        );
+        _code ~= Instruction(Op.assertTrue, condition, cast(ushort) diagnostic);
+        return true;
+    }
+
+    private bool compileScalarIdentityAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        const lhsOperand = compileExpression(lhs);
+        const rhsOperand = compileExpression(rhs);
+        const condition = allocateBytes(1, 1);
+        _code ~= Instruction(
+            pointerComparisonOp(op),
+            condition,
+            lhsOperand.offset,
+            rhsOperand.offset,
+        );
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~= AssertDiagnostic(
+            op,
+            lhsOperand.offset,
+            rhsOperand.offset,
+            ScalarType.ulong_,
         );
         _code ~= Instruction(Op.assertTrue, condition, cast(ushort) diagnostic);
         return true;

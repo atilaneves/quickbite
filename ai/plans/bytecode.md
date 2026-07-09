@@ -4966,6 +4966,22 @@ for the whole branch vs `master` (`source/`), 276 changed lines — over
 the 200-line cap, continued past it on explicit user direction rather
 than contorting the code to stay under it.
 
+`ct/diagnostics.d` null-class diagnostics promoted to `BytecodeNewCore`,
+2026-07-09: pre-approved `SystemLinker`-oracle-backed promotion of
+`nullClassFieldReadReportsDiagnostic`,
+`nullClassMethodCallReportsDiagnostic`, and
+`typeidNullClassReferenceReportsDiagnostic`. The red focused run exited
+139 before production changes, confirming the new core was reaching raw
+class-pointer operations for null receivers. Added a single
+`throwIfNullClassReference` VM guard and emitted it only for class field
+read, class method receiver dispatch, and expression-backed `typeid`.
+Also taught lowered scalar identity asserts (`is`/`!is`) to compare the
+compiled operands so `typeid(thing) is typeid(Thing)` reaches the guarded
+`typeid(thing)` operand. Focused verification: the three promoted
+`.BytecodeNewCore` rows pass; all 29 `ct/diagnostics.d`
+`.BytecodeNewCore` rows pass. Remaining pre-flip behaviours are the
+`pow` float intrinsic and the separately approved `= void` narrowing.
+
 ## Coverage loss: runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState
 
 The full `bin/ut --random` suite (not the focused per-rung runs above)
