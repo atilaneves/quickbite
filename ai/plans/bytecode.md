@@ -335,6 +335,12 @@ Earn the design back test-first, in this order. Each slice follows the
 existing discipline: red test (or an already-green matrix behaviour moved to
 the new core), minimal implementation, green suite, benchmark checkpoint.
 
+**Superseded as a work order (2026-07-09).** The slices below record the
+design, not what to do next. Every remaining slice is deferred behind
+deleting the old core — see "Current Next Step". Only the three
+null-class-reference diagnostics of slice 9 and the `pow` intrinsic of
+slice 1's math surface are in scope before the flip.
+
 1. Scalar core: typed frames, specialised arithmetic/comparison opcodes,
    locals, calls, returns, assert diagnostics, and minimal scalar `Value`
    reification at the `Evaluator` boundary (read bytes at a frame offset,
@@ -1186,7 +1192,124 @@ dual-mode model and the `ExecutionMode` enum have been removed
 (`ai/plans/single-oracle.md`); the VM targets full D against the
 `SystemLinker` oracle.
 
-## Current Next Step
+## Current Next Step: flip the default, delete the old core
+
+Re-scoped 2026-07-09.
+
+**The single goal is deleting the old core. Do not start any other bytecode
+work before the flip lands.**
+
+The overriding goal of this project is unittest latency (`AGENTS.md`). The
+old core buys none of it and costs a second engine to keep green. The
+"Rewrite strategy" section already states the endgame: *when the entire
+matrix passes on the new core, flip the default and delete the old core in
+the same change.* Measured on 2026-07-09, that is nearly true, and the work
+order had drifted away from it.
+
+Measured state (`bin/ut -l`, 2026-07-09): the new core carries far more
+matrix rows than the old core. Exactly nine `Bytecode` rows have no
+`BytecodeNewCore` counterpart, and only **four are behaviours**:
+
+1. `ct/diagnostics.d`: `nullClassFieldReadReportsDiagnostic`,
+   `nullClassMethodCallReportsDiagnostic`, and
+   `typeidNullClassReferenceReportsDiagnostic`. The new core already has
+   native object layout, vtables, virtual dispatch, and `typeid`
+   (`expressions.class.virtualCallUsesDynamicClass`,
+   `expressions.typeid.classReferenceUsesDynamicClass`). What it lacks is a
+   null-reference *diagnostic* on field read, method call, and `typeid`.
+   This is much smaller than slice 9 as written.
+2. `ct/math.d`: `evaluatesRuntimePowFloatInputs`. The new core recognises no
+   math intrinsics at all (`compiler.d` matches only `classinfo` and
+   `emplace` by identifier), so `pow` on float inputs needs intrinsic
+   lowering.
+
+The other five are not behaviours and need no new-core implementation:
+
+- `ct/diagnostics.d`: `voidInitializedScalarReadReportsUninitialized`. See
+  "The `= void` row is a fossil" below — narrow it, do not implement it.
+- `rt/cstdlib.d`: `calloc.multiArg.zeroedNativeMemory`,
+  `realloc.null.pointerArgPointerReturn`,
+  `realloc.grow.preservesNativeMemory`, and
+  `malloc.pointerReturn.nativeMemory` are pinned *refusals* on
+  `Bytecode`/`IR`, not behaviours the old core performs. Per the
+  omit-don't-pin convention they are dropped from `Bytecode` in the flip
+  commit, exactly as they are already absent from `BytecodeNewCore`.
+
+### The `= void` row is a fossil
+
+`voidInitializedScalarReadReportsUninitialized` (`ct/diagnostics.d`) asserts
+that reading an `int value = void;` local throws
+`cannot read uninitialized variable ... in ctfe`, on `Ctfe`, `Interpreter`,
+`Bytecode`, and `IR`. It was added 2026-05-28 ("Add non-array CTFE coverage
+tests"), under the **two-oracle model** in which `Ctfe` was the oracle for
+compile-time behaviour. `ai/plans/single-oracle.md` (2026-06-13) replaced
+that model: `SystemLinker` is the oracle for `Interpreter`, `Bytecode`, and
+`IR`, and compiled code just reads the slot. The test's own comment concedes
+this. It makes three backends *emulate* a CTFE quirk that this plan's Oracle
+section says to *characterize, not emulate*, and its expected message pins
+DMD's CTFE wording rather than any quickbite diagnostic.
+
+The old core only satisfies it because its locals are tagged `Value`s and
+every `loadLocal` compares against `Value.void_` (`bytecode/vm.d`) — that
+is, because of the universal runtime value type this rewrite exists to
+delete ("No universal runtime value type", Core Architecture). Reproducing
+it on native-layout frames means per-slot initialization state and a checked
+load on the hot path. Removed slice 2 was exactly that machinery, and it was
+removed with the CTFE-replacement goal.
+
+**Action: narrow the block to `AliasSeq!(Ctfe)`**, with a comment naming the
+divergence, per `single-oracle.md`'s explicit rule for divergent rows. The
+fixture body does not change. This is a test change and needs owner approval
+before the edit. Do **not** implement uninitialized-read detection in the
+new core to satisfy it.
+
+Owner decision (2026-07-09): quickbite's value proposition is speed, not UB
+detection. If a definite-assignment lint is ever wanted it is a compile-time
+check applied uniformly across every backend, with its own plan entry — not
+runtime tagging in one engine, and not a reason to delay the flip.
+
+### Work order
+
+1. Null-class-reference diagnostics on the new core (3 rows).
+2. `pow` float intrinsic on the new core (1 row).
+3. Narrow the `= void` row to `AliasSeq!(Ctfe)` (owner approval required).
+4. **The flip, one change**: `Bytecode`'s default constructor selects
+   `Engine.typedFrames`; delete the `BytecodeNewCore` handle class; delete
+   the old core (`backends/bytecode/{compiler,vm,builtins,instructions}.d`);
+   drop `Bytecode` from the four `rt/cstdlib.d` refusal blocks; rename the
+   `.BytecodeNewCore` matrix rows to `.Bytecode`. The legacy-core entry in
+   the Deletion Inventory (enum member-name and struct-literal display in
+   `bytecode/compiler.d`) dies here too.
+
+Nothing else gates the flip. The old core has **no production consumers**:
+outside its own package, only the separately-doomed `executors/` tree names
+`Bytecode`, and `Bytecode()` is constructed only by the test matrix.
+
+### Explicitly deferred until after the flip
+
+None of these are behaviours the old core has, so none of them shortens the
+path to deleting it. Do not start them first:
+
+- The rest of slice 8 (`calloc`, `realloc`, cast-converted pointer
+  arguments, indexing through a returned pointer, `div`/`ldiv` struct
+  returns). These are *refusals* on the old core.
+- Slice 9 beyond the three null-reference diagnostics.
+- Slice 11, prelude formatter execution. The `repl.d` display rows it
+  governs are frozen for **both** engines, so deleting the old core costs
+  nothing there.
+- Slice 10, REPL session state.
+
+Risk accepted: "the entire matrix passes" is this plan's definition of
+parity, not a proof of it. Row-name parity is not behaviour parity, and the
+old core is deleted on the strength of its matrix rows alone. Given zero
+production consumers, the blast radius is tests.
+
+## Post-Flip Backlog
+
+Everything below is deferred until the old core is deleted (see "Current
+Next Step"). It records what the new core has already re-earned, and what
+comes after the flip. It is not a work order for the next agent.
+
 `eval.d` (module order 1), `rt/cstdlib.d` (2), `integrals.d` (3),
 `logic.d` (4), `results.d` (5), `diagnostics.d` (6), `math.d` (7),
 `arrays.d` (8), `structs.d` (9), `control_flow.d` (10), `exceptions.d` (11),
