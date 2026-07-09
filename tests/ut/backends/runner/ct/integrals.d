@@ -19,7 +19,7 @@ private alias IntegralTypes = AliasSeq!(
 
 
 static foreach (T; IntegralTypes) {
-    static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+    static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
         @("type." ~ T.stringof ~ "." ~ backend.stringof)
         @Tags(backend.stringof)
         unittest {
@@ -49,7 +49,7 @@ static foreach (T; IntegralTypes) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("typeFailureMessage.byte.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -73,7 +73,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -97,7 +97,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("typeFailureMessage.uint.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -123,7 +123,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
 
 // IR is omitted: its i32 comparison is signed-only, so it evaluates
 // `-1 < 0u` as true — a semantic divergence recorded in ai/plans/ir.md.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("signedUnsignedComparisonIsUnsigned." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -147,7 +147,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("wraparoundAtTypeBoundaries." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

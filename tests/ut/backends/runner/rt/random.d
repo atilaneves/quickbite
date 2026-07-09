@@ -22,7 +22,7 @@ import ut.backends;
 // scalar-buffer FFI fill (`buffer[0 .. length]` over `&(uint)`), which is a
 // deeper marshalling gap owned by ai/plans/ffi.md §35.11, not this rung. The
 // Rung 9 fix's own evidence is the cerealed re-measure (the 21x `identifier`
-// class is gone). Ctfe (no getrandom source) and BytecodeNewCore are likewise
+// class is gone). Ctfe (no getrandom source) and Bytecode are likewise
 // omitted.
 static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("random.unpredictableSeedReadsNonRootInitializer." ~ backend.stringof)

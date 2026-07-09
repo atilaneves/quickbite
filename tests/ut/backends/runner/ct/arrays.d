@@ -10,7 +10,7 @@ import ut.backends;
     These tests verify expression/value rendering for failed asserts. Array feature
     tests below should not each repeat these same "actual != expected" checks.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.integerEquality." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -22,7 +22,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -34,7 +34,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.booleanEquality." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -46,7 +46,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.arrayElementMismatch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -61,7 +61,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.arrayLengthMismatch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -80,7 +80,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
 /++
     Dynamic array basics.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.lengthCases." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -98,7 +98,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.literalElements." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -119,7 +119,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.ubyteLiteralTruncatesElements." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -134,7 +134,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.indexReadWrite." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -152,7 +152,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.postIncrementIndex." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -168,7 +168,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.mutableStringLiteralCopiesDoNotShareWrites." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -190,7 +190,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
 /++
     Append and concatenation.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.localAppend." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -208,7 +208,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.appendToNonEmptyArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -226,7 +226,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.refParameterAppend." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -248,7 +248,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.concatenation." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -289,7 +289,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.elementConcatenatesWithArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -345,7 +345,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 /++
     Slices.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.sliceFromRuntimeBounds." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -366,7 +366,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.nullZeroLengthSlice." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -384,7 +384,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.nestedSliceWritesPropagateToOriginalArray." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -403,7 +403,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.nestedSliceAppendKeepsOriginalArrayTail." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -422,7 +422,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.sliceAssignmentUpdatesArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -483,7 +483,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled overlapping slice assignment raises druntime's plain
 // "Range violation"; the slice-range text is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.overlappingSliceAssignmentDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -533,7 +533,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 // Compiled bounds checks raise druntime's ArrayIndexError text; the
 // "exceeds array length" wording is CTFE-only.
-static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.sliceIndexPastLengthDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -579,7 +579,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 // Compiled bounds checks raise druntime's ArrayIndexError text; the
 // backtick-range wording is CTFE-only.
-static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.indexPastLengthDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -606,7 +606,7 @@ static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
 /++
     Array allocation, resizing, copying, and operations.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.newUsesRuntimeLength." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -626,7 +626,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.newCharArrayUsesRuntimeLengthAndDefaultFill." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -653,7 +653,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.newMultidimensionalUsesRuntimeLengths." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -676,7 +676,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.lengthAssignmentResizesArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -706,7 +706,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("staticArray.copyFromRuntimeArrayUsesArrayCtor." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -730,7 +730,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("staticArray.multidimensionalSliceBlockAssignRepeatsRow." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -755,7 +755,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.arrayOperationAddsRuntimeElements." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -785,7 +785,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
 /++
     Dynamic array return values.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.returnValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -809,7 +809,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.sliceReturnValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -834,7 +834,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.indexesCallResult." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -858,7 +858,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
 /++
     Associative arrays.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.literalKeepsRuntimeKeysAndValues." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -880,7 +880,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.literalKeepsLastDuplicateRuntimeKey." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -902,7 +902,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.keysAndValuesUseRuntimeLiteral." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -938,7 +938,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.inFindsRuntimeKey." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -967,7 +967,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -999,7 +999,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.removeRuntimeKey." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1025,7 +1025,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.dupCopiesEntries." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1056,7 +1056,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
 
 // Bytecode ("Unsupported bytecode assignment target.") and IR ("Unsupported
 // IR expression `null`") cannot run AA insertion.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.insertionGrowsAndOverwrites." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1111,7 +1111,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 // Compiled missing-key reads raise druntime's plain "Range violation"; the
 // key/array-name text is CTFE-only.
-static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     @("assocArray.readMissingKeyThrowsDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1138,7 +1138,7 @@ static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
 /++
     Pointer operations over dynamic arrays.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.arithmeticOverDynamicArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1167,7 +1167,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.indexReadsDynamicArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1189,7 +1189,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.comparisonWithinArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1216,7 +1216,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.relationsAcrossArraysReturnFalse." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1253,7 +1253,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.sliceFromDynamicArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1305,7 +1305,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 // Compiled pointer slicing is unchecked: the allocated-block diagnostic is
 // CTFE-only and the fixture just passes (the slice is never dereferenced).
-static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.slicePastAllocatedBlockDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1330,10 +1330,10 @@ static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
 }
 
 
-// Bytecode ("Unsupported bytecode assignment target."), BytecodeNewCore
+// Bytecode ("Unsupported bytecode assignment target."), Bytecode
 // ("Unsupported type in bytecode core: int[]"), and IR ("Unsupported IR
 // expression `[first, first + 1, first + 2]`") cannot run this .dup fixture.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.dupDetachesCopyFromOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1358,10 +1358,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-// Bytecode ("Unsupported bytecode assignment target."), BytecodeNewCore
+// Bytecode ("Unsupported bytecode assignment target."), Bytecode
 // ("Unsupported type in bytecode core: int[]"), and IR (unsupported array
 // literal expression) cannot run this .idup fixture.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.idupFreezesIndependentCopy." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1385,10 +1385,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-// Bytecode ("Unsupported cast target: Tpointer"), BytecodeNewCore
+// Bytecode ("Unsupported cast target: Tpointer"), Bytecode
 // ("Unsupported type in bytecode core: int[]"), and IR (unsupported array
 // literal expression) cannot run this .ptr fixture.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.ptrPointsAtFirstElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1460,9 +1460,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// BytecodeNewCore cannot take the address of a static array yet; pin its
+// Bytecode cannot take the address of a static array yet; pin its
 // structured diagnostic rather than dropping it from the matrix.
-static foreach (backend; AliasSeq!(BytecodeNewCore)) {
+static foreach (backend; AliasSeq!(Bytecode)) {
     @("pointer.sliceAssignmentWritesArrayStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1492,9 +1492,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// BytecodeNewCore cannot run `= void` initializers yet; pin its structured
+// Bytecode cannot run `= void` initializers yet; pin its structured
 // diagnostic rather than dropping it from the matrix.
-static foreach (backend; AliasSeq!(BytecodeNewCore)) {
+static foreach (backend; AliasSeq!(Bytecode)) {
     @("pointer.indexAssignmentWritesVoidInitialisedArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1537,10 +1537,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// Bytecode ("Unsupported expression `rows.length`"), BytecodeNewCore
+// Bytecode ("Unsupported expression `rows.length`"), Bytecode
 // ("Unsupported type in bytecode core: int[][]"), and IR (unsupported nested
 // array literal) cannot run jagged arrays.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.jaggedRowsKeepIndependentLengths." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1575,7 +1575,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
 // after filling to the reserved capacity compares unequal (representation
 // debt, retires with value.md's native-layout track). Ctfe omitted:
 // pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE
-// refuses at compile time. BytecodeNewCore omitted: `.ptr` of an array is
+// refuses at compile time. Bytecode omitted: `.ptr` of an array is
 // not yet implemented there.
 static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate." ~
@@ -1605,7 +1605,7 @@ static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
 // length, so it overruns and throws for any interior pointer
 // (representation debt, retires with value.md's native-layout track). Ctfe
 // omitted: `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at
-// all. BytecodeNewCore omitted: same `.ptr`-of-array gap as above.
+// all. Bytecode omitted: same `.ptr`-of-array gap as above.
 static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~
         backend.stringof)

@@ -32,7 +32,7 @@ unittest {
     });
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -53,7 +53,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("intLessThanOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -71,7 +71,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("intLessOrEqualOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -89,7 +89,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("intGreaterThanOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -107,7 +107,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("intGreaterOrEqualOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -125,7 +125,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("intNotEqualOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -143,7 +143,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("ok." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -159,7 +159,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("oops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -175,7 +175,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("okFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -191,7 +191,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("localIntReturnOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -208,7 +208,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
     @("voidFunctionOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -226,7 +226,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 // Compiled `assert(0)` in a non-unittest function raises the plain _d_assert
 // message "Assertion failure" (checkaction=context adds no operands for a
 // literal condition); "`assert(0)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     @("voidFunctionOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -246,7 +246,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    BytecodeNewCore,
     IR,
     SystemLinker,
 )) {
@@ -269,7 +268,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    BytecodeNewCore,
     IR,
     SystemLinker,
 )) {
@@ -304,7 +302,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    BytecodeNewCore,
     IR,
     SystemLinker,
 )) {
@@ -327,7 +324,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    BytecodeNewCore,
     IR,
     SystemLinker,
 )) {
@@ -349,7 +345,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("refParameterOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -371,7 +367,6 @@ static foreach (backend; AliasSeq!(
     Ctfe,
     Interpreter,
     Bytecode,
-    BytecodeNewCore,
     IR,
     SystemLinker,
 )) {
@@ -390,7 +385,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("refSizeTParameterOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -408,7 +403,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -420,7 +415,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, IR)) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -433,7 +428,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR)) {
 
 // Compiled `assert(false)` in a unittest body raises the plain _d_unittest
 // hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -445,7 +440,7 @@ static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, L
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -461,7 +456,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -474,7 +469,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -487,7 +482,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -500,7 +495,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("assertMessageDoesNotEvaluateOnSuccess." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -516,7 +511,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("uintGreaterOrEqualUsesUnsignedComparison." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -535,7 +530,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
 // SystemLinker deliberately excluded from the three null-class-dereference
 // blocks below: a compiled null dereference is a real SIGSEGV that would kill
 // the test runner (ai/plans/dmd-backend.md, slice 3).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -554,7 +549,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("nullClassFieldReadReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -571,7 +566,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("typeidNullClassReferenceReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -605,7 +600,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
 // field-granular: only reads of still-void scalars/fields are reported, not the
 // whole-aggregate read that `return res;` performs. Mirrors Phobos
 // `trustedVoidInit`, which the interpreter previously rejected before reaching
-// any libc call. Bytecode/BytecodeNewCore/IR do not yet support whole-aggregate
+// any libc call. Bytecode/Bytecode/IR do not yet support whole-aggregate
 // void reads, so they are excluded pending their own fix.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("voidInitializedStructReturnedWholeIsUsable." ~ backend.stringof)

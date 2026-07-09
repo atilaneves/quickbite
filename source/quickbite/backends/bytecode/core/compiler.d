@@ -8347,7 +8347,7 @@ private struct Compiler {
         CallExp call,
         FuncDeclaration function_,
     ) {
-        import quickbite.backends.bytecode.builtins:
+        import quickbite.backends.bytecode.core.builtins:
             BytecodeBuiltin, bytecodeBuiltinArgumentCount,
             tryBytecodeBuiltin;
         import std.conv: text;

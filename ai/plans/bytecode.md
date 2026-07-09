@@ -5008,3 +5008,15 @@ diagnostic assertion are unchanged; the row now characterizes the
 `Ctfe`/`SystemLinker` compiled-D divergence instead of requiring
 `Interpreter`, `Bytecode`, or `IR` to emulate CTFE uninitialized-read
 tracking. No `BytecodeNewCore` uninitialized-read detection was added.
+
+Default flip completed, 2026-07-09: `Bytecode` now runs the typed-frame
+core directly, the `BytecodeNewCore` handle is deleted, and the legacy
+top-level bytecode core (`compiler`, `vm`, `instructions`, and legacy
+`builtins`) is gone. The builtin recognizer needed by the typed-frame
+compiler moved under `bytecode/core`. Test matrices now name `Bytecode`;
+the old `rt/cstdlib.d` refusal rows that only pinned legacy-core absence
+were narrowed off `Bytecode`; duplicate/differing legacy assertion-message
+rows were collapsed onto the compiled-oracle `Bytecode` expectation. Focused
+stale-name scans found no `BytecodeNewCore` references in `source/` or
+`tests/`, no duplicate generated test names remained, and
+`bin/ut --random` passed.
