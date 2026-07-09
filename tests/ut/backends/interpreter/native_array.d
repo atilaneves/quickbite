@@ -53,7 +53,7 @@ unittest {
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
 
-    array.ownership.should == array.block.ownership;
+    array.ownership.should == NativeBlock.Ownership.owned;
 }
 
 
