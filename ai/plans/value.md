@@ -439,6 +439,30 @@ addressable GC blocks; now that a block is a real allocation, no shim
 is retired yet and nothing is wired in -- this is only the fact
 becoming readable.
 
+Progress 2026-07-09 (grow through real storage): `NativeArray` gains
+`reserve(n)`, guaranteeing capacity for at least `n` elements exactly
+like compiled D's `arr.reserve(n)`. `n <= capacity` is a no-op: no
+address change, no byte touched. Otherwise it first tries
+`core.memory.GC.extend` to grow the existing GC allocation in place --
+verified against the local druntime (`core/memory.d` ~line 603): it
+returns the extended block's byte size, or zero on failure, and
+requires `p` to be the block's own base pointer, which `_block.address`
+always is here. On success the address is unchanged. If `GC.extend`
+fails, `reserve` allocates a fresh block of the required byte length
+with the *same* `NativeBlock.Scan` policy already recorded on the old
+block (never recomputed), copies the live `length * stride` bytes
+across with a `@safe` slice copy, and adopts the new block -- the
+address legitimately changes here. Per the Address-stability bullet
+above, that is correct: stale pointers into the old block go stale
+exactly as compiled D loses append capacity on reallocation, and
+nothing is ever copied back to the old address. No borrowed-block
+guard was added: a borrowed block cannot legitimately be reallocated,
+but `NativeArray` has no borrow constructor yet, so that path is
+unreachable from any test today. Owed contract: once a borrow
+constructor exists, `reserve` must throw loudly on a borrowed block
+instead of silently detaching the handle from memory its owner still
+holds.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

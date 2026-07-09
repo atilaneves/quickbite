@@ -251,3 +251,61 @@ unittest {
 
     array.capacity.should == 0;
 }
+
+
+@("NativeArray.reserve.withinCapacityLeavesAddressUnchanged")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    const address = array.block.address;
+
+    array.reserve(array.capacity);
+
+    array.block.address.should == address;
+}
+
+
+@("NativeArray.reserve.farBeyondCapacityYieldsCapacityAtLeastRequested")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    const n = 100_000;
+
+    array.reserve(n);
+
+    (array.capacity >= n).should == true;
+}
+
+
+@("NativeArray.reserve.elementValuesSurviveAReallocatingReserve")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    array.element(0)[0] = 10;
+    array.element(1)[0] = 20;
+    array.element(2)[0] = 30;
+
+    array.reserve(100_000);
+
+    array.element(0)[0].should == 10;
+    array.element(1)[0].should == 20;
+    array.element(2)[0].should == 30;
+}
+
+
+@("NativeArray.reserve.doesNotChangeLength")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.reserve(100_000);
+
+    array.length.should == 3;
+}
+
+
+@("NativeArray.reserve.zeroLengthArrayYieldsCapacityAtLeastRequested")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+    const n = 100_000;
+
+    array.reserve(n);
+
+    (array.capacity >= n).should == true;
+}
