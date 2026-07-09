@@ -1273,12 +1273,19 @@ execution). The current backlog for this track, in order:
    Throwable crossing) are climbed — they are ordered behind ffi.md's
    Interpreter dub-coverage items until then (ffi.md §34.3 work order).
    Until they land, correctness rows keep using the buffer path and no
-   boxed-vs-native FFI latency claim is valid. The native-call bridge's
-   argument plumbing is now arity-general (slot-indexed argument area,
-   `nativeArgumentSlotSize`-byte stride); `tryCompileNativeCall`'s call-site
-   acceptance gate is still arity-1. Active work: the `strtod`/`strtol`
-   `endptr` out-parameter rungs, which are the reason multiple arguments were
-   needed and are the next call sites to widen the acceptance gate for.
+   boxed-vs-native FFI latency claim is valid. The native-call bridge and its
+   call-site acceptance gate (`tryCompileNativeCall`) are both arity-general
+   now: a per-argument shape whitelist accepts any mix of string-literal
+   `const(char)*`, scalar `int`/`long` by value, and `&local` pointer
+   out-parameter arguments. The `strtod.floatReturn.endptr` and
+   `strtol.endptr` rows are promoted to `BytecodeNewCore`. Active work on
+   this rung: `free.null.voidReturn.BytecodeNewCore` is not a cheap
+   follow-on — `tryCompileNativeCall`'s return-type gate excludes `TY.Tvoid`
+   outright, `machine.d`'s `nativeResultSize` has no `Tvoid` case, and it is
+   not established whether `quickbite.ffi.callNative` invokes `readResult`
+   at all for a void-returning callee. The remaining `rt/cstdlib.d` rows
+   (native `malloc`/`calloc`/`realloc` pointer returns with native-memory
+   identity; `div`/`ldiv` struct returns) remain genuinely larger slices.
 3. Slice 9, classes.
 4. Slice 11, prelude formatter execution — which re-earns the frozen
    `repl.d` display rows and deletes the interim display scaffolding

@@ -121,7 +121,10 @@ package(quickbite.backends.bytecode) enum sliceDescriptorSize =
 // `argumentArea + index * nativeArgumentSlotSize` regardless of each
 // argument's own width: the stride is a fixed native-word slot, not the
 // argument's own width, so the marshaller can locate argument `index`
-// without knowing the widths of the arguments before it.
+// without knowing the widths of the arguments before it. Invariant: the
+// stride must be at least as wide as the widest scalar argument the bridge
+// accepts (an 8-byte `long` on a hypothetical 32-bit target, where
+// `size_t.sizeof == 4`, would not fit).
 package(quickbite.backends.bytecode) enum nativeArgumentSlotSize =
     size_t.sizeof;
 

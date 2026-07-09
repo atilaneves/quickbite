@@ -7423,7 +7423,7 @@ private struct Compiler {
         FuncDeclaration function_,
         Type[] argumentTypes,
         in ushort argumentArea,
-        in ushort[] outParameterOffsets = null,
+        in ushort[] outParameterOffsets,
     ) {
         const returnScalar =
             scalarType(function_.type.toBasetype.nextOf.toBasetype);
