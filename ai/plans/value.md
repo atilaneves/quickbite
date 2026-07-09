@@ -374,9 +374,11 @@ block with the DMD element `Type`, a length, and a stride cached once from
 ordinary D slice bounds checking, and `writeSliceHeader` materialises a
 real D dynamic-array slice header (`{ size_t length; void* ptr; }`) into a
 caller-supplied destination, aliasing the element block rather than
-snapshotting it -- proven against the host compiler's own slice layout,
-with the ABI fact (`length` first, `ptr` second, `2 * size_t` bytes)
-pinned by a `static assert` rather than hand-rolled. The block (and so the
+snapshotting it. A `static assert` pins only the total header size
+(`2 * size_t` bytes); field order (`length` first, `ptr` second) is
+pinned separately, at runtime, by the `writeSliceHeader` tests, which
+write a header and read it back against the host compiler's own slice
+layout. The block (and so the
 array handle) now records its scan policy, making the handle
 self-describing rather than requiring a question to the GC.
 

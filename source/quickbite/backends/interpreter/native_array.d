@@ -5,10 +5,13 @@ private:
 
 
 // A D dynamic array's runtime representation is `{ size_t length; T* ptr; }`
-// -- length at offset 0, pointer at offset `size_t.sizeof`. This is a
-// language ABI fact, not a per-type layout fact DMD exposes as offsets, so
-// it is stated once here and guarded by the host compiler's own slice
-// layout rather than hand-rolled.
+// -- length at offset 0, pointer at offset `size_t.sizeof`. This assert only
+// guards the total header size, `2 * size_t.sizeof`; it says nothing about
+// field order. The order is pinned separately, at runtime, by the
+// `writeSliceHeader` reinterpret tests in
+// tests/ut/backends/interpreter/native_array.d, which write a header and
+// read it back as a real `int[]` against the host compiler's own slice
+// layout.
 static assert((void[]).sizeof == 2 * size_t.sizeof);
 
 
@@ -133,7 +136,10 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
 // Writing a raw pointer's bit pattern into a byte range is not @safe; this
 // is the @trusted boundary. `memcpy` (rather than a pointer-typed store)
 // avoids relying on `dest` being size_t-aligned, which a caller-supplied
-// `ubyte[]` is not guaranteed to be.
+// `ubyte[]` is not guaranteed to be. The `in` contract below is stripped
+// under `-release`, so this function's safety actually rests on its sole
+// caller, `NativeArray.writeSliceHeader`, whose unconditional `throw`
+// validates `dest.length` before calling here -- not on the contract.
 private void writeSliceHeaderBytes(
     ubyte[] dest,
     in size_t length,
