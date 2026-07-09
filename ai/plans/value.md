@@ -478,6 +478,12 @@ constructor exists, `reserve` must throw loudly on a borrowed block
 instead of silently detaching the handle from memory its owner still
 holds.
 
+Progress 2026-07-09 (strideless-handle fix): `NativeArray.init` (no
+element type, zero stride) is a legal value -- reachable the moment this
+handle is put in a field or array slot -- so `capacity` now returns 0
+for it instead of dividing by zero, and `reserve` throws on it instead
+of silently returning with capacity 0 short of what was requested.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

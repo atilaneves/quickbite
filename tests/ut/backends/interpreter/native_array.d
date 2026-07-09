@@ -370,3 +370,37 @@ unittest {
 
     array.reserve(n).shouldThrow!Exception;
 }
+
+
+// A default-constructed `NativeArray.init` has no element type, hence no
+// stride (`_stride == 0`). Before the fix, `capacity` computed
+// `_block.trueByteSize / _stride` unconditionally -- 0 / 0, a hardware
+// division trap that kills the process instead of failing cleanly. This
+// pins the honest answer: a handle with no element type has no capacity.
+@("NativeArray.init.capacityIsZero")
+unittest {
+    NativeArray array;
+
+    array.capacity.should == 0;
+}
+
+
+// Pins the pre-existing `.init`-tolerance that the `capacity` fix relies
+// on: a default-constructed handle already reports a sane `length`.
+@("NativeArray.init.lengthIsZero")
+unittest {
+    NativeArray array;
+
+    array.length.should == 0;
+}
+
+
+// `reserve` on a strideless handle must not silently "succeed" with
+// `capacity == 0 < n` -- growing an array with no element type is a
+// programming error, not a no-op, so it fails loudly instead.
+@("NativeArray.reserve.onInitHandleThrows")
+unittest {
+    NativeArray array;
+
+    array.reserve(1).shouldThrow!Exception;
+}
