@@ -10,25 +10,32 @@ private:
 // deliberately absent here.
 public struct NativeArray {
     import quickbite.backends.interpreter.native_block: NativeBlock;
+    import dmd.mtype: Type;
 
     private NativeBlock _block;
-    private imported!"dmd.mtype".Type _elementType;
+    private Type _elementType;
     private size_t _length;
     private size_t _stride;
 
     // Allocates one block of `length * stride` zeroed bytes, `stride` being
     // `elementType`'s DMD byte size. Elements are contiguous at
     // `index * stride`, which is D's own array layout -- no invented
-    // padding. Not `nothrow`: `typeByteSize` throws on an unsized type.
+    // padding. The block's scan policy follows `elementType`: pointer-
+    // bearing elements get a conservatively scanned block so the GC can
+    // still find what they point to; everything else is `NO_SCAN`. Not
+    // `nothrow`: `typeByteSize` throws on an unsized type.
     public static NativeArray allocate(
         imported!"dmd.mtype".Type elementType,
         in size_t length,
     ) @safe {
-        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
 
         const stride = typeByteSize(elementType);
+        const scan = typeHasPointers(elementType)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no;
         return NativeArray(
-            NativeBlock.allocate(length * stride),
+            NativeBlock.allocate(length * stride, scan),
             elementType,
             length,
             stride,

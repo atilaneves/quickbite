@@ -402,6 +402,26 @@ blocks, dynamic-array slice headers, capacity through real storage, and
 struct/class layout. No shim is retired and no backend behaviour changed;
 nothing outside `native_array.d` and its test references the new type.
 
+Progress 2026-07-09 (correction): the "GC roots" bullet's `GC.addRange`/
+`removeRange` sketch is wrong for owned blocks and is corrected in place
+above. `NativeBlock` is a value struct copied freely so that every copy
+shares one stable address -- by design it has no single owner, so a
+destructor-based `removeRange` would unregister the range while other
+copies were still alive, or run more than once for the same range. The
+registration lifecycle also turns out to be unnecessary: an owned block is
+GC memory, so it can simply be allocated `NO_SCAN` or conservatively
+scanned according to `layout.typeHasPointers` on the element type, and the
+GC then scans it for exactly as long as it stays reachable -- the same
+conservative, whole-range policy the sketch asked for, with no
+registration state and no destruction hook to get wrong. Landed as
+`NativeBlock.Scan` (`no`/`conservative`), threaded through
+`NativeBlock.allocate`'s `GC.calloc` call (which also fixes a real bug:
+the prior `new ubyte[]` allocation was always `NO_SCAN`, so a block holding
+guest pointers was invisible to the GC and its targets could be collected
+out from under it) and through `NativeArray.allocate`, which picks the
+policy from the element type. `GC.addRange` remains the right tool only
+for borrowed, non-GC-owned memory, which still registers nothing.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -730,13 +750,20 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      reallocates, the owning slice header is updated and stale addresses go
      stale exactly as compiled D loses append capacity — no boxed value is ever
      copied back as the authority.
-   - **GC roots.** A block is either `NO_SCAN` or scan-registered. Start
-     conservative: `GC.addRange` over the whole byte range while the handle is
-     live, removed on handle destruction or replacement. Frames record the
-     ranges they own and unregister on unwind. Precise pointer-bearing
-     subranges are a later optimization, not a prerequisite. Handles that
-     borrow FFI or host memory register nothing; they only keep a
-     Quickbite-owned source owner live for the duration of the borrow.
+   - **GC roots.** (Corrected 2026-07-09 -- see Status.) An owned block is
+     a GC allocation whose scan attribute (`NO_SCAN` vs conservatively
+     scanned) is chosen once, at allocation, from whether the element type
+     carries pointers. `NativeBlock` is a value struct copied freely --
+     copies share one address but have no single owner -- so there is no
+     registration token and no destruction hook to get wrong: an
+     allocation attribute cannot be double-freed or unregistered out from
+     under a still-live copy. The GC then conservatively scans the whole
+     byte range for exactly as long as the block is reachable, which is
+     the conservative policy this item asks for. Precise pointer-bearing
+     subranges are a later optimization, not a prerequisite. `GC.addRange`
+     is reserved for memory the GC does not own: handles that borrow FFI
+     or host memory register nothing; they only keep a Quickbite-owned
+     source owner live for the duration of the borrow.
    - **Ownership and writeback.** Whether a block is owned or borrowed, and
      whether writes through it reach an external owner, is explicit metadata on
      the handle. It is never inferred by diffing a pre-call boxed aggregate
@@ -783,8 +810,8 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    yet describe; and class object bodies, deferred wholesale.
 
    Next PR: the array-native block handle skeleton — an interpreter-owned array
-   value carrying a stable block, `Type*`, length, stride, ownership, and root
-   state, with no user-visible display or FFI change and no shim retired. Then
+   value carrying a stable block, `Type*`, length, stride, ownership, and scan
+   policy, with no user-visible display or FFI change and no shim retired. Then
    static arrays inline, dynamic-array slice headers, interior addresses,
    conservative roots, and capacity through real storage, in that order.
    Latency is measured only once the array and struct correctness gates are

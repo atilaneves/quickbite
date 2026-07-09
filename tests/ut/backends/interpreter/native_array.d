@@ -103,3 +103,25 @@ unittest {
     array.length.should == 0;
     array.block.byteLength.should == 0;
 }
+
+
+@("NativeArray.allocate.pointerBearingElementTypeYieldsScannedBlock")
+unittest {
+    import core.memory: GC;
+
+    auto array = NativeArray.allocate(Type.tvoidptr, 3);
+    const attr = GC.getAttr(GC.addrOf(array.block.address));
+
+    (attr & GC.BlkAttr.NO_SCAN).should == 0;
+}
+
+
+@("NativeArray.allocate.nonPointerElementTypeYieldsNoScanBlock")
+unittest {
+    import core.memory: GC;
+
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    const attr = GC.getAttr(GC.addrOf(array.block.address));
+
+    (attr & GC.BlkAttr.NO_SCAN).should == GC.BlkAttr.NO_SCAN;
+}

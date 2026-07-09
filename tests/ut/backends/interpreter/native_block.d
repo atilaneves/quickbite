@@ -76,3 +76,33 @@ unittest {
 
     block.ownership.should == NativeBlock.Ownership.owned;
 }
+
+
+@("NativeBlock.allocate.zeroLengthIsLegal")
+unittest {
+    auto block = NativeBlock.allocate(0);
+
+    block.byteLength.should == 0;
+}
+
+
+@("NativeBlock.allocate.noScanCarriesNoScanAttribute")
+unittest {
+    import core.memory: GC;
+
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
+    const attr = GC.getAttr(GC.addrOf(block.address));
+
+    (attr & GC.BlkAttr.NO_SCAN).should == GC.BlkAttr.NO_SCAN;
+}
+
+
+@("NativeBlock.allocate.conservativeScanDoesNotCarryNoScanAttribute")
+unittest {
+    import core.memory: GC;
+
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.conservative);
+    const attr = GC.getAttr(GC.addrOf(block.address));
+
+    (attr & GC.BlkAttr.NO_SCAN).should == 0;
+}
