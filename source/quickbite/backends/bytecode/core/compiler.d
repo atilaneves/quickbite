@@ -7337,7 +7337,7 @@ private struct Compiler {
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
         if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
-             returnTy != TY.Tfloat64) ||
+             returnTy != TY.Tfloat64 && returnTy != TY.Tvoid) ||
             call.arguments is null || call.arguments.length == 0)
             return null;
 
@@ -7365,6 +7365,26 @@ private struct Compiler {
                 if (string_ is null)
                     return null;
                 emitStringLiteralArgument(slot, string_);
+                continue;
+            }
+
+            // A `null` literal argument (e.g. `free(null)`) keeps its own
+            // `typeof(null)` static type, not the declared pointer type
+            // (compilePointerDeclaration's `= null` finding applies here
+            // too); take the pointer type from the callee's own parameter
+            // instead, and emit a zeroed slot.
+            if (argument.isNullExp !is null) {
+                auto parameterList =
+                    function_.type.toBasetype.isTypeFunction.parameterList;
+                auto parameter = parameterList[index];
+                if (parameter is null ||
+                    parameter.type.toBasetype.ty != TY.Tpointer)
+                    return null;
+                argumentTypes[index] = parameter.type.toBasetype;
+                _code ~= Instruction(
+                    Op.loadConstant, slot, constantIndex(0),
+                    cast(ushort) nativeArgumentSlotSize,
+                );
                 continue;
             }
 

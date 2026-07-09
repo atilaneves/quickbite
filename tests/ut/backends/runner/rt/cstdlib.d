@@ -141,7 +141,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, SystemLinker, BytecodeNewCore,
+)) {
     @("free.null.voidReturn." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -186,7 +188,11 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 // before failing. Do not add tests that first fail on unrelated frontend /
 // backend gaps such as string-literal pointer lowering, local pointer out
 // params, symbolOffset, array initializers, or callbacks.
-static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
+//
+// BytecodeNewCore is not in this AliasSeq: it has its own real
+// free.null.voidReturn row above, promoted once the void-return native-call
+// rung landed.
+static foreach (backend; AliasSeq!(Bytecode, IR)) {
     @("free.null.voidReturn." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -201,7 +207,9 @@ static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
 
         shouldFailNoSource!(backend, "free", source);
     }
+}
 
+static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
     unittest {
         enum source = q{

@@ -1277,15 +1277,17 @@ execution). The current backlog for this track, in order:
    call-site acceptance gate (`tryCompileNativeCall`) are both arity-general
    now: a per-argument shape whitelist accepts any mix of string-literal
    `const(char)*`, scalar `int`/`long` by value, and `&local` pointer
-   out-parameter arguments. The `strtod.floatReturn.endptr` and
-   `strtol.endptr` rows are promoted to `BytecodeNewCore`. Active work on
-   this rung: `free.null.voidReturn.BytecodeNewCore` is not a cheap
-   follow-on — `tryCompileNativeCall`'s return-type gate excludes `TY.Tvoid`
-   outright, `machine.d`'s `nativeResultSize` has no `Tvoid` case, and it is
-   not established whether `quickbite.ffi.callNative` invokes `readResult`
-   at all for a void-returning callee. The remaining `rt/cstdlib.d` rows
-   (native `malloc`/`calloc`/`realloc` pointer returns with native-memory
-   identity; `div`/`ldiv` struct returns) remain genuinely larger slices.
+   out-parameter arguments. The `strtod.floatReturn.endptr`,
+   `strtol.endptr`, and `free.null.voidReturn` rows are promoted to
+   `BytecodeNewCore`. `free.null.voidReturn` needed a void-return-shaped
+   rung of its own: `tryCompileNativeCall`'s return-type gate now admits
+   `TY.Tvoid`, `machine.d`'s `nativeResultSize` gained a `Tvoid` case, and
+   `quickbite.ffi.callNative` (`callNativeImpl`) turned out to call
+   `readResult` unconditionally even for a void-returning callee — not the
+   dead-code case this plan previously left unestablished. The remaining
+   `rt/cstdlib.d` rows (native `malloc`/`calloc`/`realloc` pointer returns
+   with native-memory identity; `div`/`ldiv` struct returns) remain
+   genuinely larger slices.
 3. Slice 9, classes.
 4. Slice 11, prelude formatter execution — which re-earns the frozen
    `repl.d` display rows and deletes the interim display scaffolding
@@ -4602,3 +4604,75 @@ type"), and it is not established whether `quickbite.ffi.callNative` calls
 `readResult` at all for a void-returning callee. That is a real, if modest,
 slice of its own — return-side plumbing that the argument-side generalisation
 here does not touch.
+
+`free.null.voidReturn` promoted to `BytecodeNewCore`, 2026-07-09: the
+`free.null.voidReturn` block (`tests/ut/backends/runner/rt/cstdlib.d`) ran
+on `Interpreter` only, so it was not yet `SystemLinker`-oracle-backed.
+Added `SystemLinker` to that block's `AliasSeq` first and confirmed it
+passed unmodified — `free(null); assert(true);` is genuine compiled-D
+behaviour, no fixture change needed. Only then added `BytecodeNewCore`.
+Red diagnostic before any production change, verbatim:
+
+    object.Exception: `free` cannot be interpreted at compile time,
+    because it has no available source code
+
+Two independent gaps, both confirmed by reading the code rather than
+assumed: `tryCompileNativeCall`'s return-type gate
+(`source/quickbite/backends/bytecode/core/compiler.d`) excluded
+`TY.Tvoid` outright, so the compiler never reached the argument loop for
+`free`; and `free(null)`'s single argument is a `NullExp`, which (like
+`compilePointerDeclaration`'s `= null` case from the `strtod` rung) keeps
+its own `typeof(null)` static type rather than the declared `void*`
+parameter type, so it matched none of the three whitelisted argument
+shapes even once the return-type gate opened.
+
+Fix: widened the return-type gate to admit `TY.Tvoid`. Added a fourth
+argument shape — a `NullExp` argument takes its type from the callee's
+own declared parameter (`function_.type.toBasetype.isTypeFunction
+.parameterList[index].type`, refused unless that declared type is
+`TY.Tpointer`) and emits a zeroed argument slot, mirroring
+`compilePointerDeclaration`'s existing zero-slot-for-null handling for
+locals. `emitNativeCall`'s `allocate(returnScalar)` needed no change:
+`scalarType(Tvoid)` already returns `ScalarType.void_`, and `allocate`
+already handles a zero-size, zero-alignment allocation (the existing
+`cast(void)expr`-discarded-result comment on `allocateBytes` covers
+exactly this case) — the plan's assumption of a gap there was wrong.
+
+Two runtime-side gaps surfaced once the compile-time gate opened.
+`BytecodeNativeMarshaller.canRepresent` (`machine.d`) — consulted by
+`quickbite.ffi.core.canRepresentCall` *before* the native call runs —
+did not accept `TY.Tvoid` for the return type, so the compiled call would
+still have failed at run time with the identical no-available-source
+message. Fixed narrowly: `TY.Tvoid` is representable only in the
+`fromNative` (return) direction, never `toNative` (argument/receiver),
+since no real D or C argument is void-typed. Established, not assumed:
+`quickbite.ffi.core.callNativeImpl` calls `marshaller.readResult(
+returnType, returnBuffer)` unconditionally on every non-ref-return call,
+void or not (the `returnsRef` branch is the only fork, and `free` takes
+neither branch's ref path) — so `readResult`/`nativeResultSize` needed a
+real `Tvoid` case, not a dead one; the plan's prior "not established"
+bullet was wrong in the direction of assuming it might be dead code.
+Added `case Tvoid: return 0;` to `nativeResultSize`, making the
+subsequent `_stack[...0] = buffer[0..0]` copy a correct no-op.
+
+The pre-existing `free.null.voidReturn.Bytecode`/`.IR`/`.BytecodeNewCore`
+design-driving no-source rows (same file, a separate block) asserted the
+opposite of the new behaviour for `BytecodeNewCore` and shared the exact
+`@()` test name with the newly-promoted row — not a compile error (D
+tolerates duplicate unittest names), but a real behavioural contradiction
+once `BytecodeNewCore` stopped throwing. Split that block in two:
+`free.null.voidReturn`'s no-source `AliasSeq` narrows to `Bytecode, IR`
+(with a comment pointing at the new real row); `malloc.pointerReturn
+.nativeMemory` (the block's other fixture, still unsupported on
+`BytecodeNewCore`) keeps `Bytecode, BytecodeNewCore, IR`. No fixture body
+changed in either block.
+
+Verification: `ninja bin/ut`; the full `rt/cstdlib.d` module (90 tests, 0
+failed); a focused run of `free.null.voidReturn` on every backend, every
+other `cstdlib.*.BytecodeNewCore` row, and `strtod.floatReturn.endptr`/
+`strtol.endptr` on `Interpreter`/`SystemLinker`/`LLVMJit`/`BytecodeNewCore`
+(24 tests, 0 failed). `bin/ut --random` was not run; the orchestrator runs
+the long suite. Production diff for the whole branch vs `master`
+(`source/`) is 228 changed lines — over the 200-line cap, continued past
+it on explicit user direction rather than contorting the code to stay
+under it.

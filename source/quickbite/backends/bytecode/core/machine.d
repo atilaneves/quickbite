@@ -2652,6 +2652,8 @@ private final class BytecodeNativeMarshaller:
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
         import dmd.astenums: TY;
         const ty = type.toBasetype.ty;
+        if (ty == TY.Tvoid)
+            return direction == NativeMarshaller.Direction.fromNative;
         return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tfloat64 ||
             ty == TY.Tpointer;
     }
@@ -2698,6 +2700,10 @@ private final class BytecodeNativeMarshaller:
     private static size_t nativeResultSize(Type type) {
         import dmd.astenums: TY;
         switch (type.toBasetype.ty) with (TY) {
+            case Tvoid:
+                // `callNativeImpl` (ffi/core.d) calls `readResult` even for a
+                // void-returning callee; there is no result to copy back.
+                return 0;
             case Tint32:
                 return int.sizeof;
             case Tint64:
