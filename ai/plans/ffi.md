@@ -2240,11 +2240,11 @@ dub projects (`interpreter.md` §1) — orders the open FFI work; rungs 24–25
 sort by consumer need, not table position:
 
 ```text
-1. §35.2: data symbols + dependency-image init — the §35.2a read rung, the
-   write rung, the struct-global read+field-write rung, the slice-global read
-   rung, the slice-global writeback rung, the struct-global whole-value rebind
-   rung, and cross-image module-ctor ORDERING are DONE. What remains is
-   TLS-in-dependency-image edge cases
+1. §35.2: data symbols + dependency-image init — DONE, including the §35.2a
+   read rung, write rung, struct-global read+field-write rung, slice-global
+   read rung, slice-global writeback rung, struct-global whole-value rebind
+   rung, cross-image and DT_NEEDED module-ctor ORDERING, and DT_NEEDED
+   TLS-in-dependency-image read/write.
 2. rungs 24–25: sequenced with bytecode.md's native-runtime slice taking up
    FFI latency / exception fidelity as its stated work
 
@@ -2362,6 +2362,16 @@ with no production change: the caller specifies load order and the loader
 honours it. What genuinely remains is DT_NEEDED-driven ordering where the caller
 does NOT specify load order (the dynamic loader picks it) and TLS-in-dependency-
 image edge cases.
+DONE: §35.2 DT_NEEDED TLS-default global read/write —
+dependencyImage.dtNeededTlsGlobalReadWrite. The caller names only image B, B has
+a DT_NEEDED edge to image A, and A owns the default TLS global. Both the
+SystemLinker oracle and the Interpreter observe A's initializer, an interpreted
+write-through, and B's native mutation through the same TLS instance after
+dlopen(B) loads A. This closed the TLS-in-dependency-image edge case and
+therefore §35.2. The fixture also required the SystemLinker oracle to allow
+shared-library-only links to resolve direct references through the dependency
+image's DT_NEEDED closure at load time; `-z defs` remains in force for empty,
+object, and archive link sets.
 ```
 
 An agent asked to "work on ffi.md" starts at the top of this list, not at
@@ -3275,8 +3285,25 @@ module ctor (`dtNeededSeed = 20`), then runs B's module ctor
 (`derived = dtNeededSeed + 4`). `readDerived` returns 24 for both backends. No
 production change was needed: the existing `RTLD_NOW | RTLD_GLOBAL` load path
 already lets the platform loader honour DT_NEEDED constructor ordering.
-Green-as-pin. The remaining §35.2 surface is TLS-in-dependency-image edge
-cases.
+Green-as-pin. The remaining §35.2 surface was TLS-in-dependency-image edge
+cases, now closed below.
+
+**Status: DT_NEEDED TLS-default global read/write LANDED (§35.2 closed).**
+`dependencyImage.dtNeededTlsGlobalReadWrite` pins the case where the caller
+supplies only image B, B was linked against image A, and A owns a default
+thread-local D global. B imports A's declaration so its native functions and
+the interpreted source both name A's TLS symbol; `dlopen(B)` follows the
+DT_NEEDED edge to A. The oracle and Interpreter both observe A's initializer
+(`30`), an interpreted write-through (`7`, seen by B), and B's native mutation
+(`+2`, read back as `9`) through the same thread's TLS instance. No
+Interpreter change was needed: `resolveDataSymbol`/`dlsym(RTLD_DEFAULT, ...)`
+already sees the transitive image after B loads. The SystemLinker oracle needed
+a narrow native-linker adjustment: when all explicit link inputs are shared
+libraries, it omits `-z defs` so direct references from the generated test
+module may be resolved by the dynamic loader through those images' DT_NEEDED
+closure at load time. Empty, object, and archive link sets still use `-z defs`.
+With this, the §35.2 data-symbol and dependency-image initialization surface is
+closed.
 
 ### 35.3 Native exception fidelity: the core drops the Throwable object
 

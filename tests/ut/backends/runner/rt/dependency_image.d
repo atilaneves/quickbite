@@ -3606,6 +3606,104 @@ unittest {
     }
 }
 
+// Pins §35.2 TLS through a DT_NEEDED dependency image: the caller only loads
+// image B, but B depends on image A. A owns a default thread-local D global;
+// interpreted direct reads/writes and native B calls must all observe the same
+// TLS instance after dlopen(B) loads A.
+@("dependencyImage.dtNeededTlsGlobalReadWrite.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+
+        const depAPath = buildPath(importPath, "dep_image_dtneeded_tls_a.d");
+        writeFile(depAPath, q{
+            module dep_image_dtneeded_tls_a;
+
+            int dtNeededTlsCounter = 30;
+        });
+        const imageAPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_dtneeded_tls_a",
+            [depAPath],
+        );
+
+        const depBPath = buildPath(importPath, "dep_image_dtneeded_tls_b.d");
+        writeFile(depBPath, q{
+            module dep_image_dtneeded_tls_b;
+
+            import dep_image_dtneeded_tls_a: dtNeededTlsCounter;
+
+            int readTlsFromB() {
+                return dtNeededTlsCounter;
+            }
+
+            void bumpTlsFromB() {
+                dtNeededTlsCounter += 2;
+            }
+        });
+
+        const imageBPath = inSandboxPath("libdep_image_dtneeded_tls_b.so");
+        const buildB = execute([
+            "dmd",
+            "-shared",
+            "-fPIC",
+            "-defaultlib=libphobos2.so",
+            "-I=" ~ inSandboxPath(importPath),
+            "-of=" ~ imageBPath,
+            inSandboxPath(depBPath),
+            imageAPath,
+        ]);
+        buildB.status.should == 0;
+
+        writeFile(depAPath, q{
+            module dep_image_dtneeded_tls_a;
+
+            extern int dtNeededTlsCounter;
+        });
+        writeFile(depBPath, q{
+            module dep_image_dtneeded_tls_b;
+
+            int readTlsFromB();
+            void bumpTlsFromB();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_dtneeded_tls_a;
+                import dep_image_dtneeded_tls_b;
+
+                unittest {
+                    assert(dtNeededTlsCounter == 30);
+                    assert(readTlsFromB == 30);
+                    dtNeededTlsCounter = 7;
+                    assert(readTlsFromB == 7);
+                    bumpTlsFromB;
+                    assert(dtNeededTlsCounter == 9);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imageBPath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imageBPath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 // Pins §35.2: reading a pointer-typed native global. The data-symbol path routes
 // through `unmarshalValue`'s `Tpointer` case, reifying `anchorPtr` as a non-null
 // native-pointer Value. To exercise the read without interpreted native-pointer

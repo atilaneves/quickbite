@@ -332,17 +332,25 @@ private void linkSharedLibrary(
 
     // Link against shared phobos so the library shares the host's druntime
     // (one GC, one DSO registry) instead of smuggling in its own copy.
+    //
     // `-z defs` turns any symbol the generated code fails to provide into a
-    // link error instead of a load-time failure.
+    // link error instead of a load-time failure. Shared dependency images are
+    // the exception: a module may reference a symbol supplied by a DT_NEEDED
+    // dependency of the explicitly-linked image, and the dynamic loader
+    // resolves that closure at load time.
+    const sharedDependencyImages =
+        linkFiles.length != 0 && allSharedLibraries(linkFiles);
     auto command = [ // const fails: appended to below
         "dmd",
         "-shared",
         "-defaultlib=libphobos2.so",
-        "-L=-z",
-        "-L=defs",
         "-of=" ~ libPath,
-    ] ~ objPaths;
-    if (linkFiles.length != 0 && allSharedLibraries(linkFiles)) {
+    ];
+    if (!sharedDependencyImages)
+        command ~= ["-L=-z", "-L=defs"];
+
+    command ~= objPaths;
+    if (sharedDependencyImages) {
         command ~= linkFiles;
     } else if (linkFiles.length != 0) {
         // Group-wrap archive lists: references between archives can go in
