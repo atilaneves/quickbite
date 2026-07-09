@@ -106,6 +106,17 @@ unittest {
 }
 
 
+@("NativeArray.allocate.overflowingLengthTimesStrideThrows")
+unittest {
+    // An 8-byte element type (`tint64`) and this count wraps
+    // `length * stride` to 8 -- a tiny block that would otherwise allocate
+    // silently under a handle that claims a huge `length`.
+    const count = size_t.max / 8 + 2;
+
+    NativeArray.allocate(Type.tint64, count).shouldThrow!Exception;
+}
+
+
 @("NativeArray.allocate.pointerBearingElementTypeYieldsScannedBlock")
 unittest {
     import core.memory: GC;

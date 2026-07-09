@@ -383,7 +383,10 @@ a block holding guest pointers would have been invisible to the GC and its
 targets collectible out from under it. Blocks are now allocated with an
 explicit scan policy chosen from `layout.typeHasPointers` on the element
 type, and the parameter takes no default -- under-scanning is the unsafe
-direction, so a forgotten argument must never silently choose it.
+direction, so a forgotten argument must never silently choose it. An
+overflowing `length * stride` product (checked with `core.checkedint.
+mulu`) is rejected at allocation rather than wrapping to a too-small
+block, so a handle's `length` is always consistent with its block.
 
 None of this is wired in yet: no `impl.d`/`Walker`/`Value` integration, no
 display change, no FFI change, no `interpreter.md` §9.10 shim retired, no

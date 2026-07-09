@@ -33,7 +33,9 @@ public struct NativeArray {
     // padding. The block's scan policy follows `elementType`: pointer-
     // bearing elements get a conservatively scanned block so the GC can
     // still find what they point to; everything else is `NO_SCAN`. Not
-    // `nothrow`: `typeByteSize` throws on an unsized type.
+    // `nothrow`: `typeByteSize` throws on an unsized type, and an
+    // overflowing `length * stride` throws rather than silently wrapping
+    // to a too-small block underneath a handle that still claims `length`.
     public static NativeArray allocate(
         imported!"dmd.mtype".Type elementType,
         in size_t length,
@@ -45,7 +47,7 @@ public struct NativeArray {
             ? NativeBlock.Scan.conservative
             : NativeBlock.Scan.no;
         return NativeArray(
-            NativeBlock.allocate(length * stride, scan),
+            NativeBlock.allocate(byteLength(length, stride), scan),
             elementType,
             length,
             stride,
@@ -107,6 +109,25 @@ public struct NativeArray {
 
         writeSliceHeaderBytes(dest, _length, _block.address);
     }
+}
+
+// `length * stride` computed with overflow checking: an overflowing
+// product would otherwise wrap to a small byte count, and `NativeBlock.
+// allocate` would then silently succeed with a block far too small for
+// the handle's `length`. Throws rather than returning an inconsistent
+// handle, matching `layout.typeByteSize`'s failure style.
+private size_t byteLength(in size_t length, in size_t stride) pure @safe {
+    import core.checkedint: mulu;
+
+    bool overflow;
+    const bytes = mulu(length, stride, overflow);
+    if (overflow)
+        throw new Exception(
+            "quickbite.backends.interpreter.native_array.NativeArray."
+            ~ "allocate: length * stride overflows size_t",
+        );
+
+    return bytes;
 }
 
 // Writing a raw pointer's bit pattern into a byte range is not @safe; this
