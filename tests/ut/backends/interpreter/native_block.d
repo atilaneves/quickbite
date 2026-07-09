@@ -158,3 +158,22 @@ unittest {
 
     block.trueByteSize.should == 0;
 }
+
+
+@("NativeBlock.tryExtendTo.smallBlockCannotExtendAndIsLeftUntouched")
+unittest {
+    // A small (small-bin) GC allocation can never be extended in place --
+    // druntime's `GC.extend` only ever grows large-object (page) blocks
+    // (core/internal/gc/impl/conservative/gc.d, ~line 843: `!pool.
+    // isLargeObject` returns 0 unconditionally). That makes this
+    // deterministic rather than allocator-state-dependent: `tryExtendTo`
+    // must return false and leave the block's address and byte length
+    // exactly as they were.
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
+    const address = block.address;
+
+    block.tryExtendTo(100_000).should == false;
+
+    block.address.should == address;
+    block.byteLength.should == 4;
+}

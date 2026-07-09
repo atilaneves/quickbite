@@ -109,6 +109,32 @@ public struct NativeBlock {
     public size_t trueByteSize() const nothrow @nogc @safe {
         return trueByteSizeOf(address);
     }
+
+    // Tries to grow this block's allocation in place to `newByteLength`.
+    // Returns false if the GC cannot extend it, in which case the caller
+    // must reallocate. On success the block spans exactly `newByteLength`
+    // bytes and the newly available tail is zeroed, so an extended block
+    // is indistinguishable from a freshly allocated one of the same size
+    // -- `GC.extend` itself leaves extension bytes uninitialised. The
+    // block's scan attribute (`NO_SCAN` vs conservative) needs no update:
+    // `GC.extend` grows the same underlying allocation rather than
+    // creating a new one, so whatever attribute was set at `allocate`
+    // time still applies. A null `address` -- this block's own
+    // zero-length case, since `GC.calloc(0, ...)` returns null -- simply
+    // makes the GC report "cannot extend" (see `extendBlock`'s comment
+    // below), so this returns false and the caller reallocates; no
+    // special-casing needed here.
+    public bool tryExtendTo(in size_t newByteLength) pure nothrow @safe {
+        const oldByteLength = _bytes.length;
+        auto ptr = address;
+        const extended = extendBlock(ptr, newByteLength - oldByteLength);
+        if (extended == 0)
+            return false;
+
+        _bytes = resliceBytes(ptr, newByteLength);
+        _bytes[oldByteLength .. $] = 0;
+        return true;
+    }
 }
 
 // Building a slice view over caller-owned memory needs raw pointer
@@ -148,4 +174,27 @@ private size_t trueByteSizeOf(const scope void* ptr) nothrow @nogc @trusted {
     import core.memory: GC;
 
     return GC.sizeOf(ptr);
+}
+
+// `GC.extend` takes a raw, unbounded pointer and is not `@safe`; this is
+// the `@trusted` boundary. Passing `p == null` -- this block's own
+// zero-length case, since `GC.calloc(0, ...)` returns null -- is exactly
+// the precondition druntime documents: `p` is "a pointer to the root of a
+// valid memory block or to null" (core/memory.d, ~line 610), and
+// internally `findPool(null)` finds no pool and returns 0, so a null `p`
+// just reports "cannot extend" rather than misbehaving. Returns the
+// extended block's byte size, or zero if no extension occurred
+// (core/memory.d, ~line 618).
+private size_t extendBlock(void* p, in size_t extension) pure nothrow @trusted {
+    import core.memory: GC;
+
+    return GC.extend(p, extension, extension);
+}
+
+// Reinterpreting a raw pointer as a slice is not `@safe`; this is the
+// `@trusted` boundary. Called only after `extendBlock` has confirmed the
+// GC extended the allocation at `ptr` to at least `newByteLength` bytes,
+// so the slice this returns stays within that (now larger) allocation.
+private ubyte[] resliceBytes(void* ptr, in size_t newByteLength) pure nothrow @trusted {
+    return (cast(ubyte*) ptr)[0 .. newByteLength];
 }

@@ -323,3 +323,34 @@ unittest {
     const attr = GC.getAttr(GC.addrOf(array.block.address));
     (attr & GC.BlkAttr.NO_SCAN).should == 0;
 }
+
+
+// The two success paths of `reserve` (in-place GC.extend, or reallocate)
+// must leave the handle in the same observable state: `block.byteLength`
+// exactly `n * stride`, and every byte beyond the live `length * stride`
+// zero. This pins that unified post-condition regardless of which path
+// actually ran.
+@("NativeArray.reserve.blockByteLengthEqualsRequestedCapacityTimesStride")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    const n = 100_000;
+
+    array.reserve(n);
+
+    array.block.byteLength.should == n * array.stride;
+}
+
+
+@("NativeArray.reserve.reservedTailBeyondLengthIsZero")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    array.element(0)[0] = 10;
+    array.element(1)[0] = 20;
+    array.element(2)[0] = 30;
+
+    array.reserve(100_000);
+
+    const liveBytes = array.length * array.stride;
+    foreach (byte_; array.block.bytes[liveBytes .. $])
+        byte_.should == 0;
+}

@@ -141,18 +141,22 @@ public struct NativeArray {
     // Guarantees capacity for at least `n` elements, mirroring compiled D's
     // `arr.reserve(n)`. A no-op when `n <= capacity`: the block's address
     // and every existing element are untouched. Otherwise grows through
-    // real storage, trying first to extend the existing GC allocation in
-    // place (`core.memory.GC.extend`; druntime core/memory.d ~line 603
-    // documents it returning the extended block's size, or zero on
-    // failure) -- that path leaves the address unchanged. If extension
-    // fails, allocates a new block of the required byte length with this
-    // array's own scan policy, copies the live `length * stride` bytes
-    // across, and adopts the new block: the address legitimately changes
-    // here. Per item 7's Address-stability bullet, that is correct --
-    // stale pointers into the old block go stale exactly as compiled D
-    // loses append capacity on reallocation, and no boxed/old-block value
-    // is ever copied back as the authority. No borrowed-block guard: a
-    // borrowed block cannot legitimately be reallocated (we don't own that
+    // real storage, trying first `NativeBlock.tryExtendTo` to extend the
+    // existing GC allocation in place -- that path leaves the address
+    // unchanged. If extension fails, allocates a new block of the required
+    // byte length with this array's own scan policy, copies the live
+    // `length * stride` bytes across, and adopts the new block: the
+    // address legitimately changes here. Per item 7's Address-stability
+    // bullet, that is correct -- stale pointers into the old block go
+    // stale exactly as compiled D loses append capacity on reallocation,
+    // and no boxed/old-block value is ever copied back as the authority.
+    // Both paths leave the SAME observable state: `block.byteLength ==
+    // n * stride` and every byte beyond the live `length * stride` is
+    // zero -- `tryExtendTo` establishes that itself on the extend path,
+    // and `NativeBlock.allocate`'s `GC.calloc` zeroes the whole new block
+    // on the reallocating path, so an extended block is indistinguishable
+    // from a freshly allocated one. No borrowed-block guard: a borrowed
+    // block cannot legitimately be reallocated (we don't own that
     // memory), but `NativeArray` has no borrow constructor yet, so there is
     // no way to reach this method with `_block.ownership == borrowed` --
     // adding a check no test can exercise would be unreachable defensive
@@ -164,9 +168,8 @@ public struct NativeArray {
             return;
 
         const requiredBytes = byteLength(n, _stride);
-        const extension = requiredBytes - _block.trueByteSize;
 
-        if (extendInPlace(_block.address, extension, extension))
+        if (_block.tryExtendTo(requiredBytes))
             return;
 
         auto newBlock = NativeBlock.allocate(requiredBytes, _block.scan);
@@ -193,18 +196,6 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
         );
 
     return bytes;
-}
-
-// `GC.extend` takes a raw, unbounded pointer and is not `@safe`; this is
-// the `@trusted` boundary. `p` must be the base pointer of a GC-owned
-// block -- `NativeArray.reserve`'s sole caller always passes
-// `_block.address`, which is exactly that. Returns whether the block was
-// extended in place: `GC.extend` returns the extended block's size, or
-// zero if no extension occurred (druntime core/memory.d, ~line 603).
-private bool extendInPlace(void* p, in size_t minExtension, in size_t desiredExtension) nothrow @trusted {
-    import core.memory: GC;
-
-    return GC.extend(p, minExtension, desiredExtension) != 0;
 }
 
 // Writing a raw pointer's bit pattern into a byte range is not @safe; this
