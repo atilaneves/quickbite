@@ -658,9 +658,90 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    - the cerealed frontier resumes on the new representation, and the
      latency A/B (item 6's original question) is finally measured on real
      suites once they run.
-   Design sketch first, as its own session: GC-root bookkeeping
-   (`addRange`/frame scanning), the handle type, and the migration order
-   (arrays first, then structs, then class objects) need a plan before code.
+   Design sketch 2026-07-09 (the "plan before code" session; no code, no
+   fixtures, no shim deletion). A *native block* is a stable byte range laid
+   out with DMD's own offsets, stride, and alignment; a *handle* is the
+   interpreter-owned metadata for one block — `Type*`, byte length, ownership,
+   mutability, and its GC root-registration token. Interior addresses are views
+   over a block plus an offset; a raw `void*` is produced only at the last step
+   before FFI or an intrinsic, and is never the ownership token.
+
+   - **Storage shape.** Scalars stay boxed: integral, floating, enum, null, and
+     pointer leaves keep expression evaluation direct. Recursive aggregate
+     boxes collapse to one aggregate-handle arm. A static array is one inline
+     block; a dynamic array is a real D slice header (`ptr`, `length`) over a
+     separately tracked element block; a struct is one block laid out with DMD
+     field offsets. Class references keep the boxed object representation until
+     the class phase.
+   - **Address stability.** Every address reachable through `&local`,
+     `array.ptr`, slice construction, pointer arithmetic, `memcpy`, or FFI
+     points into a native block, never into a boxed snapshot. Blocks must not
+     move while an interpreter pointer can reach them; when array growth
+     reallocates, the owning slice header is updated and stale addresses go
+     stale exactly as compiled D loses append capacity — no boxed value is ever
+     copied back as the authority.
+   - **GC roots.** A block is either `NO_SCAN` or scan-registered. Start
+     conservative: `GC.addRange` over the whole byte range while the handle is
+     live, removed on handle destruction or replacement. Frames record the
+     ranges they own and unregister on unwind. Precise pointer-bearing
+     subranges are a later optimization, not a prerequisite. Handles that
+     borrow FFI or host memory register nothing; they only keep a
+     Quickbite-owned source owner live for the duration of the borrow.
+   - **Ownership and writeback.** Whether a block is owned or borrowed, and
+     whether writes through it reach an external owner, is explicit metadata on
+     the handle. It is never inferred by diffing a pre-call boxed aggregate
+     against a post-call one. Class-reference identity is not by-value
+     writeback: one object body is shared by every reference to it, which is
+     why `writeBackByValueClassArguments` cannot be retired by the array or
+     struct phases.
+   - **Migration order.** Arrays first: the smallest surface that exercises
+     stable element addresses, slices into locals, capacity hooks, `memcpy`,
+     and array-pointer FFI without needing object identity. Structs second,
+     reusing the same block/offset machinery. Class objects third — they need
+     native object identity, vptr/monitor layout, and constructor lifetime, and
+     delaying them keeps the array/struct proof off the hardest object-model
+     questions. Invert only if a red fixture proves a struct or object root is
+     needed to make the array step observable.
+   - **Shim deletion path**, mapping §9.10's inventory onto the phases above.
+     Array-native storage retires the `gc_*` capacity hook stubs and the
+     `lastGCArrayUsedAllocation` side channel, by making druntime's capacity
+     helpers ordinary body-less FFI over real addressable blocks, and reduces
+     `runMemcpyCall` to the plain FFI or intrinsic byte copy once both
+     endpoints are native ranges. Struct-native storage retires
+     `runEmplaceRefCall`/`isEmplaceRef`, by letting the real
+     `core.internal.lifetime.emplaceRef` body write through the destination
+     address, and retires
+     `reinterpretLocalPointerLoad`/`floatBits`/`doubleBits`, by making
+     `*cast(T*) &local` a load of the same bytes at a different static type
+     rather than a name match. Class-object storage retires
+     `writeBackByValueClassArguments`. Each deletion lands with its §9.10
+     ratchet fixtures green through the real path, per the success criteria
+     above.
+
+   The representation is interpreter-internal. It must not force `Bytecode`,
+   `LLVMJit`, `SystemLinker`, or `Ctfe` to share a `Value` type or import
+   interpreter packages: a promoted fixture proves the same D-language result,
+   not a shared runtime value model. DMD-derived layout facts stay the source
+   of truth, cached on the handle; the interpreter must not grow a second set
+   of D layout rules.
+
+   Open questions for the first implementation slice: lifetime contracts for
+   blocks borrowed from arbitrary C owners; what a guest pointer into a grown
+   array should observe, and whether that deserves a diagnostic rather than
+   compiled D's silent staleness; unions and overlapping fields, which the
+   conservative whole-range root policy handles but the layout model does not
+   yet describe; and class object bodies, deferred wholesale.
+
+   Next PR: the array-native block handle skeleton — an interpreter-owned array
+   value carrying a stable block, `Type*`, length, stride, ownership, and root
+   state, with no user-visible display or FFI change and no shim retired. Then
+   static arrays inline, dynamic-array slice headers, interior addresses,
+   conservative roots, and capacity through real storage, in that order.
+   Latency is measured only once the array and struct correctness gates are
+   green and a real suite actually reaches native storage; item 6 already
+   showed the benchmark suite never crossed the old marshaller seam. Until
+   then, native layout is justified by the correctness ceiling (`&local`,
+   unions, reinterpret casts, slices into locals), not by a benchmark.
 
 ## Out of scope
 
