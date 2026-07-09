@@ -1202,8 +1202,8 @@ the same change.* Measured on 2026-07-09, that is nearly true, and the work
 order had drifted away from it.
 
 Measured state (`bin/ut -l`, 2026-07-09): the new core carries far more
-matrix rows than the old core. Exactly nine `Bytecode` rows have no
-`BytecodeNewCore` counterpart, and only **four are behaviours**:
+matrix rows than the old core. Exactly four `Bytecode` rows have no
+`BytecodeNewCore` counterpart, and all four are behaviours:
 
 1. `ct/diagnostics.d`: `nullClassFieldReadReportsDiagnostic`,
    `nullClassMethodCallReportsDiagnostic`, and
@@ -1218,7 +1218,8 @@ matrix rows than the old core. Exactly nine `Bytecode` rows have no
    `emplace` by identifier), so `pow` on float inputs needs intrinsic
    lowering.
 
-The other five are not behaviours and need no new-core implementation:
+Two additional stale-row cases are not behaviours and need no new-core
+implementation:
 
 - `ct/diagnostics.d`: `voidInitializedScalarReadReportsUninitialized`. See
   "The `= void` row is a fossil" below — narrow it, do not implement it.
@@ -1267,7 +1268,8 @@ runtime tagging in one engine, and not a reason to delay the flip.
 4. **The flip, one change**: `Bytecode`'s default constructor selects
    `Engine.typedFrames`; delete the `BytecodeNewCore` handle class; delete
    the old core (`backends/bytecode/{compiler,vm,builtins,instructions}.d`);
-   drop `Bytecode` from the four `rt/cstdlib.d` refusal blocks; rename the
+   leave `malloc.pointerReturn.nativeMemory` unpromoted while preserving the
+   three promoted `rt/cstdlib.d` native-memory rows; rename the
    `.BytecodeNewCore` matrix rows to `.Bytecode`. The legacy-core entry in
    the Deletion Inventory (enum member-name and struct-literal display in
    `bytecode/compiler.d`) dies here too.
