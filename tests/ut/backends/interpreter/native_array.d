@@ -309,3 +309,17 @@ unittest {
 
     (array.capacity >= n).should == true;
 }
+
+
+@("NativeArray.reserve.reallocationKeepsConservativeScanPolicy")
+unittest {
+    import core.memory: GC;
+
+    auto array = NativeArray.allocate(Type.tvoidptr, 3);
+
+    array.reserve(100_000);
+
+    array.scan.should == NativeBlock.Scan.conservative;
+    const attr = GC.getAttr(GC.addrOf(array.block.address));
+    (attr & GC.BlkAttr.NO_SCAN).should == 0;
+}
