@@ -1316,3 +1316,61 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// The owed §9.10 fixture: `Appender.clear` shrinks the backing slice to
+// `[0..0]` and a subsequent `put` regrows it via a fresh pointer slice
+// (`arr.ptr[0 .. len + 1]`); the pointer slice must still see the original
+// allocation's full capacity, not just the shrunk length.
+// BytecodeNewCore omitted: taking the address of a local array is not yet
+// implemented there ("Unsupported expression in bytecode core: & arr").
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("appenderClearKeepsPointerSliceBackingAllocation." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.array : appender;
+
+            unittest {
+                auto output = appender!(ubyte[]);
+
+                output.put(cast(ubyte) 1);
+                output.clear;
+                output.put(cast(ubyte) 9);
+
+                assert(output.data == [9]);
+            }
+        });
+    }
+}
+
+// The owed §9.10 fixture: a class reference passed by value to a function
+// that mutates a field must leave the mutation visible to the caller, since
+// a class is a reference type. Shim-backed by `writeBackByValueClassArguments`
+// (§9.10 deletion inventory) — this fixture pins the observable behaviour,
+// not the shim's mechanism, and must stay green once the native-layout
+// object model replaces it.
+// BytecodeNewCore omitted: class-field assignment is not yet implemented
+// there ("Unsupported assignment in bytecode core: box.value = 42").
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("classReferencePassedByValueMutatesObject." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Box {
+                int value;
+            }
+
+            void fill(Box box) {
+                box.value = 42;
+            }
+
+            unittest {
+                auto box = new Box;
+
+                fill(box);
+
+                assert(box.value == 42);
+            }
+        });
+    }
+}

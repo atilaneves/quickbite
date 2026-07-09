@@ -1373,11 +1373,6 @@ optional, and each lands under the §8 approval rule. Classification:
 ```text
 ratchet fixtures (green today, pin oracle behaviour, protect the shim->real
 migration — a fixture asserts behaviour, so it survives the shim's deletion):
-- classReferencePassedByValueMutatesObject         (shim-backed, behaviour
-                                                    correct for this shape)
-- appenderClearKeepsPointerSliceBackingAllocation  (pointerSlice allocation
-                                                    identity — a genuine boxed-
-                                                    model fix, not a shim)
 - emplaceRefWritesArrayElement                     (shim-backed; scalar
                                                     elements only, where the
                                                     shim is provably
@@ -1608,6 +1603,52 @@ double->ulong) and every other reinterpret is still wrong or refused.
 These three fixtures are the ratchet: they must stay green through the
 eventual native-layout replacement of that shim, at which point the
 shim itself is deleted per its retirement condition.
+
+The remaining two owed ratchet fixtures,
+`appenderClearKeepsPointerSliceBackingAllocation` and
+`classReferencePassedByValueMutatesObject`, were reconstructed red-first
+(procedure per the 2026-07-09 handoff above) and landed in `ct/cerealed.d`.
+
+`appenderClearKeepsPointerSliceBackingAllocation` uses `std.array.appender`
+(Phobos) rather than a hand-rolled pointer-slice snippet: the bug is
+specifically in `Value.pointerSlice`'s handling of `Appender.clear`'s
+`_data.arr = _data.arr.ptr[0 .. 0]` followed by regrowth via
+`arr.ptr[0 .. len + 1]` inside `Appender.put`, and only `Appender`'s exact
+clear/grow sequence exercises it. Applied alone at `833c560c`'s parent
+(the pointer-slice fix's own parent, `ca901fd9` — the class-reference fix
+just prior), `Interpreter` fails with the exact diagnostic the plan
+predicted: `` pointer slice `[0..1]` exceeds allocated memory block
+`[0..0]` ``; `SystemLinker` is green. This is "a genuine boxed-model fix,
+not a shim" (per the classification above), so the fixture asserts
+allocation-identity behaviour outright, with no shim cross-reference.
+Verified green at this branch's `HEAD` on `Ctfe, Interpreter, SystemLinker,
+LLVMJit`. `BytecodeNewCore` is omitted, genuinely red, not a pinned
+refusal: `Unsupported expression in bytecode core: & arr` — that backend
+does not yet support taking the address of a local array, an
+unimplemented-construct gap unrelated to the fix being proven.
+
+`classReferencePassedByValueMutatesObject` reproduces a class reference
+passed by value to a function that mutates a field, asserting the caller
+observes the mutation. Applied alone at `ca901fd9`'s parent (`bce523cc`,
+"interpreter: handle emplaceRef writes" — the true parent of the
+class-reference-writeback fix), `Interpreter` fails with `0 != 42` (the
+caller sees the default field value instead of the callee's mutation);
+`SystemLinker` is green. This fixture is shim-backed by
+`writeBackByValueClassArguments` (§9.10 deletion inventory above): the
+shim models reference semantics by post-call value diffing rather than
+first-class object references. The fixture pins observable *behaviour*,
+not the shim's mechanism, so it is a valid ratchet fixture that must stay
+green once §9.10's native-layout object model replaces the shim with
+first-class object references. Verified green at this branch's `HEAD` on
+`Ctfe, Interpreter, SystemLinker, LLVMJit`. `BytecodeNewCore` is omitted,
+genuinely red: `Unsupported assignment in bytecode core: box.value = 42`
+— that backend does not yet support class-field assignment at all, an
+unimplemented-construct gap unrelated to this fixture's target behaviour.
+
+Both fixtures' green matrix was re-verified on this branch's `HEAD`
+(`fb92e785` plus the lazy-argument frame-capture change `674e76a2`, not
+present at master when the red-first proofs above were originally run),
+confirming the fix and matrix still hold with that change in place.
 
 ## 10. Done
 
