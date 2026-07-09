@@ -2209,7 +2209,7 @@ Inc  Contract                                          Track  Status   Ref
 21  variadics (printf-shaped; ffi_prep_cif_var)         A     done     §34.15
 22  delegates / callbacks / closures: reverse bridge    AB    done*    §34.16
 23  extern(C++) function and member ABI                 A     done     §34.17
-24  seam v2: pointer-handing crossing + CIF cache       A     open     §35.1
+24  seam v2: pointer-handing crossing + CIF cache       A     done     §35.1
 25  native Throwable crossing as rooted reference       A     open     §35.3
 ```
 
@@ -3063,9 +3063,9 @@ block the terminal goal (§34.1) for the two backends.
 
 ### 35.1 Seam v2: no identity crossing, no CIF cache
 
-**Status: partially landed — ladder rung 24 (§34.3, 2026-07-09).**
-Pointer-handing through the live BytecodeNewCore call site is green; the
-non-variadic CIF cache remains the open §35.1 subitem.
+**Status: landed — ladder rung 24 (§34.3, 2026-07-09).**
+Pointer-handing through the live BytecodeNewCore call site is green, and the
+non-variadic CIF cache subitem is landed.
 
 **Claim.** §5/§23: for a native-layout backend `materialize`/`reify` is the
 identity — "there is no marshalling for this backend to own". §1/§4/§24.1:
@@ -3103,8 +3103,8 @@ a. pointer-handing seam variant: optional NativeMarshaller methods
    back to today's buffer copies. When the backend supplies addresses the
    core puts them straight into avalue[] / passes them as the sret
    destination; no per-argument allocation.
-b. reinstate the per-callable CIF cache for non-variadic calls, keyed by the
-   resolved FuncDeclaration; variadic calls keep per-call ffi_prep_cif_var
+b. DONE: reinstate the per-callable CIF cache for non-variadic calls, keyed
+   by the resolved FuncDeclaration; variadic calls keep per-call ffi_prep_cif_var
    (§34.15).
 c. second-consumer neutrality proof: the narrowest REAL bytecode call site
    crossing by address — the live machine.d callNative site switched to hand
@@ -3139,6 +3139,15 @@ still dereferences as `char*` afterward.
 The non-variadic CIF cache was deliberately left for the next §35.1 slice:
 this commit proves the real call-site pointer-handing seam and keeps the
 backend-neutral core fallback for existing Interpreter paths.
+
+**Progress 2026-07-09 (CIF cache).** Landed the remaining §35.1b subitem in
+`quickbite.ffi.core`: non-variadic outbound calls now cache the prepared
+`ffi_cif` and the owned `ffi_type*[]` storage it references per resolved
+`FuncDeclaration` plus hidden-receiver/ref-return shape. Variadic calls still
+use per-call `ffi_prep_cif_var`, and native delegate calls without a resolved
+`FuncDeclaration` keep the previous stack-local prep path. No test fixture was
+added; the correctness gate remains the existing native-call suite staying
+green.
 
 ### 35.2 Data symbols and dependency-image initialization are missing
 

@@ -249,6 +249,7 @@ public bool callNativeDelegate(
         return false;
 
     return callViaLibffi(
+        null,
         LINK.d,
         type,
         funcptr,
@@ -321,6 +322,21 @@ private struct NativeThis {
     }
 }
 
+private struct NativeCifCacheKey {
+    private const(void)* function_;
+    private bool hasReceiver;
+    private RefReturnMode refReturnMode;
+}
+
+private struct CachedNativeCif {
+    private imported!"quickbite.ffi.libffi".ffi_cif cif;
+    private imported!"quickbite.ffi.libffi".ffi_type* returnFfi;
+    private imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
+    private imported!"quickbite.ffi.libffi".ffi_type*[] abiArgumentFfiTypes;
+}
+
+private CachedNativeCif*[NativeCifCacheKey] _nativeCifCache;
+
 private bool callNativeImpl(
     imported!"dmd.func".FuncDeclaration function_,
     NativeThis receiver,
@@ -359,6 +375,7 @@ private bool callNativeImpl(
         );
 
     return callViaLibffi(
+        function_,
         function_._linkage,
         type,
         symbol,
@@ -454,6 +471,7 @@ private bool isSupportedNativeLinkage(
 // signature shape not yet modelled, preserving the caller's no-available-source
 // diagnostic.
 private bool callViaLibffi(
+    imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.astenums".LINK linkage,
     imported!"dmd.mtype".TypeFunction type,
     const void* symbol,
@@ -530,37 +548,61 @@ private bool callViaLibffi(
         if (isOutPointer(parameter))
             hasOutPointer = true;
 
-    // Per-call CIF: a variadic call needs ffi_prep_cif_var with the fixed/total
-    // split and cannot share the non-variadic prep (§34.14).
+    // A variadic call needs ffi_prep_cif_var with the fixed/total split and
+    // cannot share a non-variadic prep (§34.14). Non-variadic calls cache the
+    // CIF and the ffi_type* arrays it points at by resolved callable (§35.1).
     ffi_cif cif;
-    const prepStatus = isVariadic
-        ? ffi_prep_cif_var(
+    ffi_cif* cifPointer;
+    auto preparedReturnFfi = returnFfi;
+    auto preparedArgumentFfiTypes = argumentFfiTypes;
+    if (isVariadic) {
+        const prepStatus = ffi_prep_cif_var(
             &cif,
             FFI_DEFAULT_ABI,
             cast(uint) (hiddenNargs + fixedNargs),
             cast(uint) totalNargs,
             returnFfi,
             abiArgumentFfiTypes.ptr,
-        )
-        : ffi_prep_cif(
+        );
+        if (prepStatus != ffi_status.FFI_OK)
+            return false;
+        cifPointer = &cif;
+    } else if (function_ is null) {
+        const prepStatus = ffi_prep_cif(
             &cif,
             FFI_DEFAULT_ABI,
             cast(uint) totalNargs,
             returnFfi,
             abiArgumentFfiTypes.ptr,
         );
-    if (prepStatus != ffi_status.FFI_OK)
-        return false;
+        if (prepStatus != ffi_status.FFI_OK)
+            return false;
+        cifPointer = &cif;
+    } else {
+        auto cachedCif = cachedNativeCif(
+            function_,
+            receiver,
+            refReturnMode,
+            returnFfi,
+            argumentFfiTypes,
+            abiArgumentFfiTypes,
+        );
+        if (cachedCif is null)
+            return false;
+        cifPointer = &cachedCif.cif;
+        preparedReturnFfi = cachedCif.returnFfi;
+        preparedArgumentFfiTypes = cachedCif.argumentFfiTypes;
+    }
 
     // libffi fills in struct ffi_type sizes during prep; cross-check against
     // DMD's computed layout (ffi.md §24.3). ffiTypeFor only claims layouts
     // libffi reproduces exactly (ffi.md §35.7), so a mismatch is a mapper bug.
     if (!returnsRef && returnType.ty == TY.Tstruct)
-        assert(returnFfi.size == cast(size_t) size(returnType),
+        assert(preparedReturnFfi.size == cast(size_t) size(returnType),
             "libffi/DMD return struct layout mismatch (ffi.md §24.3)");
     foreach (index; 0 .. nargs)
         if (parameterTypes[index].ty == TY.Tstruct)
-            assert(argumentFfiTypes[index].size ==
+            assert(preparedArgumentFfiTypes[index].size ==
                 cast(size_t) size(parameterTypes[index]),
                 "libffi/DMD argument struct layout mismatch (ffi.md §24.3)");
 
@@ -689,7 +731,7 @@ private bool callViaLibffi(
     alias CFunction = extern(C) void function();
     try {
         ffi_call(
-            &cif,
+            cifPointer,
             cast(CFunction) symbol,
             returnAddress,
             abiArgumentValues.ptr,
@@ -731,6 +773,43 @@ private bool callViaLibffi(
             marshaller.readResult(returnType, returnBuffer);
     }
     return true;
+}
+
+private CachedNativeCif* cachedNativeCif(
+    imported!"dmd.func".FuncDeclaration function_,
+    NativeThis receiver,
+    in RefReturnMode refReturnMode,
+    imported!"quickbite.ffi.libffi".ffi_type* returnFfi,
+    imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes,
+    imported!"quickbite.ffi.libffi".ffi_type*[] abiArgumentFfiTypes,
+) {
+    import quickbite.ffi.libffi: ffi_prep_cif, ffi_status, FFI_DEFAULT_ABI;
+
+    const key = NativeCifCacheKey(
+        cast(const(void)*) function_,
+        receiver.enabled,
+        refReturnMode,
+    );
+    if (auto existing = key in _nativeCifCache)
+        return *existing;
+
+    auto result = new CachedNativeCif;
+    result.returnFfi = returnFfi;
+    result.argumentFfiTypes = argumentFfiTypes.dup;
+    result.abiArgumentFfiTypes = abiArgumentFfiTypes.dup;
+
+    const prepStatus = ffi_prep_cif(
+        &result.cif,
+        FFI_DEFAULT_ABI,
+        cast(uint) result.abiArgumentFfiTypes.length,
+        result.returnFfi,
+        result.abiArgumentFfiTypes.ptr,
+    );
+    if (prepStatus != ffi_status.FFI_OK)
+        return null;
+
+    _nativeCifCache[key] = result;
+    return result;
 }
 
 private const(ubyte)[] nativeBytes(
