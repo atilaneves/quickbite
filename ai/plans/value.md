@@ -352,6 +352,21 @@ interpreter arrays are not addressable GC blocks. Consequences:
   native-layout aggregates/arrays behind a handle reusing DMD offsets.
   See remaining-work item 7.
 
+Progress 2026-07-09: item 7's "Next PR" list is started. Landed only the
+native block itself (`source/quickbite/backends/interpreter/native_block.d`):
+a `NativeBlock` struct wrapping a stable byte range, with a nested
+`Ownership` enum (`owned`/`borrowed`), `allocate`/`borrow` factories,
+`byteLength`/`ownership`/`bytes` accessors, and an `address` accessor that
+is the only place a raw `void*` escapes. Copying the handle copies the
+slice header, not the bytes, so every copy observes the same address.
+Nothing else from the design sketch is wired up yet: no `Type*`, no
+stride/mutability, no GC root registration, no element addressing, no
+slice headers, and no interpreter call sites use it. The interpreter still
+boxes arrays exactly as before; this commit only proves out the block
+primitive the handle will sit on. Next: give the array value a handle
+carrying `Type*`, length, stride, and root state per the "Next PR"
+description, still with no shim retired.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

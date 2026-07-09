@@ -14,6 +14,7 @@ int main(string[] args) {
         "ut.backends.evaluator.value",
         "ut.backends.evaluator.eval",
         "ut.backends.interpreter.interception_guard",
+        "ut.backends.interpreter.native_block",
         "ut.backends.runner.results",
         "ut.backends.runner.ct.expressions",
         "ut.backends.runner.ct.arrays",
