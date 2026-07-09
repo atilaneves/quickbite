@@ -4,7 +4,7 @@ module ut.backends.runner.ct.cerealed;
 import ut.backends;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -32,7 +32,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("refCursorReadAdvancesPosition." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -58,7 +58,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("postIncrementCursorReadAdvancesPosition." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -83,7 +83,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("templateLengthPrefixUsesRequestedWidth." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -111,7 +111,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("decodeBoolReadsSequentialBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -139,7 +139,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("encodeIntWritesBigEndianBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -170,7 +170,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("roundTripBoolBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -208,7 +208,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("roundTripEnumBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -267,7 +267,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("exampleFooRoundTripBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -307,7 +307,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("multidimensionalArrayWritesNestedLengths." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -363,7 +363,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("nestedStructWritesAssociativeArrayChild." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -419,7 +419,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointerToIntWritesPointeeBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -447,7 +447,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("ubyteArrayRoundTripUsesUbyteLength." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -488,7 +488,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("protocolUnitLengthFieldRoundTrip." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -584,7 +584,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("bitPackedStructHeaderRoundTrip." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -635,7 +635,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("inputRangeWritesLengthAndValues." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -690,7 +690,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("resetReaderRestoresOriginalOrNewBytes." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -757,7 +757,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("staticArrayRoundTripOmitsLengthPrefix." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -877,7 +877,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled bounds checks raise druntime's ArrayIndexError text; the
 // backtick-range wording in the Ctfe block above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("roundTripEnumExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -976,7 +976,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled bounds checks raise druntime's ArrayIndexError text (see above).
-static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("roundTripBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1046,7 +1046,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled bounds checks raise druntime's ArrayIndexError text (see above).
-static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("decodeBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1080,7 +1080,7 @@ static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, L
 /++
     Known project-shaped gaps.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("encodeFloatReinterpretsBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1155,7 +1155,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled code reads the static child-class registry fine; the Ctfe
 // @ShouldFail limitation above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("classSerialisationReadsStaticChildRegistry." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1198,7 +1198,7 @@ static foreach (backend; AliasSeq!(Interpreter, BytecodeNewCore, SystemLinker, L
     }
 }
 
-// BytecodeNewCore omitted: lazy parameters are not yet implemented there
+// Bytecode omitted: lazy parameters are not yet implemented there
 // ("Unsupported call in bytecode core: expression()").
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("lazyForwardedAssertionThunkRunsExpression." ~ backend.stringof)
@@ -1327,9 +1327,9 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // only `Appender!(ubyte[])` use and the sole source of the
 // `emplaceInitializer!(Appender!(ubyte[]).Data)` template instances that fed
 // the `link-set-pollution.md` flake (see the cross-track observation in
-// §9.10 below).  The raw construct also runs on `BytecodeNewCore`, which the
+// §9.10 below).  The raw construct also runs on `Bytecode`, which the
 // Phobos-based body could not express, so the matrix widens by one backend.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("appenderClearKeepsPointerSliceBackingAllocation." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1350,7 +1350,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
 // (§9.10 deletion inventory) — this fixture pins the observable behaviour,
 // not the shim's mechanism, and must stay green once the native-layout
 // object model replaces it.
-// BytecodeNewCore omitted: class-field assignment is not yet implemented
+// Bytecode omitted: class-field assignment is not yet implemented
 // there ("Unsupported assignment in bytecode core: box.value = 42").
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("classReferencePassedByValueMutatesObject." ~ backend.stringof)
@@ -1384,12 +1384,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `bce523cc^` (the parent of fix commit `bce523cc`, "interpreter: handle
 // emplaceRef writes"), `Interpreter` fails with `cannot read uninitialized
 // variable `.trustedMoveImpl.result` in ctfe` and `SystemLinker` is green.
-// BytecodeNewCore omitted for an unrelated reason: its `_d_assert_fail`
+// Bytecode omitted for an unrelated reason: its `_d_assert_fail`
 // cannot render a `char[]`-vs-string-literal `==` comparison
 // ("Unsupported comparison assert in bytecode core: _d_assert_fail(...)"),
 // confirmed independent of `emplaceRef` by a probe with no `emplaceRef` call
 // at all that fails identically, and by an `emplaceRef`-using probe that
-// asserts via scalar comparisons instead, which passes on BytecodeNewCore.
+// asserts via scalar comparisons instead, which passes on Bytecode.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("emplaceRefWritesArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1421,13 +1421,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `assert(counters[0].postblitCount == 1)` fails with `0 != 1` — the
 // postblit body never runs. Retire the omission when value.md's
 // native-layout track lands and the shim is deleted (§9.10).
-// BytecodeNewCore omitted for an unrelated reason: passing a struct by
+// Bytecode omitted for an unrelated reason: passing a struct by
 // value through a `ref` array-element argument (here, `emplaceRef`'s
 // generated wrapper constructor) is only partially supported there
 // ("Unsupported variable in bytecode core: source"), confirmed by a
 // second, `emplaceRef`-free probe (a plain `ref` function assigning a
 // by-value struct parameter to an array element) that fails on
-// BytecodeNewCore with the sibling diagnostic "Unsupported ref argument
+// Bytecode with the sibling diagnostic "Unsupported ref argument
 // in bytecode core: counters[0]".
 static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
@@ -1469,7 +1469,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
 // refusal.
 // Interpreter omitted per §8: the omission is the documentation of this
 // refusal. Verbatim red: `Unsupported eval call.`
-// BytecodeNewCore omitted for the same unrelated ref-array-element gap
+// Bytecode omitted for the same unrelated ref-array-element gap
 // noted above: `Unsupported ref argument in bytecode core: message[0]`.
 static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("emplaceRefRefusesZeroArgDefaultInit." ~ backend.stringof)
@@ -1498,10 +1498,10 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
 // documented refusal.
 // Interpreter omitted per §8: the omission is the documentation of this
 // refusal. Verbatim red: `Unsupported eval call.`
-// BytecodeNewCore omitted: unlike the sibling gap fixtures above, this
+// Bytecode omitted: unlike the sibling gap fixtures above, this
 // shape does not refuse cleanly — it crashes (SIGSEGV, exit code 139, no
 // exception text at all). This is a distinct, pre-existing, unrelated
-// BytecodeNewCore crash, not an `emplaceRef` defect; recorded as a
+// Bytecode crash, not an `emplaceRef` defect; recorded as a
 // cross-track observation for ai/plans/bytecode.md (not fixed here).
 static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("emplaceRefRefusesMultiArgConstructor." ~ backend.stringof)

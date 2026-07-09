@@ -70,7 +70,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
     @("atoi.value." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -101,7 +101,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
     @("strtol.endptr." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -142,7 +142,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 
 static foreach (backend; AliasSeq!(
-    Interpreter, SystemLinker, BytecodeNewCore,
+    Interpreter, SystemLinker, Bytecode,
 )) {
     @("free.null.voidReturn." ~ backend.stringof)
     unittest {
@@ -162,7 +162,7 @@ static foreach (backend; AliasSeq!(
 
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
     @("malloc.pointerRoundTrip." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -191,10 +191,8 @@ static foreach (backend; AliasSeq!(
 // backend gaps such as string-literal pointer lowering, local pointer out
 // params, symbolOffset, array initializers, or callbacks.
 //
-// BytecodeNewCore is not in this AliasSeq: it has its own real
-// free.null.voidReturn row above, promoted once the void-return native-call
-// rung landed.
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+// Bytecode has its own real free.null.voidReturn row above.
+static foreach (backend; AliasSeq!(IR)) {
     @("free.null.voidReturn." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -211,13 +209,13 @@ static foreach (backend; AliasSeq!(Bytecode, IR)) {
     }
 }
 
-// BytecodeNewCore is not in this AliasSeq: promoting malloc.pointerRoundTrip
-// (a `void*` return with `size_t` args) made `malloc` itself compile, so this
-// fixture no longer fails on the malloc leaf pinned below. It still fails
-// honestly - now on `free(ptr)`'s implicit `ubyte*` -> `void*` conversion,
-// a CastExp-wrapped pointer argument the narrow gate does not match - but
-// that is a different diagnostic than this block pins.
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+// Bytecode is omitted: promoting malloc.pointerRoundTrip (a `void*` return
+// with `size_t` args) made `malloc` itself compile, so this fixture no
+// longer fails on the malloc leaf pinned below. It still fails honestly -
+// now on `free(ptr)`'s implicit `ubyte*` -> `void*` conversion, a
+// CastExp-wrapped pointer argument the narrow gate does not match - but that
+// is a different diagnostic than this block pins.
+static foreach (backend; AliasSeq!(IR)) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -300,11 +298,11 @@ enum reallocNullSource = q{
     }
 };
 
-// BytecodeNewCore is not in this AliasSeq: `calloc`/`realloc` share malloc's
-// promoted shape (two `size_t`/`void*` args, a `void*` return), so both now
-// compile past the leaf this block pins - they fail later instead, honestly,
-// on the same `free(ptr)` CastExp-argument gap as malloc.pointerReturn above.
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+// Bytecode is omitted: `calloc`/`realloc` share malloc's promoted shape (two
+// `size_t`/`void*` args, a `void*` return), so both now compile past the leaf
+// this block pins - they fail later instead, honestly, on the same
+// `free(ptr)` CastExp-argument gap as malloc.pointerReturn above.
+static foreach (backend; AliasSeq!(IR)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     unittest {
@@ -361,12 +359,11 @@ enum reallocGrowSource = q{
     }
 };
 
-// Bytecode/IR fail at the first malloc leaf; the Interpreter reaches
-// realloc. BytecodeNewCore is not in this AliasSeq: malloc's promoted shape
-// makes the leaf this block pins compile now; it fails later instead,
-// honestly, on the same `free(ptr)`/`realloc(ptr, ...)` CastExp-argument gap
-// as the blocks above.
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+// IR fails at the first malloc leaf; the Interpreter reaches realloc.
+// Bytecode is omitted: malloc's promoted shape makes the leaf this block
+// pins compile now; it fails later instead, honestly, on the same
+// `free(ptr)`/`realloc(ptr, ...)` CastExp-argument gap as the blocks above.
+static foreach (backend; AliasSeq!(IR)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     unittest {
@@ -414,7 +411,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 }
 
 
-static foreach (backend; AliasSeq!(Bytecode, BytecodeNewCore, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
     @("div.structReturn." ~ backend.stringof)
     unittest {
@@ -532,7 +529,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
     @("abs.scalar." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -550,7 +547,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
     @("labs.widerScalar." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -568,7 +565,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
     @("ctype.toupperTolower." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -586,7 +583,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
     @("atof.floatReturn." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -604,7 +601,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 static foreach (backend; AliasSeq!(
-    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
 )) {
     @("strtod.floatReturn.endptr." ~ backend.stringof)
     @Tags(backend.stringof)

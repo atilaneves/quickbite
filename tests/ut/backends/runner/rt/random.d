@@ -16,7 +16,7 @@ import ut.backends;
 // user imports are root-promoted and get semantic2, so this must lean on a real
 // archive (Phobos) module.
 //
-// Ctfe (no getrandom source) and BytecodeNewCore are omitted.
+// Ctfe (no getrandom source) and Bytecode are omitted.
 static foreach (backend; AliasSeq!(SystemLinker, LLVMJit, Interpreter)) {
     @("random.unpredictableSeedReadsNonRootInitializer." ~ backend.stringof)
     @Tags(backend.stringof)

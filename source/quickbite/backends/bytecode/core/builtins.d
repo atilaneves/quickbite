@@ -1,4 +1,4 @@
-module quickbite.backends.bytecode.builtins;
+module quickbite.backends.bytecode.core.builtins;
 
 private:
 
@@ -11,22 +11,12 @@ package enum BytecodeBuiltin: size_t {
     sqrt,
 }
 
-package BytecodeBuiltin bytecodeBuiltin(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    BytecodeBuiltin builtin;
-    if (tryBytecodeBuiltin(function_, builtin))
-        return builtin;
-
-    throw new Exception("Unsupported bytecode call target.");
-}
-
 package bool tryBytecodeBuiltin(
     imported!"dmd.func".FuncDeclaration function_,
     out BytecodeBuiltin builtin,
-    ) {
-        import dmd.builtin: isBuiltin;
-        import dmd.func: BUILTIN;
+) {
+    import dmd.builtin: isBuiltin;
+    import dmd.func: BUILTIN;
 
     if (function_ is null)
         return false;
@@ -117,67 +107,4 @@ package size_t bytecodeBuiltinArgumentCount(
         case sqrt:
             return 1;
     }
-}
-
-package imported!"quickbite.lang".Value unaryBuiltinCall(
-    in BytecodeBuiltin builtin,
-    in imported!"quickbite.lang".Value value,
-) {
-    import std.math: mathFabs = fabs;
-    import std.math: mathIsInfinity = isInfinity;
-    import std.math: mathIsNaN = isNaN;
-    import std.math: mathSignbit = signbit;
-    import std.math: mathSqrt = sqrt;
-
-    with (BytecodeBuiltin) final switch (builtin) {
-        case fabs:
-            return value.unaryFloating!mathFabs;
-
-        case isInfinity:
-            return value.unaryFloating!mathIsInfinity;
-
-        case isNaN:
-            return value.unaryFloating!mathIsNaN;
-
-        case pow:
-            break;
-
-        case signbit:
-            return value.unaryFloating!mathSignbit;
-
-        case sqrt:
-            return value.unaryFloating!mathSqrt;
-    }
-
-    throw new Exception("Unsupported bytecode unary builtin call.");
-}
-
-package imported!"quickbite.lang".Value binaryBuiltinCall(
-    in BytecodeBuiltin builtin,
-    in imported!"quickbite.lang".Value lhs,
-    in imported!"quickbite.lang".Value rhs,
-) {
-    import std.math: mathPow = pow;
-
-    with (BytecodeBuiltin) final switch (builtin) {
-        case fabs:
-            break;
-
-        case isInfinity:
-            break;
-
-        case isNaN:
-            break;
-
-        case pow:
-            return lhs.binaryFloating!mathPow(rhs);
-
-        case signbit:
-            break;
-
-        case sqrt:
-            break;
-    }
-
-    throw new Exception("Unsupported bytecode binary builtin call.");
 }

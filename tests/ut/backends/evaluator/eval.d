@@ -5,7 +5,7 @@ import ut.backends;
 import std.typecons: tuple;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("literal." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("0").should == "0";
@@ -21,14 +21,14 @@ static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("add.int.0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == "3";
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
 
     @("add.int.1." ~ backend.stringof)
     unittest {
@@ -36,21 +36,21 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("add.int.2." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("3 + 3").should == "6";
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("add.float." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1.5f + 2.25f").should == "3.75f";
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("integerLikeBinaryOperands." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("cast(char) 65 + 1").should == "66";
@@ -58,7 +58,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("arithmetic." ~ backend.stringof)
     unittest {
         static immutable cases = [
@@ -73,7 +73,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
 
     @("multiCell." ~ backend.stringof)
     unittest {
@@ -81,7 +81,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("cast(byte) -3").should == "-3";
@@ -97,7 +97,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("double input = 7.75;\ncast(int) input")
@@ -105,7 +105,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("castsRuntimeValuesToIntegerTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int input = 258;\ncast(byte) input")
@@ -127,14 +127,14 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("defaultUintPreservesScalarType." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("uint value;\nvalue").should == "0u";
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("floatingSubtractionUsesNumericValues." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -146,7 +146,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("floatingUnaryMinusUsesNumericValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval("double input = 7.75;\n-input");
@@ -156,7 +156,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("fabsFloatPreservesReturnType." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -168,7 +168,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("powFloatDoesNotReturnDoubleValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -180,7 +180,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("stringLiteralIsArray." ~ backend.stringof)
     unittest {
         newBackend!backend.eval(q{ "abc" }).should == `"abc"`;

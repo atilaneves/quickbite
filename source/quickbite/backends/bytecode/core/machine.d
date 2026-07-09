@@ -1281,6 +1281,14 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case throwIfNullClassReference:
+                if (scalarValue!size_t(stack, base + instruction.a) == 0)
+                    throw new Exception(stringFromData(
+                        program.data, instruction.b, instruction.c,
+                    ));
+                ++ip;
+                break;
+
             case call, callIndirect:
                 // A direct `call` carries the callee's function index in
                 // `instruction.a`; an indirect `callIndirect` reads it from the
@@ -1837,6 +1845,14 @@ private string stringFromSlice(
 ) @safe pure {
     const dataOffset = scalarValue!uint(stack, offset);
     const length = scalarValue!uint(stack, offset + uint.sizeof);
+    return (cast(const(char)[]) data[dataOffset .. dataOffset + length]).idup;
+}
+
+private string stringFromData(
+    in ubyte[] data,
+    in size_t dataOffset,
+    in size_t length,
+) @safe pure {
     return (cast(const(char)[]) data[dataOffset .. dataOffset + length]).idup;
 }
 
