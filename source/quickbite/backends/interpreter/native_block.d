@@ -27,7 +27,13 @@ public struct NativeBlock {
 
     // Wraps memory owned elsewhere. Allocates nothing; writes through
     // `bytes` reach the original memory.
-    public static NativeBlock borrow(void* ptr, in size_t byteLength) pure nothrow @safe {
+    //
+    // Precondition (caller-enforced, unverifiable here): `ptr` points to
+    // at least `byteLength` valid, live bytes that outlive every handle
+    // derived from this block. This is a raw-memory constructor and so
+    // cannot be `@safe`; the FFI seam that supplies `ptr` is the
+    // `@trusted` boundary that vouches for the precondition.
+    public static NativeBlock borrow(void* ptr, in size_t byteLength) pure nothrow @system {
         return NativeBlock(borrowedBytes(ptr, byteLength), Ownership.borrowed);
     }
 
@@ -52,8 +58,9 @@ public struct NativeBlock {
 }
 
 // Building a slice view over caller-owned memory needs raw pointer
-// indexing; contain the @trusted surface to this helper.
-private ubyte[] borrowedBytes(void* ptr, in size_t byteLength) pure nothrow @trusted {
+// indexing. `borrow` is `@system`, so this needs no `@trusted`: it is
+// already only reachable from `@system`/`@trusted` callers.
+private ubyte[] borrowedBytes(void* ptr, in size_t byteLength) pure nothrow @system {
     return (cast(ubyte*) ptr)[0 .. byteLength];
 }
 

@@ -365,7 +365,12 @@ slice headers, and no interpreter call sites use it. The interpreter still
 boxes arrays exactly as before; this commit only proves out the block
 primitive the handle will sit on. Next: give the array value a handle
 carrying `Type*`, length, stride, and root state per the "Next PR"
-description, still with no shim retired.
+description, still with no shim retired. `NativeBlock.borrow` is
+`@system`, not `@safe`: it fabricates a slice from a caller-supplied
+raw pointer and length that it cannot itself verify, so its
+`@trusted` boundary belongs to its caller, not to the block. The
+future FFI seam that hands `borrow` a pointer is that boundary; it
+alone can vouch for the pointer/length pair.
 
 ## Audit findings (June 2026)
 

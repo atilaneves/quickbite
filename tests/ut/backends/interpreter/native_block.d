@@ -49,6 +49,7 @@ unittest {
 
 
 @("NativeBlock.borrow.writesThroughToCallerMemory")
+@system
 unittest {
     ubyte[4] callerOwned = [1, 2, 3, 4];
     auto block = NativeBlock.borrow(callerOwned.ptr, callerOwned.length);
@@ -60,6 +61,7 @@ unittest {
 
 
 @("NativeBlock.borrow.reportsBorrowedOwnership")
+@system
 unittest {
     ubyte[4] callerOwned = [1, 2, 3, 4];
     auto block = NativeBlock.borrow(callerOwned.ptr, callerOwned.length);
