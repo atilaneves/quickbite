@@ -1579,7 +1579,7 @@ private struct Walker {
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(call.f, arguments, argumentExpressions);
+        child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(call.f.fbody);
@@ -3051,7 +3051,7 @@ private struct Walker {
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(function_, arguments, argumentExpressions);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(function_.fbody);
@@ -3125,7 +3125,7 @@ private struct Walker {
             child.thisValue = receiver;
         }
         child.hasThis = true;
-        child.bindFunctionParameters(function_, arguments, argumentExpressions);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(function_.fbody);
@@ -3390,6 +3390,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions = null,
+        Value[VarDeclaration] callerLocals = null,
     ) {
         if (arguments.length == 0) {
             if (function_.parameters !is null && function_.parameters.length != 0)
@@ -3410,6 +3411,7 @@ private struct Walker {
                     index < argumentExpressions.length
                         ? argumentExpressions[index]
                         : null,
+                    callerLocals,
                 );
                 continue;
             }
@@ -3425,9 +3427,20 @@ private struct Walker {
         }
     }
 
+    // A `lazy` parameter is a delegate over the *caller's live frame*, not a
+    // value captured at call time (ai/plans/interpreter.md §9.10). `locals`
+    // is a D associative array: a reference to a heap-allocated hash table.
+    // Storing `callerLocals` here without `.dup` (and forwarding it without
+    // `.dup` below, and substituting it without `.dup` in `runLazyArgument`)
+    // makes the captured environment the *same* table the caller's `locals`
+    // still points at, so any mutation performed while evaluating the lazy
+    // expression (e.g. a forwarded range's cursor advancing) is visible to
+    // the declaring frame immediately, exactly as it is for a real D
+    // closure — no separate write-back step is needed.
     private void bindLazyFunctionParameter(
         VarDeclaration parameter,
         Expression argumentExpression,
+        Value[VarDeclaration] callerLocals,
     ) {
         locals[parameter] = Value.undisplayable;
 
@@ -3435,7 +3448,7 @@ private struct Walker {
             if (auto expression = variable in lazyArgumentExpressions) {
                 lazyArgumentExpressions[parameter] = *expression;
                 if (auto captured = variable in lazyArgumentLocals)
-                    lazyArgumentLocals[parameter] = (*captured).dup;
+                    lazyArgumentLocals[parameter] = *captured;
                 return;
             }
         }
@@ -3444,7 +3457,7 @@ private struct Walker {
             throw new Exception("Unsupported interpreter call arguments.");
 
         lazyArgumentExpressions[parameter] = argumentExpression;
-        lazyArgumentLocals[parameter] = locals.dup;
+        lazyArgumentLocals[parameter] = callerLocals;
     }
 
     private Value runLazyArgument(VarDeclaration variable) {
@@ -3459,10 +3472,10 @@ private struct Walker {
         auto savedLocals = locals;  // mutated below while evaluating the thunk
         scope(exit) locals = savedLocals;
 
-        locals = (*captured).dup;
-        const result = runLazyArgumentExpression(*expression);
-        lazyArgumentLocals[variable] = locals.dup;
-        return result;
+        // No `.dup`: see the comment on `bindLazyFunctionParameter`. `locals`
+        // becomes the caller's own live table for the duration of the thunk.
+        locals = *captured;
+        return runLazyArgumentExpression(*expression);
     }
 
     private Value runLazyArgumentExpression(Expression expression) {
@@ -4303,7 +4316,7 @@ private struct Walker {
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
         child.hasThis = true;
-        child.bindFunctionParameters(function_, arguments, argumentExpressions);
+        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(function_.fbody);
@@ -4384,7 +4397,7 @@ private struct Walker {
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(call.f, arguments, argumentExpressions);
+        child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
 
         try {
             child.runStatement(call.f.fbody);

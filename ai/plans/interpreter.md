@@ -1410,55 +1410,132 @@ forward onto this branch (after `7f09bd67`), it is green on
 lazy parameters are not yet implemented there (`Unsupported call in bytecode
 core: expression()`).
 
-**Blocked, not landed (2026-07-09).**
-`decodeLazyForwardedRangeErrorSeesReaderState` was reconstructed red-first
-as drafted: applied alone on the parent of fix commit `bf9d6836` (parent
-`833c560c`, "interpreter: preserve pointer slice allocations" — the tip of
-the `7f09bd67` lazy-thunk work), it fails on `Interpreter` with
-`false != true` (the `RangeError` expectation does not fire) and passes on
-`SystemLinker`, matching the "lazy-state wrong answer" class the handoff
-predicted.
-
-Carrying it forward past `bf9d6836` onto this branch's HEAD does **not**
-turn it green: `Interpreter` still fails, now with
-`index [0] is out of bounds for array of length 0`. Minimal-repro isolation
-(scratch fixtures, not committed) narrowed the cause to something well
-outside forwarding or UFCS: any dynamic-array **local** — no struct, no
-member call, no forwarding — read from inside a lazy argument's generated
-DMD wrapper comes back as a zero-length array, e.g.
+**Resolved (2026-07-09, follow-up session).** The captured-locals snapshot
+defect above was reproduced and fixed. Red-first evidence, reconfirmed on
+this branch: applying `decodeLazyForwardedRangeErrorSeesReaderState` alone
+at `833c560c` (parent of fix commit `bf9d6836`) still fails on `Interpreter`
+with `false != true` and passes on `SystemLinker`, as previously recorded.
+The minimal repro from the previous handoff was re-run against this
+branch's pre-fix `HEAD` (`aee073a5`) and fails exactly as described:
 
 ```d
 void runIt(lazy ubyte expression) { expression; }
 
 unittest {
     ubyte[] bytes = [1, 2, 3];
-    runIt(bytes[1]);  // green on SystemLinker; Interpreter: index [1] is
-                       // out of bounds for array of length 0
+    runIt(bytes[1]);
 }
+// Interpreter: index [1] is out of bounds for array of length 0
+// SystemLinker: passes
 ```
 
-A plain `int` local captured the same way (`scratchLazyDebugC`) round-trips
-correctly, and a struct's scalar field (`scratchLazyDebugD`, a `Counter`)
-captures its initial value correctly but loses the mutation on write-back
-(`10 != 11`) — a second, narrower defect. Root suspect for the array case:
-`bindLazyFunctionParameter`'s captured-locals snapshot
-(`lazyArgumentLocals[parameter] = locals.dup`) is a plain
-`Value[VarDeclaration]` dup and does not carry the parallel array-tracking
-state (`arrayAllocations`, `arrayAllocationAliases`, etc.) that a dynamic
-array's backing storage lives in outside the `Value` itself — a
-representation-ceiling defect per §8's triage rule, not something
-`bf9d6836` was scoped to fix. `bf9d6836` fixed wrapper *invocation*; it did
-not fix array identity across that invocation's captured environment, nor
-mutation write-back out of it.
+as does the struct-field-mutation companion repro:
 
-This fixture is **not landed**. It cannot honestly be pinned green (it would
-misrepresent fixed behaviour), and per the triage rule it is not simply an
-"omit Interpreter" gap fixture either, since its own name commits to testing
-state visibility across forwarded lazy calls — diluting it to something that
-passes would stop exercising the construct it names. It stays owed pending a
-decision on scope: either fix the array-capture/write-back gap first (two
-distinct defects, above) and then land this fixture, or split it into a
-narrower fixture that matches whatever slice of this is fixed next.
+```d
+struct Counter { int value; }
+void bump(lazy int expression) { expression; }
+
+unittest {
+    Counter counter;
+    counter.value = 10;
+    bump(counter.value = counter.value + 1);
+    assert(counter.value == 11);
+}
+// Interpreter: 10 != 11
+// SystemLinker: passes
+```
+
+**Root cause (corrected).** The previous handoff's hypothesis — that the
+defect is a representation-ceiling gap because the snapshot doesn't carry
+`arrayAllocations`/`arrayAllocationAliases` — does not hold up. A dynamic
+array's backing storage lives inside `Value.Array` itself (`elements`,
+`allocation`: real D slices), which already round-trips correctly through
+an ordinary `Value[VarDeclaration]` dup; no parallel allocation-id map is
+involved in a plain local read. The actual bug is simpler and is an
+ordinary language-surface defect: `bindLazyFunctionParameter` runs as a
+method of the **callee's** `Walker` (`child`, constructed in `runFunction`/
+`runMemberFunction`/the ref-return call-location helpers), so its
+`locals.dup` captured `child.locals` — for a non-nested plain call this is
+just `datasegLocals` (globals only) — instead of the **caller's** real
+frame, which is a different `Walker` instance entirely and was never
+threaded through `bindFunctionParameters`. The caller's dynamic-array local
+was therefore simply absent from the captured map, so reading it fell back
+to a default (empty) array. This also explains the struct-mutation defect:
+even had the snapshot been of the right frame, mutating a *dup* of it during
+`runLazyArgument` never wrote anywhere the caller could see after the call
+returned — the snapshot was disconnected in both directions.
+
+**Triage classification: language-surface, not representation-ceiling.**
+Per §8's triage rule, "lazy-parameter semantics" is explicitly called out
+as language-surface (a missing/incorrect language behaviour any
+representation needs), and that is what this is: a `lazy` parameter is a
+delegate over the caller's live frame in real D, not a value snapshot taken
+at an arbitrary (and here, wrong) point. The fix does not touch value
+representation, boxing, or allocation identity at all — it corrects *which*
+environment gets captured and how mutations flow back through it. Per §8,
+this is fixed at the root with a red-first fixture, not shimmed or deferred
+to `value.md`.
+
+**The fix.** Two changes, both confined to the lazy-argument path:
+
+1. `bindFunctionParameters` and `bindLazyFunctionParameter` gained an
+   explicit `callerLocals` parameter, threaded from every call site that
+   constructs a callee `Walker` and calls `child.bindFunctionParameters(...)`
+   (`impl.d`, five sites — the two `new_.member` constructor-call sites are
+   unchanged: a constructor with a `lazy` parameter already throws
+   `Unsupported interpreter call arguments.` before reaching the capture
+   line, since those two sites never build an `argumentExpressions` array).
+   Each site passes its own `locals` (unqualified, i.e. `this.locals` — the
+   real caller's frame) rather than leaving the callee to capture its own,
+   nearly-empty one.
+2. The capture, the same-parameter forward (`bindLazyFunctionParameter`'s
+   already-lazy-argument branch), and the substitution in `runLazyArgument`
+   all dropped their `.dup`. `Value[VarDeclaration]` is a D associative
+   array — a reference to a heap hash table, not a value type — so storing
+   `callerLocals` without duplicating it makes the captured environment
+   literally the *same* table the caller's `locals` field still points at.
+   Evaluating the thunk swaps `locals` to that table (no dup), so any
+   mutation performed while evaluating it (e.g. a forwarded range's cursor
+   advancing) mutates the caller's real frame directly and is visible the
+   moment the call returns — matching a genuine closure with no separate
+   write-back step, and correctly compounding across forwarding: each hop's
+   `child.locals` for its own declared parameters stays independently
+   `.dup`'d as before, only the lazy-capture table itself is shared.
+
+This is the frame-reference fix, not a snapshot widened with more parallel
+maps: no new tracking map was added, and `arrayAllocations` et al. were
+never the problem.
+
+**On the #386 drafts.** The unshipped `writeBackLazyArgumentSideEffects` in
+the 2026-07-09 drafts (`386-drafts.patch`) was a snapshot-plus-explicit-
+write-back scheme: dup the caller's locals at capture time, diff the
+before/after snapshot inside `runLazyArgument`, fold changed keys into the
+callee's own `locals`, then fold *that* into the true caller's `locals` on
+function return via a new helper gated on "does this function have any
+lazy parameter." Re-derivation for this fix confirms that design would
+only propagate a mutation up exactly one call level per return, so a
+value forwarded through two or more hops (as
+`decodeLazyForwardedRangeErrorSeesReaderState` requires) would stall at
+the first intermediate frame that doesn't already hold the mutated
+variable as an existing key — it was never actually exercised end-to-end,
+which is why the earlier "lazy-state wrong answer" note in this plan
+overstated what `#386` had proven. It is superseded by the no-dup,
+shared-table design above and was not landed in any form.
+
+**Fixtures landed.**
+- `decodeLazyForwardedRangeErrorSeesReaderState` (ct/cerealed.d): the owed
+  fixture, unchanged from the draft body. Green on `Interpreter,
+  SystemLinker` after the fix above.
+- `lazyArgumentReadsCallerDynamicArray` (ct/cerealed.d): new, narrow
+  standalone fixture for the dynamic-array-local read repro. Green on
+  `Interpreter, SystemLinker`.
+
+Both fixtures omit `BytecodeNewCore` (lazy parameters unsupported there —
+consistent with `lazyForwardedAssertionThunkRunsExpression` above) and
+`Ctfe`/`LLVMJit` (not exercised by this rung; the existing lazy fixture in
+this file already covers those backends for the simpler thunk-invocation
+case). Full `ct/` and `rt/` suites re-run clean after the change (2422
+tests, 0 failed, 6 pre-existing expected failures).
 
 ## 10. Done
 

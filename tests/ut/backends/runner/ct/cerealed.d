@@ -1228,3 +1228,91 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// A `lazy` parameter is a delegate over the caller's live frame: reading a
+// dynamic-array local from inside the thunk must see the caller's actual
+// backing storage, not an empty default (ai/plans/interpreter.md §9.10).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("lazyArgumentReadsCallerDynamicArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte runIt(lazy ubyte expression) { return expression; }
+
+            unittest {
+                ubyte[] bytes = [1, 2, 3];
+                assert(runIt(bytes[1]) == 2);
+            }
+        });
+    }
+}
+
+// The owed §9.10 fixture: a `lazy` argument forwarded through two more
+// layers, evaluated multiple times, over a struct-typed caller local whose
+// scalar field (`index`) mutates between evaluations. Each mutation must be
+// visible to the *next* evaluation, matching a `lazy` parameter's real
+// closure-over-the-caller-frame semantics.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("decodeLazyForwardedRangeErrorSeesReaderState." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception : RangeError;
+
+            void shouldNotThrow(lazy ulong expression) {
+                try {
+                    expression;
+                } catch (Throwable throwable) {
+                    assert(false, throwable.msg);
+                }
+            }
+
+            void shouldThrowRangeError(lazy ubyte expression) {
+                assert(forwardedShouldThrowRangeError(expression));
+            }
+
+            bool forwardedShouldThrowRangeError(lazy ubyte expression) {
+                try {
+                    expression;
+                } catch (RangeError) {
+                    return true;
+                }
+
+                return false;
+            }
+
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                ulong read64() {
+                    ulong encoded;
+
+                    foreach (_; 0 .. ulong.sizeof) {
+                        encoded <<= 8;
+                        encoded |= bytes[index++];
+                    }
+
+                    return encoded;
+                }
+
+                ubyte readByte() {
+                    return bytes[index++];
+                }
+            }
+
+            unittest {
+                auto reader = Reader([
+                    0x3f, 0xf0, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,
+                    0x40, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,
+                ]);
+
+                shouldNotThrow(reader.read64);
+                shouldNotThrow(reader.read64);
+                shouldThrowRangeError(reader.readByte);
+            }
+        });
+    }
+}
