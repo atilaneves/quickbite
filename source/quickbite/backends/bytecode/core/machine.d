@@ -2724,7 +2724,7 @@ private final class BytecodeNativeMarshaller:
     public void writeOutParameter(in size_t index, Type pointedToType,
         in ubyte[] cell)
     {
-        const slot = _base + _outParameterOffsets[index];
+        const slot = _base + outParameterOffset(index);
         _stack[slot .. slot + cell.length] = cell[];
     }
 
@@ -2734,8 +2734,18 @@ private final class BytecodeNativeMarshaller:
         in size_t index, in bool stableString, ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers)
     {
-        const slot = _base + _outParameterOffsets[index];
+        const slot = _base + outParameterOffset(index);
         cell[] = _stack[slot .. slot + cell.length];
+    }
+
+    // `noOutParameterOffset` marks an argument that isn't an out parameter;
+    // used as a frame offset it would silently corrupt the stack.
+    private size_t outParameterOffset(in size_t index) {
+        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
+
+        if (_outParameterOffsets[index] == noOutParameterOffset)
+            unsupportedNativeCall;
+        return _outParameterOffsets[index];
     }
 
     public const(void)* receiverObjectPointer() {

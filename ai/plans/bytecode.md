@@ -4542,3 +4542,56 @@ is the identical `char**` out-parameter shape, so
 `tryCompileNativeCallOutParameter`-style handling generalises rather than
 needing a new shape; the gate widens from exactly 2 arguments to the
 (string-literal, out-pointer, scalar) triple.
+
+`strtol.endptr` promoted to `BytecodeNewCore`, 2026-07-09: pre-approved
+`SystemLinker`-oracle promotion (`tests/ut/backends/runner/rt/cstdlib.d`). Red
+diagnostic before any production change, verbatim:
+
+    object.Exception: `strtol` cannot be interpreted at compile time,
+    because it has no available source code
+
+The fixture's `strtol("123xyz".ptr, &endptr, 10)` is a three-argument call:
+string literal, `&endptr` out-parameter, scalar `int` base. The prior rung's
+`tryCompileNativeCallOutParameter` was narrowly gated to exactly
+`arguments.length == 2` in the (string-literal, out-pointer) shape, so the
+three-argument call fell straight through to the no-available-source
+diagnostic. Generalised the gate to arbitrary N by folding
+`tryCompileNativeCall`'s old single-argument special case and
+`tryCompileNativeCallOutParameter`'s two-argument special case into one
+function: a single loop over `call.arguments` classifies and emits each
+argument in turn as one of three whitelisted shapes — scalar `int`/`long` by
+value (`emitCallArgument`, unchanged), string-literal `const(char)*` (now
+`emitStringLiteralArgument`, extracted so the string-literal-argument bytes
++ NUL + `loadDataPointer` sequence exists in exactly one place), or `&local`
+(`SymOffExp` with zero offset onto a tracked pointer local) as an out
+parameter, recording only its frame offset in `outParameterOffsets` — its
+argument-area slot is never read (ffi.md §34.8: the parameter type is
+unconditionally an out parameter). Any other shape returns `null`, falling
+through to the existing diagnostic; a comment on `tryCompileNativeCall`
+records why it is safe to have already emitted earlier arguments' code by
+that point — a `null` return here always falls through to the call site's
+unconditional no-available-source throw, never a different successful path,
+so partial emission is never reached at run time. Argument `index` lives at
+argument-area slot `index` (`argumentArea + index * nativeArgumentSlotSize`,
+unchanged from the arity-general refactor). Correctness guard: `machine.d`'s
+`BytecodeNativeMarshaller.writeOutParameter`/`fillOutParameterCell` indexed
+`_outParameterOffsets[index]` unconditionally; today no reachable call site
+hits the `noOutParameterOffset` sentinel, but used as a frame offset it
+would silently corrupt the stack at `base + 65535`. Added a private
+`outParameterOffset` accessor that rejects the sentinel explicitly (the
+existing `unsupportedNativeCall` diagnostic) instead of indexing past it.
+Verification: `ninja bin/ut`; focused run of every `cstdlib.*.BytecodeNewCore`
+row plus `strtol.endptr` on `Interpreter`/`SystemLinker`/`LLVMJit` (17 tests,
+0 failed); the `BytecodeNewCore` rows of `ct/expressions`, `ct/arrays`, and
+`ct/structs` as a regression check on the shared native-call path (152
+tests, 0 failed, 1 failing as expected). `bin/ut --random` was not run; the
+orchestrator runs the long suite. Production diff for the whole branch vs
+`master` (`source/`) is 197 changed lines, under the 200-line cap.
+`free.null.voidReturn.BytecodeNewCore` (a void-returning native call) is not
+a small follow-on: `tryCompileNativeCall`'s return-type gate excludes
+`TY.Tvoid` outright, and even granting it entry, `machine.d`'s
+`nativeResultSize` has no `Tvoid` case (it throws "Unsupported native result
+type"), and it is not established whether `quickbite.ffi.callNative` calls
+`readResult` at all for a void-returning callee. That is a real, if modest,
+slice of its own — return-side plumbing that the argument-side generalisation
+here does not touch.
