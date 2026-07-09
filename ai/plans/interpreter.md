@@ -1338,10 +1338,15 @@ Aliases (builtins.d, impl.d)          returns 0 on failure;          hooks becom
                                       shrinkUsed always true;        body-less FFI leaves
                                       getUsed rebuilds from the
                                       incoming pointer, not the
-                                      block base (interior pointers
-                                      get offset 0). The side-
-                                      channel pattern-matches the
-                                      current source shape of
+                                      block base, so it loops the
+                                      full backing-block length
+                                      while indexing from the
+                                      interior offset and throws
+                                      before the loop completes
+                                      (corrected 2026-07-09: not a
+                                      silent offset-0 read). The
+                                      side-channel pattern-matches
+                                      the current source shape of
                                       core.internal.array.capacity.
 reinterpretLocalPointerLoad +         blesses exactly two cast       native layout makes all
 floatBits/doubleBits (impl.d)         shapes (float->uint,           reinterpret loads
@@ -1455,12 +1460,7 @@ migration — a fixture asserts behaviour, so it survives the shim's deletion):
 
 gap fixtures (red on Interpreter, land with Interpreter OMITTED per §8 —
 they document what the shims get wrong and what native layout must re-earn):
-- gc_reserveArrayCapacity contract fixture: MUST assert oracle-agreeing
-  behaviour (e.g. capacity >= request after reserve), NOT the shim's echo —
-  the drafted gcReserveArrayCapacityHookReturnsRequestedBytes name pins the
-  shim's wrong answer and must not land in that form
-- assumeSafeAppend/capacity through an interior pointer (getUsed offset
-  defect)
+(none outstanding)
 ```
 
 **Landed (2026-07-09).** `lazyForwardedAssertionThunkRunsExpression`
@@ -1798,6 +1798,68 @@ These three gap fixtures are the acceptance criteria for deleting the
 `runEmplaceRefCall`/`isEmplaceRef` shim: when `value.md`'s native-layout
 track lands, all three must go green with `Interpreter` added to their
 matrices, and `emplaceRefWritesArrayElement` must stay green throughout.
+
+**Landed (2026-07-09, owed-fixtures follow-up).** The last two owed §9.10
+gap fixtures — both naming the `tryGCArrayHook`/`runGCArrayHookCall` +
+`lastGCArrayUsedAllocation` shim — were reconstructed and landed in
+`ct/arrays.d`. This discharges both remaining lines from §9.10's owed gap
+list, which is now empty:
+
+- `dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate`: asserts
+  the oracle's real `reserve` contract (`arr.reserve(8)` then filling to 8
+  elements does not move `arr.ptr`), not the shim's echoed return value.
+  The plan's own warning that the drafted
+  `gcReserveArrayCapacityHookReturnsRequestedBytes` name pinned the
+  shim's wrong answer and must not land in that form was honoured: the
+  landed fixture never calls the raw `extern(C)` hook and never asserts
+  the echoed capacity number, only the public `reserve`/`.ptr`/`~=`
+  surface and the pointer-stability guarantee `SystemLinker` actually
+  provides. Matrix: `SystemLinker, LLVMJit`. `Interpreter` omitted (red:
+  `` const(Pointer)([0, 1, ..., 7], 1, 0) !is const(Pointer)([], 1, 0) ``
+  — `gc_reserveArrayCapacity` fabricates a capacity number without
+  growing the value model's backing allocation, so `arr.ptr` before vs.
+  after the fill differs in `target` even though the allocation id is
+  unchanged). `Ctfe` omitted (pointer-identity `is` on a GC-backed slice
+  lowers to an address cast CTFE refuses at compile time — no
+  reserve/capacity/pointer-identity support for this construct, not an
+  in-development gap). `BytecodeNewCore` omitted (`.ptr` of an array is
+  unimplemented there, unrelated to this shim).
+- `dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace`: takes an
+  interior slice (`tail = arr[2 .. $]`), calls `assumeSafeAppend` on it,
+  and asserts the following append lands in place (`tail.ptr` unchanged,
+  `tail[2] == 99`) — the oracle's contract, not a stub value. Matrix:
+  `SystemLinker, LLVMJit`. `Interpreter` omitted (red: `` pointer index
+  `2` exceeds allocated memory block `[-2..2]` ``). `Ctfe` omitted
+  (`gc_getArrayUsed` has no D source at all, so `Ctfe` cannot intercept
+  it — no support to begin with, not a refusal to pin). `BytecodeNewCore`
+  omitted (same `.ptr`-of-array gap as above).
+
+**Correction to the shim inventory above.** The `gc_*` hooks table entry
+stated the `getUsed` interior-pointer defect as "interior pointers get
+offset 0" — a silent wrong answer. Building the second fixture showed
+this is not what happens: it **throws**, ``pointer index `2` exceeds
+allocated memory block `[-2..2]` ``, because `gcArrayUsed` loops
+`pointer.pointerLength()` (the full backing-block length) while indexing
+from the interior `offset`, so it overruns and throws before the loop
+can complete for any `offset > 0` — it never reaches a point where it
+could substitute offset 0. The stated root cause ("rebuilds from the
+incoming pointer, not the block base") was correct; only the described
+symptom was wrong. The table above has been corrected to describe the
+throw instead of a silent offset-0 read.
+
+Both fixtures were verified at this branch's `HEAD` (`11250c93`): built
+with `ninja bin/ut`, then run focused (`SystemLinker`/`LLVMJit`, both
+green), then temporarily widened to add `Interpreter` and re-run to
+reconfirm the exact diagnostics above verbatim (no deviation from the
+prior investigation), then reverted to the landed `SystemLinker,
+LLVMJit` matrix. Full `ct/arrays.d` regression after landing: 293 tests,
+0 failed.
+
+These two gap fixtures are, together with the three `emplaceRef` gap
+fixtures above, acceptance criteria for deleting the
+`tryGCArrayHook`/`runGCArrayHookCall`/`lastGCArrayUsedAllocation` shims:
+when interpreted arrays become native-layout GC allocations, both must
+go green with `Interpreter` added to their matrices.
 
 ## 10. Done
 
