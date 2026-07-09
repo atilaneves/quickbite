@@ -1275,9 +1275,12 @@ execution). The current backlog for this track, in order:
    Until they land, correctness rows keep using the buffer path and no
    boxed-vs-native FFI latency claim is valid. The native-call bridge and its
    call-site acceptance gate (`tryCompileNativeCall`) are both arity-general
-   now: a per-argument shape whitelist accepts any mix of string-literal
-   `const(char)*`, scalar `int`/`long` by value, and `&local` pointer
-   out-parameter arguments. The `strtod.floatReturn.endptr`,
+   now: a per-argument shape whitelist and a return-type gate, each
+   accepting a growing set of shapes as later rungs earn them. Rather than
+   enumerate them here — this bullet's own enumeration has already gone
+   stale twice on this branch — see the per-rung narrative entries below
+   for what each shape covers, and `tryCompileNativeCall` in `compiler.d`
+   for the authoritative current list. The `strtod.floatReturn.endptr`,
    `strtol.endptr`, and `free.null.voidReturn` rows are promoted to
    `BytecodeNewCore`. `free.null.voidReturn` needed a void-return-shaped
    rung of its own: `tryCompileNativeCall`'s return-type gate now admits
