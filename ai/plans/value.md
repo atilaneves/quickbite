@@ -362,11 +362,13 @@ memory owned elsewhere, and an `address` accessor that is the only place a
 raw `void*` escapes -- `borrow` is `@system`, not `@safe`, since it
 fabricates a slice from a caller-supplied pointer/length it cannot itself
 verify; that `@trusted` boundary belongs to whichever future FFI seam
-vouches for the pointer, not to the block. `layout.d` adds `typeByteSize`,
-`typeAlignment`, and `typeHasPointers`, thin `@safe` wrappers over DMD's
-own `dmd.typesem.size`/`Type.alignsize`/`dmd.typesem.hasPointers` behind
-small `@trusted` boundaries -- the module computes nothing itself, every
-number is DMD's own verbatim. `native_array.d`'s `NativeArray` combines a
+vouches for the pointer, not to the block. `layout.d` adds `typeByteSize`
+and `typeHasPointers`, thin `@safe` wrappers over DMD's own
+`dmd.typesem.size`/`dmd.typesem.hasPointers` behind small `@trusted`
+boundaries -- the module computes nothing itself, every number is DMD's
+own verbatim. (Alignment is not exported yet -- it has no reader until the
+struct phase lays out fields, so it is added when that reader exists, not
+before.) `native_array.d`'s `NativeArray` combines a
 block with the DMD element `Type`, a length, and a stride cached once from
 `layout.typeByteSize`; `element` returns an interior `ubyte[]` view with
 ordinary D slice bounds checking, and `writeSliceHeader` materialises a

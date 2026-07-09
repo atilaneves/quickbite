@@ -4,12 +4,11 @@ module quickbite.backends.interpreter.layout;
 private:
 
 
-// Layout facts read directly from DMD: byte size, alignment, and whether a
-// type carries pointers the GC must scan. This module computes none of
-// these itself -- every value returned is DMD's own number, verbatim. Per
-// ai/plans/value.md item 7's guardrail: DMD-derived layout facts stay the
-// source of truth; the interpreter must not grow a second set of D layout
-// rules.
+// Layout facts read directly from DMD: byte size and whether a type carries
+// pointers the GC must scan. This module computes none of these itself --
+// every value returned is DMD's own number, verbatim. Per ai/plans/value.md
+// item 7's guardrail: DMD-derived layout facts stay the source of truth; the
+// interpreter must not grow a second set of D layout rules.
 
 // The byte size DMD assigns to `type`. Throws if DMD reports `type` as
 // unsized (DMD's `SIZE_INVALID` sentinel), e.g. `Type.terror`.
@@ -32,18 +31,6 @@ private size_t typeByteSizeImpl(imported!"dmd.mtype".Type type) @trusted {
         );
 
     return cast(size_t) bytes;
-}
-
-
-// The alignment in bytes DMD assigns to `type`.
-public uint typeAlignment(imported!"dmd.mtype".Type type) @safe {
-    return typeAlignmentImpl(type);
-}
-
-// `Type.alignsize` is not @safe/pure/nothrow; this is the @trusted
-// boundary.
-private uint typeAlignmentImpl(imported!"dmd.mtype".Type type) @trusted {
-    return type.alignsize;
 }
 
 

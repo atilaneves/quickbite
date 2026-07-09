@@ -2,8 +2,7 @@ module ut.backends.interpreter.layout;
 
 
 import ut;
-import quickbite.backends.interpreter.layout:
-    typeAlignment, typeByteSize, typeHasPointers;
+import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
 import dmd.mtype: Type;
 
 private:
@@ -24,12 +23,6 @@ unittest {
 @("typeByteSize.unsizedTypeThrows")
 unittest {
     typeByteSize(Type.terror).shouldThrow;
-}
-
-
-@("typeAlignment.int32IsReported")
-unittest {
-    typeAlignment(Type.tint32).should == 4;
 }
 
 
