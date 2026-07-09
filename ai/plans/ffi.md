@@ -3822,3 +3822,15 @@ integer-compatible values by their underlying integer so Phobos'
 
 Verification: `ninja bin/ut`, the focused promoted Interpreter fixture, and
 `bin/ut -- ut.backends.runner.rt.random` were green before this ledger update.
+
+**Ledger 2026-07-09.** Promoted the existing SystemLinker-backed
+`rt/cstdlib.d` fixture `calloc.multiArg.zeroedNativeMemory` to
+`BytecodeNewCore`. The expected red on the old CastExp-wrapped
+`free(ptr)` pointer-argument gap did not reproduce in the current tree:
+the focused promoted row was already green after `ninja bin/ut`, and
+temporary checks showed the sibling `realloc.null.pointerArgPointerReturn`
+and `realloc.grow.preservesNativeMemory` rows were green too. The
+implementation step was therefore intentionally empty; this commit only
+records the narrow oracle-backed promotion and removes stale comments for
+that cstdlib block. Verification: `ninja bin/ut`, the focused promoted
+`calloc` row, and `bin/ut --random`.

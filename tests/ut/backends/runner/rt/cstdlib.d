@@ -316,13 +316,19 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, BytecodeNewCore, SystemLinker, LLVMJit,
+)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(callocZeroedSource);
     }
+}
+
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 
     @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
     @Tags(backend.stringof)
