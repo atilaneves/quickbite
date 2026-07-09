@@ -3417,6 +3417,53 @@ implementation serving both consumers. It is scheduled when the first
 consumer arrives — either the bytecode native-runtime slice or an approved
 escaping-callback fixture — and `bytecode.md` should consume it, not fork it.
 
+**Implementation contract.** Track A owns a single `InboundTrampolineRegistry`
+behind the FFI bridge-core boundary. Backends request native entry points from
+that registry instead of allocating libffi closures directly when the entry
+point can outlive one native call.
+
+- **Ownership and lifetime.** The registry owns each libffi closure, CIF,
+  executable code pointer, callback id, and VM callable handle until the
+  owning backend session is torn down. It must not free an individual durable
+  trampoline on native call return or on local scope exit. The registry storage
+  is GC-visible so interpreted closure contexts, synthesized runtime-method
+  targets, and metadata needed for re-entry stay rooted for the session.
+- **Storage shape.** A durable entry is keyed by an opaque callback id. The
+  registry stores the callback kind (`delegate`, `functionPointer`,
+  `runtimeSlot`), source signature, linkage, backend-specific invoke handle,
+  and the libffi closure/CIF pair. User data passed to the closure is only the
+  callback id; trampoline code resolves all other state through the registry.
+- **API shape.** The bridge core exposes a narrow allocation API such as
+  `createDurableInboundTrampoline(signature, linkage, target)` returning the
+  native function pointer plus a registry handle, and a call-scoped helper for
+  §34.16's non-escaping delegate case. Consumers may pass the native pointer
+  to dependency code or write it into synthesized native-layout runtime slots,
+  but must not own the closure memory.
+- **Re-entry behavior.** The common trampoline decodes native arguments using
+  the registered source signature, restores D source argument order where
+  required, invokes the backend handle, writes the native return buffer, and
+  reports unsupported argument or return shapes through the existing native
+  call diagnostic path.
+- **Rejection behavior.** Until the durable registry exists, any API that
+  needs an escaping callback, durable function pointer, TypeInfo/vtable slot,
+  GC finalizer, or AA key-method entry must fail closed with a named
+  "durable inbound trampoline unsupported" diagnostic. The existing
+  call-scoped §34.16 delegate helper remains valid only for callbacks whose
+  lifetime is bounded by the native call.
+
+**First future oracle fixture sketch.** Add a dependency-image fixture only
+after test approval: native code stores an `extern(D)` delegate callback in a
+module-global slot, returns to interpreted code, and a second native function
+invokes the stored callback. `SystemLinker` is the oracle; the Interpreter
+should initially fail closed with the named durable-trampoline diagnostic, then
+pass once the registry is implemented. A bytecode-native-runtime fixture can
+later consume the same registry by installing a synthesized method pointer into
+a runtime slot and invoking it from native code.
+
+**Ledger 2026-07-09.** Turned §35.4 from an ownership observation into a
+bridge-core work order: one durable registry, session lifetime, opaque ids,
+shared API, fail-closed diagnostics, and the first future oracle fixture shape.
+
 ### 35.5 The escape contracts are unenforceable — the boundary is fail-open
 
 **Claim.** §34.10: "reject any signature that lets the slice escape".
