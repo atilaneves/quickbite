@@ -833,6 +833,693 @@ to a sub-range "for free, with no new code" (only `reserve`'s did); and
 nested aggregate field views as remaining work now that this commit
 (and its predecessor) delivered them.
 
+Progress 2026-07-10 (dynamic-array-field read-back): item 7's last named
+"what remains" item -- reading an existing slice-header field back as a
+`NativeArray`, distinct from writing one (`NativeArray.writeSliceHeader`)
+and from the sub-range views (`NativeStruct.structField`/`arrayField`) --
+is done. `NativeStruct` gains `sliceField(index) @system -> NativeArray`.
+`index` is bounds-checked against `fieldCount` first, matching every other
+field accessor's discipline; a field whose type is not `TypeDArray`
+(`Type.isTypeDArray` returns null) throws its own message before any
+header bytes are read, exactly the shape `structField`/`arrayField`
+already use for their own wrong-type field.
+
+Unlike `structField`/`arrayField`, this is NOT a `NativeBlock.subRange` of
+the parent's own block: a slice header's `ptr` names a separately tracked
+allocation somewhere else entirely (wherever `writeSliceHeader` last wrote
+it from), so the only way to view "the elements this field currently
+points at" is to read the `{ length, ptr }` bytes back out of the field
+and reconstruct a handle from them -- `NativeArray.borrow`'s job, under
+the same caller-enforced, unverifiable precondition `borrow` already
+documents (the precondition here is vouched for by whoever last wrote a
+valid header into the field, typically `writeSliceHeader` itself). That
+unverifiable reconstruction is why `sliceField` is `@system`, unlike
+`structField`/`arrayField`, which only ever slice an already-verified
+block with ordinary bounds-checked D. The raw two-value read itself --
+`memcpy`, not a pointer-typed load, for the same alignment reason
+`writeSliceHeaderBytes` gives, since a field's byte offset is not
+guaranteed `size_t`-aligned -- lives behind a small private helper,
+`readSliceHeaderBytes`, marked `@trusted` rather than `@system`: copying
+two fixed-size values out of an already bounds-checked byte range into
+local storage cannot itself violate memory safety no matter what bit
+pattern they contain, since it never dereferences the pointer it reads.
+Only USING that pointer to reconstruct a slice (`NativeArray.borrow`) is
+where the actual, unverifiable trust happens, and that call stays inside
+`sliceField` itself, not the helper.
+
+The contract, spelled out: a zero-length/null header (`{ length: 0,
+ptr: null }` -- a struct's zero-initialised block before anything ever
+wrote to the field) reads back as a real, empty `NativeArray`;
+`NativeArray.borrow(elementType, null, 0)` is legal for the same reason
+`NativeBlock.borrow`'s own null/zero-length case already is. The returned
+array's `ownership` is always `borrowed` -- this field does not own the
+element block, it only names it, so `reserve` on the returned handle
+throws exactly as for any other borrowed array. Its `scan`/`capacity` are
+`Scan.no`/`0` unconditionally, per `NativeBlock.borrow`'s own contract --
+even when the pointed-to block is a real, conservatively-scanned GC
+allocation the struct field itself keeps alive (per `writeSliceHeader`'s
+scanned-destination contract, that is the only way the field could
+legally hold a live GC pointer at all). That is not dishonest:
+`NativeBlock.borrow` cannot know, from a bare pointer/length pair, that
+the memory it wraps happens to be GC memory this same interpreter also
+owns elsewhere -- it makes the same conservative "assume nothing" choice
+for every borrowed block, GC-backed or not. Who keeps the element block
+alive is unchanged by any of this: the struct field itself, via the GC's
+own scan of it (or, for an unscanned struct, whatever else references
+it) -- never the returned handle, which has nothing of its own to grow or
+free. Finally, this aliases rather than snapshots: the returned
+`NativeArray` wraps the SAME address `writeSliceHeader` wrote, so a write
+through the read-back handle is visible through the original array and
+vice versa, for as long as the field's header keeps pointing at that
+address; nothing here re-reads the field on later access, so a read-back
+handle goes stale exactly like any other stale pointer once the field is
+overwritten or the element block moves.
+
+Regression tests, in `tests/ut/backends/interpreter/native_struct.d`:
+`NativeStruct.sliceField.roundTripAliasesWriteSliceHeaderSourceArray`
+(write through the read-back handle observed through the original
+`NativeArray`, not a copy); `.readBackArrayReportsBorrowedOwnershipAnd
+NoScanRegardlessOfElementBlockScanPolicy` (the ownership/scan/capacity
+honesty above, pinned directly rather than inferred from a `GC.collect`
+-- per this plan's own "ownership vs GC-visibility" note, a
+collect-survival test cannot distinguish a correct scan policy from a
+stale stack bit pattern, so it is deliberately not used here); `.
+nonZeroOffsetMatchesHostCompilerSliceLeavingSiblingFieldUntouched`
+(`struct Header { long tag; int[] xs; }`, exercising `fieldByteOffset`
+for real and confirming the sibling field is untouched, against the host
+compiler's own `Header.xs`); `.
+zeroLengthNullHeaderReadsBackAsEmptyBorrowedArray`; `.
+outOfRangeIndexThrows`; and `.indexOfStaticArrayFieldThrows`.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring, no `interpreter.md`
+§9.10 shim retired, no class objects. The interpreter still boxes
+everything; none of this native storage has a caller yet.
+
+Progress 2026-07-10 (array sub-slicing): item 7's correctness-ceiling
+"slices into locals" gets its handle-level expression. `NativeArray` gains
+`slice(begin, end) @safe -> NativeArray`, the handle a guest `xs[1 .. 3]`
+must become: a real, aliasing view over the SAME element block at `begin *
+stride`, never a copy -- a write through the returned handle is visible
+through the original array and vice versa, for as long as both stay live.
+
+Unlike `NativeStruct.sliceField`, `slice` stays `@safe`. It derives a
+sub-range of an existing, already-verified block with ordinary
+bounds-checked D -- exactly `NativeBlock.subRange`'s own "nested aggregate
+field" argument (see its comment), applied here to a sub-range of elements
+rather than a sub-range of struct fields -- so it routes through
+`subRange`, never through the `@system` raw-pointer `NativeBlock.borrow`
+path a slice-header reconstruction like `sliceField` needs.
+
+Bounds: `begin <= end <= length`, each its own thrown `Exception`, checked
+before either is multiplied by `_stride`. No extra overflow check is
+needed on `begin * stride`/`end * stride`: every construction path
+(`allocate`, `borrow`, `adopt`) already routes `length * stride` through
+the overflow-checked `byteLength` helper -- `element`'s own comment makes
+the identical argument -- so once `end <= _length` holds, `end * _stride
+<= _length * _stride` is provably wrap-free, and `begin <= end` then makes
+`begin * _stride <= end * _stride` wrap-free too, bounded by that same
+already-wrap-free product. `scan` is carried forward from the parent block
+by `subRange` unchanged, not re-derived. The handle itself is built with
+`NativeArray.adopt` over `subRange`'s block, which re-checks `length *
+stride` fits, rather than constructed by hand.
+
+The returned array is `Ownership.borrowed`: a sub-range is not an
+independent allocation, so `reserve` on it throws and `capacity` is 0,
+exactly as for any other borrowed array. That is the honest answer today,
+and it is deliberately not modelling one thing: compiled D lets you append
+to a slice (`xs[1 .. 3] ~= x`), which reallocates a NEW block for the
+RESULT rather than growing `xs` in place, and leaves `xs` itself untouched.
+That guest-level `~=` semantics is a question for whatever interpreter
+call site eventually evaluates `~=` on a `NativeArray` handle -- build a
+fresh owned array and rebind the guest variable to it, exactly as compiled
+D does -- not for this container: `reserve` throwing on a borrowed handle
+is the correct low-level primitive regardless of what a higher-level guest
+operation later decides to do about it. There is no such call site yet.
+
+`begin == end` (including `begin == end == length`, D's legal `xs[$ ..
+$]`) is legal and returns a real zero-length array. Its block's address is
+NOT null the way a zero-length *allocated* array's is (`NativeBlock.
+allocate` routes through `GC.calloc(0, ...)`, which returns `null`):
+`subRange` slices `_bytes`, so a zero-length sub-range's address is `begin
+* stride` bytes past the array's own base -- for `begin == length`, a
+past-the-end pointer, still a valid (if unused) address inside or just
+past the parent's real GC allocation. Whether `core.memory.GC.addrOf` of
+that address resolves as GC-visible (the fact `writeSliceHeader`'s
+scanned-destination check asks, should some later caller pass this handle
+to it) is not a fixed answer -- `addrOf` resolves an interior pointer to
+its allocation's base, so it depends on how much slack the GC's bin
+rounding left past the block's own live bytes. This was checked against
+druntime rather than assumed: a small raw-`GC.calloc` probe script
+(`core.memory.GC.addrOf` on the past-the-end pointer of a 12-byte and a
+16-byte allocation) showed a 12-byte block's past-the-end pointer resolves
+non-null -- the 16-byte bin it rounds up to leaves 4 bytes of slack -- while
+an exactly-16-byte block's resolved null in that same probe run. That is
+what was actually observed, not a general property of zero-slack blocks:
+with no slack left, the past-the-end pointer lands exactly at the NEXT
+bin's own base address, so `GC.addrOf` of it resolves non-null whenever
+that neighbouring bin happens to be live, and null only because the probe's
+neighbouring bin was free at the time. `slice`
+itself never asks this question -- it only calls `subRange`/`adopt`,
+neither of which touches `GC.addrOf` -- so this is not a decision `slice`
+makes, only a fact worth pinning rather than assuming for whichever caller
+later passes the resulting handle onward. Pinned directly with
+`NativeArray.slice.
+emptyEndSliceBlockAddressResolvesToParentBaseUnderCurrentBinSlack`, using
+this test file's usual 3-`int32` fixture (12 live bytes, 16-byte bin, 4
+bytes of slack).
+
+Regression tests, in `tests/ut/backends/interpreter/native_array.d`:
+`NativeArray.slice.writeThroughSliceIsVisibleReadingParentAtBegin` and `.
+writeThroughParentAtBeginIsVisibleReadingSlice` (aliasing, both
+directions); `.lengthIsEndMinusBegin`; `.
+elementZeroSharesAddressWithParentElementAtBegin`; `.
+reportsBorrowedOwnership`; `.capacityIsZero`; `.reserveNonZeroThrows`; `.
+scanMatchesParentForPointerBearingElementType`; `.
+beginGreaterThanEndThrows`; `.endGreaterThanLengthThrows`; `.
+emptySliceAtEndOfArrayIsLegalAndZeroLength` and `.
+emptySliceInMiddleOfArrayIsLegalAndZeroLength`; `.
+emptyEndSliceBlockAddressResolvesToParentBaseUnderCurrentBinSlack` (the GC-
+visibility fact above); and `.sliceOfSliceComposesOffsets` with `.
+sliceOfSliceWriteIsVisibleInOriginalArray` (a slice of a slice: offsets
+compose automatically, since `NativeBlock.subRange`'s `byteOffset` is
+already relative to the calling block's own -- possibly already sliced --
+`_bytes`, so no separate accumulation is needed). No test relies on `GC.
+collect` to prove liveness, per this plan's own "ownership vs
+GC-visibility" note: a collect-survival test cannot distinguish a correct
+scan policy from a stale stack bit pattern.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring for `slice` (no guest
+`xs[1 .. 3]` expression reaches it yet), and no guest-level `~=`
+reallocation semantics for a sliced array, per the "what this does NOT
+model" paragraph above.
+
+Progress 2026-07-10 (unions and overlapping fields): item 7's last named
+open question for the native-layout handles -- "unions and overlapping
+fields, which the conservative whole-range root policy handles but the
+layout model does not yet describe" -- is closed. A D `union` is a
+`TypeStruct` whose `sym` is DMD's `UnionDeclaration`
+(`dmd.dstruct.UnionDeclaration extends StructDeclaration`, adding nothing
+to `fields`/`structsize`/`hasPointerField`, only overriding `kind()`), so
+every existing `NativeStruct` accessor (`allocate`, `field`, `structField`,
+`arrayField`) already operates on it unmodified: none of them branch on
+struct-vs-union, they only ever read DMD's own per-field `offset`/byte-size
+for whichever index is asked for. `structTypeOf` (`tests/ut/backends/
+interpreter/package.d`) also needed no change to find a top-level `union`:
+its search loop's `member.isStructDeclaration` is DMD's own classifier,
+and DMD defines `isStructDeclaration` to accept a `DSYM.unionDeclaration`
+node too (`dsymbol.d`), so it already matched. This was verified
+empirically, not assumed: see the new tests below, all green with zero
+production-code changes.
+
+What DMD actually reports, checked against `dmd.dsymbolsem`'s
+`placeField`/`checkOverlappedFields` and confirmed by the tests: for a
+top-level `union U { size_t i; void* p; }`, every member's
+`VarDeclaration.offset` is 0 (`placeField`'s `isunion` parameter suppresses
+advancing `nextoffset` after each member, so every member starts placement
+from the same, unmoved offset), and `layout.typeByteSize` gives the
+union's own `structsize` -- the size of its largest member, since
+`placeField` still grows `aggsize` to each member's own `offset + memsize`
+even though `nextoffset` itself never advances. For overlapping fields
+inside an ordinary struct -- an anonymous union, `struct S { int tag;
+union { int i; float f; } }` -- DMD does not nest a second `TypeStruct`:
+`AnonDeclaration.setFieldOffset` recurses into the anonymous union's own
+members with the SAME enclosing `ad`, resetting its own `FieldState.
+offset` back to the anonymous union's own base offset after each member,
+so `i` and `f` are flattened directly into `S.fields` as two more
+top-level fields (`S.fields.length == 3`: `tag`, `i`, `f`), at the same
+offset as each other and different from `tag`'s. The authoritative overlap
+fact is DMD's own `VarDeclaration.overlapped`/`overlapUnsafe`
+(`dsymbolsem.d`'s `checkOverlappedFields`, run once the aggregate's size is
+finalised, comparing every field pair's own offset/size range) -- `i` and
+`f` both read `overlapped == true`, `tag` reads `false`. Per item 7's
+guardrail, `NativeStruct` does not consume `overlapped` itself and gains
+no accessor for it: `field`/`fieldByteOffset` already return DMD's own
+`offset` verbatim for whichever index is asked for, which is what makes
+two fields alias in the first place -- `overlapped` is a derived fact ABOUT
+those offsets, not a second, independent source of truth a correct
+implementation needs to consult. Inventing an `isOverlapped` reader with no
+caller would be exactly the "speculative surface" this plan's phases have
+consistently avoided elsewhere.
+
+Scan-policy rounding: a union `{ size_t i; void* p; }` has a pointer
+member, so `layout.typeHasPointers` (DMD's `hasPointerField`, OR'd across
+every field regardless of overlap) reports true, and `NativeStruct.
+allocate` picks `Scan.conservative` -- exactly the choice it already makes
+for any struct with a pointer field, with no union-specific branch. That is
+the only safe rounding, reasoned from the two failure directions: scanning
+`i`'s bytes as a possible pointer when `i` is really an unrelated `size_t`
+is a false positive -- at worst the GC retains some address-shaped integer's
+accidental target a little longer than strictly needed, which is wasteful
+but never unsound. Rounding the other way -- `Scan.no`, because some member
+of the union is a non-pointer scalar -- would be a false negative: whenever
+`p` is the union's live member, its target becomes invisible to the
+collector and can be freed while `p` still points at it, a genuine
+use-after-free. A `NativeBlock`'s `Scan` attribute covers its whole byte
+range, not a per-member choice, so it cannot be selectively right for both
+interpretations of the same bytes at once; it must round toward the safe
+failure mode (over-retain) rather than the unsafe one (collect-while-
+reachable). This is exactly why the block-wide `Scan` attribute -- rather
+than some future per-field scan map -- is what makes the safe rounding
+automatic: there is no code path left that could pick `Scan.no` for a
+pointer-bearing union member, because the attribute is decided once, at
+`allocate`, from `typeHasPointers` over the whole type.
+
+Regression tests, in `tests/ut/backends/interpreter/native_struct.d`:
+`NativeStruct.allocate.unionFieldOffsetsAreAllZeroMatchingHostCompilerOffsetof`,
+`.unionByteSizeMatchesHostCompilerSizeof`, and
+`.unionWithPointerMemberYieldsScannedBlock` for the plain-union facts above
+(oracle: a `union U { size_t i; void* p; }` declared directly in the test
+module, using `U.i.offsetof`/`U.p.offsetof`/`U.sizeof` exactly as the
+existing struct tests use `S.b.offsetof`/`S.sizeof`); `NativeStruct.
+field.writeThroughOneUnionMemberIsVisibleThroughTheOther` for the aliasing
+claim (a write through `field(0)` is visible through `field(1)`, both
+being the same 8 bytes at offset 0); and, for the anonymous-union case,
+`NativeStruct.allocate.
+anonymousUnionMembersAreFlattenedIntoParentFieldsAtOverlappingOffsets`,
+`.anonymousUnionMembersAreMarkedOverlappedByDmdItself`, and `NativeStruct.
+field.
+writeThroughOneAnonymousUnionMemberIsVisibleThroughTheOtherTagUntouched`
+(oracle: `struct WithAnonymousUnion { int tag; union { int i; float f; } }`,
+using `WithAnonymousUnion.i.offsetof`/`.f.offsetof` the same way -- D
+promotes anonymous-union member names into the enclosing struct's own
+scope, so the host compiler still gives a direct `.offsetof` oracle for
+each). The full focused `ut.backends.interpreter` suite passes, with zero
+production-code changes: this progress note only pins facts the existing
+`layout.d`/`native_struct.d` code already got right.
+
+Still open, narrower than before: a union member that is itself an
+aggregate (a struct- or array-typed member of a union, viewed through
+`structField`/`arrayField` on a `NativeStruct` built over the union's own
+type) has no dedicated pinning test yet. By inspection `structField`/
+`arrayField` have no struct-vs-union branch -- they only ever consult
+`_fields[index]`'s own DMD offset and type -- so this composition is
+expected to already work the same way struct-in-struct nesting does, but
+it has not been exercised the way the facts above were.
+
+Progress 2026-07-10 (array length assignment): `NativeArray` gains
+`setLength(n)`, the handle-level primitive behind a guest `arr.length = n`,
+built on the existing `capacity`/`reserve`/`tryExtendTo` machinery rather
+than re-deriving it. This is item 7's last named container primitive for
+the array phase; it is also the last thing standing between
+`interpreter.md` §9.10's `gc_*` capacity-hook shims and retirement, since
+those shims exist only because boxed interpreter arrays were never
+addressable GC blocks.
+
+The contract was established by reading compiled D's own
+`_d_arraysetlengthT`/`_d_arraysetlengthT_` (`core/internal/array/
+capacity.d`, local druntime source) and `_d_arrayappendcTX_`
+(`core/internal/array/appending.d`), plus a compiled probe script, rather
+than assumed. Shrink (`n <= _length`) is a pure length change: the block's
+address, `capacity`, and every byte (even ones now past the new length)
+are untouched -- matching `_d_arraysetlengthT_`'s own shrink path exactly
+(`arr = arr[0 .. newlength]`, no GC call at all). This is also why compiled
+D's `arr.length--; arr ~= x;` footgun is real: `_d_arrayappendcTX_` can
+reuse that untouched tail in place via `gc_expandArrayUsed`'s "used size"
+bookkeeping, with no zeroing of its own, unlike `setLength`'s own grow path.
+
+Grow (`n > _length`) always zeroes every byte from the OLD `_length *
+stride` up to the new `n * stride`, regardless of whether the block itself
+needed to grow to hold them. This is NOT implied by `reserve`'s own
+zeroing: `reserve` only zeroes bytes past whatever `block.byteLength` was
+when IT ran, and a shrink never touches `block.byteLength` -- so a
+grow-back after a shrink re-exposes stale bytes from before the shrink,
+not room `reserve` ever zeroed. Compiled D's `_d_arraysetlengthT_` only
+reaches this zeroing for a zero-init element type: the call is gated,
+`static if (__traits(isZeroInit, T)) memset(cast(void*)
+(cast(ubyte*)newdata + oldsize), 0, newsize - oldsize)`
+(core/internal/array/capacity.d, local druntime source, ~line 338); a
+non-zero-init `T` instead gets `T.init` emplaced (or memcpy'd) into each
+new element -- e.g. `char`'s `0xFF`, `float`'s `NaN` -- never a zero
+byte. `setLength`'s own grow path zeroes every new byte unconditionally,
+regardless of element type: a defensible container-level choice that
+matches `NativeBlock.allocate`'s own calloc-zeroed model, but it agrees
+with compiled D's behaviour only for zero-init element types -- which is
+every current fixture's element type. Making a guest `char[]` grow
+expose `0xFF` rather than `0`, to match `SystemLinker`, is left as an
+open question for whatever future interpreter call site actually wires
+`setLength` up; it is not this container's job, and this PR does not
+answer it. Pinned against a compiled probe on `int[]` (a zero-init
+element type, so it does not exercise the non-zero-init gap above):
+shrinking `[1, 2, 3, 4, 5]` to length 2 then growing back to 5 reads
+back `[1, 2, 0, 0, 0]`, never the original `3, 4, 5`. `setLength.
+shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating` pins this without
+reallocating (`_block.byteLength` already covered the regrown span).
+
+Whether an OWNED handle's block itself needs to grow is decided by
+`requiredBytes > _block.byteLength` -- deliberately NOT `n > capacity`. The
+two differ exactly when it matters: after a shrink, `_block.byteLength`
+still covers the pre-shrink span, so growing back within it needs no
+reallocation regardless of what `capacity` (the GC's own bin size divided
+by stride -- a different, unrelated bound) would say. When `_block.
+byteLength` is genuinely exceeded, growth reuses `reserve`'s own
+reallocating machinery, factored out into a private
+`growBlockTo(requiredBytes)` shared by both callers -- a pure,
+behaviour-preserving extraction; `reserve`'s own tests are unchanged.
+
+The borrowed decision, corrected by review (2026-07-10, findings 3 and 10):
+growth on a `borrowed` handle now throws unconditionally, regardless of
+`_block.byteLength`. This note originally documented a different rule --
+growth allowed whenever `requiredBytes <= _block.byteLength`, on the
+reasoning that a `NativeArray.slice` result's own block span is bytes
+`subRange` had already verified belong to the handle, so reusing them
+needed no reallocation and violated no ownership claim. That reasoning was
+false: `slice` is a real, bidirectional aliasing view, so growing a
+SHRUNK child slice back within its own span re-zeroed bytes the PARENT (or
+a sibling slice over the same block) still considered live -- exactly what
+this note's own regression test demonstrated (`setLength.
+onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent`, since
+renamed to `.onBorrowedShrinkThenGrowBackThrows` -- see below). The old
+rule also directly contradicted `NativeArray.adopt`'s and `NativeStruct.
+adopt`'s own documented promise that a block's slack bytes beyond what a
+handle claims "are none of this factory's business": a borrowed handle
+reaching into bytes beyond what it was itself given, because a DIFFERENT
+handle over the same block happened to claim them first, is exactly that
+promise being broken. "No byte belonging to some OTHER, uninvolved handle
+is ever at risk" -- this note's own original closing claim for the old
+rule -- was the false statement review caught; the shrink-then-grow-back
+test is itself the counterexample.
+
+Re-checked against compiled D rather than assumed which behaviour is
+actually right: a guest `s.length = n` growing a slice does NOT reuse the
+parent's storage in general. `_d_arraysetlengthT_` reaches
+`gc_expandArrayUsed`, whose real implementation, `expandArrayUsed`
+(`core/internal/gc/impl/conservative/gc.d`, ~line 1491), only succeeds when
+the stored allocation-length matches the slice's own current length --
+`__setArrayAllocLengthImpl`'s old-length comparison
+(`core/internal/gc/blockmeta.d`), a CAS-style equality check against the
+value already stored for that block. `reserveArrayCapacity` (same file,
+~line 1605, used by `reserve`'s own capacity query rather than by
+`setLength`'s grow path directly) gates on the textually clearer
+`existingUsed != blockUsed` -- the same "only the block's current single
+tracked tail owner is extendable in place" principle, spelled out
+explicitly. Neither check lives in `core/internal/array/appending.d`,
+which only declares/calls the `gc_expandArrayUsed` hook -- this note's
+original citation, and a matching one in `tests/ut/backends/interpreter/
+native_array.d`, both named that file and have been corrected. Confirmed
+against a compiled probe (unchanged from the original check): `a[1 .. 4]`
+shrunk to length 1 then grown back to 3 gets a NEW address, and `a` itself
+is unchanged -- every other live slice over the same block, including one
+that was just shrunk, fails the tail-owner check and gets a brand-new block
+instead.
+
+A `NativeArray` handle has no equivalent "am I the current tail owner"
+bookkeeping, so it has no sound way to decide which one of potentially
+several live borrowed views over the same block is safe to grow into --
+meaning no call site could ever have legitimately used the old
+grow-within-byteLength branch anyway. This is therefore a deliberate
+narrowing of an unwired primitive with no caller, decided by review, not a
+loss of any real capability: `setLength` had no call site before this
+change and still has none after it (see "still not done" below, unchanged
+by this narrowing). Growth-and-rebind of a borrowed handle belongs to
+whatever future call site evaluates a guest `s.length = n`, exactly as
+`slice`'s own comment already says `~=` does. Growth WITHIN the current
+length -- i.e. a shrink, `n <= _length` -- stays legal on a borrowed handle
+and remains a no-op on storage, per the shrink paragraph above; only growth
+beyond the current length is affected.
+
+Strideless (`NativeArray.init`, `_stride == 0`) mirrors `reserve`'s own
+guard, in the same position: checked first, unconditionally, before even
+asking whether `n` would grow or shrink anything, so `setLength(0)` on
+`NativeArray.init` throws even though `0 == _length` would otherwise make
+it a trivial no-op -- the identical ordering rationale `reserve` already
+uses (a strideless handle is not a properly constructed array, a more
+fundamental defect than any question of growing or shrinking it).
+`n * stride` is computed with the existing overflow-checked `byteLength`
+helper, never re-derived, and only inside the grow branch.
+
+What this does NOT model: `~=` (append) is still a call-site operation
+(allocate-and-rebind), unimplemented, with no call site yet, per the plan.
+Also not modelled: keeping a previously written slice header
+(`NativeArray.writeSliceHeader`) in sync with a later `setLength` that
+reallocates. A header is a snapshot of `{ length, ptr }` taken at write
+time, not a live view of this handle; once `setLength` reallocates, any
+previously written header still names the OLD address and length, exactly
+as stale as any other pointer into a moved block -- compiled D's own
+slices go stale the same way once a variable's `.length` is reassigned out
+from under an earlier alias. Keeping such a header in sync is the call
+site's problem, the moment it rebinds the guest variable this array backs,
+not this container's -- there is no such call site yet.
+
+Regression tests, in `tests/ut/backends/interpreter/native_array.d`:
+`NativeArray.setLength.growWithinAlreadyReservedCapacityLeavesAddressUnchanged`
+and `.growWithinAlreadyReservedCapacityZeroesNewElements` (grow within a
+block already committed by an explicit prior `reserve` call -- deliberately
+not a bare post-`allocate` `capacity`, since a plain allocation's `GC.
+sizeOf` bin-rounding slack is real but is not reflected in `block.
+byteLength` without an explicit `reserve`/`setLength` call committing it,
+and this container does not claim to use that slack for free); `.
+growBeyondBlockByteLengthPreservesElementsAcrossReallocation` and `.
+growBeyondBlockByteLengthTailIsZero`; `.shrinkUpdatesLength`; `.
+shrinkLeavesAddressCapacityAndBytesUnchanged`; `.
+shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating`; `.
+sameLengthIsANoOp`; `.onInitHandleZeroThrows` and `.
+onInitHandleNonZeroThrows`; `.overflowingLengthTimesStrideThrows`; `.
+onBorrowedShrinkSucceedsAndLeavesParentUntouched` and `.
+onBorrowedShrinkThenGrowBackThrows` (the borrowed decision, both
+directions -- these two supersede and merge in the original `.
+onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent` and `.
+onSliceGrowBeyondBlockByteLengthThrows`, both of which asserted the same
+throw once the borrowed decision above was corrected). The full focused
+`ut.backends.interpreter` suite passes.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring for `setLength` (no
+guest `arr.length = n` reaches it yet), no `interpreter.md` §9.10 shim
+retired, and `~=` remains unimplemented per the "what this does NOT model"
+paragraph above.
+
+Progress 2026-07-10 (array-of-struct element views): the composition
+established for structs (`NativeStruct.structField`/`arrayField`) gets its
+missing other direction. Until now a *struct* could view its aggregate
+fields as handles, but an *array* could not view a struct-typed element as
+one -- `NativeArray.element(index)` only ever handed back a bare `ubyte[]`,
+so a guest `Point[] ps; ps[1].x = 3;` had no handle-level expression.
+`NativeArray` gains `structElement(index) @safe -> NativeStruct`: element
+`index` of an array whose `elementType` is a `TypeStruct`, viewed as a
+`NativeStruct` over the SAME bytes, aliasing the array rather than copying
+it -- a write through the returned handle is visible in this array's
+`element(index)` bytes and vice versa.
+
+`index` is bounds-checked against `length` first, before any offset
+arithmetic, reusing `element`'s own wrap-free argument rather than
+re-deriving it: every construction path already routes `length * stride`
+through the overflow-checked `byteLength` helper, so once `index < _length`
+holds, `index * _stride` is provably wrap-free (see `element`'s own
+comment). A field whose `elementType` is not a struct
+(`Type.isTypeStruct` returns null) throws its own message before any
+sub-range is taken. `structElement` stays `@safe`, via `NativeBlock.
+subRange` -- never the `@system` raw-pointer `borrow` path -- for exactly
+`NativeArray.slice`'s own reason (see its comment): `index * stride ..
+index * stride + stride` is a sub-range of an already-verified block,
+ordinary bounds-checked D, not a pointer this code would need to
+reconstruct and cannot itself verify.
+
+The returned `NativeStruct` is `Ownership.borrowed` and carries the
+parent's `Scan` unchanged, both via `adopt`'s own `subRange`-backed
+construction: an array element is not an independent allocation, so its
+`block.trueByteSize` is 0 and nothing about it can be grown -- correct,
+since growing "one element" in place is not a meaningful operation at all;
+growing the ARRAY is `NativeArray.reserve`/`setLength`'s job, not this
+view's. `Scan` is an attribute of the whole underlying GC allocation, not
+of any one element's view into it, so an element view has no legitimate way
+to disagree with its parent about it, exactly as for `NativeStruct.
+structField`/`NativeArray.slice`.
+
+The one subtlety worth stating: the element's stride is
+`typeByteSize(elementType)` -- DMD's own `structsize`, padding included,
+computed once at construction and reused as `_stride` rather than
+recomputed -- which is exactly why `index * stride` lands on a
+correctly-aligned, correctly-sized struct element, and why D packs an array
+of structs back-to-back with no inter-element padding beyond each element's
+own `structsize`. This was verified against the host compiler rather than
+assumed: `structElement.fieldOffsetsAreRelativeToTheElementNotTheArrayBase`
+confirms a `Point[3]`'s element 2's field view sits at exactly
+`2 * Point.sizeof + Point.x.offsetof` bytes past the array's own base.
+
+Building the returned handle needed a factory `NativeStruct` did not have:
+`allocate` allocates, `borrow` takes an unverifiable raw pointer, and
+neither adopts an existing, already-verified block. `NativeStruct` gains
+`adopt(NativeBlock block, TypeStruct type) @safe`, mirroring `NativeArray.
+adopt`'s shape and its "the block already exists at a byte length this
+factory did not choose, so check it fits" discipline: `block.byteLength`
+must be at least `typeByteSize(type)`, checked and thrown on rather than
+trusted, or a struct view over too few bytes would let a field near the end
+of `structsize` read/write past the block's own real storage. A block
+LARGER than `typeByteSize(type)` is accepted, exactly as `NativeArray.
+adopt` accepts a block larger than `length * stride`: the extra bytes are
+none of this factory's business, they belong to whatever the block's own
+owner uses them for. `NativeStruct.structField` was refactored to build its
+own returned handle through `adopt` too -- a genuine simplification, not a
+speculative one, since `adopt` already does exactly what `structField` was
+constructing by hand (check-then-build over a `subRange`); `NativeStruct.
+allocate`/`borrow` were left untouched, since they choose the block's scan
+policy themselves and `adopt` deliberately does not (it has no `Type` to
+derive one from that isn't already implied by the caller-supplied block).
+
+Regression tests, in `tests/ut/backends/interpreter/native_array.d`:
+`NativeArray.structElement.writeThroughElementViewIsVisibleInParentElement
+Bytes` and `.writeThroughParentElementBytesIsVisibleThroughElementView`
+(aliasing, both directions); `.
+fieldOffsetsAreRelativeToTheElementNotTheArrayBase` (the offset-and-stride
+claim above, against the host compiler); `.elementTypeNotStructThrows`;
+`.outOfRangeIndexThrows`; `.reportsBorrowedOwnership`; `.
+blockTrueByteSizeIsZero`; `.scanMatchesParentForPointerBearingElementType`;
+and, pinning the composition one level deeper, `.
+structFieldViewStillWorksThroughElementView` and `.
+arrayFieldViewStillWorksThroughElementView` (a struct-typed array element's
+own `structField`/`arrayField` still work through the element view, with
+no special case for "my block came from an array element" on either side).
+In `tests/ut/backends/interpreter/native_struct.d`: `NativeStruct.adopt.
+rejectsBlockSmallerThanStructsize`; `.
+byteSizeMatchesHostCompilerSizeofDespitePadding`; `.
+acceptsBlockLargerThanStructsize` (the oversized-block decision above,
+pinned directly); and `.
+viewsExistingBlockSoAFieldWriteIsVisibleAtTheBlocksOwnOffset` (aliasing).
+No `GC.collect`-based liveness test was added, per this plan's own
+"ownership vs GC-visibility" note. The full focused `ut.backends.
+interpreter` suite passes.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring (no guest `ps[1].x`
+expression reaches `structElement` yet), no class objects, and every
+`interpreter.md` §9.10 shim remains unretired. Only structs are composed
+into arrays this way; the symmetric question for an array-typed array
+element (`Point[][]`, or an array of static arrays) has no dedicated
+accessor or test yet -- `element(index)` already hands back that element's
+raw bytes, but there is no `arrayElement`/`sliceElement` counterpart to
+`structElement` the way `NativeStruct` has both `structField` and
+`arrayField`/`sliceField` for its own fields.
+
+Progress 2026-07-10 (array-element aggregate views): the previous note's
+own named gap is closed. `NativeArray` gains `arrayElement(index) @safe ->
+NativeArray` and `sliceElement(index) @system -> NativeArray`, the
+counterparts to `structElement` for an array whose `elementType` is itself
+a static array (`int[3][4]`) or a dynamic array (`int[][]`), exactly
+mirroring `NativeStruct.arrayField`/`sliceField` one level down: an array
+element, not a struct field, is the aggregate being viewed. The
+struct/array composition matrix is now symmetric on both axes -- a struct
+can view any of its fields (struct, static array, or slice) as a handle,
+and an array can view any of its elements (struct, static array, or slice)
+as a handle, with no accessor left one-directional.
+
+`arrayElement` stays `@safe`: this element's bytes ARE the nested array's
+inline storage, `stride` bytes at `index * stride` inside this array's own
+block, so it only ever slices an already-verified block via `NativeBlock.
+subRange`, exactly `structElement`'s own argument. `index` is
+bounds-checked against `length` first, reusing `element`'s wrap-free
+argument rather than re-deriving it; an `elementType` that is not a static
+array throws before any offset arithmetic runs. The returned handle's
+`length` is `layout.staticArrayLength(elementType)` and its element type is
+`elementType.next`, built through `NativeArray.adopt` rather than by hand.
+Ownership/scan/`trueByteSize`: `Ownership.borrowed` and the parent's `Scan`
+via `adopt`'s own `subRange`-backed construction, and `block.trueByteSize`
+is 0 -- an array element is not an independent allocation, so nothing about
+it can be grown; growing the OUTER array stays `reserve`/`setLength`'s job.
+
+`sliceElement` is `@system`, unlike `arrayElement`: this element's bytes
+are NOT inline storage, they ARE a slice header (`{ length, ptr }`) naming
+a separately tracked block elsewhere, so the only way to view "the
+elements this slot currently points at" is to read that header back out of
+memory and reconstruct a handle via `NativeArray.borrow` -- an
+unverifiable reconstruction from a pointer this code reads out of memory,
+exactly `NativeStruct.sliceField`'s own reason for being `@system`. `index`
+is bounds-checked first, reusing `element`'s wrap-free argument; an
+`elementType` that is not a dynamic array throws before any header bytes
+are read. The read-back contract is identical to `sliceField`'s: a
+zero-length/null header reads back as a real, empty `NativeArray`; the
+returned array's `ownership` is always `borrowed`, its `scan`/`capacity`
+are `Scan.no`/`0` unconditionally per `NativeBlock.borrow`'s own contract
+even when the pointed-to block is a real, conservatively-scanned GC
+allocation this element keeps alive; and it aliases, not snapshots -- a
+write through the returned handle is visible through any other handle over
+the same block, and it goes stale exactly as any other stale pointer once
+this element's header is overwritten or the pointed-to block moves.
+
+The de-duplication the task asked for: `sliceField` and `sliceElement` both
+need the exact two-value `{ length, ptr }` header read, so the helper that
+does it, `readSliceHeaderBytes` (and its `SliceHeaderBytes` return type),
+moved from being `native_struct.d`-private to living in `native_array.d`,
+`public`, alongside `sliceHeaderByteLength`/`writeSliceHeaderBytes` -- the
+other two pieces of this module's own slice-header layout. `NativeStruct.
+sliceField` now imports and calls it rather than keeping a second,
+driftable `memcpy` of the same two fields; its own tests were not touched
+and still pass unchanged.
+
+Regression tests, in `tests/ut/backends/interpreter/native_array.d`, using
+`NativeStruct.fieldDeclaration(0).type` (an `Int3Holder`/`SliceHolder`
+struct's own field type, straight from the host compiler) as each
+fixture's `elementType`, exactly as `NativeStruct.arrayField`/`sliceField`
+already read their own field types this way:
+`NativeArray.arrayElement.lengthAndStrideMatchElementTypeAndByteLength
+MatchesHostCompilerInt3x4Sizeof` (pinned against `int[3][4].sizeof`);
+`.writeThroughElementViewIsVisibleInParentElementBytes` and `.
+writeThroughParentElementBytesIsVisibleThroughElementView` (aliasing, both
+directions); `.elementTypeNotStaticArrayThrows`; `.outOfRangeIndexThrows`;
+`NativeArray.sliceElement.roundTripAliasesWriteSliceHeaderSourceArray`
+(aliasing, not a snapshot); `.
+zeroLengthNullHeaderReadsBackAsEmptyBorrowedArray`; `.
+elementTypeNotDynamicArrayThrows`; and `.outOfRangeIndexThrows`. No
+`GC.collect`-based liveness test was added, per this plan's own "ownership
+vs GC-visibility" note. The full focused `ut.backends.interpreter` suite
+passes.
+
+Review (2026-07-10, finding 8) noted `arrayElement`'s documented
+`Ownership.borrowed`/`trueByteSize == 0` contract had no direct test,
+unlike `structElement`'s own `reportsBorrowedOwnership`/
+`blockTrueByteSizeIsZero`. Closed by adding the same two assertions under
+the matching names, `NativeArray.arrayElement.reportsBorrowedOwnership`
+and `.blockTrueByteSizeIsZero`, using the same `Int3Holder` fixture as the
+rest of this section -- both already held (no production-code change), so
+this is pure coverage, mirroring `structElement`'s own tests exactly.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring (no guest expression
+reaches `arrayElement`/`sliceElement`, `structElement`, `arrayField`, or
+`sliceField` yet -- there is no interpreter call site for any of this
+composition), no class objects, and every `interpreter.md` §9.10 shim
+remains unretired.
+
+Progress 2026-07-10 (review: two reachable-handle safety holes closed):
+review of the accumulated array/struct-handle work above found two real
+bugs, both now fixed with a failing test first.
+
+`NativeArray.slice(0, 0)` on a default-constructed `NativeArray.init`
+(`_stride == 0`, `_elementType is null`) did not throw: `begin > end` and
+`end > _length` both pass trivially (0, 0, 0 are all equal),
+`_block.subRange(0, 0)` succeeds on the null block, and `NativeArray.adopt`
+then called `typeByteSize(null)` -- `dmd.typesem.size` dereferencing a
+null `Type`, segfaulting `@safe` code (confirmed: the pinning test crashed
+the test process with SIGSEGV, exit 139, before the fix). `reserve` and
+`setLength` already guarded this exact reachable handle with a `_stride ==
+0` check; `slice` now gets the identical guard, checked first, mirroring
+`reserve`'s own ordering rationale. Pinned by `NativeArray.slice.
+onInitHandleThrows`. The other new accessors this note's own history
+added (`structElement`, `arrayElement`, `sliceElement`, `structField`,
+`arrayField`, `sliceField`) were individually re-checked rather than
+assumed safe: every one of them bounds-checks its `index` against
+`length`/`fieldCount` before touching `_elementType`/the field's `Type` at
+all, and `NativeArray.init`/`NativeStruct.init` both report a length/
+field-count of 0 -- so no index ever passes their bounds check on an
+`.init` handle, and the null-`Type` arithmetic below it is never reached.
+`NativeStruct.adopt`/`NativeArray.adopt` were also re-checked: every
+internal caller (`structElement`, `arrayElement`, `arrayField`) only ever
+passes a `Type` already proven non-null by its own `isTypeStruct`/
+`isTypeSArray`/`.next` check immediately beforehand, so neither factory is
+reachable with a null `Type` except by a caller passing `null` directly --
+not the same "innocuous `.init` handle" shape as `slice`'s bug, so no
+guard was added there.
+
+`readSliceHeaderBytes` (`native_array.d`) is `public @trusted` and
+`memcpy`s `sliceHeaderByteLength` bytes out of `src.ptr`, with its only
+length enforcement an `in (src.length == ...)` contract -- stripped under
+`-release`, unlike its `private` sibling `writeSliceHeaderBytes`, whose
+safety comment explicitly rests on its sole caller's own prior checks. A
+`public` function reachable from any `@safe` caller with a too-short slice
+would read past its end. Fixed with an unconditional, un-strippable
+length check that throws instead of the `in` contract; the `@trusted`
+comment now states the boundary rests on that check holding, not merely on
+the content of already-bounds-checked bytes. Pinned by `NativeArray.
+readSliceHeaderBytes.wrongLengthThrows`.
+
+The full focused `ut.backends.interpreter` suite passes.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1216,9 +1903,14 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    Open questions for the first implementation slice: lifetime contracts for
    blocks borrowed from arbitrary C owners; what a guest pointer into a grown
    array should observe, and whether that deserves a diagnostic rather than
-   compiled D's silent staleness; unions and overlapping fields, which the
-   conservative whole-range root policy handles but the layout model does not
-   yet describe; and class object bodies, deferred wholesale.
+   compiled D's silent staleness; and class object bodies, deferred
+   wholesale. Unions and overlapping fields are no longer an open question --
+   see the Status "unions and overlapping fields" progress note below for
+   what DMD reports and why `NativeStruct` needed no change; the one named
+   residue is a union member that is itself an aggregate (struct- or
+   array-typed) handle view, which has no dedicated pinning test yet, though
+   `structField`/`arrayField`'s offset-and-type-driven implementation has no
+   struct-vs-union branch to get wrong and so applies to it unchanged.
    `writeSliceHeader`'s scanned-destination contract is no longer open:
    `dest` is now a `(NativeBlock, byteOffset)` pair, and the function
    throws before writing a GC-owned pointer into a destination the
@@ -1245,14 +1937,67 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    now — the "no nested-struct or array-typed field composition" gaps noted
    above are closed; see the Status "nested aggregate field views" progress
    note above for `NativeBlock.subRange`/`NativeStruct.structField`/
-   `arrayField`. None of this has a user-visible display or FFI change yet,
-   and no shim is retired yet. What remains: dynamic-array-field read-back
-   (reading an existing slice-header field back as a `NativeArray` over its
-   pointed-to element block — distinct from writing one, which already
-   existed, and from the sub-range views just landed, since a slice header
-   points at a separately tracked block rather than being inline), then the
-   interpreter call site (`impl.d`/`Walker`/`Value`) that actually gives
-   these types somewhere to be used instead of sitting unwired, and only
+   `arrayField`. Dynamic-array-field read-back is also done now
+   (`NativeStruct.sliceField` — reading an existing slice-header field
+   back as a `NativeArray` over its pointed-to element block, distinct
+   from writing one and from the sub-range views above since a slice
+   header points at a separately tracked block rather than being inline;
+   see the Status "dynamic-array-field read-back" progress note above for
+   the `@system`/`@trusted` boundary and the ownership/scan/capacity
+   contract). Array sub-slicing is also done now (`NativeArray.slice` —
+   the handle-level expression of the correctness-ceiling "slices into
+   locals" item: a real, aliasing, `@safe` sub-range view via `NativeBlock.
+   subRange`/`NativeArray.adopt`, `borrowed` and non-growable, distinct
+   from `sliceField`'s `@system` slice-header reconstruction because it
+   only ever slices an already-verified block rather than reconstructing
+   one from a pointer read out of memory; see the Status "array
+   sub-slicing" progress note above for the bounds/overflow argument and
+   the measured `GC.addrOf`-of-a-past-the-end-pointer fact). Unions and
+   overlapping fields are also closed now — no production code needed a
+   change; see the Status "unions and overlapping fields" progress note
+   above for what DMD reports for a plain union's zero-offset fields and
+   an anonymous union's flattened, overlapping ones, and why the
+   block-wide conservative `Scan` policy is the only safe rounding for a
+   pointer-bearing union. Array length assignment is also done now
+   (`NativeArray.setLength` — the handle-level primitive behind a guest
+   `arr.length = n`, built on the existing `capacity`/`reserve`/
+   `tryExtendTo` machinery; see the Status "array length assignment"
+   progress note above for the compiled-D-checked shrink/grow contract,
+   the borrowed-growth decision (`setLength` refuses every growth of a
+   `borrowed` handle unconditionally — shrink stays legal and
+   storage-free — a narrowing made by review, with growth-and-rebind
+   left to a future call site), and the shrink-then-grow re-zeroing
+   subtlety) — this was the last named container primitive the array
+   phase needed. The
+   composition that had only gone one way — a struct could view its own
+   fields as handles, but an array could not view a struct-typed element as
+   one — is now symmetric too: `NativeArray.structElement` (and the new
+   `NativeStruct.adopt` factory it is built on) is also done now; see the
+   Status "array-of-struct element views" progress note above for the
+   bounds/stride argument, the `Ownership.borrowed`/zero-`trueByteSize`
+   contract, and the oversized-block decision `adopt` shares with
+   `NativeArray.adopt`. That note's own remaining, narrower composition gap
+   — an array-typed array element (`Point[][]`, or an array of static
+   arrays) had no `arrayElement`/`sliceElement` counterpart, the way
+   `NativeStruct` has both `structField` and `arrayField`/`sliceField` for
+   its own fields — is also closed now: see the Status "array-element
+   aggregate views" progress note above for the `@safe`/`@system` split
+   (identical in shape to `structElement`/`sliceField`'s own) and the
+   `readSliceHeaderBytes` de-duplication it required. The struct/array
+   composition matrix is now symmetric on both axes — struct→{struct,
+   static array, slice} fields and array→{struct, static array, slice}
+   elements — with no accessor left one-directional. None of this has a
+   user-visible display or FFI change yet, and no shim is retired yet.
+   What remains, the sole next step: the interpreter call site (`impl.d`/
+   `Walker`/`Value`) that actually gives these types somewhere to be used
+   instead of sitting unwired — including, for `slice` specifically, the
+   guest-level `~=`-on-a-slice reallocation semantics the "array
+   sub-slicing" progress note explicitly does not model, and, for
+   `setLength`, guest-level `~=`/append more generally (still a call-site
+   allocate-and-rebind operation, per the "array length assignment"
+   progress note) and keeping a previously written slice header in sync
+   with a later reallocating `setLength` (the call site's problem, not
+   this container's, exactly as for a stale compiled-D slice) — and only
    after that, shim retirement one `interpreter.md` §9.10 entry at a time,
    each proven by its ratchet fixtures staying green through the real path.
    Class objects stay third in the migration order, per the "Migration
