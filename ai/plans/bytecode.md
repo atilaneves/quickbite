@@ -5140,3 +5140,19 @@ contexts, while a non-empty array is true. This is a stale coverage gap after
 the existing dynamic-array length and truthiness lowering. Verification:
 focused Bytecode row, `ninja bin/ut`, and `bin/ut --random` passed (seed
 `3227994507`).
+
+`grainBitsBoolWritesScalar` promoted to `Bytecode`, 2026-07-10: pre-approved
+promotion of the existing direct-SystemLinker-backed compile-time fixture. The
+first Bytecode run was red with `Unsupported ref argument in bytecode core:
+reader`: `reader` is a struct local passed as the template's `ref C` argument,
+but ref-argument lowering recognized only scalar and dynamic-array locals.
+The minimal fix reuses the existing struct-base lookup, allowing a struct
+lvalue's inline frame offset to be passed to the normal ref copy-in/write-back
+path. No fixture body changed. The fixture verifies a ref struct receiver
+writes a `uint` temporary that is converted back through a ref `bool` argument.
+Verification: focused red then green and `ninja bin/ut` passed. The required
+`bin/ut --random` run (seed `4122028987`) instead found the pre-existing
+`pointer.sliceAssignmentWritesArrayStorage.Bytecode` diagnostic row failing
+because it did not throw. The same focused failure reproduced with this rung's
+struct-ref lookup temporarily removed, so it is unrelated and remains outside
+this no-pointer-slice commit.

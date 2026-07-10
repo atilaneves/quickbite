@@ -8459,6 +8459,9 @@ private struct Compiler {
                     return existing.offset;
             }
 
+        if (auto structOffset = structBaseOffsetOrNull(argument))
+            return *structOffset;
+
         // `append42(buffer.bytes)` / `append42(this.bytes)`: a `ref` to a struct
         // field binds to the field's inline slot (`base + field.offset`), so the
         // callee's writeback lands in the caller's struct.

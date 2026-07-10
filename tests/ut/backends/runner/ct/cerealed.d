@@ -1437,7 +1437,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("grainBitsBoolWritesScalar." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
