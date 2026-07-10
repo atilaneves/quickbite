@@ -476,7 +476,7 @@ reallocated, but `NativeArray` has no borrow constructor yet, so that
 path is unreachable from any test today. Owed contract: once a borrow
 constructor exists, `reserve` must throw loudly on a borrowed block
 instead of silently detaching the handle from memory its owner still
-holds.
+holds. Paid below (Progress 2026-07-09, borrowed-block guard).
 
 Progress 2026-07-09 (strideless-handle fix): `NativeArray.init` (no
 element type, zero stride) is a legal value -- reachable the moment this
@@ -488,6 +488,32 @@ Review nit fix (2026-07-09): `tryExtendTo` now only ever grows a block --
 a request that does not grow it returns `false` before subtracting -- so
 its `@trusted` re-slice is provable locally, without appealing to
 allocator internals.
+
+Progress 2026-07-09 (borrowed-block guard): the owed contract above is
+paid. `NativeArray` gains a `borrow` factory, wrapping memory owned
+elsewhere through `NativeBlock.borrow` -- it computes `stride` from
+`elementType` and checks `length * stride` for overflow exactly as
+`allocate` does, and is `@system` for the same unverifiable-
+pointer/length reason `NativeBlock.borrow` is. `reserve` now throws if
+it would reach the reallocating path with `_block.ownership ==
+borrowed`: reaching that path would silently detach the handle from
+memory its owner still holds, while that owner keeps reading and
+writing the original address. The new guard sits after the existing
+`n <= capacity` no-op, not before it: `reserve(0)` (or any `n` already
+within capacity) is a legitimate no-op on any array, borrowed or not,
+mirroring compiled D's `arr.reserve(n)`, which never touches storage it
+doesn't need to grow. A borrowed block's `capacity` is always 0, so
+that no-op is reached for a borrowed array only when `n == 0`; any
+`n >= 1` falls through to the borrowed guard, which is the right place
+for it, since only then is a reallocation actually being requested. The
+borrowed guard is checked after the pre-existing `_stride == 0` guard:
+a strideless handle is not even a properly constructed array, a more
+fundamental defect than an otherwise-valid borrowed one -- though in
+practice the two conditions never overlap on a reachable handle, since
+`borrow` always computes a real, non-zero stride. `NativeArray.borrow`
+has no caller yet -- no interpreter wiring, no FFI seam use -- so this
+remains skeleton work exactly like the rest of item 7's block handle;
+nothing observes a borrowed `NativeArray` outside its own unit tests.
 
 ## Audit findings (June 2026)
 

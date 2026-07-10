@@ -57,6 +57,34 @@ public struct NativeArray {
         );
     }
 
+    // Wraps memory owned elsewhere -- an interpreter-owned array value over
+    // caller-supplied storage (later: FFI/host memory) -- computing
+    // `stride` from `elementType` exactly as `allocate` does, and reusing
+    // the same overflow-checked `byteLength` for the borrowed byte span.
+    //
+    // Precondition (caller-enforced, unverifiable here): `ptr` points to at
+    // least `length * stride` valid, live bytes that outlive every handle
+    // derived from this array. This is a raw-memory constructor -- it
+    // fabricates a slice from a caller-supplied pointer/length it cannot
+    // itself verify -- and so cannot be `@safe`; the FFI seam that
+    // supplies `ptr` is the `@trusted` boundary that vouches for the
+    // precondition, exactly as for `NativeBlock.borrow`.
+    public static NativeArray borrow(
+        Type elementType,
+        void* ptr,
+        in size_t length,
+    ) @system {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        const stride = typeByteSize(elementType);
+        return NativeArray(
+            NativeBlock.borrow(ptr, byteLength(length, stride)),
+            elementType,
+            length,
+            stride,
+        );
+    }
+
     public inout(Type) elementType() inout pure nothrow @nogc @safe {
         return _elementType;
     }
@@ -162,23 +190,38 @@ public struct NativeArray {
     // zero -- `tryExtendTo` establishes that itself on the extend path,
     // and `NativeBlock.allocate`'s `GC.calloc` zeroes the whole new block
     // on the reallocating path, so an extended block is indistinguishable
-    // from a freshly allocated one. No borrowed-block guard: a borrowed
-    // block cannot legitimately be reallocated (we don't own that
-    // memory), but `NativeArray` has no borrow constructor yet, so there is
-    // no way to reach this method with `_block.ownership == borrowed` --
-    // adding a check no test can exercise would be unreachable defensive
-    // code (see ai/plans/value.md item 7 for the owed contract once a
-    // borrow constructor exists). Not `nothrow`: `byteLength` throws on
-    // overflow; not `@nogc`/`pure`: the reallocating path allocates.
+    // from a freshly allocated one. A borrowed block cannot legitimately be
+    // reallocated -- we don't own that memory, so silently adopting a new
+    // block here would detach the handle from memory its owner still
+    // holds, while that owner keeps reading and writing the original
+    // address. Reaching the reallocating path with `_block.ownership ==
+    // borrowed` now throws instead (see `NativeArray.borrow`).
+    //
+    // That guard sits after the `n <= capacity` no-op, not before it:
+    // `reserve(0)`, like any `n` already within capacity, is a legitimate
+    // no-op on any array -- borrowed or not -- exactly like compiled D's
+    // `arr.reserve(n)`, which never touches storage it doesn't need to
+    // grow. A borrowed block's `capacity` is always 0 (see `capacity`'s
+    // comment), so that no-op is only reached for a borrowed array when
+    // `n == 0`; any `n >= 1` falls through to the borrowed guard, which is
+    // the right place for it, since only then is a reallocation actually
+    // being requested. Not `nothrow`: `byteLength` throws on overflow; not
+    // `@nogc`/`pure`: the reallocating path allocates.
     //
     // A strideless handle (`NativeArray.init`, `_stride == 0`) gets a
-    // guard of its own: `byteLength(n, 0)` never overflows (`mulu` with a
-    // zero operand can't), so without this check `reserve` would "grow" to
-    // 0 bytes, copy 0 live bytes, and return normally with
+    // guard of its own, checked first: `byteLength(n, 0)` never overflows
+    // (`mulu` with a zero operand can't), so without this check `reserve`
+    // would "grow" to 0 bytes, copy 0 live bytes, and return normally with
     // `capacity == 0 < n` -- silently violating its own documented
     // postcondition. Growing an array whose element stride is zero (so it
     // has no capacity to grow) is a programming error, not a no-op, so
-    // this fails loudly instead.
+    // this fails loudly instead, and it is checked ahead of the borrowed
+    // guard: a strideless handle is not even a properly constructed array,
+    // a more fundamental defect than an otherwise-valid borrowed one. In
+    // practice the two never overlap on a reachable handle -- `borrow`
+    // always computes a real, non-zero stride from `elementType`, exactly
+    // as `allocate` does -- but the ordering still names which failure is
+    // reported first should that ever change.
     public void reserve(in size_t n) @safe {
         if (_stride == 0)
             throw new Exception(
@@ -189,6 +232,13 @@ public struct NativeArray {
 
         if (n <= capacity)
             return;
+
+        if (_block.ownership == NativeBlock.Ownership.borrowed)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "reserve: cannot reallocate a borrowed block; its memory "
+                ~ "is owned elsewhere",
+            );
 
         const requiredBytes = byteLength(n, _stride);
 

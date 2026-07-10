@@ -404,3 +404,103 @@ unittest {
 
     array.reserve(1).shouldThrow!Exception;
 }
+
+
+@("NativeArray.borrow.reportsBorrowedOwnership")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+@("NativeArray.borrow.reportsRequestedLength")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.length.should == 3;
+}
+
+
+@("NativeArray.borrow.strideFollowsElementType")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.stride.should == 4;
+}
+
+
+@("NativeArray.borrow.reportsElementType")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    (array.elementType is Type.tint32).should == true;
+}
+
+
+@("NativeArray.borrow.elementWriteIsVisibleInOriginalMemory")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.element(1)[0] = 42;
+
+    backing[1].should == 42;
+}
+
+
+@("NativeArray.borrow.overflowingLengthTimesStrideThrows")
+@system
+unittest {
+    // Same shape as `NativeArray.allocate.overflowingLengthTimesStrideThrows`:
+    // an 8-byte element type (`tint64`) and this count wraps
+    // `length * stride` to 8, which `borrow` must reject rather than
+    // silently handing back a block far smaller than the claimed length.
+    auto backing = new long[3];
+    const count = size_t.max / 8 + 2;
+
+    NativeArray.borrow(Type.tint64, backing.ptr, count).shouldThrow!Exception;
+}
+
+
+// A borrowed block can never legitimately be reallocated: the memory is
+// owned elsewhere, so silently adopting a new block would detach the
+// handle from memory its owner still holds.
+@("NativeArray.reserve.onBorrowedArrayThrows")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.reserve(100).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "reserve: cannot reallocate a borrowed block; its memory "
+        ~ "is owned elsewhere",
+    );
+}
+
+
+// `reserve(0)` (or any `n` already within capacity) is a legitimate no-op
+// on any array, mirroring compiled D's `arr.reserve(n)`, which never
+// touches storage it doesn't need to grow -- even a borrowed array must
+// not throw for a request that touches nothing.
+@("NativeArray.reserve.zeroOnBorrowedArrayIsANoOp")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+    const address = array.block.address;
+
+    array.reserve(0);
+
+    array.block.address.should == address;
+}
