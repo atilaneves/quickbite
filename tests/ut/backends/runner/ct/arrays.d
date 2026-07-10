@@ -22,6 +22,34 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+// Reinterpreting a signed-byte slice as `ubyte[]` exposes its stored bits,
+// rather than converting each signed value. Interpreter is omitted: this is a
+// native-layout/value-representation frontier owned by ai/plans/value.md.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
+    @("dynamicArray.castSignedBytesToUbytesPreservesRawBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte first = 1;
+                byte negativeOne = -2;
+                byte second = 3;
+                byte negativeTwo = -4;
+                byte[] signed = [first, second, negativeOne, cast(byte) 5,
+                    negativeTwo];
+                auto raw = cast(ubyte[]) signed;
+
+                assert(raw[0] == cast(ubyte) 1);
+                assert(raw[1] == cast(ubyte) 3);
+                assert(raw[2] == cast(ubyte) 254);
+                assert(raw[3] == cast(ubyte) 5);
+                assert(raw[4] == cast(ubyte) 252);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
