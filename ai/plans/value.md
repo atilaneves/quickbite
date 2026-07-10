@@ -1520,6 +1520,103 @@ readSliceHeaderBytes.wrongLengthThrows`.
 
 The full focused `ut.backends.interpreter` suite passes.
 
+Progress 2026-07-10 (first interpreter call site: reinterpreted local-pointer
+loads): the native-layout container types landed a caller. A new leaf module
+`source/quickbite/backends/interpreter/native_scalar.d` codes a boxed
+`quickbite.lang.Value` to and from the host's native byte layout for the D
+scalar types (`bool`, `char`/`wchar`/`dchar`, every integral width,
+`float`/`double`; an `enum` with an integral base type dispatches through its
+resolved base and so also works). `real`/`TY.Tfloat80` is deliberately
+excluded: its 80-bit extended-precision layout is host- and ABI-specific
+padding, not a portable byte-for-byte native scalar, and nothing needs it
+yet. `writeScalar`/`readScalar` `memcpy` rather than use a pointer-typed
+load/store, matching `native_array.d`'s `writeSliceHeaderBytes`/
+`readSliceHeaderBytes` alignment reasoning (the destination is an interior
+`NativeBlock` byte range, not guaranteed aligned), and enforce their
+length contract with an unconditional throw rather than only an `in`
+contract, for the same stripped-under-`-release` reason those two give.
+
+`impl.d`'s `reinterpretLocalPointerLoad` -- the exact shim `ai/plans/
+value.md` and `interpreter.md` §9.10 named as this item's next retirement --
+now allocates a `NativeBlock` sized to the source local's type, `writeScalar`s
+the boxed source value into it, and `readScalar`s the target type back out of
+the leading bytes, taking that path only when both the source and target
+types are `isNativeScalarType` AND the target is no wider than the source
+(reading a wider target than the source local owns would read bytes the
+local never had; that stays on the untouched passthrough path, a
+pre-existing gap this call site does not attempt to close). Every other
+pair -- an aggregate, a pointer, `real`, or a widening read -- returns the
+boxed value unchanged exactly as before. The two previously-hardcoded pairs
+(`float`->`uint`, `double`->`ulong`) now produce their pinned results
+(`ut.backends.runner.ct.expressions` `pointer.
+floatBitsThroughUintPointerAreRawBits`/`pointer.
+doubleBitsThroughUlongPointerAreRawBits`) through real bytes instead of a
+name match; both stayed green. The private `floatBits`/`doubleBits` helpers
+at the bottom of `impl.d` had no other caller (confirmed by grep; the
+same-named helpers in `backends/ir/bits.d` and `executor.d` are unrelated
+modules, untouched) and are deleted.
+
+One previously-unhandled pair now takes the new byte-level path where it
+used to fall through unchanged: `dchar` source / `uint` target (4 bytes
+each), exercised by `pointer.
+dcharCompoundAssignThroughUintPointerIsIntegerCompatible.Interpreter`. This
+does not change that test's outcome -- traced before changing anything: the
+test's `==` goes through `impl.d`'s `equalValues`, which already compares a
+character and a numeric scalar by code point regardless of which `Value`
+variant is active, so the old passthrough and the new byte-reinterpreted
+read agree numerically for this pair (a `dchar`'s code-point value already
+equals its raw bits for values in this range). Grepped the whole test suite
+for every `cast(T*) &expr` shape before writing any code (`tests/ut`, no
+`tests/ct`/`tests/rt` top-level trees in this repo) and traced each hit;
+`ut.backends.runner.ct.cerealed.encodeFloatReinterpretsBytes` is the other
+live pointer-reinterpret fixture and is the same, already-covered
+`float`->`uint` pair through a function parameter rather than a plain
+local. No test pinned an old wrong answer for a newly-handled pair, so
+nothing needed weakening or was left un-migrated.
+
+New unit tests in `tests/ut/backends/interpreter/native_scalar.d` (added to
+`tests/main.d`'s explicit `runTests!` module list, matching how
+`native_array`/`native_struct` are registered there): round-trip for every
+handled width, `bool`, `char`/`wchar`/`dchar`, an enum with an integral base
+(via a new `enumTypeOf` test helper in `tests/ut/backends/interpreter/
+package.d`, mirroring the existing `structTypeOf`), the host compiler as an
+explicit oracle (`*cast(uint*) &f`/`*cast(ulong*) &d` computed in the test
+and compared against `writeScalar`+`readScalar`'s result), a wrong
+`dest`/`src` length throwing, and an unsupported type (`void*`) throwing.
+Focused runs: `bin/ut -s ut.backends.interpreter.native_scalar` (21 tests,
+0 failed), `bin/ut -s ut.backends.interpreter` (214 tests, 0 failed),
+`bin/ut -s ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
+ut.backends.runner.ct.structs ut.backends.evaluator.eval` (772 tests, 0
+failed, 6 expected `@ShouldFail`), and `bin/ut -s
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image` (146
+tests, 0 failed). The full `bin/ut --random` was left to the orchestrator
+per the usual long-suite handoff.
+
+`ffi_marshal.d`'s `marshalArgument`/`unmarshalValue` already do a narrower
+version of the same integral/float encode/decode for the libffi ABI seam
+(~lines 645-660 and 907-923); `native_scalar.d`'s codec deliberately agrees
+with it rather than diverging, but the two are not consolidated in this
+commit -- `ffi_marshal.d`'s buffer is a libffi cell, not a `NativeBlock`,
+and touching it was out of scope for this call site. Flagged as future
+consolidation, not done.
+
+What this commit does NOT do, to be precise about the state of item 7:
+`reinterpretLocalPointerLoad` itself is not deleted -- it still exists and
+is still the call site, but its body now routes through real native bytes
+instead of a name/type-pair match. The local's authoritative storage is
+still a boxed `Value`; this only changes what a *load through a
+differently-typed pointer* produces, not where the local itself lives --
+`locals[VarDeclaration]` is still `Value[VarDeclaration]`, not a
+`NativeBlock`. No other `interpreter.md` §9.10 shim is retired: `gc_*`
+capacity hooks, `runEmplaceRefCall`/`isEmplaceRef`, and
+`writeBackByValueClassArguments` are all still exactly as they were. The
+array/struct container composition work from the notes above still has no
+*other* interpreter call site (no guest expression reaches
+`arrayElement`/`sliceElement`/`structElement`/`arrayField`/`sliceField`);
+this commit's call site is scoped to scalar reinterpret-loads only, the
+narrowest slice of "give these types somewhere to be used" that had an
+existing, exactly-named shim to retire.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1987,21 +2084,35 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    composition matrix is now symmetric on both axes — struct→{struct,
    static array, slice} fields and array→{struct, static array, slice}
    elements — with no accessor left one-directional. None of this has a
-   user-visible display or FFI change yet, and no shim is retired yet.
-   What remains, the sole next step: the interpreter call site (`impl.d`/
-   `Walker`/`Value`) that actually gives these types somewhere to be used
-   instead of sitting unwired — including, for `slice` specifically, the
-   guest-level `~=`-on-a-slice reallocation semantics the "array
-   sub-slicing" progress note explicitly does not model, and, for
-   `setLength`, guest-level `~=`/append more generally (still a call-site
-   allocate-and-rebind operation, per the "array length assignment"
-   progress note) and keeping a previously written slice header in sync
-   with a later reallocating `setLength` (the call site's problem, not
-   this container's, exactly as for a stale compiled-D slice) — and only
-   after that, shim retirement one `interpreter.md` §9.10 entry at a time,
-   each proven by its ratchet fixtures staying green through the real path.
-   Class objects stay third in the migration order, per the "Migration
-   order" bullet above. Latency is measured only once the
+   user-visible display or FFI change yet.
+
+   Progress 2026-07-10: the native-layout types now have a first production
+   caller, and one named §9.10 shim is retired -- see the Status "first
+   interpreter call site" progress note above for the full account. Scoped
+   precisely: `impl.d`'s `reinterpretLocalPointerLoad` (a `*cast(T*)
+   &local` scalar reinterpret-load) now routes through a real `NativeBlock`
+   plus the new `native_scalar.d` codec instead of a hardcoded
+   `float`/`uint` and `double`/`ulong` name match, and `floatBits`/
+   `doubleBits` are deleted from `impl.d`. That is the *scalar* leaf case
+   only -- `reinterpretLocalPointerLoad` itself is not deleted, a local's
+   authoritative storage is still a boxed `Value` (`locals[VarDeclaration]`
+   is still `Value[VarDeclaration]`, not a `NativeBlock`), and the
+   array/struct composition matrix built up above still has no call site
+   at all: no guest expression yet reaches `arrayElement`/`sliceElement`/
+   `structElement`/`arrayField`/`sliceField`. What remains, the next step:
+   wire a guest-level `&local`/array/struct call site for the container
+   types themselves (not just the scalar reinterpret-load leaf) — including,
+   for `slice` specifically, the guest-level `~=`-on-a-slice reallocation
+   semantics the "array sub-slicing" progress note explicitly does not
+   model, and, for `setLength`, guest-level `~=`/append more generally
+   (still a call-site allocate-and-rebind operation, per the "array length
+   assignment" progress note) and keeping a previously written slice header
+   in sync with a later reallocating `setLength` (the call site's problem,
+   not this container's, exactly as for a stale compiled-D slice) — and
+   only after that, further shim retirement one `interpreter.md` §9.10
+   entry at a time, each proven by its ratchet fixtures staying green
+   through the real path. Class objects stay third in the migration order,
+   per the "Migration order" bullet above. Latency is measured only once the
    array and struct correctness gates are green and a real suite actually
    reaches native storage; item 6 already showed the benchmark suite never
    crossed the old marshaller seam. Until then, native layout is justified by

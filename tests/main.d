@@ -18,6 +18,7 @@ int main(string[] args) {
         "ut.backends.interpreter.layout",
         "ut.backends.interpreter.native_array",
         "ut.backends.interpreter.native_struct",
+        "ut.backends.interpreter.native_scalar",
         "ut.backends.runner.results",
         "ut.backends.runner.ct.expressions",
         "ut.backends.runner.ct.arrays",

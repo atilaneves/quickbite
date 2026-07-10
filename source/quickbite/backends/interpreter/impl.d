@@ -1959,12 +1959,24 @@ private struct Walker {
         );
     }
 
+    // `*cast(T*) &local`: a load of the same bytes at a different static
+    // type, not a hardcoded name/type-pair match (ai/plans/value.md item 7,
+    // "Shim deletion path"). Only taken when both `source` and `target` are
+    // `native_scalar.isNativeScalarType` AND `target` is no wider than
+    // `source`: reading a wider target than the source local owns would
+    // read bytes the local never had, which stays on the passthrough path
+    // below untouched (a pre-existing gap, not this call site's to fix).
+    // For every other pair -- an aggregate, a pointer, `real`, or a
+    // widening read -- this returns `value` unchanged exactly as before.
     private Value reinterpretLocalPointerLoad(
         in Value value,
         imported!"dmd.mtype".Type sourceType,
         imported!"dmd.mtype".Type pointerType,
     ) {
-        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, readScalar, writeScalar;
 
         auto source = sourceType is null ? null : sourceType.toBasetype;
         auto pointer = pointerType is null ? null : pointerType.toBasetype;
@@ -1974,13 +1986,17 @@ private struct Walker {
         if (source is null || target is null)
             return value;
 
-        if (source.ty == TY.Tfloat32 && target.ty == TY.Tuns32)
-            return Value(floatBits(cast(float) value.asReal));
+        if (!isNativeScalarType(source) || !isNativeScalarType(target))
+            return value;
 
-        if (source.ty == TY.Tfloat64 && target.ty == TY.Tuns64)
-            return Value(doubleBits(cast(double) value.asReal));
+        const sourceSize = typeByteSize(source);
+        const targetSize = typeByteSize(target);
+        if (targetSize > sourceSize)
+            return value;
 
-        return value;
+        auto block = NativeBlock.allocate(sourceSize, NativeBlock.Scan.no);
+        writeScalar(source, block.bytes, value);
+        return readScalar(target, block.bytes[0 .. targetSize]);
     }
 
     private Value staticArrayPointerView(
@@ -7246,22 +7262,6 @@ private imported!"dmd.dstruct".StructDeclaration constructorStructDeclaration(
     // returns an existing declaration reference.
     imported!"dmd.aggregate".AggregateDeclaration aggregate = function_.isThis;
     return aggregate is null ? null : aggregate.isStructDeclaration;
-}
-
-
-private ulong floatBits(in float value) @trusted pure nothrow {
-    // @trusted: reads the bytes of a local float as a same-sized uint for a
-    // single immediate reinterpret load; the pointer never escapes.
-    static assert(float.sizeof == uint.sizeof);
-    return *cast(uint*) &value;
-}
-
-
-private ulong doubleBits(in double value) @trusted pure nothrow {
-    // @trusted: reads the bytes of a local double as a same-sized ulong for a
-    // single immediate reinterpret load; the pointer never escapes.
-    static assert(double.sizeof == ulong.sizeof);
-    return *cast(ulong*) &value;
 }
 
 
