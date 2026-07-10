@@ -157,10 +157,10 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
 
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     slice.length.should == 3;
     (cast(void*) slice.ptr).should == array.block.address;
@@ -171,9 +171,9 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     slice[1] = 42;
 
@@ -185,9 +185,9 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     *cast(int*) array.element(2).ptr = 7;
 
@@ -199,9 +199,9 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     slice[0] = 1;
     slice[1] = 2;
@@ -215,25 +215,113 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 0);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
 
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     slice.length.should == 0;
 }
 
 
-@("NativeArray.writeSliceHeader.wrongDestinationLengthThrowsWithoutCorruptingAdjacentBytes")
+@("NativeArray.writeSliceHeader.outOfBoundsByteOffsetThrowsWithoutCorruptingDestinationBytes")
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    ubyte[NativeArray.sliceHeaderByteLength + 2] buffer;
-    buffer[] = 0xAA;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength + 2, NativeBlock.Scan.conservative);
+    dest.bytes[] = 0xAA;
 
-    array.writeSliceHeader(buffer[1 .. $ - 2]).shouldThrow!Exception;
+    array.writeSliceHeader(dest, 4).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: byteOffset + sliceHeaderByteLength "
+        ~ "does not fit within dest.byteLength",
+    );
 
-    foreach (b; buffer)
+    foreach (b; dest.bytes)
         b.should == 0xAA;
+}
+
+
+@("NativeArray.writeSliceHeader.byteOffsetNearSizeTMaxOverflowsInsteadOfWrapping")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+
+    // byteOffset + sliceHeaderByteLength overflows size_t and would wrap to
+    // a tiny value that fits `dest.byteLength` if computed with a plain `+`
+    // instead of `core.checkedint.addu`.
+    array.writeSliceHeader(dest, size_t.max - 1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: byteOffset + sliceHeaderByteLength "
+        ~ "does not fit within dest.byteLength",
+    );
+}
+
+
+@("NativeArray.writeSliceHeader.nonZeroByteOffsetLandsHeaderAtOffsetAndLeavesSurroundingBytesUntouched")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength + 8, NativeBlock.Scan.conservative);
+    dest.bytes[] = 0xAA;
+    const byteOffset = 4;
+
+    array.writeSliceHeader(dest, byteOffset);
+
+    foreach (b; dest.bytes[0 .. byteOffset])
+        b.should == 0xAA;
+    foreach (b; dest.bytes[byteOffset + NativeArray.sliceHeaderByteLength .. $])
+        b.should == 0xAA;
+    auto slice = *cast(int[]*) (dest.bytes.ptr + byteOffset);
+    slice.length.should == 3;
+    (cast(void*) slice.ptr).should == array.block.address;
+}
+
+
+@("NativeArray.writeSliceHeader.ownedGCPointerIntoNoScanDestinationThrows")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.no);
+
+    array.writeSliceHeader(dest, 0).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: dest is not scanned by the GC, but "
+        ~ "this array's block address is a live GC pointer",
+    );
+}
+
+
+// A zero-length array's block address is `null` (`GC.calloc(0, ...)`
+// returns `null`); writing a null pointer into an unscanned destination
+// loses nothing, so this deliberately stays legal.
+@("NativeArray.writeSliceHeader.zeroLengthArrayNullPointerIntoNoScanDestinationIsLegal")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.no);
+
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
+
+    slice.length.should == 0;
+}
+
+
+// A borrowed source array's address is not GC memory the collector tracks
+// in the first place, so `dest`'s scan policy cannot make it any more or
+// less visible; keeping that memory alive is the borrower/owner's job, per
+// `NativeBlock.borrow`'s own contract, not this function's.
+@("NativeArray.writeSliceHeader.borrowedSourceAddressIntoNoScanDestinationIsLegal")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.no);
+
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
+
+    slice.length.should == 3;
+    (cast(void*) slice.ptr).should == array.block.address;
 }
 
 

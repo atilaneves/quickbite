@@ -515,6 +515,35 @@ has no caller yet -- no interpreter wiring, no FFI seam use -- so this
 remains skeleton work exactly like the rest of item 7's block handle;
 nothing observes a borrowed `NativeArray` outside its own unit tests.
 
+Progress 2026-07-09 (scanned-destination contract): `writeSliceHeader`'s
+destination is no longer a bare `ubyte[]`; it is a `(NativeBlock,
+byteOffset)` pair, since a slice header's real destination is often a
+*field* inside a larger block (a struct's `T[]` field), not the whole
+block. Two invariants now hold, each its own thrown `Exception`:
+bounds -- `byteOffset + sliceHeaderByteLength` must fit within
+`dest.byteLength`, checked with `core.checkedint.addu` so a
+caller-supplied `byteOffset` near `size_t.max` cannot wrap the sum back
+into range -- and a scanned destination -- writing this array's block
+address into a destination the GC never scans (`Scan.no`, or borrowed
+non-GC memory) would make the element block invisible to the collector,
+which could then free it while the guest's `T[]` variable still points
+at it, exactly the hazard `NativeBlock.Scan` exists to avoid for the
+block itself. That second check fires exactly when this array's own
+block is `owned`, its address is non-null, and `dest.scan !=
+Scan.conservative`; it stays silent for two cases that are not this
+function's hazard: a zero-length array's block address is `null`
+(`GC.calloc(0, ...)` returns `null`), so writing it into an unscanned
+destination loses nothing, and a *borrowed* source array's address is
+not GC memory the collector tracks in the first place, so `dest`'s scan
+policy cannot make it more or less visible -- `NativeBlock.borrow`
+already puts keeping that memory alive on the borrower/owner, not on
+wherever the address is later written (a borrowed block could still
+wrap GC memory one layer further out; if so, it is the borrow
+precondition -- the owner outlives every derived handle -- that keeps it
+alive, not this destination's scan policy). `writeSliceHeader` still has
+no caller in production code; this closes the open question from item
+7 below without wiring anything in yet.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -900,14 +929,14 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    array should observe, and whether that deserves a diagnostic rather than
    compiled D's silent staleness; unions and overlapping fields, which the
    conservative whole-range root policy handles but the layout model does not
-   yet describe; class object bodies, deferred wholesale; and a
-   scanned-destination contract for `writeSliceHeader`. A GC-owned pointer
-   written into a destination the collector never scans -- a `NO_SCAN` block,
-   or borrowed non-GC memory -- is invisible to the GC, exactly the hazard
-   `NativeBlock.Scan` exists to avoid for the block itself. `writeSliceHeader`
-   takes a bare `ubyte[]` today and enforces nothing about what that `ubyte[]`
-   is backed by; it needs a real contract once its destination is a genuine
-   frame location instead of a test-supplied buffer.
+   yet describe; and class object bodies, deferred wholesale.
+   `writeSliceHeader`'s scanned-destination contract is no longer open:
+   `dest` is now a `(NativeBlock, byteOffset)` pair, and the function
+   throws before writing a GC-owned pointer into a destination the
+   collector never scans (see Status's "scanned-destination contract"
+   note above for the exact rule and the cases -- a zero-length array's
+   null pointer, a borrowed source address -- that stay legal despite an
+   unscanned destination).
 
    Next PR: the array-native block handle skeleton — an interpreter-owned array
    value carrying a stable block, `Type*`, length, stride, ownership, and scan

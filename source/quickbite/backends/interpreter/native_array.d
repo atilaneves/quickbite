@@ -131,26 +131,79 @@ public struct NativeArray {
     }
 
     // The byte length of a D dynamic-array slice header (`{ length, ptr }`):
-    // `writeSliceHeader`'s destination must be exactly this many bytes.
+    // how many bytes `writeSliceHeader` writes at its `byteOffset` into a
+    // destination block, which need not be exactly this many bytes itself
+    // -- the destination is often a field inside a larger block.
     public enum size_t sliceHeaderByteLength = (void[]).sizeof;
 
-    // Writes this array's slice header -- `{ length, ptr }` -- into `dest`,
-    // the storage location of the guest's `T[]` variable (the destination
-    // aliases the element block; it is not a snapshot). `dest` must be
-    // exactly `sliceHeaderByteLength` bytes; a mismatched length throws
-    // rather than truncating into, or overwriting past, `dest`. The written
-    // `ptr` is the element block's address (legitimately `null` for a
-    // zero-length array, see `NativeBlock.allocate(0)`); the written
+    // Writes this array's slice header -- `{ length, ptr }` -- into `dest`
+    // at `byteOffset`, the storage location of the guest's `T[]` variable
+    // (the destination aliases the element block; it is not a snapshot).
+    // The destination is a `(NativeBlock, byteOffset)` pair rather than a
+    // bare `ubyte[]` because a slice header's real destination is often a
+    // *field* inside a larger block -- a struct's `T[]` field -- not the
+    // whole block; `dest` being self-describing is also what makes the
+    // second invariant below checkable at all, which a bare `ubyte[]`
+    // could never answer.
+    //
+    // Two invariants are enforced, each its own thrown `Exception`:
+    //
+    // 1. Bounds. `byteOffset + sliceHeaderByteLength` must fit within
+    //    `dest.byteLength`, computed with `core.checkedint.addu` rather
+    //    than a plain `+` -- `byteOffset` is caller-supplied, and a value
+    //    near `size_t.max` could otherwise wrap the sum back into range
+    //    and pass a bounds check it should fail.
+    //
+    // 2. Scanned destination. Writing this array's block address into a
+    //    destination the GC never scans (`Scan.no`, or borrowed non-GC
+    //    memory) would make the element block invisible to the collector,
+    //    which could then free it while the guest's `T[]` variable still
+    //    points at it -- exactly the hazard `NativeBlock.Scan` exists to
+    //    avoid for the block itself. So this throws exactly when this
+    //    array's own block is `owned`, its address is non-null, and
+    //    `dest.scan != Scan.conservative`. Two cases stay legal despite a
+    //    `Scan.no` destination:
+    //      - A zero-length array's block address is `null`
+    //        (`GC.calloc(0, ...)` returns `null`); writing a null pointer
+    //        into an unscanned destination loses nothing, since there is
+    //        nothing there for the GC to lose track of.
+    //      - A *borrowed* source array's address is not GC memory the
+    //        collector tracks in the first place, so `dest`'s scan policy
+    //        cannot make it any more or less visible; `NativeBlock.borrow`
+    //        already puts keeping that memory alive on the borrower/owner,
+    //        not on wherever the address later gets written. (Caveat: a
+    //        borrowed block could itself wrap GC memory one layer further
+    //        out -- e.g. a borrowed pointer into a `T[]` some other owned
+    //        block backs. If so, it is the borrow precondition -- the
+    //        owner outlives every handle derived from it -- that keeps
+    //        that memory alive, not this destination's scan policy; this
+    //        function has no way to see through a borrowed pointer to
+    //        check that precondition holds.)
+    //
+    // The written `ptr` is the element block's address; the written
     // `length` is the element count, not a byte length.
-    public void writeSliceHeader(ubyte[] dest) const @safe {
-        if (dest.length != sliceHeaderByteLength)
+    public void writeSliceHeader(NativeBlock dest, in size_t byteOffset) const @safe {
+        import core.checkedint: addu;
+
+        bool overflow;
+        const end = addu(byteOffset, sliceHeaderByteLength, overflow);
+        if (overflow || end > dest.byteLength)
             throw new Exception(
                 "quickbite.backends.interpreter.native_array.NativeArray."
-                ~ "writeSliceHeader: destination must be exactly "
-                ~ "sliceHeaderByteLength bytes",
+                ~ "writeSliceHeader: byteOffset + sliceHeaderByteLength "
+                ~ "does not fit within dest.byteLength",
             );
 
-        writeSliceHeaderBytes(dest, _length, _block.address);
+        if (_block.ownership == NativeBlock.Ownership.owned
+            && _block.address !is null
+            && dest.scan != NativeBlock.Scan.conservative)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "writeSliceHeader: dest is not scanned by the GC, but "
+                ~ "this array's block address is a live GC pointer",
+            );
+
+        writeSliceHeaderBytes(dest.bytes[byteOffset .. end], _length, _block.address);
     }
 
     // How many `_stride`-sized elements the block's true GC allocation
@@ -275,11 +328,12 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
 
 // Writing a raw pointer's bit pattern into a byte range is not @safe; this
 // is the @trusted boundary. `memcpy` (rather than a pointer-typed store)
-// avoids relying on `dest` being size_t-aligned, which a caller-supplied
-// `ubyte[]` is not guaranteed to be. The `in` contract below is stripped
-// under `-release`, so this function's safety actually rests on its sole
-// caller, `NativeArray.writeSliceHeader`, whose unconditional `throw`
-// validates `dest.length` before calling here -- not on the contract.
+// avoids relying on `dest` being size_t-aligned, which a block's byte
+// range at an arbitrary `byteOffset` is not guaranteed to be. The `in`
+// contract below is stripped under `-release`, so this function's safety
+// actually rests on its sole caller, `NativeArray.writeSliceHeader`, whose
+// unconditional throws validate the destination's bounds and scan policy
+// before calling here -- not on the contract.
 private void writeSliceHeaderBytes(
     ubyte[] dest,
     in size_t length,
