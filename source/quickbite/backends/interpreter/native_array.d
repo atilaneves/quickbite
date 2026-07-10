@@ -245,6 +245,26 @@ public struct NativeArray {
     // emptyEndSliceBlockAddressResolvesToParentBaseUnderCurrentBinSlack`
     // for the actual measured answer at this file's fixture size.
     public NativeArray slice(in size_t begin, in size_t end) @safe {
+        // A strideless handle (`NativeArray.init`, `_stride == 0`) gets a
+        // guard of its own, checked first -- the same reachable hole
+        // `reserve`/`setLength` already close (see `reserve`'s comment for
+        // the ordering rationale this mirrors): without it, `slice(0, 0)`
+        // passes both checks below trivially (`begin == end == _length ==
+        // 0`), `_block.subRange(0, 0)` succeeds on the null block, and
+        // `NativeArray.adopt` below then calls `typeByteSize(_elementType)`
+        // with `_elementType is null` -- a null `Type` dereference that
+        // segfaults instead of throwing. A handle with no element type is
+        // not a properly constructed array, a more fundamental defect than
+        // any question of what range it is being asked to slice, so this is
+        // checked ahead of -- and unconditionally of -- `begin`/`end`
+        // themselves.
+        if (_stride == 0)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "slice: element stride is zero, so the array cannot be "
+                ~ "sliced",
+            );
+
         if (begin > end)
             throw new Exception(
                 "quickbite.backends.interpreter.native_array.NativeArray."
@@ -679,74 +699,81 @@ public struct NativeArray {
     // length) are untouched. This matches compiled D's own shrink path
     // exactly: `_d_arraysetlengthT_` does `if (newlength <= arr.length) {
     // arr = arr[0 .. newlength]; return newlength; }`, a pure slice
-    // truncation with no GC call at all. It is also why compiled D's
-    // classic footgun -- `arr.length--; arr ~= x;` silently overwriting
-    // what used to be the popped element -- is real: `~=` (`core/internal/
-    // array/appending.d`'s `_d_arrayappendcTX_`) can reuse that untouched
-    // tail in place via `gc_expandArrayUsed`'s "used size" bookkeeping,
-    // with NO zeroing of its own (the caller is about to fill the appended
-    // slot immediately) -- unlike `setLength`'s own grow path below, which
-    // always zeroes.
+    // truncation with no GC call at all -- and it stays legal on a
+    // `borrowed` handle, including a `NativeArray.slice` result: a pure
+    // length change touches no storage, so there is no ownership question
+    // to ask. It is also why compiled D's classic footgun -- `arr.length
+    // --; arr ~= x;` silently overwriting what used to be the popped
+    // element -- is real: `~=` (`core/internal/array/appending.d`'s
+    // `_d_arrayappendcTX_`) can reuse that untouched tail in place via
+    // `gc_expandArrayUsed`'s "used size" bookkeeping, with NO zeroing of
+    // its own (the caller is about to fill the appended slot immediately)
+    // -- unlike `setLength`'s own grow path below, which always zeroes.
     //
-    // Grow (`n > _length`): every byte from the OLD `_length * stride` up
-    // to the new `n * stride` is zeroed, whether or not the block itself
-    // needed to grow to hold them. This is NOT implied by `reserve`'s own
-    // zeroing: `reserve` only zeroes bytes past whatever `_block.
-    // byteLength` was at the moment it ran, and a shrink never touches
-    // `_block.byteLength` at all -- so if this array was shrunk and is now
-    // growing back to (or within) its old span, the bytes between the new
-    // `_length` and the block's own already-live span are stale leftovers
-    // from before the shrink, not fresh room `reserve` ever zeroed.
-    // Compiled D agrees: `_d_arraysetlengthT_`'s own zeroing (`memset
-    // (newdata + oldsize, 0, newsize - oldsize)`) runs unconditionally on
-    // every grow, keyed on the CURRENT (possibly already-shrunk) `arr.
-    // length`, regardless of whether `gc_expandArrayUsed` grew the
-    // allocation in place or a fresh one was made -- a grow-back after a
-    // shrink is re-zeroed there too (confirmed against a compiled probe:
-    // shrinking `[1, 2, 3, 4, 5]` to length 2 then growing back to 5 reads
-    // back `[1, 2, 0, 0, 0]`, never the original `3, 4, 5`).
+    // Grow (`n > _length`) on a `borrowed` handle throws unconditionally,
+    // never touching storage -- a deliberate narrowing (review finding,
+    // 2026-07-10) of an earlier version of this function, which instead
+    // allowed growth within the handle's own already-verified `_block.
+    // byteLength` (e.g. growing a shrunk `NativeArray.slice` back within
+    // its original span). That version was unsound: because `slice` is a
+    // real, bidirectional aliasing view, re-zeroing on such a regrowth was
+    // visible through the PARENT too -- growing a shrunk CHILD slice
+    // zeroed bytes the parent (or a sibling slice over the same block)
+    // still considered live, which this function's own former test
+    // demonstrated. It also directly contradicted `NativeArray.adopt`'s
+    // (and `NativeStruct.adopt`'s) own documented promise that a block's
+    // slack bytes beyond what a handle claims "are none of this factory's
+    // business" -- growing into those slack bytes from a DIFFERENT handle
+    // is exactly the factory's business being violated.
     //
-    // Whether the block itself needs to grow is decided by `requiredBytes >
-    // _block.byteLength` -- this array's own already-verified block span --
-    // deliberately NOT `n > capacity`. The two differ exactly when it
-    // matters: after a shrink, `_block.byteLength` still covers the
-    // pre-shrink span, so growing back within it needs no reallocation at
-    // all, regardless of what `capacity` (the GC's own bin size divided by
-    // stride -- a DIFFERENT, unrelated bound, see below) would say. When
-    // `_block.byteLength` genuinely is exceeded, growth reuses `reserve`'s
-    // own reallocating machinery (`growBlockTo` above) rather than
-    // re-deriving it, throwing for a borrowed block for the identical
-    // reason `reserve` does: this handle cannot legitimately grow memory it
-    // does not own.
+    // This was checked against compiled D rather than assumed which
+    // behaviour is actually correct: a guest `s.length = n` growing a
+    // slice does NOT reuse the parent's storage in general.
+    // `_d_arraysetlengthT_` reaches `gc_expandArrayUsed`, whose real
+    // implementation, `expandArrayUsed` (`core/internal/gc/impl/
+    // conservative/gc.d`, ~line 1491), only succeeds when the block's
+    // already-stored allocation length matches the slice's own current
+    // length -- an old-length comparison inside `__setArrayAllocLengthImpl`
+    // (`core/internal/gc/blockmeta.d`). The sibling `reserveArrayCapacity`
+    // (same file, ~line 1605, used by `reserve`'s own capacity query, not
+    // `setLength`'s grow path) spells out the identical principle
+    // explicitly as `existingUsed != blockUsed`. Either way: only the
+    // block's current single tracked TAIL owner may extend in place; every
+    // other live slice over the same block, including one that was just
+    // shrunk, fails that check and gets a brand-new block instead, leaving
+    // the original bytes -- and every other handle over them -- untouched.
+    // Confirmed against a compiled probe: `a[1 .. 4]`
+    // shrunk to length 1 then grown back to 3 gets a NEW address, and `a`
+    // itself is unchanged. A `NativeArray` handle has no equivalent "am I
+    // the current tail owner" bookkeeping, so it has no sound way to
+    // decide which one of potentially several live borrowed views over the
+    // same block is safe to grow into -- meaning no call site could ever
+    // have legitimately used the old grow-within-byteLength branch anyway.
+    // Growth-and-rebind of a borrowed handle is therefore a call-site
+    // operation, never this container's, exactly as `slice`'s own comment
+    // already says `~=` is -- there is no such call site yet.
     //
-    // The borrowed decision: growth is allowed whenever `requiredBytes <=
-    // _block.byteLength`, even for a borrowed array such as a `NativeArray.
-    // slice` result -- shrink it, then grow back within that same span, and
-    // the bytes are demonstrably still there: `_block.bytes` is already an
-    // ordinary, bounds-checked view into real, live storage (`NativeBlock.
-    // subRange`'s own construction already proved that), so reading or
-    // writing within it needs no reallocation and violates no ownership
-    // claim. Only growth BEYOND `_block.byteLength` -- needing more bytes
-    // than this handle's own block was ever given -- reaches the borrowed
-    // guard and throws, because that genuinely would require reallocating
-    // memory this handle does not own. This is deliberately keyed on
-    // `_block.byteLength` (a mechanical fact: how many bytes THIS handle's
-    // own block spans), never on `capacity` (which is 0 for every borrowed
-    // block, unconditionally, per `NativeBlock.trueByteSize`'s own
-    // `Ownership` guard, so it could never say "yes" for a borrowed array
-    // at all) and never on `Ownership` directly (which only answers "may
-    // this be reallocated?", not "are these particular bytes already
-    // here?"). `capacity`'s GC-bin-size meaning is untouched by this: it
-    // keeps meaning "how big could `reserve` grow this WITHOUT
-    // reallocating," a question that is simply moot for a borrowed handle,
-    // which can never reallocate at all -- `byteLength` and `capacity` stay
-    // two different bounds on purpose, and this reuses the one that is
-    // actually true of a borrowed handle's memory. See `NativeArray.
-    // setLength.onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent`
-    // for the honest divergence from compiled D this choice produces (a
-    // shrunk-then-regrown compiled-D sub-slice reallocates instead of
-    // reusing its parent's storage, per that test's own comment) and why it
-    // is accepted.
+    // Grow on an OWNED handle is unaffected by the narrowing above -- an
+    // owned handle's `_block` is its own real allocation, never shared
+    // with another live view, so there is no other handle's bytes to put
+    // at risk. Every byte from the OLD `_length * stride` up to the new
+    // `n * stride` is zeroed, whether or not the block itself needed to
+    // grow to hold them. This is NOT implied by `reserve`'s own zeroing:
+    // `reserve` only zeroes bytes past whatever `_block.byteLength` was at
+    // the moment it ran, and a shrink never touches `_block.byteLength` at
+    // all -- so if this array was shrunk and is now growing back to (or
+    // within) its old span, the bytes between the new `_length` and the
+    // block's own already-live span are stale leftovers from before the
+    // shrink, not fresh room `reserve` ever zeroed. Compiled D agrees:
+    // `_d_arraysetlengthT_`'s own zeroing (`memset(newdata + oldsize, 0,
+    // newsize - oldsize)`) runs unconditionally on every grow, keyed on
+    // the CURRENT (possibly already-shrunk) length, regardless of whether
+    // the allocation grew in place or was replaced -- confirmed against a
+    // compiled probe: shrinking `[1, 2, 3, 4, 5]` to length 2 then growing
+    // back to 5 reads back `[1, 2, 0, 0, 0]`, never the original `3, 4,
+    // 5`. `setLength.shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating`
+    // pins this for an owned array without reallocating (`_block.
+    // byteLength` already covered the regrown span).
     //
     // Strideless (`NativeArray.init`, `_stride == 0`): mirrors `reserve`'s
     // own guard, in the same position -- checked first, unconditionally,
@@ -782,19 +809,20 @@ public struct NativeArray {
             );
 
         if (n > _length) {
+            if (_block.ownership == NativeBlock.Ownership.borrowed)
+                throw new Exception(
+                    "quickbite.backends.interpreter.native_array."
+                    ~ "NativeArray.setLength: cannot grow a borrowed "
+                    ~ "array; SystemLinker reallocates a fresh block for a "
+                    ~ "guest `s.length = n` on a slice rather than growing "
+                    ~ "it in place, so growth-and-rebind belongs to the "
+                    ~ "call site, not this container",
+                );
+
             const requiredBytes = byteLength(n, _stride);
 
-            if (requiredBytes > _block.byteLength) {
-                if (_block.ownership == NativeBlock.Ownership.borrowed)
-                    throw new Exception(
-                        "quickbite.backends.interpreter.native_array."
-                        ~ "NativeArray.setLength: cannot grow this array "
-                        ~ "beyond its own block's bytes; the block is "
-                        ~ "borrowed, so its memory is owned elsewhere",
-                    );
-
+            if (requiredBytes > _block.byteLength)
                 growBlockTo(requiredBytes);
-            }
 
             _block.bytes[_length * _stride .. requiredBytes] = 0;
         }
@@ -867,14 +895,35 @@ public struct SliceHeaderBytes {
 // This only copies two fixed-size values out of an already bounds-checked
 // byte range into local storage -- it never dereferences `ptr`, so nothing
 // here can violate memory safety no matter what bit pattern the bytes
-// contain. That is this function's own `@trusted` boundary: reading is
-// always safe; USING the resulting `ptr` to reconstruct a slice
-// (`NativeArray.sliceElement`/`NativeStruct.sliceField`, via `NativeArray.
-// borrow`) is where the real, unverifiable trust happens, which is why
-// those callers -- not this helper -- are `@system`.
-public SliceHeaderBytes readSliceHeaderBytes(in ubyte[] src) @trusted
-in (src.length == size_t.sizeof + (void*).sizeof) {
+// contain, PROVIDED `src` is actually `sliceHeaderByteLength` bytes long.
+// That length is this function's own responsibility to enforce, not its
+// caller's: unlike `writeSliceHeaderBytes` above (`private`, safety resting
+// entirely on its sole caller's own prior checks), this function is
+// `public` -- reachable from any `@safe` caller anywhere, not just its two
+// known callers (`NativeArray.sliceElement`, `NativeStruct.sliceField`),
+// which happen to always pass exactly the right length today. An `in`
+// contract alone is not enough: contracts are stripped under `-release`, so
+// a mismatched `src` would then `memcpy` `sliceHeaderByteLength` bytes out
+// of a shorter slice's `ptr`, reading past its end -- exactly the
+// `@trusted` boundary NOT actually holding that this fixes. The explicit
+// throw below runs unconditionally, in every build mode, so the length
+// this function's safety depends on is genuinely enforced rather than
+// merely documented. That is this function's own `@trusted` boundary in
+// full: reading exactly `sliceHeaderByteLength` bytes out of a range this
+// function has itself just verified is that long is always safe; USING the
+// resulting `ptr` to reconstruct a slice (`NativeArray.sliceElement`/
+// `NativeStruct.sliceField`, via `NativeArray.borrow`) is where the real,
+// unverifiable trust happens, which is why those callers -- not this
+// helper -- are `@system`.
+public SliceHeaderBytes readSliceHeaderBytes(in ubyte[] src) @trusted {
     import core.stdc.string: memcpy;
+
+    if (src.length != NativeArray.sliceHeaderByteLength)
+        throw new Exception(
+            "quickbite.backends.interpreter.native_array."
+            ~ "readSliceHeaderBytes: src.length does not match "
+            ~ "sliceHeaderByteLength",
+        );
 
     SliceHeaderBytes header;
     memcpy(&header.length, src.ptr, size_t.sizeof);

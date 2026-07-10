@@ -3,7 +3,7 @@ module ut.backends.interpreter.native_array;
 
 import ut;
 import ut.backends.interpreter: structTypeOf;
-import quickbite.backends.interpreter.native_array: NativeArray;
+import quickbite.backends.interpreter.native_array: NativeArray, readSliceHeaderBytes;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_struct: NativeStruct;
 import dmd.mtype: Type;
@@ -357,6 +357,23 @@ unittest {
 }
 
 
+// `readSliceHeaderBytes` is `public`, reachable from any `@safe` caller
+// anywhere -- not just its two known callers (`NativeArray.sliceElement`,
+// `NativeStruct.sliceField`), which always pass exactly
+// `sliceHeaderByteLength` bytes. Before the fix, the only length
+// enforcement was an `in (src.length == ...)` contract, which `-release`
+// strips -- a 3-byte slice would then `memcpy` `size_t.sizeof +
+// (void*).sizeof` bytes out of `src.ptr`, reading past the end of whatever
+// 3-byte slice was handed in. This pins the boundary actually holding: an
+// unconditional, un-strippable check that throws instead.
+@("NativeArray.readSliceHeaderBytes.wrongLengthThrows")
+unittest {
+    ubyte[3] src;
+
+    readSliceHeaderBytes(src[]).shouldThrow!Exception;
+}
+
+
 @("NativeArray.allocate.capacityIsAtLeastLength")
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
@@ -663,6 +680,25 @@ unittest {
     array.reserve(0);
 
     array.block.address.should == address;
+}
+
+
+// A default-constructed `NativeArray.init` has no element type, hence no
+// stride (`_stride == 0`) -- the same reachable handle `reserve`/`setLength`
+// already guard. Before the fix, `slice(0, 0)` on it did NOT throw:
+// `begin > end` and `end > _length` both pass trivially (0, 0, 0 are all
+// equal), `_block.subRange(0, 0)` on the null block succeeds (an empty
+// sub-range of an empty block), and `NativeArray.adopt` then computed
+// `typeByteSize(_elementType)` with `_elementType is null` -- a null `Type`
+// dereference in `dmd.typesem.size`, segfaulting `@safe` code instead of
+// throwing. `0, 0` is deliberately chosen: it is the narrowest possible
+// call that already satisfies every OTHER check `slice` performs, so
+// nothing but the missing strideless guard stands between it and `adopt`.
+@("NativeArray.slice.onInitHandleThrows")
+unittest {
+    NativeArray array;
+
+    array.slice(0, 0).shouldThrow!Exception;
 }
 
 
@@ -1004,25 +1040,13 @@ unittest {
 }
 
 
-// A `NativeArray.slice` result's own `block.byteLength` is EXACTLY its own
-// original length * stride (no slack) -- `subRange`'s own construction
-// already proved those bytes genuinely belong to this handle. Shrinking,
-// then growing back within that same span needs no reallocation and
-// violates no ownership claim, so it succeeds even though the handle is
-// `borrowed`. Because `slice` is a real aliasing view (its own documented
-// contract: writes through it are visible in the parent and vice versa),
-// the re-zeroing is visible through the parent too -- this diverges from
-// compiled D, which reallocates a shrunk-then-regrown sub-slice instead of
-// reusing the parent's storage (checked against a compiled probe: `a[1 ..
-// 4]` shrunk to length 1 then grown back to 3 gets a NEW address, and `a`
-// itself is untouched). That specific choice comes from druntime's "used
-// size" bookkeeping (`gc_expandArrayUsed`'s `existingUsed == blockUsed`
-// check, `core/internal/array/appending.d`) recognising only the block's
-// current tail owner as extendable in place -- a mechanism this simpler
-// model does not have and item 7 does not ask for. Divergence accepted:
-// nothing here reads or writes outside what `subRange`'s own bounds check
-// already verified belongs to this handle.
-@("NativeArray.setLength.onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent")
+// A pure length change touches no storage, so it stays legal on a
+// `borrowed` handle such as a `NativeArray.slice` result -- there is no
+// ownership question to ask when nothing is being grown. The parent's own
+// live elements (2 and 3, outside `sub`'s new length-1 span but still
+// inside its unchanged `block.byteLength`) must stay untouched: shrinking
+// `sub` is a fact about `sub._length` alone, never about the bytes.
+@("NativeArray.setLength.onBorrowedShrinkSucceedsAndLeavesParentUntouched")
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 5);
     array.element(1)[0] = 2;
@@ -1032,31 +1056,66 @@ unittest {
     const address = sub.block.address;
 
     sub.setLength(1);
-    sub.setLength(3);
 
+    sub.length.should == 1;
     sub.block.address.should == address;
     sub.element(0)[0].should == 2;
-    sub.element(1)[0].should == 0;
-    sub.element(2)[0].should == 0;
-    array.element(2)[0].should == 0;
-    array.element(3)[0].should == 0;
+    array.element(2)[0].should == 3;
+    array.element(3)[0].should == 4;
 }
 
 
-// Growth BEYOND a borrowed handle's own `block.byteLength` -- needing more
-// bytes than this handle was ever given -- genuinely would require
-// reallocating memory it does not own, so it throws exactly as `reserve`
-// does for the same reason.
-@("NativeArray.setLength.onSliceGrowBeyondBlockByteLengthThrows")
+// This used to be `NativeArray.setLength.
+// onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent`, and used
+// to succeed: `sub`'s own `block.byteLength` is exactly its original
+// length * stride (no slack), so shrinking it to 1 element then growing it
+// back to 3 stayed within bytes `subRange`'s own construction had already
+// verified belonged to `sub`. That was unsound -- `slice` is a real,
+// bidirectional aliasing view, so the regrowth's re-zeroing was visible
+// through the PARENT too, silently zeroing elements 2 and 3, which the
+// parent never asked to have touched; this test's own prior assertions
+// pinned exactly that. Checked against compiled D rather than assumed
+// which behaviour is actually right: `_d_arraysetlengthT_` only reuses a
+// block in place via `gc_expandArrayUsed`, whose real implementation,
+// `expandArrayUsed` (core/internal/gc/impl/conservative/gc.d ~1491), only
+// succeeds when the block's already-stored allocation length matches the
+// slice's own current length -- an old-length comparison inside
+// `__setArrayAllocLengthImpl` (core/internal/gc/blockmeta.d). The sibling
+// `reserveArrayCapacity` (same file, ~1605, used by `reserve`'s own
+// capacity query, not `setLength`'s grow path) spells out the identical
+// principle explicitly as `existingUsed != blockUsed`. Neither check lives
+// in `core/internal/array/appending.d`, which only declares/calls the
+// `gc_expandArrayUsed` hook -- i.e. only the block's current single
+// tracked TAIL owner may extend in place. A shrunk-then-regrown compiled-D
+// sub-slice fails that check and gets a brand-new block instead, leaving
+// the original bytes untouched (confirmed against a compiled probe: `a[1
+// .. 4]` shrunk to length 1 then grown back to 3 gets a NEW address, and
+// `a` itself is unchanged). A `NativeArray` handle has no equivalent "am I
+// the current tail owner" bookkeeping, so growth on ANY borrowed handle
+// now throws unconditionally, regardless of `_block.byteLength` -- which
+// also merges in the plain, never-shrunk case this file used to pin
+// separately as `setLength.onSliceGrowBeyondBlockByteLengthThrows`: that
+// scenario hits the identical `n > _length && ownership == borrowed` check
+// with the identical message, so this shrink-then-regrow shape (the
+// trickier, previously-unsound case) already exercises it too.
+@("NativeArray.setLength.onBorrowedShrinkThenGrowBackThrows")
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 5);
+    array.element(1)[0] = 2;
+    array.element(2)[0] = 3;
+    array.element(3)[0] = 4;
     auto sub = array.slice(1, 4);
+    sub.setLength(1);
 
-    sub.setLength(4).shouldThrowWithMessage(
+    sub.setLength(3).shouldThrowWithMessage(
         "quickbite.backends.interpreter.native_array.NativeArray."
-        ~ "setLength: cannot grow this array beyond its own block's bytes; "
-        ~ "the block is borrowed, so its memory is owned elsewhere",
+        ~ "setLength: cannot grow a borrowed array; SystemLinker "
+        ~ "reallocates a fresh block for a guest `s.length = n` on a "
+        ~ "slice rather than growing it in place, so growth-and-rebind "
+        ~ "belongs to the call site, not this container",
     );
+    array.element(2)[0].should == 3;
+    array.element(3)[0].should == 4;
 }
 
 
@@ -1300,6 +1359,33 @@ unittest {
         "quickbite.backends.interpreter.native_array.NativeArray."
         ~ "arrayElement: index out of range",
     );
+}
+
+
+// Mirrors `NativeArray.structElement.reportsBorrowedOwnership`: an
+// element view shares the parent's block rather than owning an
+// independent allocation, exactly as for a struct-typed element.
+@("NativeArray.arrayElement.reportsBorrowedOwnership")
+unittest {
+    auto holderType = structTypeOf(q{ struct Int3Holder { int[3] xs; } }, "Int3Holder");
+    auto elementType = NativeStruct.allocate(holderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 4);
+
+    array.arrayElement(1).ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+// Mirrors `NativeArray.structElement.blockTrueByteSizeIsZero`: an array
+// element is not an independent allocation, so nothing about it can be
+// grown -- pinned directly on the block, as `NativeArray` has no other
+// `capacity`-style reader that would apply to a nested `NativeArray` view.
+@("NativeArray.arrayElement.blockTrueByteSizeIsZero")
+unittest {
+    auto holderType = structTypeOf(q{ struct Int3Holder { int[3] xs; } }, "Int3Holder");
+    auto elementType = NativeStruct.allocate(holderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 4);
+
+    array.arrayElement(1).block.trueByteSize.should == 0;
 }
 
 

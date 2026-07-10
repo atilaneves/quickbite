@@ -973,7 +973,12 @@ druntime rather than assumed: a small raw-`GC.calloc` probe script
 (`core.memory.GC.addrOf` on the past-the-end pointer of a 12-byte and a
 16-byte allocation) showed a 12-byte block's past-the-end pointer resolves
 non-null -- the 16-byte bin it rounds up to leaves 4 bytes of slack -- while
-an exactly-16-byte block's does not, since there is no slack left. `slice`
+an exactly-16-byte block's resolved null in that same probe run. That is
+what was actually observed, not a general property of zero-slack blocks:
+with no slack left, the past-the-end pointer lands exactly at the NEXT
+bin's own base address, so `GC.addrOf` of it resolves non-null whenever
+that neighbouring bin happens to be live, and null only because the probe's
+neighbouring bin was free at the time. `slice`
 itself never asks this question -- it only calls `subRange`/`adopt`,
 neither of which touches `GC.addrOf` -- so this is not a decision `slice`
 makes, only a fact worth pinning rather than assuming for whichever caller
@@ -1098,7 +1103,7 @@ writeThroughOneAnonymousUnionMemberIsVisibleThroughTheOtherTagUntouched`
 using `WithAnonymousUnion.i.offsetof`/`.f.offsetof` the same way -- D
 promotes anonymous-union member names into the enclosing struct's own
 scope, so the host compiler still gives a direct `.offsetof` oracle for
-each). All 153 focused `ut.backends.interpreter` tests pass, with zero
+each). The full focused `ut.backends.interpreter` suite passes, with zero
 production-code changes: this progress note only pins facts the existing
 `layout.d`/`native_struct.d` code already got right.
 
@@ -1148,50 +1153,77 @@ never the original `3, 4, 5`). `setLength.
 shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating` pins this without
 reallocating (`_block.byteLength` already covered the regrown span).
 
-Whether the block itself needs to grow is decided by `requiredBytes >
-_block.byteLength` -- deliberately NOT `n > capacity`. The two differ
-exactly when it matters: after a shrink, `_block.byteLength` still covers
-the pre-shrink span, so growing back within it needs no reallocation
-regardless of what `capacity` (the GC's own bin size divided by stride --
-a different, unrelated bound) would say. When `_block.byteLength` is
-genuinely exceeded, growth reuses `reserve`'s own reallocating machinery,
-factored out into a new private `growBlockTo(requiredBytes)` shared by both
-callers -- a pure, behaviour-preserving extraction; `reserve`'s own tests
-are unchanged.
+Whether an OWNED handle's block itself needs to grow is decided by
+`requiredBytes > _block.byteLength` -- deliberately NOT `n > capacity`. The
+two differ exactly when it matters: after a shrink, `_block.byteLength`
+still covers the pre-shrink span, so growing back within it needs no
+reallocation regardless of what `capacity` (the GC's own bin size divided
+by stride -- a different, unrelated bound) would say. When `_block.
+byteLength` is genuinely exceeded, growth reuses `reserve`'s own
+reallocating machinery, factored out into a private
+`growBlockTo(requiredBytes)` shared by both callers -- a pure,
+behaviour-preserving extraction; `reserve`'s own tests are unchanged.
 
-The borrowed decision: growth is allowed whenever `requiredBytes <=
-_block.byteLength`, even for a borrowed array such as a `NativeArray.
-slice` result -- shrink it, then grow back within that same span, and the
-bytes are demonstrably still there, since `_block.bytes` is already an
-ordinary, bounds-checked view into real, live storage (`NativeBlock.
-subRange`'s own construction already proved that). Only growth BEYOND
-`_block.byteLength` -- needing more bytes than this handle's own block was
-ever given -- throws, because that genuinely would require reallocating
-memory this handle does not own. This is keyed on `_block.byteLength` (a
-mechanical fact about THIS handle's own block), never on `capacity` (which
-is 0 for every borrowed block unconditionally, so it could never say "yes"
-for a borrowed array at all) and never on `Ownership` directly (which only
-answers "may this be reallocated?", not "are these particular bytes
-already here?"). `capacity`'s GC-bin-size meaning is untouched: it still
-means "how big could `reserve` grow this WITHOUT reallocating," a question
-that is moot for a borrowed handle, which can never reallocate at all --
-`byteLength` and `capacity` stay two different bounds on purpose.
+The borrowed decision, corrected by review (2026-07-10, findings 3 and 10):
+growth on a `borrowed` handle now throws unconditionally, regardless of
+`_block.byteLength`. This note originally documented a different rule --
+growth allowed whenever `requiredBytes <= _block.byteLength`, on the
+reasoning that a `NativeArray.slice` result's own block span is bytes
+`subRange` had already verified belong to the handle, so reusing them
+needed no reallocation and violated no ownership claim. That reasoning was
+false: `slice` is a real, bidirectional aliasing view, so growing a
+SHRUNK child slice back within its own span re-zeroed bytes the PARENT (or
+a sibling slice over the same block) still considered live -- exactly what
+this note's own regression test demonstrated (`setLength.
+onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent`, since
+renamed to `.onBorrowedShrinkThenGrowBackThrows` -- see below). The old
+rule also directly contradicted `NativeArray.adopt`'s and `NativeStruct.
+adopt`'s own documented promise that a block's slack bytes beyond what a
+handle claims "are none of this factory's business": a borrowed handle
+reaching into bytes beyond what it was itself given, because a DIFFERENT
+handle over the same block happened to claim them first, is exactly that
+promise being broken. "No byte belonging to some OTHER, uninvolved handle
+is ever at risk" -- this note's own original closing claim for the old
+rule -- was the false statement review caught; the shrink-then-grow-back
+test is itself the counterexample.
 
-This produces an honest, documented divergence from compiled D, pinned in
-`setLength.onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent`'s
-own comment: because `slice` is a real, bidirectional aliasing view (its
-own already-shipped contract), the re-zeroing from a bounded borrowed
-grow-back is visible through the parent too. Checked against a second
-compiled probe, real D does NOT do this -- a shrunk-then-regrown sub-slice
-(`a[1 .. 4]` shrunk to length 1, grown back to 3) gets a NEW address, and
-`a` itself is untouched. That specific choice comes from druntime's "used
-size" bookkeeping (`gc_expandArrayUsed`'s `existingUsed == blockUsed`
-check) recognising only the block's current tail owner as extendable in
-place -- a mechanism this simpler model does not have and item 7 does not
-ask for. The divergence is accepted because nothing in this model's
-`setLength` ever reads or writes outside what `NativeBlock.subRange`'s own
-bounds check already verified belongs to the handle in question, so no
-byte belonging to some OTHER, uninvolved handle is ever at risk.
+Re-checked against compiled D rather than assumed which behaviour is
+actually right: a guest `s.length = n` growing a slice does NOT reuse the
+parent's storage in general. `_d_arraysetlengthT_` reaches
+`gc_expandArrayUsed`, whose real implementation, `expandArrayUsed`
+(`core/internal/gc/impl/conservative/gc.d`, ~line 1491), only succeeds when
+the stored allocation-length matches the slice's own current length --
+`__setArrayAllocLengthImpl`'s old-length comparison
+(`core/internal/gc/blockmeta.d`), a CAS-style equality check against the
+value already stored for that block. `reserveArrayCapacity` (same file,
+~line 1605, used by `reserve`'s own capacity query rather than by
+`setLength`'s grow path directly) gates on the textually clearer
+`existingUsed != blockUsed` -- the same "only the block's current single
+tracked tail owner is extendable in place" principle, spelled out
+explicitly. Neither check lives in `core/internal/array/appending.d`,
+which only declares/calls the `gc_expandArrayUsed` hook -- this note's
+original citation, and a matching one in `tests/ut/backends/interpreter/
+native_array.d`, both named that file and have been corrected. Confirmed
+against a compiled probe (unchanged from the original check): `a[1 .. 4]`
+shrunk to length 1 then grown back to 3 gets a NEW address, and `a` itself
+is unchanged -- every other live slice over the same block, including one
+that was just shrunk, fails the tail-owner check and gets a brand-new block
+instead.
+
+A `NativeArray` handle has no equivalent "am I the current tail owner"
+bookkeeping, so it has no sound way to decide which one of potentially
+several live borrowed views over the same block is safe to grow into --
+meaning no call site could ever have legitimately used the old
+grow-within-byteLength branch anyway. This is therefore a deliberate
+narrowing of an unwired primitive with no caller, decided by review, not a
+loss of any real capability: `setLength` had no call site before this
+change and still has none after it (see "still not done" below, unchanged
+by this narrowing). Growth-and-rebind of a borrowed handle belongs to
+whatever future call site evaluates a guest `s.length = n`, exactly as
+`slice`'s own comment already says `~=` does. Growth WITHIN the current
+length -- i.e. a shrink, `n <= _length` -- stays legal on a borrowed handle
+and remains a no-op on storage, per the shrink paragraph above; only growth
+beyond the current length is affected.
 
 Strideless (`NativeArray.init`, `_stride == 0`) mirrors `reserve`'s own
 guard, in the same position: checked first, unconditionally, before even
@@ -1230,9 +1262,13 @@ shrinkLeavesAddressCapacityAndBytesUnchanged`; `.
 shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating`; `.
 sameLengthIsANoOp`; `.onInitHandleZeroThrows` and `.
 onInitHandleNonZeroThrows`; `.overflowingLengthTimesStrideThrows`; `.
+onBorrowedShrinkSucceedsAndLeavesParentUntouched` and `.
+onBorrowedShrinkThenGrowBackThrows` (the borrowed decision, both
+directions -- these two supersede and merge in the original `.
 onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent` and `.
-onSliceGrowBeyondBlockByteLengthThrows` (the borrowed decision, both
-directions). All 166 focused `ut.backends.interpreter` tests pass.
+onSliceGrowBeyondBlockByteLengthThrows`, both of which asserted the same
+throw once the borrowed decision above was corrected). The full focused
+`ut.backends.interpreter` suite passes.
 
 Still not done: no `impl.d`/`Walker`/`Value` wiring for `setLength` (no
 guest `arr.length = n` reaches it yet), no `interpreter.md` §9.10 shim
@@ -1327,8 +1363,8 @@ acceptsBlockLargerThanStructsize` (the oversized-block decision above,
 pinned directly); and `.
 viewsExistingBlockSoAFieldWriteIsVisibleAtTheBlocksOwnOffset` (aliasing).
 No `GC.collect`-based liveness test was added, per this plan's own
-"ownership vs GC-visibility" note. All 180 focused `ut.backends.interpreter`
-tests pass.
+"ownership vs GC-visibility" note. The full focused `ut.backends.
+interpreter` suite passes.
 
 Still not done: no `impl.d`/`Walker`/`Value` wiring (no guest `ps[1].x`
 expression reaches `structElement` yet), no class objects, and every
@@ -1410,14 +1446,67 @@ directions); `.elementTypeNotStaticArrayThrows`; `.outOfRangeIndexThrows`;
 zeroLengthNullHeaderReadsBackAsEmptyBorrowedArray`; `.
 elementTypeNotDynamicArrayThrows`; and `.outOfRangeIndexThrows`. No
 `GC.collect`-based liveness test was added, per this plan's own "ownership
-vs GC-visibility" note. All 189 focused `ut.backends.interpreter` tests
-pass.
+vs GC-visibility" note. The full focused `ut.backends.interpreter` suite
+passes.
+
+Review (2026-07-10, finding 8) noted `arrayElement`'s documented
+`Ownership.borrowed`/`trueByteSize == 0` contract had no direct test,
+unlike `structElement`'s own `reportsBorrowedOwnership`/
+`blockTrueByteSizeIsZero`. Closed by adding the same two assertions under
+the matching names, `NativeArray.arrayElement.reportsBorrowedOwnership`
+and `.blockTrueByteSizeIsZero`, using the same `Int3Holder` fixture as the
+rest of this section -- both already held (no production-code change), so
+this is pure coverage, mirroring `structElement`'s own tests exactly.
 
 Still not done: no `impl.d`/`Walker`/`Value` wiring (no guest expression
 reaches `arrayElement`/`sliceElement`, `structElement`, `arrayField`, or
 `sliceField` yet -- there is no interpreter call site for any of this
 composition), no class objects, and every `interpreter.md` §9.10 shim
 remains unretired.
+
+Progress 2026-07-10 (review: two reachable-handle safety holes closed):
+review of the accumulated array/struct-handle work above found two real
+bugs, both now fixed with a failing test first.
+
+`NativeArray.slice(0, 0)` on a default-constructed `NativeArray.init`
+(`_stride == 0`, `_elementType is null`) did not throw: `begin > end` and
+`end > _length` both pass trivially (0, 0, 0 are all equal),
+`_block.subRange(0, 0)` succeeds on the null block, and `NativeArray.adopt`
+then called `typeByteSize(null)` -- `dmd.typesem.size` dereferencing a
+null `Type`, segfaulting `@safe` code (confirmed: the pinning test crashed
+the test process with SIGSEGV, exit 139, before the fix). `reserve` and
+`setLength` already guarded this exact reachable handle with a `_stride ==
+0` check; `slice` now gets the identical guard, checked first, mirroring
+`reserve`'s own ordering rationale. Pinned by `NativeArray.slice.
+onInitHandleThrows`. The other new accessors this note's own history
+added (`structElement`, `arrayElement`, `sliceElement`, `structField`,
+`arrayField`, `sliceField`) were individually re-checked rather than
+assumed safe: every one of them bounds-checks its `index` against
+`length`/`fieldCount` before touching `_elementType`/the field's `Type` at
+all, and `NativeArray.init`/`NativeStruct.init` both report a length/
+field-count of 0 -- so no index ever passes their bounds check on an
+`.init` handle, and the null-`Type` arithmetic below it is never reached.
+`NativeStruct.adopt`/`NativeArray.adopt` were also re-checked: every
+internal caller (`structElement`, `arrayElement`, `arrayField`) only ever
+passes a `Type` already proven non-null by its own `isTypeStruct`/
+`isTypeSArray`/`.next` check immediately beforehand, so neither factory is
+reachable with a null `Type` except by a caller passing `null` directly --
+not the same "innocuous `.init` handle" shape as `slice`'s bug, so no
+guard was added there.
+
+`readSliceHeaderBytes` (`native_array.d`) is `public @trusted` and
+`memcpy`s `sliceHeaderByteLength` bytes out of `src.ptr`, with its only
+length enforcement an `in (src.length == ...)` contract -- stripped under
+`-release`, unlike its `private` sibling `writeSliceHeaderBytes`, whose
+safety comment explicitly rests on its sole caller's own prior checks. A
+`public` function reachable from any `@safe` caller with a too-short slice
+would read past its end. Fixed with an unconditional, un-strippable
+length check that throws instead of the `in` contract; the `@trusted`
+comment now states the boundary rests on that check holding, not merely on
+the content of already-bounds-checked bytes. Pinned by `NativeArray.
+readSliceHeaderBytes.wrongLengthThrows`.
+
+The full focused `ut.backends.interpreter` suite passes.
 
 ## Audit findings (June 2026)
 
