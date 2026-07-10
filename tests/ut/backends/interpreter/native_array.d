@@ -157,10 +157,10 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
 
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     slice.length.should == 3;
     (cast(void*) slice.ptr).should == array.block.address;
@@ -171,9 +171,9 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     slice[1] = 42;
 
@@ -185,9 +185,9 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     *cast(int*) array.element(2).ptr = 7;
 
@@ -199,9 +199,9 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     slice[0] = 1;
     slice[1] = 2;
@@ -215,25 +215,143 @@ unittest {
 @system
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 0);
-    align(size_t.alignof) ubyte[NativeArray.sliceHeaderByteLength] header;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
 
-    array.writeSliceHeader(header[]);
-    auto slice = *cast(int[]*) header.ptr;
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
 
     slice.length.should == 0;
 }
 
 
-@("NativeArray.writeSliceHeader.wrongDestinationLengthThrowsWithoutCorruptingAdjacentBytes")
+@("NativeArray.writeSliceHeader.outOfBoundsByteOffsetThrowsWithoutCorruptingDestinationBytes")
 unittest {
     auto array = NativeArray.allocate(Type.tint32, 3);
-    ubyte[NativeArray.sliceHeaderByteLength + 2] buffer;
-    buffer[] = 0xAA;
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength + 2, NativeBlock.Scan.conservative);
+    dest.bytes[] = 0xAA;
 
-    array.writeSliceHeader(buffer[1 .. $ - 2]).shouldThrow!Exception;
+    array.writeSliceHeader(dest, 4).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: byteOffset + sliceHeaderByteLength "
+        ~ "does not fit within dest.byteLength",
+    );
 
-    foreach (b; buffer)
+    foreach (b; dest.bytes)
         b.should == 0xAA;
+}
+
+
+@("NativeArray.writeSliceHeader.byteOffsetNearSizeTMaxOverflowsInsteadOfWrapping")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+
+    // byteOffset + sliceHeaderByteLength overflows size_t and would wrap to
+    // a tiny value that fits `dest.byteLength` if computed with a plain `+`
+    // instead of `core.checkedint.addu`.
+    array.writeSliceHeader(dest, size_t.max - 1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: byteOffset + sliceHeaderByteLength "
+        ~ "does not fit within dest.byteLength",
+    );
+}
+
+
+@("NativeArray.writeSliceHeader.nonZeroByteOffsetLandsHeaderAtOffsetAndLeavesSurroundingBytesUntouched")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength + 8, NativeBlock.Scan.conservative);
+    dest.bytes[] = 0xAA;
+    const byteOffset = 4;
+
+    array.writeSliceHeader(dest, byteOffset);
+
+    foreach (b; dest.bytes[0 .. byteOffset])
+        b.should == 0xAA;
+    foreach (b; dest.bytes[byteOffset + NativeArray.sliceHeaderByteLength .. $])
+        b.should == 0xAA;
+    auto slice = *cast(int[]*) (dest.bytes.ptr + byteOffset);
+    slice.length.should == 3;
+    (cast(void*) slice.ptr).should == array.block.address;
+}
+
+
+@("NativeArray.writeSliceHeader.ownedGCPointerIntoNoScanDestinationThrows")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.no);
+
+    array.writeSliceHeader(dest, 0).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: dest is not scanned by the GC, but "
+        ~ "this array's block address is a live GC pointer",
+    );
+}
+
+
+// A zero-length array's block address is `null` (`GC.calloc(0, ...)`
+// returns `null`); writing a null pointer into an unscanned destination
+// loses nothing, so this deliberately stays legal.
+@("NativeArray.writeSliceHeader.zeroLengthArrayNullPointerIntoNoScanDestinationIsLegal")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.no);
+
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
+
+    slice.length.should == 0;
+}
+
+
+// A borrowed source array wrapping genuinely non-GC memory (here,
+// `malloc`'d, not `new int[3]` -- which IS GC memory and would defeat the
+// point of this fixture) is not GC memory the collector tracks in the
+// first place, so `dest`'s scan policy cannot make it any more or less
+// visible; keeping that memory alive is the borrower/owner's job, per
+// `NativeBlock.borrow`'s own contract, not this function's. The check is
+// keyed on `core.memory.GC.addrOf` returning `null` for this address, not
+// on `NativeBlock.Ownership` -- see
+// `borrowedSubRangeOfGCMemoryIntoNoScanDestinationThrows` below for the
+// borrowed-but-GC-visible case this same rule must reject.
+@("NativeArray.writeSliceHeader.borrowedNonGCSourceAddressIntoNoScanDestinationIsLegal")
+@system
+unittest {
+    import core.stdc.stdlib: malloc, free;
+
+    auto backing = cast(int*) malloc(int.sizeof * 3);
+    scope(exit) free(backing);
+    auto array = NativeArray.borrow(Type.tint32, backing, 3);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.no);
+
+    array.writeSliceHeader(dest, 0);
+    auto slice = *cast(int[]*) dest.address;
+
+    slice.length.should == 3;
+    (cast(void*) slice.ptr).should == array.block.address;
+}
+
+
+// The hole `writeSliceHeader`'s old ownership-keyed check left open: a
+// `NativeBlock.subRange` is `Ownership.borrowed`, exactly like memory
+// wrapped by `NativeBlock.borrow`, but its address can be live GC memory --
+// here, a zero-offset sub-range whose address IS the parent's own owned GC
+// block. Writing that address into a `Scan.no` destination must throw:
+// the parent block would then be reachable only through unscanned bytes,
+// making it collectable while still logically in use.
+@("NativeArray.writeSliceHeader.borrowedSubRangeOfGCMemoryIntoNoScanDestinationThrows")
+unittest {
+    auto parent = NativeBlock.allocate(3 * int.sizeof, NativeBlock.Scan.no);
+    auto array = NativeArray.adopt(parent.subRange(0, 3 * int.sizeof), Type.tint32, 3);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.no);
+
+    array.writeSliceHeader(dest, 0).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: dest is not scanned by the GC, but "
+        ~ "this array's block address is a live GC pointer",
+    );
 }
 
 
@@ -403,4 +521,144 @@ unittest {
     NativeArray array;
 
     array.reserve(1).shouldThrow!Exception;
+}
+
+
+@("NativeArray.borrow.reportsBorrowedOwnership")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+@("NativeArray.borrow.reportsRequestedLength")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.length.should == 3;
+}
+
+
+@("NativeArray.borrow.strideFollowsElementType")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.stride.should == 4;
+}
+
+
+@("NativeArray.borrow.reportsElementType")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    (array.elementType is Type.tint32).should == true;
+}
+
+
+@("NativeArray.borrow.elementWriteIsVisibleInOriginalMemory")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    // Full 4-byte store, not `element(1)[0] = ...`: writing only byte 0 of a
+    // 4-byte `int` would be endian-dependent (and rely on the block already
+    // being zeroed for the other three bytes to read back as 0).
+    *cast(int*) array.element(1).ptr = 42;
+
+    backing[1].should == 42;
+}
+
+
+@("NativeArray.borrow.overflowingLengthTimesStrideThrows")
+@system
+unittest {
+    // Same shape as `NativeArray.allocate.overflowingLengthTimesStrideThrows`:
+    // an 8-byte element type (`tint64`) and this count wraps
+    // `length * stride` to 8, which `borrow` must reject rather than
+    // silently handing back a block far smaller than the claimed length.
+    auto backing = new long[3];
+    const count = size_t.max / 8 + 2;
+
+    NativeArray.borrow(Type.tint64, backing.ptr, count).shouldThrow!Exception;
+}
+
+
+// `adopt` must route `length` through the same overflow-checked
+// `byteLength(length, stride)` helper `allocate`/`borrow` already use --
+// otherwise `element`'s wrap-free argument (which rests on that routing)
+// breaks for an adopted array. A non-overflowing but too-large `length`
+// pins the new "does it fit the block" comparison directly.
+@("NativeArray.adopt.lengthTimesStrideExceedingBlockByteLengthThrows")
+unittest {
+    NativeArray.adopt(
+        NativeBlock.allocate(16, NativeBlock.Scan.no),
+        Type.tint64,
+        3, // 3 * 8 == 24 > the block's 16 bytes
+    ).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "adopt: length * stride does not fit within block's byteLength",
+    );
+}
+
+
+// The exact shape of the post-merge `element` wrap regression
+// (`NativeArray.element.wrappingIndexThrowsInsteadOfAliasingAnotherElement`
+// above), but reached through `adopt` instead of `allocate`. Before this
+// guard, `adopt` never called `byteLength` at all, so this length -- which
+// overflows `length * stride` under a raw multiply -- was silently
+// accepted into a 16-byte block, and only `element`'s own bounds check
+// stood between a wrapping `index * stride` and a silently aliased
+// element. `adopt` now computes `byteLength(length, stride)` itself, so
+// construction throws immediately instead.
+@("NativeArray.adopt.wrappingLengthThrowsInsteadOfRevivingElementIndexWrapBug")
+unittest {
+    NativeArray.adopt(
+        NativeBlock.allocate(16, NativeBlock.Scan.no),
+        Type.tint64,
+        size_t.max / 8 + 2,
+    ).shouldThrow!Exception;
+}
+
+
+// A borrowed block can never legitimately be reallocated: the memory is
+// owned elsewhere, so silently adopting a new block would detach the
+// handle from memory its owner still holds.
+@("NativeArray.reserve.onBorrowedArrayThrows")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+
+    array.reserve(100).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "reserve: cannot reallocate a borrowed block; its memory "
+        ~ "is owned elsewhere",
+    );
+}
+
+
+// `reserve(0)` (or any `n` already within capacity) is a legitimate no-op
+// on any array, mirroring compiled D's `arr.reserve(n)`, which never
+// touches storage it doesn't need to grow -- even a borrowed array must
+// not throw for a request that touches nothing.
+@("NativeArray.reserve.zeroOnBorrowedArrayIsANoOp")
+@system
+unittest {
+    auto backing = new int[3];
+    auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
+    const address = array.block.address;
+
+    array.reserve(0);
+
+    array.block.address.should == address;
 }

@@ -57,6 +57,72 @@ public struct NativeArray {
         );
     }
 
+    // Wraps memory owned elsewhere -- an interpreter-owned array value over
+    // caller-supplied storage (later: FFI/host memory) -- computing
+    // `stride` from `elementType` exactly as `allocate` does, and reusing
+    // the same overflow-checked `byteLength` for the borrowed byte span.
+    //
+    // Precondition (caller-enforced, unverifiable here): `ptr` points to at
+    // least `length * stride` valid, live bytes that outlive every handle
+    // derived from this array. This is a raw-memory constructor -- it
+    // fabricates a slice from a caller-supplied pointer/length it cannot
+    // itself verify -- and so cannot be `@safe`; the FFI seam that
+    // supplies `ptr` is the `@trusted` boundary that vouches for the
+    // precondition, exactly as for `NativeBlock.borrow`.
+    public static NativeArray borrow(
+        Type elementType,
+        void* ptr,
+        in size_t length,
+    ) @system {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        const stride = typeByteSize(elementType);
+        return NativeArray(
+            NativeBlock.borrow(ptr, byteLength(length, stride)),
+            elementType,
+            length,
+            stride,
+        );
+    }
+
+    // Adopts an existing block rather than allocating a new one -- a
+    // static-array-typed struct field's bytes are already storage (a
+    // `NativeBlock.subRange` of the enclosing struct's own block); this
+    // views them as an array without copying or allocating a byte.
+    // `length` comes from the caller (`layout.staticArrayLength` for a
+    // static-array field) since a bare `NativeBlock` carries bytes, not a D
+    // array length; `stride` is still computed from `elementType`, exactly
+    // as `allocate`/`borrow` do, so it never becomes a second, driftable
+    // copy of DMD's own element size.
+    //
+    // Unlike `allocate`/`borrow`, `block` already exists at a fixed byte
+    // length that `adopt` did not choose, so a caller-supplied `length`
+    // that does not actually fit `block` must be rejected here rather than
+    // silently accepted: `element`'s own wrap-free bounds-check argument
+    // rests on `length * stride` never having been allowed to outrun the
+    // block's real bytes in the first place (see `element`'s comment).
+    // Reuses the same overflow-checked `byteLength` helper `allocate`/
+    // `borrow` already route through, so an overflowing `length * stride`
+    // is rejected the same way there; a non-overflowing but too-large
+    // product is rejected by the explicit comparison below.
+    public static NativeArray adopt(
+        NativeBlock block,
+        Type elementType,
+        in size_t length,
+    ) @safe {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        const stride = typeByteSize(elementType);
+        const bytes = byteLength(length, stride);
+        if (bytes > block.byteLength)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "adopt: length * stride does not fit within block's byteLength",
+            );
+
+        return NativeArray(block, elementType, length, stride);
+    }
+
     public inout(Type) elementType() inout pure nothrow @nogc @safe {
         return _elementType;
     }
@@ -83,11 +149,12 @@ public struct NativeArray {
 
     // The bytes of element `index`: an interior view into the block at
     // `index * stride .. (index + 1) * stride`. `index` is checked against
-    // `_length` first, and only then multiplied by `_stride`: `allocate`
-    // already proved `_length * _stride` doesn't overflow `size_t`
-    // (`byteLength`'s `mulu` check), so once `index < _length` holds,
-    // `index * _stride < _length * _stride` is provably wrap-free too --
-    // there is no need for a second overflow check on the multiply itself.
+    // `_length` first, and only then multiplied by `_stride`: every
+    // construction path (`allocate`, `borrow`, `adopt`) already routes
+    // `_length * _stride` through the overflow-checked `byteLength` helper,
+    // so once `index < _length` holds, `index * _stride < _length *
+    // _stride` is provably wrap-free too -- there is no need for a second
+    // overflow check on the multiply itself.
     // Without the bounds check first, a large enough `index` makes
     // `index * _stride` wrap and land inside the block, silently aliasing
     // a different element instead of failing.
@@ -103,26 +170,94 @@ public struct NativeArray {
     }
 
     // The byte length of a D dynamic-array slice header (`{ length, ptr }`):
-    // `writeSliceHeader`'s destination must be exactly this many bytes.
+    // how many bytes `writeSliceHeader` writes at its `byteOffset` into a
+    // destination block, which need not be exactly this many bytes itself
+    // -- the destination is often a field inside a larger block.
     public enum size_t sliceHeaderByteLength = (void[]).sizeof;
 
-    // Writes this array's slice header -- `{ length, ptr }` -- into `dest`,
-    // the storage location of the guest's `T[]` variable (the destination
-    // aliases the element block; it is not a snapshot). `dest` must be
-    // exactly `sliceHeaderByteLength` bytes; a mismatched length throws
-    // rather than truncating into, or overwriting past, `dest`. The written
-    // `ptr` is the element block's address (legitimately `null` for a
-    // zero-length array, see `NativeBlock.allocate(0)`); the written
+    // Writes this array's slice header -- `{ length, ptr }` -- into `dest`
+    // at `byteOffset`, the storage location of the guest's `T[]` variable
+    // (the destination aliases the element block; it is not a snapshot).
+    // The destination is a `(NativeBlock, byteOffset)` pair rather than a
+    // bare `ubyte[]` because a slice header's real destination is often a
+    // *field* inside a larger block -- a struct's `T[]` field -- not the
+    // whole block; `dest` being self-describing is also what makes the
+    // second invariant below checkable at all, which a bare `ubyte[]`
+    // could never answer.
+    //
+    // Two invariants are enforced, each its own thrown `Exception`:
+    //
+    // 1. Bounds. `byteOffset + sliceHeaderByteLength` must fit within
+    //    `dest.byteLength`, computed with `core.checkedint.addu` rather
+    //    than a plain `+` -- `byteOffset` is caller-supplied, and a value
+    //    near `size_t.max` could otherwise wrap the sum back into range
+    //    and pass a bounds check it should fail.
+    //
+    // 2. Scanned destination. Writing this array's block address into a
+    //    destination the GC never scans (`Scan.no`) would make the element
+    //    block invisible to the collector, which could then free it while
+    //    the guest's `T[]` variable still points at it -- exactly the
+    //    hazard `NativeBlock.Scan` exists to avoid for the block itself.
+    //
+    //    This is keyed on whether this array's block address is
+    //    *GC-visible* -- a mechanical fact read directly from
+    //    `core.memory.GC.addrOf`, which returns non-null for
+    //    a pointer into any GC allocation, INCLUDING an interior pointer
+    //    into a larger one (it returns that allocation's base address) --
+    //    never from this array's `NativeBlock.Ownership`. Ownership
+    //    answers a different question ("may this block legitimately be
+    //    reallocated/extended?"), not "is this address one the GC can
+    //    lose track of?". Those two questions used to have the same
+    //    answer, because the only way to get a `borrowed` block was
+    //    `NativeBlock.borrow`, wrapping genuinely non-GC (FFI/host)
+    //    memory. `NativeBlock.subRange` broke that coincidence: a
+    //    sub-range is `borrowed` (it cannot be grown/reallocated
+    //    independently of its parent) but its address can very well be
+    //    live GC memory -- e.g. `NativeStruct.arrayField`'s view of a
+    //    struct's own inline array field. Keying this check on ownership
+    //    would let such a sub-range's address be written into an unscanned
+    //    destination and silently escape the collector's view, which is
+    //    exactly the hazard this check exists to prevent. So this throws
+    //    exactly when `GC.addrOf(_block.address) !is null` and
+    //    `dest.scan != Scan.conservative`. One case stays legal despite a
+    //    `Scan.no` destination:
+    //      - A zero-length array's block address is `null`
+    //        (`GC.calloc(0, ...)` returns `null`, and `GC.addrOf(null)` is
+    //        also `null` per its own contract); writing a null pointer
+    //        into an unscanned destination loses nothing, since there is
+    //        nothing there for the GC to lose track of.
+    //    Genuinely non-GC memory -- `malloc`'d, FFI, or any other memory a
+    //    `borrowed` block wraps that was never a GC allocation in the
+    //    first place -- also reports `GC.addrOf(...) is null`, so it stays
+    //    legal for exactly the reason the old ownership-keyed exemption
+    //    was actually written for: keeping that memory alive is the
+    //    borrower/owner's job (`NativeBlock.borrow`'s own contract), not
+    //    this destination's scan policy's.
+    //
+    // The written `ptr` is the element block's address; the written
     // `length` is the element count, not a byte length.
-    public void writeSliceHeader(ubyte[] dest) const @safe {
-        if (dest.length != sliceHeaderByteLength)
+    public void writeSliceHeader(NativeBlock dest, in size_t byteOffset) const @safe {
+        import core.checkedint: addu;
+        import core.memory: GC;
+
+        bool overflow;
+        const end = addu(byteOffset, sliceHeaderByteLength, overflow);
+        if (overflow || end > dest.byteLength)
             throw new Exception(
                 "quickbite.backends.interpreter.native_array.NativeArray."
-                ~ "writeSliceHeader: destination must be exactly "
-                ~ "sliceHeaderByteLength bytes",
+                ~ "writeSliceHeader: byteOffset + sliceHeaderByteLength "
+                ~ "does not fit within dest.byteLength",
             );
 
-        writeSliceHeaderBytes(dest, _length, _block.address);
+        if (GC.addrOf(_block.address) !is null
+            && dest.scan != NativeBlock.Scan.conservative)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "writeSliceHeader: dest is not scanned by the GC, but "
+                ~ "this array's block address is a live GC pointer",
+            );
+
+        writeSliceHeaderBytes(dest.bytes[byteOffset .. end], _length, _block.address);
     }
 
     // How many `_stride`-sized elements the block's true GC allocation
@@ -131,8 +266,12 @@ public struct NativeArray {
     // field would be a second, driftable copy of it (item 7's guardrail).
     // For an owned array this is `>= length` (the GC's bin size rounds up
     // from the requested `length * stride`); for a borrowed or
-    // zero-length array `_block.trueByteSize` is 0, so this is 0 too.
-    // `_stride == 0` is `NativeArray.init`'s own case: a default-
+    // zero-length array `_block.trueByteSize` is 0, so this is 0 too --
+    // unconditionally for `borrowed`, per `trueByteSize`'s own explicit
+    // `Ownership` guard (not merely an interior-pointer side effect of
+    // `GC.sizeOf`, which alone would still leak a zero-offset sub-range's
+    // parent's true bin size here). `_stride == 0` is `NativeArray.init`'s
+    // own case: a default-
     // constructed handle has no element type, hence no stride, hence no
     // capacity -- asking is not an error, mirroring `length` and `block`,
     // which are already `.init`-tolerant in exactly this way. Guard it
@@ -162,23 +301,40 @@ public struct NativeArray {
     // zero -- `tryExtendTo` establishes that itself on the extend path,
     // and `NativeBlock.allocate`'s `GC.calloc` zeroes the whole new block
     // on the reallocating path, so an extended block is indistinguishable
-    // from a freshly allocated one. No borrowed-block guard: a borrowed
-    // block cannot legitimately be reallocated (we don't own that
-    // memory), but `NativeArray` has no borrow constructor yet, so there is
-    // no way to reach this method with `_block.ownership == borrowed` --
-    // adding a check no test can exercise would be unreachable defensive
-    // code (see ai/plans/value.md item 7 for the owed contract once a
-    // borrow constructor exists). Not `nothrow`: `byteLength` throws on
-    // overflow; not `@nogc`/`pure`: the reallocating path allocates.
+    // from a freshly allocated one. A borrowed block cannot legitimately be
+    // reallocated -- we don't own that memory, so silently adopting a new
+    // block here would detach the handle from memory its owner still
+    // holds, while that owner keeps reading and writing the original
+    // address. Reaching the reallocating path with `_block.ownership ==
+    // borrowed` now throws instead (see `NativeArray.borrow`).
+    //
+    // That guard sits after the `n <= capacity` no-op, not before it:
+    // `reserve(0)`, like any `n` already within capacity, is a legitimate
+    // no-op on any array -- borrowed or not -- exactly like compiled D's
+    // `arr.reserve(n)`, which never touches storage it doesn't need to
+    // grow. A borrowed block's `capacity` is always 0 -- unconditionally,
+    // per `NativeBlock.trueByteSize`'s explicit `Ownership` guard (see
+    // `capacity`'s comment) -- so that no-op is only reached for a
+    // borrowed array when `n == 0`; any `n >= 1` falls through to the
+    // borrowed guard, which is the right place for it, since only then is
+    // a reallocation actually being requested. Not `nothrow`: `byteLength`
+    // throws on overflow; not `@nogc`/`pure`: the reallocating path
+    // allocates.
     //
     // A strideless handle (`NativeArray.init`, `_stride == 0`) gets a
-    // guard of its own: `byteLength(n, 0)` never overflows (`mulu` with a
-    // zero operand can't), so without this check `reserve` would "grow" to
-    // 0 bytes, copy 0 live bytes, and return normally with
+    // guard of its own, checked first: `byteLength(n, 0)` never overflows
+    // (`mulu` with a zero operand can't), so without this check `reserve`
+    // would "grow" to 0 bytes, copy 0 live bytes, and return normally with
     // `capacity == 0 < n` -- silently violating its own documented
     // postcondition. Growing an array whose element stride is zero (so it
     // has no capacity to grow) is a programming error, not a no-op, so
-    // this fails loudly instead.
+    // this fails loudly instead, and it is checked ahead of the borrowed
+    // guard: a strideless handle is not even a properly constructed array,
+    // a more fundamental defect than an otherwise-valid borrowed one. In
+    // practice the two never overlap on a reachable handle -- `borrow`
+    // always computes a real, non-zero stride from `elementType`, exactly
+    // as `allocate` does -- but the ordering still names which failure is
+    // reported first should that ever change.
     public void reserve(in size_t n) @safe {
         if (_stride == 0)
             throw new Exception(
@@ -189,6 +345,13 @@ public struct NativeArray {
 
         if (n <= capacity)
             return;
+
+        if (_block.ownership == NativeBlock.Ownership.borrowed)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "reserve: cannot reallocate a borrowed block; its memory "
+                ~ "is owned elsewhere",
+            );
 
         const requiredBytes = byteLength(n, _stride);
 
@@ -207,8 +370,8 @@ public struct NativeArray {
 // allocate` would then silently succeed with a block far too small for
 // the handle's `length`. Throws rather than returning an inconsistent
 // handle, matching `layout.typeByteSize`'s failure style. Called from
-// both `allocate` and `reserve`, so the message names the operation
-// (`length * stride`), not either caller.
+// `allocate`, `reserve`, and `adopt`, so the message names the operation
+// (`length * stride`), not any one caller.
 private size_t byteLength(in size_t length, in size_t stride) pure @safe {
     import core.checkedint: mulu;
 
@@ -225,11 +388,12 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
 
 // Writing a raw pointer's bit pattern into a byte range is not @safe; this
 // is the @trusted boundary. `memcpy` (rather than a pointer-typed store)
-// avoids relying on `dest` being size_t-aligned, which a caller-supplied
-// `ubyte[]` is not guaranteed to be. The `in` contract below is stripped
-// under `-release`, so this function's safety actually rests on its sole
-// caller, `NativeArray.writeSliceHeader`, whose unconditional `throw`
-// validates `dest.length` before calling here -- not on the contract.
+// avoids relying on `dest` being size_t-aligned, which a block's byte
+// range at an arbitrary `byteOffset` is not guaranteed to be. The `in`
+// contract below is stripped under `-release`, so this function's safety
+// actually rests on its sole caller, `NativeArray.writeSliceHeader`, whose
+// unconditional throws validate the destination's bounds and scan policy
+// before calling here -- not on the contract.
 private void writeSliceHeaderBytes(
     ubyte[] dest,
     in size_t length,

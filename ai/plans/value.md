@@ -476,7 +476,7 @@ reallocated, but `NativeArray` has no borrow constructor yet, so that
 path is unreachable from any test today. Owed contract: once a borrow
 constructor exists, `reserve` must throw loudly on a borrowed block
 instead of silently detaching the handle from memory its owner still
-holds.
+holds. Paid below (Progress 2026-07-09, borrowed-block guard).
 
 Progress 2026-07-09 (strideless-handle fix): `NativeArray.init` (no
 element type, zero stride) is a legal value -- reachable the moment this
@@ -488,6 +488,350 @@ Review nit fix (2026-07-09): `tryExtendTo` now only ever grows a block --
 a request that does not grow it returns `false` before subtracting -- so
 its `@trusted` re-slice is provable locally, without appealing to
 allocator internals.
+
+Progress 2026-07-09 (borrowed-block guard): the owed contract above is
+paid. `NativeArray` gains a `borrow` factory, wrapping memory owned
+elsewhere through `NativeBlock.borrow` -- it computes `stride` from
+`elementType` and checks `length * stride` for overflow exactly as
+`allocate` does, and is `@system` for the same unverifiable-
+pointer/length reason `NativeBlock.borrow` is. `reserve` now throws if
+it would reach the reallocating path with `_block.ownership ==
+borrowed`: reaching that path would silently detach the handle from
+memory its owner still holds, while that owner keeps reading and
+writing the original address. The new guard sits after the existing
+`n <= capacity` no-op, not before it: `reserve(0)` (or any `n` already
+within capacity) is a legitimate no-op on any array, borrowed or not,
+mirroring compiled D's `arr.reserve(n)`, which never touches storage it
+doesn't need to grow. A borrowed block's `capacity` is always 0, so
+that no-op is reached for a borrowed array only when `n == 0`; any
+`n >= 1` falls through to the borrowed guard, which is the right place
+for it, since only then is a reallocation actually being requested. The
+borrowed guard is checked after the pre-existing `_stride == 0` guard:
+a strideless handle is not even a properly constructed array, a more
+fundamental defect than an otherwise-valid borrowed one -- though in
+practice the two conditions never overlap on a reachable handle, since
+`borrow` always computes a real, non-zero stride. `NativeArray.borrow`
+has no caller yet -- no interpreter wiring, no FFI seam use -- so this
+remains skeleton work exactly like the rest of item 7's block handle;
+nothing observes a borrowed `NativeArray` outside its own unit tests.
+
+Progress 2026-07-09 (scanned-destination contract): `writeSliceHeader`'s
+destination is no longer a bare `ubyte[]`; it is a `(NativeBlock,
+byteOffset)` pair, since a slice header's real destination is often a
+*field* inside a larger block (a struct's `T[]` field), not the whole
+block. Two invariants now hold, each its own thrown `Exception`:
+bounds -- `byteOffset + sliceHeaderByteLength` must fit within
+`dest.byteLength`, checked with `core.checkedint.addu` so a
+caller-supplied `byteOffset` near `size_t.max` cannot wrap the sum back
+into range -- and a scanned destination -- writing this array's block
+address into a destination the GC never scans (`Scan.no`, or borrowed
+non-GC memory) would make the element block invisible to the collector,
+which could then free it while the guest's `T[]` variable still points
+at it, exactly the hazard `NativeBlock.Scan` exists to avoid for the
+block itself. That second check fires exactly when this array's own
+block is `owned`, its address is non-null, and `dest.scan !=
+Scan.conservative`; it stays silent for two cases that are not this
+function's hazard: a zero-length array's block address is `null`
+(`GC.calloc(0, ...)` returns `null`), so writing it into an unscanned
+destination loses nothing, and a *borrowed* source array's address is
+not GC memory the collector tracks in the first place, so `dest`'s scan
+policy cannot make it more or less visible -- `NativeBlock.borrow`
+already puts keeping that memory alive on the borrower/owner, not on
+wherever the address is later written (a borrowed block could still
+wrap GC memory one layer further out; if so, it is the borrow
+precondition -- the owner outlives every derived handle -- that keeps it
+alive, not this destination's scan policy). `writeSliceHeader` still has
+no caller in production code; this closes the open question from item
+7 below without wiring anything in yet.
+
+Correction (2026-07-09, see the "ownership vs GC-visibility" note
+below): the paragraph above keyed the scanned-destination check on
+this array's own block being `owned` (`Ownership`), and exempted a
+*borrowed* source address on the grounds that it "is not GC memory the
+collector tracks in the first place." That was false once
+`NativeBlock.subRange` existed: a sub-range is `borrowed` but can still
+be live GC memory (e.g. a struct's inline array field), so a borrowed
+sub-range's address sailing through into an unscanned destination was
+exactly the hazard this check exists to prevent. The check is now
+keyed on the mechanical fact `GC.addrOf(_block.address) !is null`, not
+on `Ownership`; the two cases that stay legal despite an unscanned
+destination are a null block address (a zero-length array) and a
+genuinely non-GC source address (`malloc`'d/FFI memory) -- a borrowed
+sub-range of GC memory now throws. See the Status "ownership vs
+GC-visibility" note below for the full account and the regression
+tests that pin it.
+
+Progress 2026-07-09 (struct phase: native block + DMD field offsets):
+item 7's migration order moves to its second phase -- "a struct is one
+block laid out with DMD field offsets" -- reusing the array phase's
+block/offset machinery rather than growing a parallel set of layout
+rules. `layout.d` gains `structFields`, which returns a `TypeStruct`'s
+fields, in declaration order, as DMD's own `VarDeclaration`s
+(`TypeStruct.sym.fields`, sliced to a plain array), and
+`fieldByteOffset`, which returns one field's byte offset verbatim from
+DMD's own `VarDeclaration.offset`. Both take DMD's own node types
+(`TypeStruct`, `VarDeclaration`) rather than a bare `Type` cast at the
+call site, so the type system -- not a runtime check -- rejects a
+non-struct caller. The layout-forcing subtlety: `sym.fields` and every
+field's `offset` are only meaningful once DMD has laid the struct out
+(`determineSize`/`finalizeSize`), and can be empty or meaningless
+before that. `structFields` forces that layout by calling the
+already-existing `typeByteSize` first -- `Type.size` on a `Tstruct`
+calls `aggregateDeclSize`, which calls `determineSize` ->
+`determineFields` + `finalizeSize` -- reusing DMD's own layout pass
+rather than duplicating it, and inheriting `typeByteSize`'s existing
+`SIZE_INVALID` guard for free. `typeAlignment` is still not exported:
+DMD hands us field offsets directly and `structsize` already includes
+padding, so there is still no reader that would need it.
+
+A new module, `native_struct.d`, adds `NativeStruct`: one `NativeBlock`
+plus the DMD `TypeStruct`, mirroring `NativeArray`'s shape. `allocate`
+sizes the block from `layout.typeByteSize(type)` -- DMD's own
+`structsize`, padding included, never summed from field sizes -- and
+picks the block's scan policy from `layout.typeHasPointers(type)`
+exactly as `NativeArray.allocate` does from the element type: a struct
+with any pointer/slice/class/AA field gets a conservatively scanned
+block, since a block's scan policy is one attribute for its whole byte
+range, not per field. `borrow` wraps memory owned elsewhere through
+`NativeBlock.borrow`, under the same caller-enforced, unverifiable
+precondition as `NativeBlock.borrow`/`NativeArray.borrow`. `fieldCount`
+and `fieldDeclaration` expose the underlying `VarDeclaration`s;
+`field(index)` returns the interior `ubyte[]` view of field `index`,
+spanning `offset .. offset + typeByteSize(fieldType)`. `index` is
+bounds-checked against `fieldCount` first, before any offset or size is
+read, mirroring `NativeArray.element`'s discipline of failing on a bad
+index before any arithmetic runs on it. Unlike `NativeArray.element`,
+there is no overflow to guard in the arithmetic itself -- `offset` and
+`fieldByteSize` are both DMD's own numbers, not a product of two
+caller-controlled values -- so `field` relies on, rather than
+re-derives, DMD's own guarantee that every field lies fully within
+`structsize`.
+
+None of this is wired in yet: no `impl.d`/`Walker`/`Value` integration,
+no `interpreter.md` §9.10 shim retired, no nested-struct or
+array-typed field *composition* (only the raw byte view of one field
+at a time), no class objects, and no writes beyond that raw byte view.
+Alignment remains unexported, per the paragraph above.
+
+Progress 2026-07-09 (array/struct composition): `NativeStruct` and
+`NativeArray` have now been composed for the first time. `NativeStruct`
+gains `fieldByteOffset(index)` -- the DMD byte offset of field `index`,
+bounds-checked against `fieldCount` exactly like `field`/
+`fieldDeclaration`, and returned as `size_t` so it plugs directly into
+`writeSliceHeader`'s `byteOffset` parameter with no cast at the call
+site. No other production surface was added: the composition itself is
+expressed at the call site, `array.writeSliceHeader(s.block,
+s.fieldByteOffset(i))`, not behind a new "write this array into that
+field" convenience method.
+
+This is now true: a dynamic-array field of a native struct is a real D
+slice header (`ptr`, `length`) over a separately tracked element block,
+verified against the host compiler's own struct layout by reinterpreting
+the struct's block bytes as the host's own equivalent `struct { ...
+T[] xs; }` and reading `.xs` back. A second case pins this at a
+non-zero offset (`struct Header { long tag; int[] xs; }`), confirming
+`fieldByteOffset` is exercised for real and that the header write does
+not disturb a sibling field. And the struct's scan policy -- chosen
+from `layout.typeHasPointers(type)` at `allocate` time, per the struct
+phase above -- is exactly what makes that header write legal:
+`writeSliceHeader`'s scanned-destination contract throws unless the
+destination block is `Scan.conservative`, and a struct with a slice
+field gets exactly that, while an all-scalar struct gets `Scan.no` and
+writing a slice header into one of its fields throws with
+`writeSliceHeader`'s own "dest is not scanned by the GC" message. The
+two contracts -- `NativeStruct.allocate`'s scan-policy choice and
+`NativeArray.writeSliceHeader`'s scanned-destination check -- were
+written independently, in separate PRs, and this composition is where
+they are shown to fit rather than merely asserted to.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring, no `interpreter.md`
+§9.10 shim retired, no nested *struct*-in-struct field views, no
+static-array-inline field, no class objects. The interpreter still
+boxes everything; none of this native storage has a caller yet.
+
+Progress 2026-07-09 (nested aggregate field views): the two remaining
+"Storage shape" gaps just above are closed for the *view* case (reading
+an existing field as its own handle, not allocating new storage). Both
+are proven true now: a struct-typed field (`struct Outer { int a; Inner
+inner; }`) is a sub-range of `Outer`'s one block at DMD's own offset for
+`inner`, laid out with `Inner`'s own field offsets relative to that
+sub-range, not to `Outer`'s block from byte 0; a static-array-typed field
+(`struct Holder { int[3] xs; }`) is 12 bytes inline in `Holder`'s block,
+not a slice header (`Holder.sizeof == 12` is the host-compiler oracle for
+that -- a slice-header field would make it 16), viewed as a `NativeArray`
+over the same bytes. Both alias the parent: a write through the nested
+view lands in the parent's bytes and vice versa, and neither allocates a
+byte.
+
+The new surface: `NativeBlock.subRange(byteOffset, byteLength) @safe`,
+`NativeStruct.structField(index) @safe -> NativeStruct`, and
+`NativeStruct.arrayField(index) @safe -> NativeArray`, plus
+`layout.staticArrayLength(TypeSArray) @safe` and a new `NativeArray.
+adopt(block, elementType, length) @safe` factory that wraps an existing
+block instead of allocating one (needed because `arrayField` must hand
+back an array *over* the struct's own sub-range, not a fresh
+allocation).
+
+`subRange` is the answer to "what does a block that is a sub-range of
+another block look like": it slices `_bytes` with ordinary
+bounds-checked D (no raw pointer, unlike `borrow`), and is reachable only
+through this `@safe` factory, never through the `@system` raw-pointer
+`borrow` path -- deriving a sub-slice of an existing `ubyte[]` needs no
+unsafe cast, so routing it through `borrow` would have been a strictly
+worse boundary. Its `Scan` is carried forward from the parent unchanged:
+`Scan` is an attribute of the whole underlying GC allocation (whether the
+collector scans it on collect at all), not of any particular sub-range
+of it, so a sub-range has no legitimate way to disagree with its parent
+about that. Its `Ownership` is `borrowed`: a sub-range is not an
+independent allocation and cannot legitimately be grown or reallocated in
+place (`GC.extend`/`GC.calloc` operate on whole allocations, not a byte
+range in the middle of one), which is exactly `borrowed`'s existing
+contract -- "memory owned elsewhere; the owner keeps it alive" -- with
+the owner here being the parent block itself (or, one level further out,
+whatever the parent itself borrowed from). Reusing `borrowed` rather than
+inventing a third `Ownership` value means `NativeArray.reserve`'s existing
+refusal to reallocate a borrowed block applies correctly to a sub-range
+for free.
+
+Correction (2026-07-09, see Status's "ownership vs GC-visibility" note
+below): the sentence above originally claimed "every existing
+borrowed-block guard ... already applies correctly to a sub-range for
+free, with no new code." That was false. `reserve`'s guard was the only
+one; `NativeBlock.tryExtendTo` and `trueByteSize` had none, and both had
+to grow one of their own once `borrowed` covered both non-GC foreign
+memory and interior views of an owned GC allocation. Worse, `writeSlice
+Header`'s scanned-destination check was keyed on `Ownership` as a proxy
+for "not GC memory," which a zero-offset sub-range quietly falsified. A
+review (not a test) caught this; see the Status note for the full
+account and the four guards it repaired.
+
+That choice makes `trueByteSize`/`capacity` honest for an interior view
+without any extra guarding: `GC.sizeOf` on an interior pointer (not the
+head of an allocation) returns 0 by its own documented contract, so a
+non-zero-offset `subRange`'s `trueByteSize` is pinned at 0 -- the same
+honest "I don't know" a borrowed block already reports, not the parent's
+true size, which would otherwise mislead a caller like `NativeArray.
+capacity` (which divides `trueByteSize` by stride) into believing a
+sub-range has room to grow in place when it does not. Nothing new had to
+enforce that; it falls out of `Ownership.borrowed` plus `GC.sizeOf`'s own
+contract.
+
+The static array's element count comes from `TypeSArray.dim.toUInteger()`
+(wrapped in a `@trusted` boundary, `Expression.toUInteger` not being
+`@safe`/`pure`/`nothrow`), not from `typeByteSize(fieldType) /
+typeByteSize(elementType)`. Both give the same answer for every real
+static-array type (D packs array elements back-to-back with no
+inter-element padding), but `dim` is the one DMD field that IS the
+element count, where the division is an indirect re-derivation through
+two other DMD numbers plus an assumption about packing. Reading `dim`
+directly keeps DMD as the single source of truth for this fact, exactly
+as `fieldByteOffset` already reads `VarDeclaration.offset` directly
+rather than re-deriving it.
+
+Test correction in the same commit: the pre-existing
+`writeSliceHeaderIntoSliceFieldReinterpretsAsHostCompilerSlice` test's
+`GC.collect` and nested scope are removed. D's GC conservatively scans
+the stack and registers, so a collect afterwards cannot distinguish "the
+element block is kept alive by the scanned struct field" (the property
+under test) from "a stale pointer bit-pattern happens to still sit in an
+unreused stack slot" -- it would pass even with a wrong scan policy,
+proving nothing, and is flaky by construction. The real, deterministic
+test of the scan policy is `allocate.pointerBearingFieldYieldsScannedBlock`,
+which already asserts `Scan.conservative` directly. What remains is
+honestly just a header-round-trips-as-a-host-slice test, which is what
+it is now documented as. The same test's `elements.element(i)[0] = ...`
+byte-0-only writes are also replaced with full 4-byte int stores, since
+writing only the first byte of a 4-byte `int` is endian-dependent (and
+was relying on the rest of the block already being zeroed).
+
+Still not done: dynamic-array-field *read-back* (reading an existing
+slice-header field back as a `NativeArray` over its pointed-to element
+block -- distinct from writing one, which already existed, and from the
+sub-range views added here, since a slice header points at a separately
+tracked block rather than being inline); class objects; the interpreter
+call site (`impl.d`/`Walker`/`Value`); and every `interpreter.md` §9.10
+shim. The interpreter still boxes everything; none of this native
+storage has a caller yet.
+
+Progress 2026-07-09 (ownership vs GC-visibility): a review of the nested-
+aggregate-field-views commit (not a test -- nothing here was caught by
+the suite) found that `NativeBlock.subRange` broke an assumption every
+earlier borrowed-block guard had quietly relied on. `Ownership` used to
+mean two things at once: "may this block be reallocated/extended?" and,
+as a proxy, "is this address memory the GC can lose track of?" Those
+coincided as long as the only route to `Ownership.borrowed` was
+`NativeBlock.borrow`, wrapping genuinely non-GC (FFI/host) memory.
+`subRange` produces `borrowed` blocks that ARE live GC memory -- an
+interior or, worse, a zero-offset (base-pointer) view into an owned
+allocation -- so every guard keyed on `ownership == borrowed` as a stand-
+in for "not GC memory" was now answering the wrong question for a
+sub-range.
+
+The model is resolved as: `Ownership` answers exactly "may we
+reallocate/extend this block?" (`owned` = yes, `borrowed` = no). Whether
+an address is GC-visible is a separate, mechanical fact, read from
+`core.memory.GC.addrOf` (non-null for a pointer into any GC allocation,
+including an interior pointer, which resolves to the allocation's base)
+and never inferred from `Ownership`. `borrowed` now honestly covers two
+different things -- genuinely non-GC foreign memory, and an interior
+view of a GC allocation the view itself cannot independently grow -- and
+no code may assume those are the same case.
+
+Four guards had to be repaired, none of them caught by the existing
+suite before this review:
+
+- `NativeBlock.tryExtendTo` had no `Ownership` guard at all. `GC.extend`
+  resolves a pointer via the allocator's own page lookup, not via this
+  handle's `Ownership`, so it could genuinely extend a large-object
+  parent through a zero-offset `subRange`, and the subsequent zeroing of
+  the "new" tail would zero the parent's own live bytes. Now returns
+  `false` immediately for `Ownership.borrowed`.
+- `NativeArray.adopt` took a caller-supplied `length` without routing it
+  through the overflow-checked `byteLength(length, stride)` helper
+  `allocate`/`borrow` already use, and never checked the result fit the
+  adopted block. That revived the `element` index-wrap bug fixed earlier
+  (post-merge) for `allocate`: an oversized `length` let a wrapping
+  `index * stride` alias a different element instead of failing. `adopt`
+  now computes and checks `byteLength` itself.
+- `NativeArray.writeSliceHeader`'s scanned-destination check threw only
+  when the source block was `owned`; a borrowed sub-range's live GC
+  address sailed through into an unscanned destination, making the
+  parent block collectable while still reachable only through unscanned
+  bytes. The check is now keyed on `gcAddrOf(_block.address) !is null`,
+  not on `Ownership`.
+- `NativeBlock.trueByteSize` relied on `GC.sizeOf` returning 0 for an
+  *interior* pointer to stay honest for a borrowed sub-range -- but a
+  zero-offset `subRange`'s address IS the parent's base pointer, and
+  `GC.sizeOf` reports the bin size for a base pointer, not 0. That made
+  `NativeArray.capacity` claim phantom growth room on a block `reserve`
+  would still (correctly) refuse to grow. `trueByteSize` now returns 0
+  for `Ownership.borrowed` explicitly, rather than depending on the
+  interior/base distinction.
+
+Each hole now has a regression test: `NativeBlock.tryExtendTo.
+borrowedSubRangeReturnsFalseAndLeavesParentBytesUntouched`; `NativeArray.
+adopt.lengthTimesStrideExceedingBlockByteLengthThrows` and `.
+wrappingLengthThrowsInsteadOfRevivingElementIndexWrapBug`; `NativeArray.
+writeSliceHeader.borrowedSubRangeOfGCMemoryIntoNoScanDestinationThrows`
+(and `NativeStruct.arrayField.
+writeSliceHeaderOfBorrowedSubRangeIntoNoScanDestinationThrows` for the
+composed struct-field path); `NativeBlock.subRange.
+zeroOffsetTrueByteSizeIsZero` and `NativeStruct.arrayField.
+capacityIsZeroForZeroOffsetSubRangeView`. The pre-existing
+`writeSliceHeader.borrowedSourceAddressIntoNoScanDestinationIsLegal` test
+used `new int[3]` as its "not GC memory" fixture, which is itself GC
+memory and only passed because the old check consulted `Ownership`; it
+is renamed
+`borrowedNonGCSourceAddressIntoNoScanDestinationIsLegal` and its fixture
+switched to `malloc`/`free`, so it now pins what it always claimed to.
+
+Two standing claims elsewhere in this plan were false and are corrected
+in place rather than repeated here: the "nested aggregate field views"
+progress note above no longer claims every borrowed-block guard applied
+to a sub-range "for free, with no new code" (only `reserve`'s did); and
+"Remaining work" item 7's "Next PR" progress paragraph no longer lists
+nested aggregate field views as remaining work now that this commit
+(and its predecessor) delivered them.
 
 ## Audit findings (June 2026)
 
@@ -874,25 +1218,50 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    array should observe, and whether that deserves a diagnostic rather than
    compiled D's silent staleness; unions and overlapping fields, which the
    conservative whole-range root policy handles but the layout model does not
-   yet describe; class object bodies, deferred wholesale; and a
-   scanned-destination contract for `writeSliceHeader`. A GC-owned pointer
-   written into a destination the collector never scans -- a `NO_SCAN` block,
-   or borrowed non-GC memory -- is invisible to the GC, exactly the hazard
-   `NativeBlock.Scan` exists to avoid for the block itself. `writeSliceHeader`
-   takes a bare `ubyte[]` today and enforces nothing about what that `ubyte[]`
-   is backed by; it needs a real contract once its destination is a genuine
-   frame location instead of a test-supplied buffer.
+   yet describe; and class object bodies, deferred wholesale.
+   `writeSliceHeader`'s scanned-destination contract is no longer open:
+   `dest` is now a `(NativeBlock, byteOffset)` pair, and the function
+   throws before writing a GC-owned pointer into a destination the
+   collector never scans (see Status's "ownership vs GC-visibility"
+   note above for the exact rule and the cases -- a zero-length array's
+   null block address, or a genuinely non-GC source address -- that
+   stay legal despite an unscanned destination).
 
-   Next PR: the array-native block handle skeleton — an interpreter-owned array
-   value carrying a stable block, `Type*`, length, stride, ownership, and scan
-   policy, with no user-visible display or FFI change and no shim retired. Then
-   static arrays inline, dynamic-array slice headers, interior addresses,
-   conservative roots, and capacity through real storage, in that order.
-   Latency is measured only once the array and struct correctness gates are
-   green and a real suite actually reaches native storage; item 6 already
-   showed the benchmark suite never crossed the old marshaller seam. Until
-   then, native layout is justified by the correctness ceiling (`&local`,
-   unions, reinterpret casts, slices into locals), not by a benchmark.
+   Progress against the "Next PR" list below: the array-native block handle
+   skeleton is done (`NativeArray`: stable block, `Type`, length, stride,
+   ownership, scan policy); capacity and growth through real storage are done
+   (`capacity`, `reserve`, extending in place or reallocating, per the
+   `NativeBlock.tryExtendTo`/GC-realloc progress notes above); a borrowed-block
+   guard on `reserve` is done; `writeSliceHeader`'s scanned-destination
+   contract is done (see above); and the struct phase (`NativeStruct`: one
+   block sized and laid out with DMD's own `structsize`/field offsets, the
+   same conservative-vs-no-scan choice `NativeArray.allocate` makes) is done.
+   The two have been composed: a struct's `T[]` field now carries a real
+   slice header written by `NativeArray.writeSliceHeader` at
+   `NativeStruct.fieldByteOffset`, verified against the host compiler's own
+   layout, proving the scan-policy and scanned-destination contracts were
+   designed to fit together. Nested aggregate field views (a struct field
+   that is itself a struct, or a static-array inline field) are also done
+   now — the "no nested-struct or array-typed field composition" gaps noted
+   above are closed; see the Status "nested aggregate field views" progress
+   note above for `NativeBlock.subRange`/`NativeStruct.structField`/
+   `arrayField`. None of this has a user-visible display or FFI change yet,
+   and no shim is retired yet. What remains: dynamic-array-field read-back
+   (reading an existing slice-header field back as a `NativeArray` over its
+   pointed-to element block — distinct from writing one, which already
+   existed, and from the sub-range views just landed, since a slice header
+   points at a separately tracked block rather than being inline), then the
+   interpreter call site (`impl.d`/`Walker`/`Value`) that actually gives
+   these types somewhere to be used instead of sitting unwired, and only
+   after that, shim retirement one `interpreter.md` §9.10 entry at a time,
+   each proven by its ratchet fixtures staying green through the real path.
+   Class objects stay third in the migration order, per the "Migration
+   order" bullet above. Latency is measured only once the
+   array and struct correctness gates are green and a real suite actually
+   reaches native storage; item 6 already showed the benchmark suite never
+   crossed the old marshaller seam. Until then, native layout is justified by
+   the correctness ceiling (`&local`, unions, reinterpret casts, slices into
+   locals), not by a benchmark.
 
 ## Out of scope
 
