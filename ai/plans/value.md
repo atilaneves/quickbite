@@ -1572,7 +1572,14 @@ for every `cast(T*) &expr` shape before writing any code (`tests/ut`, no
 live pointer-reinterpret fixture and is the same, already-covered
 `float`->`uint` pair through a function parameter rather than a plain
 local. No test pinned an old wrong answer for a newly-handled pair, so
-nothing needed weakening or was left un-migrated.
+nothing needed weakening or was left un-migrated. The strict-narrowing
+case (target strictly narrower than source, e.g. a `uint` local read
+through a `ushort*`) also newly takes this byte-level path rather than
+the untouched passthrough -- the narrowing behaviour is correct (it reads
+the leading bytes, matching compiled D) but, unlike the `dchar`/`uint`
+pair above, no `ct/`/`rt/` fixture exercises a strict-narrowing
+reinterpret today; it is pinned only at the codec level, by
+`native_scalar.d`'s own narrowing unit test.
 
 New unit tests in `tests/ut/backends/interpreter/native_scalar.d` (added to
 `tests/main.d`'s explicit `runTests!` module list, matching how
@@ -1583,14 +1590,14 @@ package.d`, mirroring the existing `structTypeOf`), the host compiler as an
 explicit oracle (`*cast(uint*) &f`/`*cast(ulong*) &d` computed in the test
 and compared against `writeScalar`+`readScalar`'s result), a wrong
 `dest`/`src` length throwing, and an unsupported type (`void*`) throwing.
-Focused runs: `bin/ut -s ut.backends.interpreter.native_scalar` (21 tests,
-0 failed), `bin/ut -s ut.backends.interpreter` (214 tests, 0 failed),
-`bin/ut -s ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
-ut.backends.runner.ct.structs ut.backends.evaluator.eval` (772 tests, 0
-failed, 6 expected `@ShouldFail`), and `bin/ut -s
-ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image` (146
-tests, 0 failed). The full `bin/ut --random` was left to the orchestrator
-per the usual long-suite handoff.
+Focused runs, all green: `bin/ut -s ut.backends.interpreter.native_scalar`,
+`bin/ut -s ut.backends.interpreter`, `bin/ut -s
+ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
+ut.backends.runner.ct.structs ut.backends.evaluator.eval` (all
+pre-existing `@ShouldFail` rows still fail as expected), and `bin/ut -s
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`. The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
 
 `ffi_marshal.d`'s `marshalArgument`/`unmarshalValue` already do a narrower
 version of the same integral/float encode/decode for the libffi ABI seam
@@ -1607,15 +1614,23 @@ instead of a name/type-pair match. The local's authoritative storage is
 still a boxed `Value`; this only changes what a *load through a
 differently-typed pointer* produces, not where the local itself lives --
 `locals[VarDeclaration]` is still `Value[VarDeclaration]`, not a
-`NativeBlock`. No other `interpreter.md` §9.10 shim is retired: `gc_*`
-capacity hooks, `runEmplaceRefCall`/`isEmplaceRef`, and
-`writeBackByValueClassArguments` are all still exactly as they were. The
-array/struct container composition work from the notes above still has no
-*other* interpreter call site (no guest expression reaches
+`NativeBlock`. No `interpreter.md` §9.10 shim is retired by this commit,
+including this one: the `reinterpretLocalPointerLoad` +
+`floatBits`/`doubleBits` entry's retirement condition is "native layout
+makes ALL reinterpret loads structural", and only the two previously-
+hardcoded pairs (`float`->`uint`, `double`->`ulong`) now go through real
+bytes -- aggregate, pointer, `real`, and widening reinterprets still take
+the untouched boxed/refused passthrough path, so the condition is unmet
+and the entry stays open, merely narrowed (`floatBits`/`doubleBits`
+themselves are deleted; see above). `gc_*` capacity hooks,
+`runEmplaceRefCall`/`isEmplaceRef`, and `writeBackByValueClassArguments`
+are all still exactly as they were. The array/struct container
+composition work from the notes above still has no *other* interpreter
+call site (no guest expression reaches
 `arrayElement`/`sliceElement`/`structElement`/`arrayField`/`sliceField`);
 this commit's call site is scoped to scalar reinterpret-loads only, the
 narrowest slice of "give these types somewhere to be used" that had an
-existing, exactly-named shim to retire.
+existing, exactly-named shim entry to narrow.
 
 Progress 2026-07-10 (single scalar<->bytes authority): `impl.d` carried a
 second, older scalar-byte codec alongside `native_scalar.d` -- `scalarBytes`
@@ -1672,15 +1687,15 @@ trip through an individually-boxed `Value[]` byte array (mirroring `impl.
 d`'s new `scalarBytes`/`scalarFromBytes` composition one level below their
 private, untestable-in-isolation bodies) for a 4-byte integral type, and
 the same composition for `float`/`double` -- the newly-succeeding case.
-Focused runs: `bin/ut -s ut.backends.interpreter.native_scalar` (23 tests,
-0 failed, up from 21), `bin/ut -s ut.backends.interpreter` (216 tests, 0
-failed, up from 214), `bin/ut -s ut.backends.runner.ct.expressions ut.
+Focused runs, all green with the new cases added and nothing else changed:
+`bin/ut -s ut.backends.interpreter.native_scalar`, `bin/ut -s
+ut.backends.interpreter`, `bin/ut -s ut.backends.runner.ct.expressions ut.
 backends.runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
-evaluator.eval` (772 tests, 0 failed, 6 expected `@ShouldFail`, identical
-to the pre-change baseline), and `bin/ut -s ut.backends.runner.rt.cstdlib
-ut.backends.runner.rt.dependency_image` (146 tests, 0 failed, identical to
-baseline). The full `bin/ut --random` was left to the orchestrator per the
-usual long-suite handoff.
+evaluator.eval` (identical to the pre-change baseline, pre-existing
+`@ShouldFail` rows still fail as expected), and `bin/ut -s
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`
+(identical to baseline). The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
 
 `ffi_marshal.d`'s narrower version of the same encode/decode (noted above)
 is still untouched -- out of scope here too, same reasoning as the prior
@@ -1768,19 +1783,18 @@ bytes -- confirmed by every focused run below staying green, not merely
 argued.
 
 No test was added or modified; the proof for this commit is the existing
-FFI/runtime suites staying green end to end. Focused runs: `bin/ut -s
-ut.backends.interpreter` (216 tests, 0 failed, unchanged), `bin/ut -s
-ut.backends.interpreter.native_scalar` (23 tests, 0 failed, unchanged),
-`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
-dependency_image` (146 tests, 0 failed, unchanged), `bin/ut -s ut.backends.
+FFI/runtime suites staying green end to end. Focused runs, all unchanged
+from baseline: `bin/ut -s ut.backends.interpreter`, `bin/ut -s
+ut.backends.interpreter.native_scalar`, `bin/ut -s ut.backends.runner.rt.
+cstdlib ut.backends.runner.rt.dependency_image`, `bin/ut -s ut.backends.
 runner.rt.concurrency ut.backends.runner.rt.file ut.backends.runner.rt.
 random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf ut.
-backends.runner.rt.llvm_jit` (16 tests, 0 failed), and `bin/ut -s ut.
+backends.runner.rt.llvm_jit`, and `bin/ut -s ut.
 backends.runner.ct.expressions ut.backends.runner.ct.cerealed ut.backends.
-runner.ct.structs ut.backends.evaluator.eval` (772 tests, 0 failed, 6
-expected `@ShouldFail`, identical to the pre-change baseline). The full
-`bin/ut --random` was left to the orchestrator per the usual long-suite
-handoff.
+runner.ct.structs ut.backends.evaluator.eval` (identical to the pre-change
+baseline, pre-existing `@ShouldFail` rows still fail as expected). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
 
 Item 7's guardrail now holds across both production scalar<->bytes call
 sites the interpreter has: the reinterpret-load container path and the FFI
@@ -1854,17 +1868,17 @@ No test was added or modified; the proof is the existing FFI/runtime suites
 staying green end to end, plus the structural identity arguments above (this
 call site's correctness does not rest on fixture coverage the way a value
 computation would -- the handle reads the exact same DMD objects and numbers
-the old code did). Focused runs: `bin/ut -s ut.backends.interpreter` (216
-tests, 0 failed, unchanged), `bin/ut -s ut.backends.interpreter.native_struct
-ut.backends.interpreter.native_array` (148 tests, 0 failed), `bin/ut -s ut.
-backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image` (146
-tests, 0 failed, unchanged), `bin/ut -s ut.backends.runner.rt.concurrency ut.
+the old code did). Focused runs, all green and unchanged from baseline
+except where noted: `bin/ut -s ut.backends.interpreter`, `bin/ut -s
+ut.backends.interpreter.native_struct ut.backends.interpreter.native_array`,
+`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
+dependency_image`, `bin/ut -s ut.backends.runner.rt.concurrency ut.
 backends.runner.rt.file ut.backends.runner.rt.random ut.backends.runner.rt.
-inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.llvm_jit` (16
-tests, 0 failed, unchanged), and `bin/ut -s ut.backends.runner.ct.expressions
-ut.backends.runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
-evaluator.eval` (772 tests, 0 failed, 6 expected `@ShouldFail`, identical to
-the pre-change baseline). The full `bin/ut --random` was left to the
+inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.llvm_jit`, and
+`bin/ut -s ut.backends.runner.ct.expressions ut.backends.runner.ct.
+cerealed ut.backends.runner.ct.structs ut.backends.evaluator.eval`
+(identical to the pre-change baseline, pre-existing `@ShouldFail` rows
+still fail as expected). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
 To be precise about the milestone: this gives `NativeStruct`/`NativeArray` a
@@ -1963,18 +1977,18 @@ local's storage lives or add a new guest-reachable call site for
 
 No test was added or modified; the proof is the existing FFI/runtime suites
 staying green, plus the structural stride/offset-identity argument above.
-Focused runs: `bin/ut -s ut.backends.interpreter` (216 tests, 0 failed,
-unchanged), `bin/ut -s ut.backends.interpreter.native_array ut.backends.
-interpreter.native_struct` (148 tests, 0 failed, unchanged), `bin/ut -s ut.
+Focused runs, all green and unchanged from baseline: `bin/ut -s
+ut.backends.interpreter`, `bin/ut -s ut.backends.interpreter.native_array
+ut.backends.interpreter.native_struct`, `bin/ut -s ut.
 backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image ut.
 backends.runner.rt.concurrency ut.backends.runner.rt.file ut.backends.
 runner.rt.random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf
-ut.backends.runner.rt.llvm_jit` (162 tests, 0 failed, unchanged), and
-`bin/ut -s ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
-ut.backends.runner.ct.structs ut.backends.evaluator.eval` (772 tests, 0
-failed, 6 expected `@ShouldFail`, identical to the pre-change baseline). The
-full `bin/ut --random` was left to the orchestrator per the usual
-long-suite handoff.
+ut.backends.runner.rt.llvm_jit`, and `bin/ut -s
+ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
+ut.backends.runner.ct.structs ut.backends.evaluator.eval` (identical to
+the pre-change baseline, pre-existing `@ShouldFail` rows still fail as
+expected). The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.
 
 Progress 2026-07-10 (single byte-size authority): the prior two notes
 routed `impl.d`/`ffi_marshal.d`'s hand-rolled per-field/per-element byte
@@ -1985,8 +1999,9 @@ type's byte size, each casting DMD's `SIZE_INVALID` sentinel to
 throws instead. This commit routes every one of those sites through
 `layout.typeByteSize`, completing this branch's single-layout-authority
 theme: `layout.typeByteSize` is now the only place in the interpreter
-package that calls `dmd.typesem.size` for a byte size. Converted, all in
-`ffi_marshal.d` unless noted: `InterpreterInboundTrampolineSession.
+package that calls `dmd.typesem.size` for a byte size, apart from
+`impl.d`'s `pointerElementSize` (deliberately left; see below). Converted,
+all in `ffi_marshal.d` unless noted: `InterpreterInboundTrampolineSession.
 invoke`'s callback-argument size, `pointerWritebacks`'s element size,
 `writeRefResult`'s ref-result size, `invokeClosure`'s callback-argument
 size, `marshalPointerElements`'s element size, `unmarshalNative`'s and
@@ -2035,18 +2050,17 @@ alone and is reported here rather than silently folded in.
 
 No layout number, offset walk, or aggregate-handling behaviour changed;
 this is purely internal call routing. No test was added or modified.
-Focused runs: `bin/ut -s ut.backends.interpreter` (216 tests, 0 failed,
-unchanged), `bin/ut -s ut.backends.interpreter.native_scalar ut.
-backends.interpreter.native_array ut.backends.interpreter.native_struct
-ut.backends.interpreter.layout` (182 tests, 0 failed, unchanged),
-`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
-dependency_image ut.backends.runner.rt.concurrency ut.backends.runner.
-rt.file ut.backends.runner.rt.random ut.backends.runner.rt.inline_asm
-ut.backends.runner.rt.elf ut.backends.runner.rt.llvm_jit` (162 tests, 0
-failed, unchanged), and `bin/ut -s ut.backends.runner.ct.expressions ut.
-backends.runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
-evaluator.eval` (772 tests, 0 failed, 6 expected `@ShouldFail`,
-identical to the pre-change baseline). The full `bin/ut --random` was
+Focused runs, all green and unchanged from baseline: `bin/ut -s
+ut.backends.interpreter`, `bin/ut -s ut.backends.interpreter.native_scalar
+ut.backends.interpreter.native_array ut.backends.interpreter.native_struct
+ut.backends.interpreter.layout`, `bin/ut -s ut.backends.runner.rt.cstdlib
+ut.backends.runner.rt.dependency_image ut.backends.runner.rt.concurrency
+ut.backends.runner.rt.file ut.backends.runner.rt.random ut.backends.
+runner.rt.inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.
+llvm_jit`, and `bin/ut -s ut.backends.runner.ct.expressions ut.backends.
+runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
+evaluator.eval` (identical to the pre-change baseline, pre-existing
+`@ShouldFail` rows still fail as expected). The full `bin/ut --random` was
 left to the orchestrator per the usual long-suite handoff.
 
 ## Audit findings (June 2026)
@@ -2519,18 +2533,24 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    user-visible display or FFI change yet.
 
    Progress 2026-07-10: the native-layout types now have a first production
-   caller, and one named §9.10 shim is retired -- see the Status "first
-   interpreter call site" progress note above for the full account. Scoped
-   precisely: `impl.d`'s `reinterpretLocalPointerLoad` (a `*cast(T*)
-   &local` scalar reinterpret-load) now routes through a real `NativeBlock`
-   plus the new `native_scalar.d` codec instead of a hardcoded
-   `float`/`uint` and `double`/`ulong` name match, and `floatBits`/
-   `doubleBits` are deleted from `impl.d`. That is the *scalar* leaf case
-   only -- `reinterpretLocalPointerLoad` itself is not deleted, a local's
-   authoritative storage is still a boxed `Value` (`locals[VarDeclaration]`
-   is still `Value[VarDeclaration]`, not a `NativeBlock`), and the
-   array/struct composition matrix built up above still has no call site
-   at all: no guest expression yet reaches `arrayElement`/`sliceElement`/
+   caller, and interpreter.md §9.10's `reinterpretLocalPointerLoad` +
+   `floatBits`/`doubleBits` entry is narrowed, not retired -- see the
+   Status "first interpreter call site" progress note above for the full
+   account. Scoped precisely: `impl.d`'s `reinterpretLocalPointerLoad` (a
+   `*cast(T*) &local` scalar reinterpret-load) now routes through a real
+   `NativeBlock` plus the new `native_scalar.d` codec instead of a
+   hardcoded `float`/`uint` and `double`/`ulong` name match, and
+   `floatBits`/`doubleBits` are deleted from `impl.d`. But the entry's
+   retirement condition ("native layout makes ALL reinterpret loads
+   structural") is unmet -- aggregate, pointer, `real`, and widening
+   reinterprets are still boxed/refused through the untouched passthrough
+   path -- so no §9.10 shim is retired; only its scope is narrowed. That is
+   the *scalar* leaf case only -- `reinterpretLocalPointerLoad` itself is
+   not deleted, a local's authoritative storage is still a boxed `Value`
+   (`locals[VarDeclaration]` is still `Value[VarDeclaration]`, not a
+   `NativeBlock`), and the array/struct composition matrix built up above
+   still has no call site at all: no guest expression yet reaches
+   `arrayElement`/`sliceElement`/
    `structElement`/`arrayField`/`sliceField`. What remains, the next step:
    wire a guest-level `&local`/array/struct call site for the container
    types themselves (not just the scalar reinterpret-load leaf) — including,

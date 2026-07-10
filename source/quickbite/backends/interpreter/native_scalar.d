@@ -100,18 +100,6 @@ public void writeScalar(
 }
 
 
-// The integer bits behind an integral/`bool`/character `Value`, widened to
-// `long` -- agrees with `ffi_marshal.d`'s own local `scalarBits` helper
-// (still used there for its one remaining unconsolidated case, the widened
-// closure-result buffer -- see this module's header comment) for every
-// input both can receive: a character value's bits are its code point
-// (`castTo!long`), matching that module's own scalar marshalling so the two
-// helpers stay in agreement rather than silently drifting.
-private long scalarLong(in imported!"quickbite.lang".Value value) @safe {
-    return value.isCharacter ? value.castTo!long.asLong : value.asLong;
-}
-
-
 // @trusted: `memcpy`s a same-sized native value's bits into `dest`.
 // `writeScalar` above has already verified, with an unconditional throw,
 // that `dest.length` equals the exact width `kind` needs before calling
@@ -178,6 +166,18 @@ private void writeScalarBits(
                 ~ "unsupported native scalar type",
             );
     }
+}
+
+
+// The integer bits behind an integral/`bool`/character `Value`, widened to
+// `long` -- agrees with `ffi_marshal.d`'s own local `scalarBits` helper
+// (still used there for its one remaining unconsolidated case, the widened
+// closure-result buffer -- see this module's header comment) for every
+// input both can receive: a character value's bits are its code point
+// (`castTo!long`), matching that module's own scalar marshalling so the two
+// helpers stay in agreement rather than silently drifting.
+private long scalarLong(in imported!"quickbite.lang".Value value) @safe {
+    return value.isCharacter ? value.castTo!long.asLong : value.asLong;
 }
 
 

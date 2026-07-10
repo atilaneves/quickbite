@@ -712,8 +712,15 @@ private void marshalArgument(
             // type` is the DECLARED field type -- `.toBasetype` below
             // reproduces the exact same recursive dispatch the old code's
             // `field.type.toBasetype` performed.
+            import quickbite.backends.interpreter.layout: typeByteSize;
             import quickbite.backends.interpreter.native_struct: NativeStruct;
 
+            // `NativeStruct.borrow` fabricates its extent from `type`
+            // rather than sub-slicing `buffer`, so a too-short `buffer`
+            // would silently write past its end instead of range-erroring
+            // the way the old hand-rolled sub-slice did. Restore that
+            // fail-fast.
+            assert(buffer.length >= typeByteSize(type));
             auto ns = NativeStruct.borrow(cast(TypeStruct) type, buffer.ptr);
             foreach (index; 0 .. ns.fieldCount)
                 marshalArgument(
@@ -731,11 +738,17 @@ private void marshalArgument(
             // Same consolidation as the Tstruct arm above, for a static
             // array's inline elements.
             import dmd.mtype: TypeSArray;
+            import quickbite.backends.interpreter.layout: typeByteSize;
             import quickbite.backends.interpreter.native_array: NativeArray;
 
             auto staticArray = cast(TypeSArray) type;
             auto elementType = staticArray.next.toBasetype;
             const length = cast(size_t) staticArray.dim.toInteger;
+
+            // Same fail-fast restoration as the Tstruct arm above:
+            // `NativeArray.borrow` fabricates its extent from
+            // `elementType`/`length` rather than sub-slicing `buffer`.
+            assert(buffer.length >= length * typeByteSize(elementType));
             auto na = NativeArray.borrow(elementType, buffer.ptr, length);
             foreach (index; 0 .. length)
                 marshalArgument(
@@ -1116,6 +1129,7 @@ private imported!"quickbite.lang".Value unmarshalStaticArray(
 ) {
     import quickbite.lang: Value;
     import dmd.mtype: TypeSArray;
+    import quickbite.backends.interpreter.layout: typeByteSize;
     import quickbite.backends.interpreter.native_array: NativeArray;
 
     // Routed through the item 7 container handle rather than a hand-rolled
@@ -1126,6 +1140,16 @@ private imported!"quickbite.lang".Value unmarshalStaticArray(
     auto staticArray = cast(TypeSArray) type;
     auto elementType = staticArray.next.toBasetype;
     const length = cast(size_t) staticArray.dim.toInteger;
+
+    // `NativeArray.borrow` fabricates its extent from `elementType`/`length`
+    // rather than sub-slicing `buffer`, so a too-short `buffer` would
+    // silently read/write past its end instead of range-erroring the way
+    // the old hand-rolled sub-slice did. Restore that fail-fast.
+    assert(buffer.length >= length * typeByteSize(elementType));
+    // `cast(void*)` strips `buffer`'s `const` only to satisfy `borrow`'s
+    // signature; this function only ever READS through `na` (elements feed
+    // `unmarshalValue(..., in ubyte[])` below), never writes back into
+    // `buffer`.
     auto na = NativeArray.borrow(elementType, cast(void*) buffer.ptr, length);
 
     Value[] elements;
@@ -1172,7 +1196,19 @@ private imported!"quickbite.lang".Value unmarshalSlice(
             // item 7's guardrail). `data` is native memory this function
             // did not allocate -- exactly `NativeArray.borrow`'s own
             // documented precondition, vouched for here by the native call
-            // that filled this return buffer.
+            // that filled this return buffer. No length precondition to
+            // assert here (unlike `unmarshalStruct`/`unmarshalStaticArray`):
+            // `data`'s allocation size is not derived from any parameter
+            // this function holds, and the old code's own `(cast(const(
+            // ubyte)*) data)[0 .. length * elementSize]` was an equally
+            // unchecked raw-pointer slice, not a bounds-checked sub-slice of
+            // a caller-supplied array -- there is no old fail-fast to
+            // restore.
+            //
+            // `cast(void*)` strips `data`'s `const` only to satisfy
+            // `borrow`'s signature; this function only ever READS through
+            // `na` (elements feed `unmarshalValue(..., in ubyte[])` below),
+            // never writes back through `data`.
             import quickbite.backends.interpreter.native_array: NativeArray;
 
             auto na = NativeArray.borrow(elementType, cast(void*) data, length);
@@ -1261,6 +1297,7 @@ private imported!"quickbite.lang".Value unmarshalStruct(
     in ubyte[] buffer,
 ) {
     import quickbite.lang: Value;
+    import quickbite.backends.interpreter.layout: typeByteSize;
     import quickbite.backends.interpreter.native_struct: NativeStruct;
     import std.string: fromStringz;
 
@@ -1270,6 +1307,16 @@ private imported!"quickbite.lang".Value unmarshalStruct(
     // `NativeStruct.fieldDeclaration(index).type` is the DECLARED field
     // type, not the basetype the old code dispatched on -- `.toBasetype`
     // below reproduces the exact same recursive dispatch.
+    //
+    // `NativeStruct.borrow` fabricates its extent from `type` rather than
+    // sub-slicing `buffer`, so a too-short `buffer` would silently read
+    // past its end instead of range-erroring the way the old hand-rolled
+    // sub-slice did. Restore that fail-fast.
+    assert(buffer.length >= typeByteSize(type));
+    // `cast(void*)` strips `buffer`'s `const` only to satisfy `borrow`'s
+    // signature; this function only ever READS through `ns` (fields feed
+    // `unmarshalValue(..., in ubyte[])` below), never writes back into
+    // `buffer`.
     auto ns = NativeStruct.borrow(type, cast(void*) buffer.ptr);
     Value[] fields;
     foreach (index; 0 .. ns.fieldCount)

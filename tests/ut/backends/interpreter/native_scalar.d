@@ -83,6 +83,23 @@ unittest {
 }
 
 
+// The round-trip tests above are byte-order-symmetric: a codec that
+// consistently reversed bytes on both write and read would still pass every
+// one of them (write-reversed then read-reversed cancels out). This instead
+// pins `writeScalar`'s OUTPUT bytes directly against the host compiler's own
+// in-memory layout for a multi-byte value, catching that class of bug.
+// `impl.d`'s `reinterpretLocalPointerLoad` reads `block.bytes[0 ..
+// targetSize]`, so byte position -- not just round-trip value -- matters.
+@("writeScalar.producesTheHostCompilersOwnByteLayoutNotJustARoundTrip")
+unittest {
+    uint u = 0x1122_3344;
+    auto bytes = new ubyte[](typeByteSize(Type.tuns32));
+    writeScalar(Type.tuns32, bytes, Value(u));
+
+    bytes.should == (cast(ubyte*) &u)[0 .. uint.sizeof];
+}
+
+
 @("writeScalar.thenReadScalar.roundTripsBool")
 unittest {
     auto bytes = new ubyte[](1);
@@ -174,6 +191,25 @@ unittest {
     writeScalar(Type.tfloat64, bytes, Value(d));
 
     readScalar(Type.tuns64, bytes).asLong.should == expected;
+}
+
+
+// `impl.d`'s `reinterpretLocalPointerLoad` takes a STRICT-NARROWING path
+// (target strictly narrower than source) through the source's leading
+// bytes; that branch was exercised by zero tests before this one. Pin it
+// at the codec level: write a wider scalar, read a narrower type back from
+// its leading bytes, and match the host compiler's own narrowing
+// reinterpret cast.
+@("writeScalar.thenReadScalar.narrowerTargetReadsLeadingBytesMatchingHostCompilersReinterpretCast")
+unittest {
+    uint i = 0x1234_5678;
+    const expected = *cast(ushort*) &i;
+
+    auto bytes = new ubyte[](typeByteSize(Type.tuns32));
+    writeScalar(Type.tuns32, bytes, Value(i));
+
+    readScalar(Type.tuns16, bytes[0 .. typeByteSize(Type.tuns16)])
+        .asLong.should == expected;
 }
 
 
