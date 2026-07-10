@@ -1239,6 +1239,107 @@ guest `arr.length = n` reaches it yet), no `interpreter.md` §9.10 shim
 retired, and `~=` remains unimplemented per the "what this does NOT model"
 paragraph above.
 
+Progress 2026-07-10 (array-of-struct element views): the composition
+established for structs (`NativeStruct.structField`/`arrayField`) gets its
+missing other direction. Until now a *struct* could view its aggregate
+fields as handles, but an *array* could not view a struct-typed element as
+one -- `NativeArray.element(index)` only ever handed back a bare `ubyte[]`,
+so a guest `Point[] ps; ps[1].x = 3;` had no handle-level expression.
+`NativeArray` gains `structElement(index) @safe -> NativeStruct`: element
+`index` of an array whose `elementType` is a `TypeStruct`, viewed as a
+`NativeStruct` over the SAME bytes, aliasing the array rather than copying
+it -- a write through the returned handle is visible in this array's
+`element(index)` bytes and vice versa.
+
+`index` is bounds-checked against `length` first, before any offset
+arithmetic, reusing `element`'s own wrap-free argument rather than
+re-deriving it: every construction path already routes `length * stride`
+through the overflow-checked `byteLength` helper, so once `index < _length`
+holds, `index * _stride` is provably wrap-free (see `element`'s own
+comment). A field whose `elementType` is not a struct
+(`Type.isTypeStruct` returns null) throws its own message before any
+sub-range is taken. `structElement` stays `@safe`, via `NativeBlock.
+subRange` -- never the `@system` raw-pointer `borrow` path -- for exactly
+`NativeArray.slice`'s own reason (see its comment): `index * stride ..
+index * stride + stride` is a sub-range of an already-verified block,
+ordinary bounds-checked D, not a pointer this code would need to
+reconstruct and cannot itself verify.
+
+The returned `NativeStruct` is `Ownership.borrowed` and carries the
+parent's `Scan` unchanged, both via `adopt`'s own `subRange`-backed
+construction: an array element is not an independent allocation, so its
+`block.trueByteSize` is 0 and nothing about it can be grown -- correct,
+since growing "one element" in place is not a meaningful operation at all;
+growing the ARRAY is `NativeArray.reserve`/`setLength`'s job, not this
+view's. `Scan` is an attribute of the whole underlying GC allocation, not
+of any one element's view into it, so an element view has no legitimate way
+to disagree with its parent about it, exactly as for `NativeStruct.
+structField`/`NativeArray.slice`.
+
+The one subtlety worth stating: the element's stride is
+`typeByteSize(elementType)` -- DMD's own `structsize`, padding included,
+computed once at construction and reused as `_stride` rather than
+recomputed -- which is exactly why `index * stride` lands on a
+correctly-aligned, correctly-sized struct element, and why D packs an array
+of structs back-to-back with no inter-element padding beyond each element's
+own `structsize`. This was verified against the host compiler rather than
+assumed: `structElement.fieldOffsetsAreRelativeToTheElementNotTheArrayBase`
+confirms a `Point[3]`'s element 2's field view sits at exactly
+`2 * Point.sizeof + Point.x.offsetof` bytes past the array's own base.
+
+Building the returned handle needed a factory `NativeStruct` did not have:
+`allocate` allocates, `borrow` takes an unverifiable raw pointer, and
+neither adopts an existing, already-verified block. `NativeStruct` gains
+`adopt(NativeBlock block, TypeStruct type) @safe`, mirroring `NativeArray.
+adopt`'s shape and its "the block already exists at a byte length this
+factory did not choose, so check it fits" discipline: `block.byteLength`
+must be at least `typeByteSize(type)`, checked and thrown on rather than
+trusted, or a struct view over too few bytes would let a field near the end
+of `structsize` read/write past the block's own real storage. A block
+LARGER than `typeByteSize(type)` is accepted, exactly as `NativeArray.
+adopt` accepts a block larger than `length * stride`: the extra bytes are
+none of this factory's business, they belong to whatever the block's own
+owner uses them for. `NativeStruct.structField` was refactored to build its
+own returned handle through `adopt` too -- a genuine simplification, not a
+speculative one, since `adopt` already does exactly what `structField` was
+constructing by hand (check-then-build over a `subRange`); `NativeStruct.
+allocate`/`borrow` were left untouched, since they choose the block's scan
+policy themselves and `adopt` deliberately does not (it has no `Type` to
+derive one from that isn't already implied by the caller-supplied block).
+
+Regression tests, in `tests/ut/backends/interpreter/native_array.d`:
+`NativeArray.structElement.writeThroughElementViewIsVisibleInParentElement
+Bytes` and `.writeThroughParentElementBytesIsVisibleThroughElementView`
+(aliasing, both directions); `.
+fieldOffsetsAreRelativeToTheElementNotTheArrayBase` (the offset-and-stride
+claim above, against the host compiler); `.elementTypeNotStructThrows`;
+`.outOfRangeIndexThrows`; `.reportsBorrowedOwnership`; `.
+blockTrueByteSizeIsZero`; `.scanMatchesParentForPointerBearingElementType`;
+and, pinning the composition one level deeper, `.
+structFieldViewStillWorksThroughElementView` and `.
+arrayFieldViewStillWorksThroughElementView` (a struct-typed array element's
+own `structField`/`arrayField` still work through the element view, with
+no special case for "my block came from an array element" on either side).
+In `tests/ut/backends/interpreter/native_struct.d`: `NativeStruct.adopt.
+rejectsBlockSmallerThanStructsize`; `.
+byteSizeMatchesHostCompilerSizeofDespitePadding`; `.
+acceptsBlockLargerThanStructsize` (the oversized-block decision above,
+pinned directly); and `.
+viewsExistingBlockSoAFieldWriteIsVisibleAtTheBlocksOwnOffset` (aliasing).
+No `GC.collect`-based liveness test was added, per this plan's own
+"ownership vs GC-visibility" note. All 180 focused `ut.backends.interpreter`
+tests pass.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring (no guest `ps[1].x`
+expression reaches `structElement` yet), no class objects, and every
+`interpreter.md` §9.10 shim remains unretired. Only structs are composed
+into arrays this way; the symmetric question for an array-typed array
+element (`Point[][]`, or an array of static arrays) has no dedicated
+accessor or test yet -- `element(index)` already hands back that element's
+raw bytes, but there is no `arrayElement`/`sliceElement` counterpart to
+`structElement` the way `NativeStruct` has both `structField` and
+`arrayField`/`sliceField` for its own fields.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1684,8 +1785,20 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    progress note above for the compiled-D-checked shrink/grow contract,
    the borrowed bounded-growth decision and its documented divergence from
    compiled D, and the shrink-then-grow re-zeroing subtlety) — this was
-   the last named container primitive the array phase needed, so item 7's
-   array/struct correctness work has no other named gap left. None of
+   the last named container primitive the array phase needed. The
+   composition that had only gone one way — a struct could view its own
+   fields as handles, but an array could not view a struct-typed element as
+   one — is now symmetric too: `NativeArray.structElement` (and the new
+   `NativeStruct.adopt` factory it is built on) is also done now; see the
+   Status "array-of-struct element views" progress note above for the
+   bounds/stride argument, the `Ownership.borrowed`/zero-`trueByteSize`
+   contract, and the oversized-block decision `adopt` shares with
+   `NativeArray.adopt`. That note also names the one remaining, narrower
+   composition gap: an array-typed array element (`Point[][]`, or an array
+   of static arrays) has no `arrayElement`/`sliceElement` counterpart yet,
+   the way `NativeStruct` has both `structField` and `arrayField`/
+   `sliceField` for its own fields — `element(index)` already hands back
+   that element's raw bytes, but nothing wraps them as a handle. None of
    this has a user-visible display or FFI change yet, and no shim is
    retired yet. What remains: the interpreter call site (`impl.d`/
    `Walker`/`Value`) that actually gives these types somewhere to be used

@@ -2,8 +2,10 @@ module ut.backends.interpreter.native_array;
 
 
 import ut;
+import ut.backends.interpreter: structTypeOf;
 import quickbite.backends.interpreter.native_array: NativeArray;
 import quickbite.backends.interpreter.native_block: NativeBlock;
+import quickbite.backends.interpreter.native_struct: NativeStruct;
 import dmd.mtype: Type;
 
 private:
@@ -1055,4 +1057,170 @@ unittest {
         ~ "setLength: cannot grow this array beyond its own block's bytes; "
         ~ "the block is borrowed, so its memory is owned elsewhere",
     );
+}
+
+
+// Oracle: `Point`'s field offsets come from the host compiler's own layout
+// of the identical struct declared below, exactly as `native_struct.d`'s
+// `S` fixture is its own tests' oracle. `byte tag; int x;` leaves 3 padding
+// bytes before `x`, so a naive "no padding" implementation would fail the
+// offset tests below.
+struct Point {
+    byte tag;
+    int x;
+}
+
+
+@("NativeArray.structElement.writeThroughElementViewIsVisibleInParentElementBytes")
+unittest {
+    auto type = structTypeOf(q{ struct Point { byte tag; int x; } }, "Point");
+    auto array = NativeArray.allocate(type, 3);
+
+    array.structElement(1).field(1)[] = [0x11, 0x22, 0x33, 0x44];
+
+    array.element(1)[Point.x.offsetof .. Point.x.offsetof + int.sizeof]
+        .should == [0x11, 0x22, 0x33, 0x44];
+}
+
+
+@("NativeArray.structElement.writeThroughParentElementBytesIsVisibleThroughElementView")
+unittest {
+    auto type = structTypeOf(q{ struct Point { byte tag; int x; } }, "Point");
+    auto array = NativeArray.allocate(type, 3);
+
+    array.element(1)[Point.x.offsetof .. Point.x.offsetof + int.sizeof] =
+        [0x11, 0x22, 0x33, 0x44];
+
+    array.structElement(1).field(1).should == [0x11, 0x22, 0x33, 0x44];
+}
+
+
+// The centrepiece: the element view's field offsets are `Point`'s OWN
+// offsets, relative to the element (`Point.x.offsetof`), not to the array's
+// base -- proving the sub-range is anchored at `index * stride`, and that
+// stride (`typeByteSize(Point)`) is `Point.sizeof` with no extra
+// inter-element padding, exactly as the host compiler lays out `Point[3]`.
+@("NativeArray.structElement.fieldOffsetsAreRelativeToTheElementNotTheArrayBase")
+unittest {
+    auto type = structTypeOf(q{ struct Point { byte tag; int x; } }, "Point");
+    auto array = NativeArray.allocate(type, 3);
+
+    array.structElement(2).field(1).ptr.should ==
+        array.element(2).ptr + Point.x.offsetof;
+}
+
+
+@("NativeArray.structElement.elementTypeNotStructThrows")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.structElement(1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "structElement: elementType is not a struct",
+    );
+}
+
+
+@("NativeArray.structElement.outOfRangeIndexThrows")
+unittest {
+    auto type = structTypeOf(q{ struct Point { byte tag; int x; } }, "Point");
+    auto array = NativeArray.allocate(type, 3);
+
+    array.structElement(3).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "structElement: index out of range",
+    );
+}
+
+
+@("NativeArray.structElement.reportsBorrowedOwnership")
+unittest {
+    auto type = structTypeOf(q{ struct Point { byte tag; int x; } }, "Point");
+    auto array = NativeArray.allocate(type, 3);
+
+    array.structElement(1).ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+// An element view is not an independent allocation -- nothing about it can
+// be grown -- exactly like `NativeStruct.arrayField`'s zero-offset
+// sub-range view (`capacityIsZeroForZeroOffsetSubRangeView`) and
+// `NativeArray.slice`'s own `capacityIsZero`. `NativeStruct` has no
+// `capacity` reader of its own (only `NativeArray` divides `trueByteSize`
+// by a stride), so this is pinned directly on the block.
+@("NativeArray.structElement.blockTrueByteSizeIsZero")
+unittest {
+    auto type = structTypeOf(q{ struct Point { byte tag; int x; } }, "Point");
+    auto array = NativeArray.allocate(type, 3);
+
+    array.structElement(1).block.trueByteSize.should == 0;
+}
+
+
+@("NativeArray.structElement.scanMatchesParentForPointerBearingElementType")
+unittest {
+    auto type = structTypeOf(q{ struct WithSlice { int[] xs; } }, "WithSlice");
+    auto array = NativeArray.allocate(type, 3);
+
+    array.structElement(1).scan.should == NativeBlock.Scan.conservative;
+    array.structElement(1).scan.should == array.scan;
+}
+
+
+// Composition one level deeper: a struct-typed element's own `structField`
+// still works through the element view, proving `structElement` composes
+// with `NativeStruct.structField` exactly as any other `NativeStruct` does
+// -- neither has a special case for "my block came from an array element".
+// A write through the doubly-nested view must land at
+// `Outer.inner.offsetof + Inner.y.offsetof` bytes past the ARRAY ELEMENT's
+// own base, mirroring `NativeStruct.structField`'s own
+// `writeThroughNestedFieldViewLandsAtOffsetRelativeToParentInHostCompilerBytes`
+// test.
+struct Inner {
+    int x;
+    long y;
+}
+
+
+struct Outer {
+    int a;
+    Inner inner;
+}
+
+
+@("NativeArray.structElement.structFieldViewStillWorksThroughElementView")
+unittest {
+    auto type = structTypeOf(
+        q{ struct Inner { int x; long y; } struct Outer { int a; Inner inner; } },
+        "Outer",
+    );
+    auto array = NativeArray.allocate(type, 2);
+
+    array.structElement(1).structField(1).field(1)[] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    const offset = Outer.inner.offsetof + Inner.y.offsetof;
+    array.element(1)[offset .. offset + long.sizeof]
+        .should == [1, 2, 3, 4, 5, 6, 7, 8];
+}
+
+
+// Composition one level deeper, the array-field case: a static-array-typed
+// element field still works through the element view too, mirroring
+// `NativeStruct.arrayField`'s own
+// `writeThroughViewIsVisibleAtHostCompilerOffsetForElement2` test.
+struct Holder {
+    int[3] xs;
+}
+
+
+@("NativeArray.structElement.arrayFieldViewStillWorksThroughElementView")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct Holder { int[3] xs; } }, "Holder");
+    auto array = NativeArray.allocate(type, 2);
+
+    *cast(int*) array.structElement(1).arrayField(0).element(2).ptr = 42;
+
+    auto guest = *cast(Holder*) array.element(1).ptr;
+    guest.xs[2].should == 42;
 }

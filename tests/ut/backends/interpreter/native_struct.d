@@ -288,6 +288,67 @@ unittest {
 }
 
 
+@("NativeStruct.adopt.rejectsBlockSmallerThanStructsize")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+
+    NativeStruct.adopt(
+        NativeBlock.allocate(S.sizeof - 1, NativeBlock.Scan.no),
+        type,
+    ).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_struct.NativeStruct."
+        ~ "adopt: typeByteSize(type) does not fit within block's byteLength",
+    );
+}
+
+
+@("NativeStruct.adopt.byteSizeMatchesHostCompilerSizeofDespitePadding")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto struct_ = NativeStruct.adopt(
+        NativeBlock.allocate(S.sizeof, NativeBlock.Scan.no),
+        type,
+    );
+
+    struct_.byteSize.should == S.sizeof;
+}
+
+
+// `adopt` accepts a block LARGER than `typeByteSize(type)`, mirroring
+// `NativeArray.adopt`'s identical acceptance of a block larger than
+// `length * stride` (see `NativeStruct.adopt`'s own comment): the extra
+// bytes are none of this factory's business. `byteSize` (`_block.
+// byteLength`) then honestly reports the whole adopted block, not
+// `typeByteSize(type)`.
+@("NativeStruct.adopt.acceptsBlockLargerThanStructsize")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto struct_ = NativeStruct.adopt(
+        NativeBlock.allocate(S.sizeof + 8, NativeBlock.Scan.no),
+        type,
+    );
+
+    struct_.byteSize.should == S.sizeof + 8;
+}
+
+
+// Views the SAME block rather than copying it: a field write through the
+// adopted handle must land at the block's own offset -- the same aliasing
+// claim `NativeStruct.field.writeThroughFieldViewIsVisibleAtItsOwnBlockOffset`
+// pins for `allocate`.
+@("NativeStruct.adopt.viewsExistingBlockSoAFieldWriteIsVisibleAtTheBlocksOwnOffset")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto block = NativeBlock.allocate(S.sizeof, NativeBlock.Scan.no);
+    auto struct_ = NativeStruct.adopt(block, type);
+
+    struct_.field(1)[] = [0x11, 0x22, 0x33, 0x44];
+
+    block.bytes[S.b.offsetof .. S.b.offsetof + int.sizeof]
+        .should == [0x11, 0x22, 0x33, 0x44];
+}
+
+
 struct Inner {
     int x;
     long y;

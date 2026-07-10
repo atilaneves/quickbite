@@ -23,6 +23,7 @@ static assert((void[]).sizeof == 2 * size_t.sizeof);
 // `NativeBlock.Scan` and ai/plans/value.md's "GC roots" note).
 public struct NativeArray {
     import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.native_struct: NativeStruct;
     import dmd.mtype: Type;
 
     private NativeBlock _block;
@@ -259,6 +260,79 @@ public struct NativeArray {
         const count = end - begin;
         return NativeArray.adopt(
             _block.subRange(begin * _stride, count * _stride), _elementType, count);
+    }
+
+    // Views element `index` -- an array whose `elementType` is a struct --
+    // as its own `NativeStruct`, sharing this array's own block rather than
+    // copying it: an element of an array is not an independent allocation,
+    // it is a `NativeBlock.subRange` of this array's block at `index *
+    // stride`, laid out with the element type's own field offsets relative
+    // to that sub-range, not to the array's base. A write through the
+    // returned handle is visible in this array's `element(index)` bytes and
+    // vice versa, for as long as both stay live -- the same aliasing
+    // discipline `NativeStruct.structField` already established for a
+    // struct-typed struct field, applied here to a struct-typed array
+    // element.
+    //
+    // `index` is bounds-checked against `_length` first, before any offset
+    // arithmetic runs on it, matching `element`'s own discipline above --
+    // and reusing its wrap-free argument rather than re-deriving one: every
+    // construction path already routes `length * stride` through the
+    // overflow-checked `byteLength` helper, so once `index < _length`
+    // holds, `index * _stride` is provably wrap-free (see `element`'s own
+    // comment). A field whose `elementType` is not a struct
+    // (`Type.isTypeStruct` returns null) throws its own message before the
+    // sub-range is ever taken, since `NativeStruct.adopt`'s own layout
+    // machinery would be meaningless applied to the wrong DMD type.
+    //
+    // Routes through `NativeBlock.subRange` -- never the `@system`
+    // raw-pointer `NativeBlock.borrow` path -- for exactly `slice`'s own
+    // reason (see its comment): `index * stride .. index * stride +
+    // stride` is a sub-range of an already-verified block, ordinary
+    // bounds-checked D, not a pointer this code would need to reconstruct
+    // and cannot itself verify. The handle itself is built with
+    // `NativeStruct.adopt` over that sub-range, which re-derives
+    // `typeByteSize(elementType)` and re-checks it fits, rather than
+    // constructed by hand.
+    //
+    // The element's stride is `typeByteSize(elementType)` -- DMD's own
+    // `structsize`, padding included, computed once at construction and
+    // reused here as `_stride` rather than recomputed -- which is exactly
+    // why `index * stride` lands on a correctly-aligned, correctly-sized
+    // struct element and why D packs an array of structs back-to-back with
+    // no inter-element padding beyond each element's own `structsize`
+    // (verified against the host compiler: a `Point[3]`'s element 1 sits at
+    // exactly `Point.sizeof` bytes past element 0, pinned by this file's
+    // `structElement.fieldOffsetsAreRelativeToTheElementNotTheArrayBase`
+    // test below).
+    //
+    // The returned `NativeStruct` is `Ownership.borrowed`, via `adopt`'s
+    // own `NativeBlock.subRange`-backed construction: an array element is
+    // not an independent allocation, so its `block.trueByteSize` is 0 and
+    // nothing about it can be grown -- correct, since growing "one element"
+    // in place is not a meaningful operation; growing the ARRAY is
+    // `NativeArray.reserve`/`setLength`'s job, not this view's. `scan` is
+    // carried forward from this array's own block by `subRange` unchanged,
+    // exactly as for `slice`/`NativeStruct.structField` -- `Scan` is an
+    // attribute of the whole underlying GC allocation, not of any one
+    // element's view into it, so an element view has no legitimate way to
+    // disagree with its parent about it.
+    public NativeStruct structElement(in size_t index) @safe {
+        if (index >= _length)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "structElement: index out of range",
+            );
+
+        auto structType = _elementType.isTypeStruct;
+        if (structType is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "structElement: elementType is not a struct",
+            );
+
+        const start = index * _stride;
+        return NativeStruct.adopt(_block.subRange(start, _stride), structType);
     }
 
     // The byte length of a D dynamic-array slice header (`{ length, ptr }`):

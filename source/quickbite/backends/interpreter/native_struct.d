@@ -69,6 +69,42 @@ public struct NativeStruct {
         );
     }
 
+    // Adopts an existing block rather than allocating a new one -- mirrors
+    // `NativeArray.adopt`: a caller already has a block (e.g. `NativeArray.
+    // structElement`'s `NativeBlock.subRange` of an array's own block at
+    // `index * stride`) and wants to view it as a `NativeStruct` without
+    // copying or allocating a byte.
+    //
+    // Unlike `allocate`/`borrow`, `block` already exists at a byte length
+    // this factory did not choose, so that byte length must be checked
+    // rather than trusted: `block.byteLength` must be at least
+    // `layout.typeByteSize(type)`, or a struct view over too few bytes
+    // would let a field near the end of `structsize` read/write past the
+    // block's own real storage -- `NativeArray.adopt`'s identical "does it
+    // fit" discipline for its own `length * stride`, applied here to one
+    // struct's `structsize` instead.
+    //
+    // A block LARGER than `typeByteSize(type)` is accepted, exactly as
+    // `NativeArray.adopt` accepts a block larger than `length * stride`:
+    // the extra bytes are none of this factory's business, they belong to
+    // whatever the block's own owner uses them for. `byteSize` (`_block.
+    // byteLength`) then honestly reports the adopted block's own real byte
+    // length, which need not equal `typeByteSize(type)` -- exactly as
+    // `NativeArray.block.byteLength` need not equal `length * stride` for
+    // an adopted array.
+    public static NativeStruct adopt(NativeBlock block, TypeStruct type) @safe {
+        import quickbite.backends.interpreter.layout: typeByteSize, structFields;
+
+        const size = typeByteSize(type);
+        if (size > block.byteLength)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_struct.NativeStruct."
+                ~ "adopt: typeByteSize(type) does not fit within block's byteLength",
+            );
+
+        return NativeStruct(block, type, structFields(type));
+    }
+
     public inout(TypeStruct) type() inout pure nothrow @nogc @safe {
         return _type;
     }
@@ -177,7 +213,7 @@ public struct NativeStruct {
     // arithmetic either, since `structFields`/`typeByteSize` would be
     // meaningless applied to the wrong DMD type.
     public NativeStruct structField(in size_t index) @safe {
-        import quickbite.backends.interpreter.layout: typeByteSize, fieldByteOffset, structFields;
+        import quickbite.backends.interpreter.layout: typeByteSize, fieldByteOffset;
 
         if (index >= _fields.length)
             throw new Exception(
@@ -195,7 +231,7 @@ public struct NativeStruct {
 
         const offset = fieldByteOffset(declaration);
         const fieldSize = typeByteSize(structType);
-        return NativeStruct(_block.subRange(offset, fieldSize), structType, structFields(structType));
+        return NativeStruct.adopt(_block.subRange(offset, fieldSize), structType);
     }
 
     // Views field `index` -- a static-array-typed field (DMD's
