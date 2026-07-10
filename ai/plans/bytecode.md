@@ -5169,3 +5169,14 @@ the generic sequence form while relying on the existing field write path for
 the actual copies. Verification: focused red then green, `ninja bin/ut`, and
 `bin/ut --random` passed (seed `1010252269`). The known unrelated pointer-slice
 diagnostic row is left unchanged.
+
+`pointer.indexAssignmentWritesArrayStorage` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The first Bytecode candidate run was red (`'\0' != 'x'`).
+The constructor correctly retained its `char*` field and emitted the pointer
+store, but materialising its static-array slice argument made an independent
+VM heap copy. The minimal call-argument lowering now passes a descriptor with
+the frame address and element count; general static-array materialisation stays
+copying so result bytes can outlive the VM stack. No fixture body changed.
+Verification: focused red then green, `ninja bin/ut`, and `bin/ut --random`
+passed (seed `4022505703`).

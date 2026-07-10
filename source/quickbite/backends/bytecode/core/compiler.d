@@ -8080,6 +8080,28 @@ private struct Compiler {
         }
 
         if (isDynamicArrayArgument(argument)) {
+            // A static-array whole slice passed to a callee aliases its frame
+            // storage. Keep the general materialisation path below for result
+            // values, whose bytes must outlive this VM invocation.
+            if (auto source = staticArrayViewOffset(argument)) {
+                auto staticArray = argument;
+                while (auto cast_ = staticArray.isCastExp)
+                    staticArray = cast_.e1;
+                if (auto slice = staticArray.isSliceExp)
+                    staticArray = slice.e1;
+                const element = staticArray.type.toBasetype.nextOf;
+                const count = staticArraySize(staticArray.type) /
+                    staticArraySize(cast(Type) element);
+                _code ~= Instruction(Op.frameAddress, slot, *source);
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    cast(ushort) (slot + size_t.sizeof),
+                    constantIndex(count),
+                    cast(ushort) size_t.sizeof,
+                );
+                return;
+            }
+
             const descriptor = arrayDescriptorOffset(
                 dynamicArrayElementType(argument.type), argument,
             );
