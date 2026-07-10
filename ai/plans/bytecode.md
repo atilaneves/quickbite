@@ -5102,3 +5102,11 @@ in a field, and reads the field back through the constructed value. This is a
 stale coverage gap after the existing struct constructor, template, dynamic
 array descriptor, and field-read paths. Verification: focused Bytecode row,
 `ninja bin/ut`, and `bin/ut --random` passed (seed `2694263265`).
+
+`malloc` promoted to `Bytecode`, 2026-07-10: pre-approved promotion of the
+existing direct-SystemLinker-backed runtime fixture. The focused Bytecode row
+passed on its first candidate run, so no production change was needed. The
+fixture calls `malloc`, casts its result to `ubyte*`, writes and reads native
+memory, and frees it through `scope(exit)`. This is a stale coverage gap after
+the existing native-call and raw-pointer paths. Verification: focused Bytecode
+row, `ninja bin/ut`, and `bin/ut --random` passed (seed `1522907379`).

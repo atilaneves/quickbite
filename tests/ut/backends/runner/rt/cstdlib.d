@@ -447,7 +447,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 // above is interpretation-only. LLVMJit is promoted alongside SystemLinker
 // (its single behaviour oracle) on this surviving rt/ block: a real runtime
 // libc malloc call through the in-process JIT.
-static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     @("malloc." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
