@@ -1617,6 +1617,75 @@ this commit's call site is scoped to scalar reinterpret-loads only, the
 narrowest slice of "give these types somewhere to be used" that had an
 existing, exactly-named shim to retire.
 
+Progress 2026-07-10 (single scalar<->bytes authority): `impl.d` carried a
+second, older scalar-byte codec alongside `native_scalar.d` -- `scalarBytes`
+(splats a boxed `Value`'s bits into a `Value[]` of individually-boxed
+`ubyte`s) and `scalarFromBytes` (its inverse, reassembling those boxed bytes
+back into a scalar `Value` via a hand-written `switch` over `dmd.astenums.
+TY`), used by `localPointerByteSlice` (`ptr[lower..upper]` byte slices
+through a pointer to a scalar local) and `scalarWithByte`/
+`writeThroughArrayPointer` (single-byte pointer writebacks, e.g. a native
+call filling a buffer that aliases a non-array scalar local). This was
+exactly item 7's "must not grow a second set of D layout rules" guardrail
+being violated by the interpreter's own pre-existing code, not new code --
+`native_scalar.d` already had the byte width and bit-pattern facts for
+every scalar `TY` it claims; `impl.d` was re-deriving them independently.
+
+Both helpers now delegate: `scalarBytes` allocates a `ubyte[layout.
+typeByteSize(type)]`, calls `native_scalar.writeScalar` into it, and maps
+each byte to `Value(ubyte)`; `scalarFromBytes` copies its `Value[]` bytes
+into a `ubyte[]` and calls `native_scalar.readScalar`. Both keep their
+original signatures (`Value[]` in/out) so `localPointerByteSlice`,
+`scalarWithByte`, and `writeThroughArrayPointer` are unchanged.
+
+The float/double question: the old hand-written `scalarFromBytes` `switch`
+had no `Tfloat32`/`Tfloat64` case and threw "Unsupported scalar byte
+writeback." for them -- but that throw was already effectively dead code
+via `scalarBytes`, not `scalarFromBytes`: `scalarBytes` computed its bytes
+via `value.asLong`, and `quickbite.lang.Value.asLong` itself throws
+("Expected integer-compatible scalar.") for a `float`/`double`-holding
+`Value`, since those are separate, non-integral `SumType` members. So a
+float/double local reaching either helper already threw before ever
+reaching `scalarFromBytes`'s own throw branch, just with a different
+message. Grepped the whole `tests/` tree for both exact messages
+("Unsupported scalar byte writeback.", "Expected integer-compatible
+scalar.") and for `ptr[lower..upper]`/compound-assignment-through-scalar-
+pointer fixtures exercising float/double specifically: nothing pins either
+throw. Per the single-oracle rule, `SystemLinker` (real compiled D) has no
+such restriction -- `*cast(ubyte*)&floatLocal` byte-slices or writes back
+fine in compiled D. So this reimplementation is allowed to make float/
+double succeed here, and it does: `native_scalar.writeScalar`/`readScalar`
+handle `Tfloat32`/`Tfloat64` via `Value.asReal`, not `asLong`, so both
+`scalarBytes` and `scalarFromBytes` now succeed for float/double locals
+through this path, matching the `SystemLinker` oracle. This is verified as
+*unpinned* (nothing in `tests/` depended on the old throw), not *proven* by
+a new `ct/`/`rt/` fixture -- no such fixture was added, per this task's
+scope (adding one needs separate TDD approval). Every other previously-
+handled type (`bool`, `char`/`wchar`/`dchar`, every integral width, and an
+`enum` with an integral base, which reaches the codec via `Value.EnumValue`
+regardless of base type) is unchanged: `isNativeScalarType`'s case list is
+a strict superset of the old `switch`'s cases, so no type the old code
+handled is now unhandled.
+
+New unit tests in `tests/ut/backends/interpreter/native_scalar.d`: a round
+trip through an individually-boxed `Value[]` byte array (mirroring `impl.
+d`'s new `scalarBytes`/`scalarFromBytes` composition one level below their
+private, untestable-in-isolation bodies) for a 4-byte integral type, and
+the same composition for `float`/`double` -- the newly-succeeding case.
+Focused runs: `bin/ut -s ut.backends.interpreter.native_scalar` (23 tests,
+0 failed, up from 21), `bin/ut -s ut.backends.interpreter` (216 tests, 0
+failed, up from 214), `bin/ut -s ut.backends.runner.ct.expressions ut.
+backends.runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
+evaluator.eval` (772 tests, 0 failed, 6 expected `@ShouldFail`, identical
+to the pre-change baseline), and `bin/ut -s ut.backends.runner.rt.cstdlib
+ut.backends.runner.rt.dependency_image` (146 tests, 0 failed, identical to
+baseline). The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.
+
+`ffi_marshal.d`'s narrower version of the same encode/decode (noted above)
+is still untouched -- out of scope here too, same reasoning as the prior
+progress note.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

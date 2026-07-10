@@ -4744,17 +4744,23 @@ private struct Walker {
         return backendCastValue(value, target);
     }
 
+    // Delegates to `native_scalar.writeScalar` -- `ai/plans/value.md` item
+    // 7's single scalar<->bytes authority -- rather than re-deriving a
+    // scalar's byte width and bit pattern here; this module must not grow
+    // its own second set of D layout rules alongside that codec's.
     private Value[] scalarBytes(
         imported!"dmd.mtype".Type type,
         in Value value,
     ) {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        const byteCount = cast(size_t) size(type);
-        const bits = cast(ulong) value.asLong;
+        auto raw = new ubyte[](typeByteSize(type));
+        writeScalar(type, raw, value);
+
         Value[] bytes;
-        foreach (index; 0 .. byteCount)
-            bytes ~= Value(cast(ubyte) (bits >> (index * 8)));
+        foreach (byte_; raw)
+            bytes ~= Value(byte_);
         return bytes;
     }
 
@@ -4774,32 +4780,22 @@ private struct Walker {
         return scalarFromBytes(type, bytes);
     }
 
+    // The inverse of `scalarBytes` above, via `native_scalar.readScalar`.
+    // Note this also now succeeds for `float`/`double` -- see `ai/plans/
+    // value.md`'s 2026-07-10 "single scalar<->bytes authority" progress
+    // note for why the old name-matched `switch`'s throw on those two types
+    // was safe to drop.
     private Value scalarFromBytes(
         imported!"dmd.mtype".Type type,
         in Value[] bytes,
     ) {
-        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        ulong bits;
+        auto raw = new ubyte[](bytes.length);
         foreach (index, byte_; bytes)
-            bits |= cast(ulong) cast(ubyte) byte_.asLong << (index * 8);
+            raw[index] = cast(ubyte) byte_.asLong;
 
-        switch (type.toBasetype.ty) with (TY) {
-            case Tbool:   return Value(bits != 0);
-            case Tchar:   return Value(cast(char) bits);
-            case Twchar:  return Value(cast(wchar) bits);
-            case Tdchar:  return Value(cast(dchar) bits);
-            case Tint8:   return Value(cast(byte) bits);
-            case Tuns8:   return Value(cast(ubyte) bits);
-            case Tint16:  return Value(cast(short) bits);
-            case Tuns16:  return Value(cast(ushort) bits);
-            case Tint32:  return Value(cast(int) bits);
-            case Tuns32:  return Value(cast(uint) bits);
-            case Tint64:  return Value(cast(long) bits);
-            case Tuns64:  return Value(cast(ulong) bits);
-            default:
-                throw new Exception("Unsupported scalar byte writeback.");
-        }
+        return readScalar(type, raw);
     }
 
     // Apply the elements a native call wrote through pointers into

@@ -208,3 +208,52 @@ unittest {
 
     readScalar(Type.tvoidptr, bytes).shouldThrow!Exception;
 }
+
+
+// `impl.d`'s `scalarBytes`/`scalarFromBytes` splat a scalar's native bytes
+// out into a `Value[]` of individually-boxed `ubyte` bytes (for pointer byte
+// slices and single-byte pointer writebacks) and reassemble the same way;
+// these tests exercise that exact splat/reassemble composition on top of
+// `writeScalar`/`readScalar` directly, one byte-boxing step removed from
+// `impl.d`'s own (private, untestable-in-isolation) helpers.
+@("writeScalar.thenReadScalar.roundTripsThroughAnIndividuallyBoxedByteArray")
+unittest {
+    auto raw = new ubyte[](typeByteSize(Type.tint32));
+    writeScalar(Type.tint32, raw, Value(0x1234_5678));
+
+    Value[] boxedBytes;
+    foreach (byte_; raw)
+        boxedBytes ~= Value(byte_);
+
+    auto reassembled = new ubyte[](boxedBytes.length);
+    foreach (index, byte_; boxedBytes)
+        reassembled[index] = cast(ubyte) byte_.asLong;
+
+    readScalar(Type.tint32, reassembled).asLong.should == 0x1234_5678;
+}
+
+
+// The newly-succeeding case: `float`/`double` through the same boxed-byte
+// splat/reassemble composition. `impl.d`'s old hand-written
+// `scalarFromBytes` threw "Unsupported scalar byte writeback." for these
+// two types; nothing in `tests/` pinned that throw (see `ai/plans/
+// value.md`'s 2026-07-10 "single scalar<->bytes authority" progress note),
+// so routing through this codec instead now succeeds here too, matching
+// `SystemLinker`.
+@("writeScalar.thenReadScalar.roundTripsFloatAndDoubleThroughAnIndividuallyBoxedByteArray")
+unittest {
+    foreach (type; [Type.tfloat32, Type.tfloat64]) {
+        auto raw = new ubyte[](typeByteSize(type));
+        writeScalar(type, raw, Value(1.5));
+
+        Value[] boxedBytes;
+        foreach (byte_; raw)
+            boxedBytes ~= Value(byte_);
+
+        auto reassembled = new ubyte[](boxedBytes.length);
+        foreach (index, byte_; boxedBytes)
+            reassembled[index] = cast(ubyte) byte_.asLong;
+
+        readScalar(type, reassembled).asReal.should == cast(real) 1.5;
+    }
+}
