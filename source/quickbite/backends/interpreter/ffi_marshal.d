@@ -643,21 +643,47 @@ private void marshalArgument(
     import dmd.typesem: size;
 
     switch (type.ty) {
+        // native_scalar.writeScalar is `layout.d`'s single scalar<->bytes
+        // authority (`ai/plans/value.md` item 7); it needs `dest.length ==
+        // layout.typeByteSize(type)` exactly. That holds for every argument,
+        // receiver, ref-result, and struct/array-field buffer this function
+        // fills. It does NOT hold for a native closure/callback result
+        // buffer (`invokeClosure`/`InterpreterInboundTrampolineSession.
+        // invoke`, ffi.md §34.16): libffi widens a narrow scalar return
+        // buffer to its `ffi_arg` width (>= 8 bytes) and requires the WHOLE
+        // widened buffer to carry a sign/zero-extended copy of the value
+        // for ABI correctness, which a fixed-width `writeScalar` cannot
+        // produce. Route the common exact-size case through the shared
+        // codec and keep the old byte splat for the widened one.
         case TY.Tbool, TY.Tchar, TY.Twchar, TY.Tdchar,
              TY.Tint8, TY.Tuns8, TY.Tint16, TY.Tuns16,
-             TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64:
+             TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64: {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+            if (buffer.length == typeByteSize(type)) {
+                writeScalar(type, buffer, value);
+                return;
+            }
+
             const scalar = scalarBits(type, value);
             foreach (index; 0 .. buffer.length)
                 buffer[index] = cast(ubyte) (scalar >> (8 * index));
             return;
+        }
 
-        case TY.Tfloat32:
-            *cast(float*) buffer.ptr = cast(float) value.asReal;
-            return;
+        case TY.Tfloat32, TY.Tfloat64: {
+            // Unlike the integral case above, the old code here already
+            // writes only `typeByteSize(type)` bytes at `buffer.ptr`
+            // regardless of `buffer.length` (a widened closure-result
+            // buffer's extra bytes were already left untouched), so
+            // slicing down to feed `writeScalar` reproduces it exactly.
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        case TY.Tfloat64:
-            *cast(double*) buffer.ptr = cast(double) value.asReal;
+            writeScalar(type, buffer[0 .. typeByteSize(type)], value);
             return;
+        }
 
         case TY.Tfloat80:
             *cast(real*) buffer.ptr = value.asReal;
@@ -903,23 +929,29 @@ private imported!"quickbite.lang".Value unmarshalValue(
     import quickbite.lang: Value;
     import dmd.astenums: TY;
     import dmd.mtype: TypeStruct;
+    import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.native_scalar: readScalar;
 
     switch (type.ty) {
         case TY.Tvoid:     return Value.void_;
-        case TY.Tbool:     return Value(*cast(const bool*) buffer.ptr);
-        case TY.Tchar:     return Value(*cast(const char*) buffer.ptr);
-        case TY.Twchar:    return Value(*cast(const wchar*) buffer.ptr);
-        case TY.Tdchar:    return Value(*cast(const dchar*) buffer.ptr);
-        case TY.Tint8:     return Value(*cast(const byte*) buffer.ptr);
-        case TY.Tuns8:     return Value(*cast(const ubyte*) buffer.ptr);
-        case TY.Tint16:    return Value(*cast(const short*) buffer.ptr);
-        case TY.Tuns16:    return Value(*cast(const ushort*) buffer.ptr);
-        case TY.Tint32:    return Value(*cast(const int*) buffer.ptr);
-        case TY.Tuns32:    return Value(*cast(const uint*) buffer.ptr);
-        case TY.Tint64:    return Value(*cast(const long*) buffer.ptr);
-        case TY.Tuns64:    return Value(*cast(const ulong*) buffer.ptr);
-        case TY.Tfloat32:  return Value(*cast(const float*) buffer.ptr);
-        case TY.Tfloat64:  return Value(*cast(const double*) buffer.ptr);
+
+        // A direct (non-ref) native return buffer is at least libffi's
+        // `ffi_arg` width (>= 8 bytes, `quickbite.ffi.core`'s
+        // `returnSize`), wider than a narrow scalar's own `typeByteSize`;
+        // every other buffer this function reads (a struct/array field, a
+        // slice element, a callback argument, an out-parameter cell) is
+        // already exactly `typeByteSize(type)` long. Slicing to the low
+        // `typeByteSize(type)` bytes is a no-op for the exact-size callers
+        // and, on this little-endian host, reads the same bytes the old
+        // pointer cast read for the widened return buffer too -- reading
+        // needs only those bytes, unlike the sign/zero-extended write-side
+        // case in `marshalArgument`.
+        case TY.Tbool, TY.Tchar, TY.Twchar, TY.Tdchar,
+             TY.Tint8, TY.Tuns8, TY.Tint16, TY.Tuns16,
+             TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64,
+             TY.Tfloat32, TY.Tfloat64:
+            return readScalar(type, buffer[0 .. typeByteSize(type)]);
+
         case TY.Tfloat80:  return Value(*cast(const real*) buffer.ptr);
         case TY.Tpointer:
             return Value.nativePointerValue(*cast(void**) buffer.ptr);

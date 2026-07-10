@@ -1686,6 +1686,110 @@ usual long-suite handoff.
 is still untouched -- out of scope here too, same reasoning as the prior
 progress note.
 
+Progress 2026-07-10 (scalar authority reaches the FFI marshaller): the
+previous two notes left `ffi_marshal.d`'s own scalar encode/decode as a
+deliberately-unconsolidated third copy of the same D layout rules -- exactly
+item 7's "must not grow a second set of D layout rules" guardrail, this time
+at the libffi ABI seam rather than in `impl.d`. `marshalArgument`'s
+`Tbool`/`Tchar`/`Twchar`/`Tdchar`/every integral width arm and its
+`Tfloat32`/`Tfloat64` arms, and `unmarshalValue`'s matching arms, now route
+through `native_scalar.writeScalar`/`readScalar`. `Tfloat80` (`real`) and
+every aggregate/pointer/class/array/struct/delegate arm are untouched, per
+`native_scalar.d`'s own deliberate exclusion of `real`'s host-specific
+padded layout and this task's scope.
+
+Proving byte-for-byte preservation needed tracing, not assumption, on two
+fronts:
+
+Char/integral agreement: `ffi_marshal.d`'s local `scalarBits(type, value)`
+and `native_scalar.d`'s local `scalarLong(value)` compute a `Value`'s
+integer bits slightly differently in their source text (`scalarBits`
+special-cases `Tchar`/`Twchar`/`Tdchar` by *type*; `scalarLong` special-cases
+by whether the `Value` *itself* `isCharacter`), so they can only diverge when
+the type says char but the value is not character-valued -- concretely, a
+`float`/`double`-holding `Value` reaching a char-typed slot, where
+`scalarBits` would truncate via `castTo!long.asLong` and `scalarLong` would
+throw via a direct `asLong`. Traced whether that is reachable: every
+`marshalArgument`/`unmarshalValue` `type` argument arrives already resolved
+through `.toBasetype` (`quickbite.ffi.core`'s `parameterType`/the `Tarray`/
+`Tstruct` recursions), and every `Value` reaching a char-typed argument
+either comes from `integerValue` (an `IntegerExp` literal, which switches on
+`integer.type.ty` and produces a genuinely char-typed `Value` for a
+char-typed literal) or from an explicit `CastExp`, whose `castValue` routes
+through `quickbite.backends.casts.castValue`'s `char_`/`wchar_`/`dchar_`
+targets -- `value.castTo!char` etc. -- which also produces a genuinely
+char-typed `Value` regardless of the source type. D has no implicit
+narrowing conversion to `char`/`wchar`/`dchar` that would let a float reach
+a char-typed argument slot uncast. So the only inputs either helper can
+receive are ones where both formulas already agree (an integral/bool/char
+`Value` at any of these types); the divergent float-at-char-type case is
+provably unreachable, not merely unobserved.
+
+Buffer-width agreement: unlike the container call site in the prior two
+notes, `ffi_marshal.d`'s buffers are not uniformly `layout.typeByteSize
+(type)`-sized, so `writeScalar`/`readScalar`'s unconditional length-match
+throw needed checking against every call site, not assuming it. Traced all
+of them (`quickbite.ffi.core`'s argument/receiver/ref-result/out-parameter
+cell allocations, and this file's struct-field/static-array/slice-element/
+pointer-element recursive slices): every one is exactly `typeByteSize(type)`
+long, *except* a direct (non-ref) native return buffer and a native closure/
+callback result buffer, both of which `quickbite.ffi.core` widens to at
+least libffi's `ffi_arg` width (>= 8 bytes) for a narrow scalar type -- a
+real, load-bearing libffi ABI convention, not an oversight. For the read
+side (`unmarshalValue`), only the low `typeByteSize(type)` bytes of that
+widened buffer ever mattered (the old pointer-cast read the same bytes,
+oblivious to the rest of the buffer), so slicing to `buffer[0 ..
+typeByteSize(type)]` before calling `readScalar` reproduces the old read
+exactly for both the exact-size and the widened case. For the write side
+(`marshalArgument`), the two are not equivalent: the old integral/char
+arm's byte splat fills the *entire* (possibly widened) buffer with a sign-
+or zero-extended copy of the value, which is what libffi's closure-result
+ABI convention requires when an interpreted delegate is called back into
+from native code and returns a narrow scalar (ffi.md §34.16) -- a fixed-
+width `writeScalar` cannot produce that. This is the one case left
+deliberately unconsolidated: `marshalArgument`'s integral/char arm checks
+`buffer.length == typeByteSize(type)` first and calls `writeScalar` for the
+exact-size case (every argument, receiver, ref-result, and struct/array
+field -- the overwhelming majority of calls), falling back to the original
+`scalarBits`-driven splat only for the widened closure-result case. The
+`Tfloat32`/`Tfloat64` write arms needed no such branch: the old code already
+wrote only `typeByteSize(type)` bytes via a pointer-typed store regardless
+of `buffer.length`, identical to what a sliced `writeScalar` call produces,
+so both consolidate unconditionally.
+
+`scalarBits` is therefore still used (the widened-buffer fallback) and was
+not deleted, per this task's "still used by a path you did not touch, leave
+it" rule -- it is now a narrower, ABI-specific helper rather than the
+general-purpose scalar codec it used to be. `native_scalar.writeScalar`/
+`readScalar` `memcpy` into an exactly-sized slice rather than use a
+pointer-typed load/store; this is strictly safer than the old direct
+pointer casts (alignment-agnostic) and, on this host, produces identical
+bytes -- confirmed by every focused run below staying green, not merely
+argued.
+
+No test was added or modified; the proof for this commit is the existing
+FFI/runtime suites staying green end to end. Focused runs: `bin/ut -s
+ut.backends.interpreter` (216 tests, 0 failed, unchanged), `bin/ut -s
+ut.backends.interpreter.native_scalar` (23 tests, 0 failed, unchanged),
+`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
+dependency_image` (146 tests, 0 failed, unchanged), `bin/ut -s ut.backends.
+runner.rt.concurrency ut.backends.runner.rt.file ut.backends.runner.rt.
+random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf ut.
+backends.runner.rt.llvm_jit` (16 tests, 0 failed), and `bin/ut -s ut.
+backends.runner.ct.expressions ut.backends.runner.ct.cerealed ut.backends.
+runner.ct.structs ut.backends.evaluator.eval` (772 tests, 0 failed, 6
+expected `@ShouldFail`, identical to the pre-change baseline). The full
+`bin/ut --random` was left to the orchestrator per the usual long-suite
+handoff.
+
+Item 7's guardrail now holds across both production scalar<->bytes call
+sites the interpreter has: the reinterpret-load container path and the FFI
+marshaller. The one remaining split (the widened closure-result buffer) is
+not a second set of layout *rules* -- it reuses the same `scalarBits`/
+`scalarLong` bit-value formula `native_scalar.d`'s header comment already
+documents as kept in agreement -- it is an ABI-width concern specific to
+libffi's calling convention that a fixed-width leaf codec should not absorb.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

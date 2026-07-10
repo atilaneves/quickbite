@@ -25,14 +25,18 @@ private:
 // requires `real`; excluding it keeps this codec's claims honest rather
 // than silently wrong on a host whose padding differs.
 //
-// This duplicates a narrower version of `ffi_marshal.d`'s scalar
-// encode/decode (`marshalArgument`'s integral/float cases and
-// `unmarshalValue`'s counterpart, ~lines 645-660 and 907-923): both convert
-// between a boxed `Value` and the same host-native bit pattern for the same
-// set of scalar `TY` kinds. `ffi_marshal.d` is deliberately left unchanged
-// here (its buffer is a libffi ABI cell, not a `NativeBlock`, and touching
-// it is out of scope for this call site); consolidating the two into one
-// shared codec is future work, not done in this commit.
+// `ffi_marshal.d`'s `marshalArgument`/`unmarshalValue` route their
+// exact-size scalar arms through `writeScalar`/`readScalar` too, so this is
+// the interpreter's single scalar<->bytes authority across both the
+// native-layout container call site above and the FFI marshaller (`ai/plans/
+// value.md` item 7's "must not grow a second set of D layout rules"
+// guardrail). One case stays on `ffi_marshal.d`'s own byte splat: a native
+// closure/callback result buffer for a narrow scalar return type is widened
+// by libffi to its `ffi_arg` width and must carry a sign/zero-extended copy
+// of the value across the WHOLE widened buffer for ABI correctness, which
+// this codec's fixed-width `writeScalar` (exactly `layout.typeByteSize(type)`
+// bytes, no more) cannot produce; that narrow ABI concern belongs to the
+// libffi seam, not this leaf codec.
 
 
 // `dmd.mtype.Type.toBasetype` is not `@safe`; this is the `@trusted`
@@ -97,11 +101,12 @@ public void writeScalar(
 
 
 // The integer bits behind an integral/`bool`/character `Value`, widened to
-// `long` -- mirrors `ffi_marshal.d`'s local `scalarBits` helper (~lines
-// 722-737): a character value's bits are its code point (`castTo!long`),
-// matching that module's own scalar marshalling so this codec agrees with
-// it rather than silently drifting (see this module's header comment on the
-// duplication).
+// `long` -- agrees with `ffi_marshal.d`'s own local `scalarBits` helper
+// (still used there for its one remaining unconsolidated case, the widened
+// closure-result buffer -- see this module's header comment) for every
+// input both can receive: a character value's bits are its code point
+// (`castTo!long`), matching that module's own scalar marshalling so the two
+// helpers stay in agreement rather than silently drifting.
 private long scalarLong(in imported!"quickbite.lang".Value value) @safe {
     return value.isCharacter ? value.castTo!long.asLong : value.asLong;
 }
