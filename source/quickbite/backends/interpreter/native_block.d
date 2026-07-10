@@ -5,11 +5,35 @@ private:
 
 
 // A stable byte range: an address that never moves while any handle can
-// reach it. Owned blocks are GC memory the interpreter allocates; borrowed
-// blocks wrap memory owned elsewhere (later: FFI/host memory) and write
-// through to it. Copying a `NativeBlock` copies the handle, not the bytes:
+// reach it. Copying a `NativeBlock` copies the handle, not the bytes:
 // every copy sees the same stable address.
+//
+// Note what a block does NOT tell you: whether its bytes are GC memory.
+// `Ownership` answers a narrower question (below), and `subRange` hands
+// out `borrowed` blocks that are GC memory. Code that needs the GC fact
+// must read it mechanically, from `core.memory.GC.addrOf`, never from
+// the ownership label -- see `NativeArray.writeSliceHeader`.
 public struct NativeBlock {
+    // Answers exactly one question: may we reallocate or extend this
+    // block? `owned` means yes -- this handle's allocation is ours to
+    // grow or replace. `borrowed` means no, because the allocation
+    // belongs to something else.
+    //
+    // `borrowed` deliberately covers two different kinds of "something
+    // else": memory outside the D GC entirely (malloc'd, FFI, host
+    // memory -- see `borrow`), and an interior view of a GC allocation
+    // this interpreter owns (see `subRange`). They differ in whether the
+    // collector can see the bytes, and they are alike in the only thing
+    // this enum claims: neither may be reallocated underneath its real
+    // owner.
+    //
+    // Do not read `borrowed` as "not GC memory". It meant that before
+    // `subRange` existed, and guards keyed on it that way were wrong in
+    // four separate places (see ai/plans/value.md's "ownership vs
+    // GC-visibility" note). `trueByteSize` and `tryExtendTo` gate on
+    // `Ownership` because they ask this enum's own question; the
+    // scanned-destination check in `NativeArray.writeSliceHeader` asks
+    // the GC instead, because it asks a different one.
     public enum Ownership {
         owned,
         borrowed,
