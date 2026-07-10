@@ -662,3 +662,170 @@ unittest {
 
     array.block.address.should == address;
 }
+
+
+@("NativeArray.slice.writeThroughSliceIsVisibleReadingParentAtBegin")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(1, 3);
+
+    sub.element(0)[0] = 42;
+
+    array.element(1)[0].should == 42;
+}
+
+
+@("NativeArray.slice.writeThroughParentAtBeginIsVisibleReadingSlice")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(1, 3);
+
+    array.element(1)[0] = 42;
+
+    sub.element(0)[0].should == 42;
+}
+
+
+@("NativeArray.slice.lengthIsEndMinusBegin")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(1, 3);
+
+    sub.length.should == 2;
+}
+
+
+@("NativeArray.slice.elementZeroSharesAddressWithParentElementAtBegin")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(1, 3);
+
+    sub.element(0).ptr.should == array.element(1).ptr;
+}
+
+
+@("NativeArray.slice.reportsBorrowedOwnership")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(1, 3);
+
+    sub.ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+@("NativeArray.slice.capacityIsZero")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(1, 3);
+
+    sub.capacity.should == 0;
+}
+
+
+// A sub-range cannot be independently grown -- the memory belongs to the
+// parent block, exactly as for any other borrowed array.
+@("NativeArray.slice.reserveNonZeroThrows")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(1, 3);
+
+    sub.reserve(1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "reserve: cannot reallocate a borrowed block; its memory "
+        ~ "is owned elsewhere",
+    );
+}
+
+
+@("NativeArray.slice.scanMatchesParentForPointerBearingElementType")
+unittest {
+    auto array = NativeArray.allocate(Type.tvoidptr, 5);
+    auto sub = array.slice(1, 3);
+
+    sub.scan.should == NativeBlock.Scan.conservative;
+    sub.scan.should == array.scan;
+}
+
+
+@("NativeArray.slice.beginGreaterThanEndThrows")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+
+    array.slice(3, 1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "slice: begin > end",
+    );
+}
+
+
+@("NativeArray.slice.endGreaterThanLengthThrows")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+
+    array.slice(0, 6).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "slice: end > length",
+    );
+}
+
+
+@("NativeArray.slice.emptySliceAtEndOfArrayIsLegalAndZeroLength")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(5, 5);
+
+    sub.length.should == 0;
+    sub.block.byteLength.should == 0;
+}
+
+
+@("NativeArray.slice.emptySliceInMiddleOfArrayIsLegalAndZeroLength")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(2, 2);
+
+    sub.length.should == 0;
+    sub.block.byteLength.should == 0;
+}
+
+
+// Pins the measured druntime fact the `slice` doc comment relies on: for
+// this file's usual 3-`int32` fixture, the block's 12 live bytes round up
+// to a 16-byte GC bin, so the `xs[$ .. $]` slice's past-the-end address
+// still resolves as GC-visible (an interior pointer of the same bin) via
+// `core.memory.GC.addrOf`, rather than being treated as outside any GC
+// allocation. This is `subRange`/`slice` mechanics plus GC bin rounding,
+// not a guarantee `slice` itself makes or checks.
+@("NativeArray.slice.emptyEndSliceBlockAddressResolvesToParentBaseUnderCurrentBinSlack")
+unittest {
+    import core.memory: GC;
+
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    auto sub = array.slice(3, 3);
+
+    (GC.addrOf(sub.block.address) is null).should == false;
+    GC.addrOf(sub.block.address).should == array.block.address;
+}
+
+
+@("NativeArray.slice.sliceOfSliceComposesOffsets")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 10);
+    auto once = array.slice(2, 8);
+    auto twice = once.slice(1, 4);
+
+    twice.length.should == 3;
+    twice.element(0).ptr.should == array.element(3).ptr;
+}
+
+
+@("NativeArray.slice.sliceOfSliceWriteIsVisibleInOriginalArray")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 10);
+    auto once = array.slice(2, 8);
+    auto twice = once.slice(1, 4);
+
+    twice.element(0)[0] = 99;
+
+    array.element(3)[0].should == 99;
+}

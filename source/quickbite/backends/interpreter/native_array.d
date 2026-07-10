@@ -169,6 +169,98 @@ public struct NativeArray {
         return _block.bytes[start .. start + _stride];
     }
 
+    // A sub-range view over elements `[begin, end)` -- the handle-level
+    // expression of a guest `xs[1 .. 3]` -- aliasing the SAME element block
+    // at `begin * stride`, never a copy: a write through the returned
+    // handle is visible through this array and vice versa, for as long as
+    // both stay live.
+    //
+    // Routes through `NativeBlock.subRange` rather than `NativeBlock.
+    // borrow`/a raw pointer: `begin`/`end` are checked below against this
+    // array's own already-verified `_length`, and slicing an interior byte
+    // range of an already-verified block is ordinary bounds-checked D --
+    // exactly `subRange`'s own "nested aggregate field" argument (see its
+    // comment), applied here to a sub-range of elements instead of a
+    // sub-range of struct fields. That is why this stays `@safe`, unlike
+    // `NativeStruct.sliceField`'s reconstruction of a handle from a raw
+    // pointer read back out of memory, which cannot be verified the same
+    // way.
+    //
+    // Bounds: `begin <= end <= length`, each its own thrown `Exception`,
+    // checked before either is multiplied by `_stride`. No separate
+    // overflow check is needed on `begin * stride`/`end * stride`
+    // themselves: every construction path (`allocate`, `borrow`, `adopt`)
+    // already routes `length * stride` through the overflow-checked
+    // `byteLength` helper, so once `end <= _length` holds, `end * _stride
+    // <= _length * _stride` is provably wrap-free -- exactly `element`'s own
+    // argument (see its comment) -- and `begin <= end` then makes `begin *
+    // _stride <= end * _stride` wrap-free too, since it is bounded by the
+    // same already-wrap-free product.
+    //
+    // The returned array is `Ownership.borrowed` -- via `NativeArray.adopt`
+    // over `NativeBlock.subRange`'s own `borrowed` block, per this
+    // function's own instructions to build the handle that way rather than
+    // by hand -- so `reserve` on it throws and `capacity` is 0, exactly as
+    // for any other borrowed array. That is the honest answer today: a
+    // sub-range is not an independent allocation, so it has nothing of its
+    // own to grow. What this deliberately does NOT model: compiled D lets
+    // you append to a slice (`xs[1 .. 3] ~= x`), which reallocates a NEW
+    // block for the RESULT rather than growing `xs` in place, and does not
+    // disturb `xs` at all. That guest-level `~=` semantics is a question
+    // for whatever interpreter call site eventually evaluates `~=` on a
+    // `NativeArray` handle -- build a fresh owned array and rebind the
+    // guest variable to it, exactly as compiled D does -- not for this
+    // container: `reserve` throwing on a borrowed handle is the correct
+    // low-level primitive regardless of what a higher-level guest operation
+    // later decides to do about it. There is no such call site yet (see
+    // ai/plans/value.md item 7).
+    //
+    // `begin == end` (including `begin == end == length`, D's legal `xs[$
+    // .. $]`) is legal and returns a real zero-length array; `scan` is
+    // carried forward from this array's own block by `subRange` unchanged,
+    // exactly as for any other sub-range, so it is not re-derived here.
+    // Its block's address is NOT null the way a zero-length *allocated*
+    // array's is (`NativeBlock.allocate`/`NativeArray.allocate` route
+    // through `GC.calloc(0, ...)`, which returns `null`): `subRange` slices
+    // `_bytes`, so a zero-length sub-range's address is `begin * stride`
+    // bytes past this array's own base -- for `begin == length`, a
+    // past-the-end pointer, still a valid (if unused) address inside or
+    // just past the parent's real GC allocation. Whether `core.memory.GC.
+    // addrOf` of that address resolves as GC-visible (the fact `
+    // writeSliceHeader`'s scanned-destination check asks, should some later
+    // caller pass this handle to it) is not a fixed answer: `addrOf`
+    // resolves an interior pointer to its allocation's base, so it depends
+    // on how much slack the GC's bin rounding left past the block's own
+    // live bytes past `begin` -- measured directly against druntime (not
+    // assumed): a 3-`int32` block's 12 live bytes round up to a 16-byte
+    // bin, leaving 4 bytes of slack, so `GC.addrOf` of THAT block's
+    // past-the-end pointer resolves non-null, to the same base address; a
+    // block whose live bytes exactly fill its bin (e.g. exactly 16, 32, ...
+    // bytes) would answer differently. `slice` itself never asks this
+    // question -- it only calls `subRange`/`adopt`, neither of which
+    // touches `GC.addrOf` -- so this is not a decision `slice` makes, only
+    // a fact worth pinning rather than assuming for whichever caller later
+    // passes the resulting handle onward; see `NativeArray.slice.
+    // emptyEndSliceBlockAddressResolvesToParentBaseUnderCurrentBinSlack`
+    // for the actual measured answer at this file's fixture size.
+    public NativeArray slice(in size_t begin, in size_t end) @safe {
+        if (begin > end)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "slice: begin > end",
+            );
+
+        if (end > _length)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "slice: end > length",
+            );
+
+        const count = end - begin;
+        return NativeArray.adopt(
+            _block.subRange(begin * _stride, count * _stride), _elementType, count);
+    }
+
     // The byte length of a D dynamic-array slice header (`{ length, ptr }`):
     // how many bytes `writeSliceHeader` writes at its `byteOffset` into a
     // destination block, which need not be exactly this many bytes itself

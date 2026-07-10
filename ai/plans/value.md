@@ -915,6 +915,99 @@ Still not done: no `impl.d`/`Walker`/`Value` wiring, no `interpreter.md`
 §9.10 shim retired, no class objects. The interpreter still boxes
 everything; none of this native storage has a caller yet.
 
+Progress 2026-07-10 (array sub-slicing): item 7's correctness-ceiling
+"slices into locals" gets its handle-level expression. `NativeArray` gains
+`slice(begin, end) @safe -> NativeArray`, the handle a guest `xs[1 .. 3]`
+must become: a real, aliasing view over the SAME element block at `begin *
+stride`, never a copy -- a write through the returned handle is visible
+through the original array and vice versa, for as long as both stay live.
+
+Unlike `NativeStruct.sliceField`, `slice` stays `@safe`. It derives a
+sub-range of an existing, already-verified block with ordinary
+bounds-checked D -- exactly `NativeBlock.subRange`'s own "nested aggregate
+field" argument (see its comment), applied here to a sub-range of elements
+rather than a sub-range of struct fields -- so it routes through
+`subRange`, never through the `@system` raw-pointer `NativeBlock.borrow`
+path a slice-header reconstruction like `sliceField` needs.
+
+Bounds: `begin <= end <= length`, each its own thrown `Exception`, checked
+before either is multiplied by `_stride`. No extra overflow check is
+needed on `begin * stride`/`end * stride`: every construction path
+(`allocate`, `borrow`, `adopt`) already routes `length * stride` through
+the overflow-checked `byteLength` helper -- `element`'s own comment makes
+the identical argument -- so once `end <= _length` holds, `end * _stride
+<= _length * _stride` is provably wrap-free, and `begin <= end` then makes
+`begin * _stride <= end * _stride` wrap-free too, bounded by that same
+already-wrap-free product. `scan` is carried forward from the parent block
+by `subRange` unchanged, not re-derived. The handle itself is built with
+`NativeArray.adopt` over `subRange`'s block, which re-checks `length *
+stride` fits, rather than constructed by hand.
+
+The returned array is `Ownership.borrowed`: a sub-range is not an
+independent allocation, so `reserve` on it throws and `capacity` is 0,
+exactly as for any other borrowed array. That is the honest answer today,
+and it is deliberately not modelling one thing: compiled D lets you append
+to a slice (`xs[1 .. 3] ~= x`), which reallocates a NEW block for the
+RESULT rather than growing `xs` in place, and leaves `xs` itself untouched.
+That guest-level `~=` semantics is a question for whatever interpreter
+call site eventually evaluates `~=` on a `NativeArray` handle -- build a
+fresh owned array and rebind the guest variable to it, exactly as compiled
+D does -- not for this container: `reserve` throwing on a borrowed handle
+is the correct low-level primitive regardless of what a higher-level guest
+operation later decides to do about it. There is no such call site yet.
+
+`begin == end` (including `begin == end == length`, D's legal `xs[$ ..
+$]`) is legal and returns a real zero-length array. Its block's address is
+NOT null the way a zero-length *allocated* array's is (`NativeBlock.
+allocate` routes through `GC.calloc(0, ...)`, which returns `null`):
+`subRange` slices `_bytes`, so a zero-length sub-range's address is `begin
+* stride` bytes past the array's own base -- for `begin == length`, a
+past-the-end pointer, still a valid (if unused) address inside or just
+past the parent's real GC allocation. Whether `core.memory.GC.addrOf` of
+that address resolves as GC-visible (the fact `writeSliceHeader`'s
+scanned-destination check asks, should some later caller pass this handle
+to it) is not a fixed answer -- `addrOf` resolves an interior pointer to
+its allocation's base, so it depends on how much slack the GC's bin
+rounding left past the block's own live bytes. This was checked against
+druntime rather than assumed: a small raw-`GC.calloc` probe script
+(`core.memory.GC.addrOf` on the past-the-end pointer of a 12-byte and a
+16-byte allocation) showed a 12-byte block's past-the-end pointer resolves
+non-null -- the 16-byte bin it rounds up to leaves 4 bytes of slack -- while
+an exactly-16-byte block's does not, since there is no slack left. `slice`
+itself never asks this question -- it only calls `subRange`/`adopt`,
+neither of which touches `GC.addrOf` -- so this is not a decision `slice`
+makes, only a fact worth pinning rather than assuming for whichever caller
+later passes the resulting handle onward. Pinned directly with
+`NativeArray.slice.
+emptyEndSliceBlockAddressResolvesToParentBaseUnderCurrentBinSlack`, using
+this test file's usual 3-`int32` fixture (12 live bytes, 16-byte bin, 4
+bytes of slack).
+
+Regression tests, in `tests/ut/backends/interpreter/native_array.d`:
+`NativeArray.slice.writeThroughSliceIsVisibleReadingParentAtBegin` and `.
+writeThroughParentAtBeginIsVisibleReadingSlice` (aliasing, both
+directions); `.lengthIsEndMinusBegin`; `.
+elementZeroSharesAddressWithParentElementAtBegin`; `.
+reportsBorrowedOwnership`; `.capacityIsZero`; `.reserveNonZeroThrows`; `.
+scanMatchesParentForPointerBearingElementType`; `.
+beginGreaterThanEndThrows`; `.endGreaterThanLengthThrows`; `.
+emptySliceAtEndOfArrayIsLegalAndZeroLength` and `.
+emptySliceInMiddleOfArrayIsLegalAndZeroLength`; `.
+emptyEndSliceBlockAddressResolvesToParentBaseUnderCurrentBinSlack` (the GC-
+visibility fact above); and `.sliceOfSliceComposesOffsets` with `.
+sliceOfSliceWriteIsVisibleInOriginalArray` (a slice of a slice: offsets
+compose automatically, since `NativeBlock.subRange`'s `byteOffset` is
+already relative to the calling block's own -- possibly already sliced --
+`_bytes`, so no separate accumulation is needed). No test relies on `GC.
+collect` to prove liveness, per this plan's own "ownership vs
+GC-visibility" note: a collect-survival test cannot distinguish a correct
+scan policy from a stale stack bit pattern.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring for `slice` (no guest
+`xs[1 .. 3]` expression reaches it yet), and no guest-level `~=`
+reallocation semantics for a sliced array, per the "what this does NOT
+model" paragraph above.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1334,15 +1427,26 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    header points at a separately tracked block rather than being inline;
    see the Status "dynamic-array-field read-back" progress note above for
    the `@system`/`@trusted` boundary and the ownership/scan/capacity
-   contract) — item 7's array/struct correctness work has no other named
-   gap left. None of this has a user-visible display or FFI change yet,
-   and no shim is retired yet. What remains: the interpreter call site
-   (`impl.d`/`Walker`/`Value`) that actually gives these types somewhere
-   to be used instead of sitting unwired, and only after that, shim
-   retirement one `interpreter.md` §9.10 entry at a time, each proven by
-   its ratchet fixtures staying green through the real path. Class
-   objects stay third in the migration order, per the "Migration order"
-   bullet above. Latency is measured only once the
+   contract). Array sub-slicing is also done now (`NativeArray.slice` —
+   the handle-level expression of the correctness-ceiling "slices into
+   locals" item: a real, aliasing, `@safe` sub-range view via `NativeBlock.
+   subRange`/`NativeArray.adopt`, `borrowed` and non-growable, distinct
+   from `sliceField`'s `@system` slice-header reconstruction because it
+   only ever slices an already-verified block rather than reconstructing
+   one from a pointer read out of memory; see the Status "array
+   sub-slicing" progress note above for the bounds/overflow argument and
+   the measured `GC.addrOf`-of-a-past-the-end-pointer fact) — item 7's
+   array/struct correctness work has no other named gap left. None of
+   this has a user-visible display or FFI change yet, and no shim is
+   retired yet. What remains: the interpreter call site (`impl.d`/
+   `Walker`/`Value`) that actually gives these types somewhere to be used
+   instead of sitting unwired — including, for `slice` specifically, the
+   guest-level `~=`-on-a-slice reallocation semantics the "array
+   sub-slicing" progress note explicitly does not model — and only after
+   that, shim retirement one `interpreter.md` §9.10 entry at a time, each
+   proven by its ratchet fixtures staying green through the real path.
+   Class objects stay third in the migration order, per the "Migration
+   order" bullet above. Latency is measured only once the
    array and struct correctness gates are green and a real suite actually
    reaches native storage; item 6 already showed the benchmark suite never
    crossed the old marshaller seam. Until then, native layout is justified by
