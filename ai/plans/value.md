@@ -1143,13 +1143,25 @@ needed to grow to hold them. This is NOT implied by `reserve`'s own
 zeroing: `reserve` only zeroes bytes past whatever `block.byteLength` was
 when IT ran, and a shrink never touches `block.byteLength` -- so a
 grow-back after a shrink re-exposes stale bytes from before the shrink,
-not room `reserve` ever zeroed. Compiled D agrees: `_d_arraysetlengthT_`'s
-own zeroing (`memset(newdata + oldsize, 0, newsize - oldsize)`) runs
-unconditionally on every grow, keyed on the CURRENT (possibly
-already-shrunk) length, regardless of whether the allocation grew in place
-or was replaced -- pinned against a compiled probe (shrinking `[1, 2, 3,
-4, 5]` to length 2 then growing back to 5 reads back `[1, 2, 0, 0, 0]`,
-never the original `3, 4, 5`). `setLength.
+not room `reserve` ever zeroed. Compiled D's `_d_arraysetlengthT_` only
+reaches this zeroing for a zero-init element type: the call is gated,
+`static if (__traits(isZeroInit, T)) memset(cast(void*)
+(cast(ubyte*)newdata + oldsize), 0, newsize - oldsize)`
+(core/internal/array/capacity.d, local druntime source, ~line 338); a
+non-zero-init `T` instead gets `T.init` emplaced (or memcpy'd) into each
+new element -- e.g. `char`'s `0xFF`, `float`'s `NaN` -- never a zero
+byte. `setLength`'s own grow path zeroes every new byte unconditionally,
+regardless of element type: a defensible container-level choice that
+matches `NativeBlock.allocate`'s own calloc-zeroed model, but it agrees
+with compiled D's behaviour only for zero-init element types -- which is
+every current fixture's element type. Making a guest `char[]` grow
+expose `0xFF` rather than `0`, to match `SystemLinker`, is left as an
+open question for whatever future interpreter call site actually wires
+`setLength` up; it is not this container's job, and this PR does not
+answer it. Pinned against a compiled probe on `int[]` (a zero-init
+element type, so it does not exercise the non-zero-init gap above):
+shrinking `[1, 2, 3, 4, 5]` to length 2 then growing back to 5 reads
+back `[1, 2, 0, 0, 0]`, never the original `3, 4, 5`. `setLength.
 shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating` pins this without
 reallocating (`_block.byteLength` already covered the regrown span).
 
@@ -1951,9 +1963,12 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    `arr.length = n`, built on the existing `capacity`/`reserve`/
    `tryExtendTo` machinery; see the Status "array length assignment"
    progress note above for the compiled-D-checked shrink/grow contract,
-   the borrowed bounded-growth decision and its documented divergence from
-   compiled D, and the shrink-then-grow re-zeroing subtlety) — this was
-   the last named container primitive the array phase needed. The
+   the borrowed-growth decision (`setLength` refuses every growth of a
+   `borrowed` handle unconditionally — shrink stays legal and
+   storage-free — a narrowing made by review, with growth-and-rebind
+   left to a future call site), and the shrink-then-grow re-zeroing
+   subtlety) — this was the last named container primitive the array
+   phase needed. The
    composition that had only gone one way — a struct could view its own
    fields as handles, but an array could not view a struct-typed element as
    one — is now symmetric too: `NativeArray.structElement` (and the new

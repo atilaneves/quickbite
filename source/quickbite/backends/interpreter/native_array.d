@@ -764,14 +764,26 @@ public struct NativeArray {
     // all -- so if this array was shrunk and is now growing back to (or
     // within) its old span, the bytes between the new `_length` and the
     // block's own already-live span are stale leftovers from before the
-    // shrink, not fresh room `reserve` ever zeroed. Compiled D agrees:
-    // `_d_arraysetlengthT_`'s own zeroing (`memset(newdata + oldsize, 0,
-    // newsize - oldsize)`) runs unconditionally on every grow, keyed on
-    // the CURRENT (possibly already-shrunk) length, regardless of whether
-    // the allocation grew in place or was replaced -- confirmed against a
-    // compiled probe: shrinking `[1, 2, 3, 4, 5]` to length 2 then growing
-    // back to 5 reads back `[1, 2, 0, 0, 0]`, never the original `3, 4,
-    // 5`. `setLength.shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating`
+    // shrink, not fresh room `reserve` ever zeroed. Compiled D only
+    // matches this for a zero-init element type: `_d_arraysetlengthT_`'s
+    // own zeroing is gated, `static if (__traits(isZeroInit, T)) memset(
+    // cast(void*)(cast(ubyte*)newdata + oldsize), 0, newsize - oldsize)`
+    // (core/internal/array/capacity.d, local druntime source, ~line 338);
+    // a non-zero-init `T` instead gets `T.init` emplaced into each new
+    // element -- e.g. `char`'s `0xFF`, `float`'s `NaN` -- never a zero
+    // byte. This function zeroes every new byte unconditionally regardless
+    // of element type -- a defensible container-level choice matching
+    // `NativeBlock.allocate`'s own calloc-zeroed model, but one that
+    // agrees with compiled D only for zero-init element types, which is
+    // every current fixture's element type; making a guest `char[]` grow
+    // expose `0xFF` rather than `0`, to match `SystemLinker`, is left as
+    // an open question for whatever future call site wires `setLength`
+    // up, not this container's job. Confirmed against a compiled probe on
+    // `int[]` (a zero-init element type, so it does not exercise the
+    // non-zero-init gap above): shrinking `[1, 2, 3, 4, 5]` to length 2
+    // then growing back to 5 reads back `[1, 2, 0, 0, 0]`, never the
+    // original `3, 4, 5`.
+    // `setLength.shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating`
     // pins this for an owned array without reallocating (`_block.
     // byteLength` already covered the regrown span).
     //
