@@ -5080,3 +5080,15 @@ zeroed frame. This is limited to this struct-default-init path; it does not add
 general struct initialization, pointer, FFI, or display work. Verification:
 focused red then green; `ninja bin/ut` and `bin/ut --random` passed (seed
 `1598476746`).
+
+`strlen.localBuffer` promoted to `Bytecode`, 2026-07-10: pre-approved
+promotion of the existing direct-SystemLinker-backed runtime fixture. The
+focused Bytecode row was red with the no-available-source diagnostic. The
+native-call gate lacked `size_t` results and admitted `char*` arguments only
+when they were string literals; DMD lowers `&buf[0]` here to its
+symbol-offset form over the inline static-array local. The narrow change adds
+the existing `ulong` result shape, passes supported non-literal `char*`
+operands through the native argument slot, and takes the frame address of the
+static-array symbol. This does not add struct returns, arbitrary native
+marshalling, or formatter work. Verification: focused red then green and
+`ninja bin/ut` passed; `bin/ut --random` passed (seed `1104894086`).
