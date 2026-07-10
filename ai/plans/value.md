@@ -420,6 +420,75 @@ up, not this container's. `layout.d` also now asserts a 64-bit host at
 compile time, since DMD reports type sizes as 64-bit `uinteger_t`
 values that the module narrows to `size_t`.
 
+Progress 2026-07-09 (capacity through real storage): an array's element
+capacity is now read from the GC rather than tracked in a field of our
+own. `NativeBlock` gains `trueByteSize`, which returns `core.memory.GC.
+sizeOf` on the block's address -- the GC's own bin size for the
+allocation, not a number this module invents or caches. A *borrowed*
+block honestly reports 0 (it is never GC memory), and a *zero-length*
+block also reports 0 (its address is null); both are real, expected
+zeros per `GC.sizeOf`'s own contract, not something papered over.
+`NativeArray` gains `capacity`, derived as `block.trueByteSize / stride`
+-- again derived, not stored -- so an owned array's capacity is `>=
+length` (the GC's bin size rounds up from the requested bytes) and a
+borrowed or zero-length array's capacity is 0. This is the first step
+toward retiring `interpreter.md` §9.10's `gc_*` capacity-hook shims
+(`tryGCArrayHook`/`runGCArrayHookCall`/`lastGCArrayUsedAllocation`),
+which exist only because boxed interpreter arrays were never
+addressable GC blocks; now that a block is a real allocation, no shim
+is retired yet and nothing is wired in -- this is only the fact
+becoming readable.
+
+Progress 2026-07-09 (grow through real storage): `NativeArray` gains
+`reserve(n)`, guaranteeing capacity for at least `n` elements exactly
+like compiled D's `arr.reserve(n)`. `n <= capacity` is a no-op: no
+address change, no byte touched. Otherwise `NativeBlock` gained
+`tryExtendTo(newByteLength)`, which tries `core.memory.GC.extend` to
+grow the existing GC allocation in place -- verified against the local
+druntime (`core/memory.d` ~line 603): it returns the extended block's
+byte size, or zero on failure. Correction to an earlier draft of this
+note: `p` is not required to be "the block's own base pointer, which
+`_block.address` always is here" -- druntime documents `p` as "a
+pointer to the root of a valid memory block or to null", and a null
+`p` (this block's own zero-length case, since `GC.calloc(0, ...)`
+returns null) just makes `findPool(null)` report "cannot extend"
+rather than misbehave. On success, `tryExtendTo` re-slices the block
+over `newByteLength` bytes and zeroes the newly available tail, since
+`GC.extend` itself leaves extension bytes uninitialised (druntime
+`WARN_UNINITIALIZED`). If `GC.extend` fails, `reserve` allocates a
+fresh block of the required byte length with the *same*
+`NativeBlock.Scan` policy already recorded on the old block (never
+recomputed), copies the live `length * stride` bytes across with a
+`@safe` slice copy, and adopts the new block -- the address
+legitimately changes here. Per the Address-stability bullet above,
+that is correct: stale pointers into the old block go stale exactly as
+compiled D loses append capacity on reallocation, and nothing is ever
+copied back to the old address.
+
+Unified post-condition: both paths leave `reserve` in exactly the same
+observable state -- `block.byteLength == n * stride`, every byte beyond
+the live `length * stride` is zero, `length` is unchanged, and element
+values survive. Whether the allocator could extend in place, or had to
+reallocate, is no longer observable: an extended block is
+indistinguishable from a freshly allocated one of the same size. No
+borrowed-block guard was added: a borrowed block cannot legitimately be
+reallocated, but `NativeArray` has no borrow constructor yet, so that
+path is unreachable from any test today. Owed contract: once a borrow
+constructor exists, `reserve` must throw loudly on a borrowed block
+instead of silently detaching the handle from memory its owner still
+holds.
+
+Progress 2026-07-09 (strideless-handle fix): `NativeArray.init` (no
+element type, zero stride) is a legal value -- reachable the moment this
+handle is put in a field or array slot -- so `capacity` now returns 0
+for it instead of dividing by zero, and `reserve` throws on it instead
+of silently returning with capacity 0 short of what was requested.
+
+Review nit fix (2026-07-09): `tryExtendTo` now only ever grows a block --
+a request that does not grow it returns `false` before subtracting -- so
+its `@trusted` re-slice is provable locally, without appealing to
+allocator internals.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

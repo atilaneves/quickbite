@@ -124,13 +124,91 @@ public struct NativeArray {
 
         writeSliceHeaderBytes(dest, _length, _block.address);
     }
+
+    // How many `_stride`-sized elements the block's true GC allocation
+    // could hold, derived from `NativeBlock.trueByteSize` rather than
+    // stored -- the GC already knows this fact, so a separate `_capacity`
+    // field would be a second, driftable copy of it (item 7's guardrail).
+    // For an owned array this is `>= length` (the GC's bin size rounds up
+    // from the requested `length * stride`); for a borrowed or
+    // zero-length array `_block.trueByteSize` is 0, so this is 0 too.
+    // `_stride == 0` is `NativeArray.init`'s own case: a default-
+    // constructed handle has no element type, hence no stride, hence no
+    // capacity -- asking is not an error, mirroring `length` and `block`,
+    // which are already `.init`-tolerant in exactly this way. Guard it
+    // explicitly rather than dividing: `allocate` never produces a zero
+    // stride, but nothing stops a bare `NativeArray.init` from existing
+    // (an array field, `NativeArray[]` growth, ...), and dividing by a
+    // zero stride there would be a hardware trap, not a thrown exception,
+    // in a function that claims `@safe nothrow @nogc`.
+    public size_t capacity() const nothrow @nogc @safe {
+        return _stride == 0 ? 0 : _block.trueByteSize / _stride;
+    }
+
+    // Guarantees capacity for at least `n` elements, mirroring compiled D's
+    // `arr.reserve(n)`. A no-op when `n <= capacity`: the block's address
+    // and every existing element are untouched. Otherwise grows through
+    // real storage, trying first `NativeBlock.tryExtendTo` to extend the
+    // existing GC allocation in place -- that path leaves the address
+    // unchanged. If extension fails, allocates a new block of the required
+    // byte length with this array's own scan policy, copies the live
+    // `length * stride` bytes across, and adopts the new block: the
+    // address legitimately changes here. Per item 7's Address-stability
+    // bullet, that is correct -- stale pointers into the old block go
+    // stale exactly as compiled D loses append capacity on reallocation,
+    // and no boxed/old-block value is ever copied back as the authority.
+    // Both paths leave the SAME observable state: `block.byteLength ==
+    // n * stride` and every byte beyond the live `length * stride` is
+    // zero -- `tryExtendTo` establishes that itself on the extend path,
+    // and `NativeBlock.allocate`'s `GC.calloc` zeroes the whole new block
+    // on the reallocating path, so an extended block is indistinguishable
+    // from a freshly allocated one. No borrowed-block guard: a borrowed
+    // block cannot legitimately be reallocated (we don't own that
+    // memory), but `NativeArray` has no borrow constructor yet, so there is
+    // no way to reach this method with `_block.ownership == borrowed` --
+    // adding a check no test can exercise would be unreachable defensive
+    // code (see ai/plans/value.md item 7 for the owed contract once a
+    // borrow constructor exists). Not `nothrow`: `byteLength` throws on
+    // overflow; not `@nogc`/`pure`: the reallocating path allocates.
+    //
+    // A strideless handle (`NativeArray.init`, `_stride == 0`) gets a
+    // guard of its own: `byteLength(n, 0)` never overflows (`mulu` with a
+    // zero operand can't), so without this check `reserve` would "grow" to
+    // 0 bytes, copy 0 live bytes, and return normally with
+    // `capacity == 0 < n` -- silently violating its own documented
+    // postcondition. Growing an array whose element stride is zero (so it
+    // has no capacity to grow) is a programming error, not a no-op, so
+    // this fails loudly instead.
+    public void reserve(in size_t n) @safe {
+        if (_stride == 0)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "reserve: element stride is zero, so the array has no "
+                ~ "capacity to grow",
+            );
+
+        if (n <= capacity)
+            return;
+
+        const requiredBytes = byteLength(n, _stride);
+
+        if (_block.tryExtendTo(requiredBytes))
+            return;
+
+        auto newBlock = NativeBlock.allocate(requiredBytes, _block.scan);
+        const liveBytes = _length * _stride;
+        newBlock.bytes[0 .. liveBytes] = _block.bytes[0 .. liveBytes];
+        _block = newBlock;
+    }
 }
 
 // `length * stride` computed with overflow checking: an overflowing
 // product would otherwise wrap to a small byte count, and `NativeBlock.
 // allocate` would then silently succeed with a block far too small for
 // the handle's `length`. Throws rather than returning an inconsistent
-// handle, matching `layout.typeByteSize`'s failure style.
+// handle, matching `layout.typeByteSize`'s failure style. Called from
+// both `allocate` and `reserve`, so the message names the operation
+// (`length * stride`), not either caller.
 private size_t byteLength(in size_t length, in size_t stride) pure @safe {
     import core.checkedint: mulu;
 
@@ -139,7 +217,7 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
     if (overflow)
         throw new Exception(
             "quickbite.backends.interpreter.native_array.NativeArray."
-            ~ "allocate: length * stride overflows size_t",
+            ~ "byteLength: length * stride overflows size_t",
         );
 
     return bytes;

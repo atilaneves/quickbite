@@ -235,3 +235,172 @@ unittest {
     foreach (b; buffer)
         b.should == 0xAA;
 }
+
+
+@("NativeArray.allocate.capacityIsAtLeastLength")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    (array.capacity >= array.length).should == true;
+}
+
+
+@("NativeArray.allocate.zeroLengthCapacityIsZero")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+
+    array.capacity.should == 0;
+}
+
+
+@("NativeArray.reserve.withinCapacityLeavesAddressUnchanged")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    const address = array.block.address;
+
+    array.reserve(array.capacity);
+
+    array.block.address.should == address;
+}
+
+
+@("NativeArray.reserve.farBeyondCapacityYieldsCapacityAtLeastRequested")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    const n = 100_000;
+
+    array.reserve(n);
+
+    (array.capacity >= n).should == true;
+}
+
+
+@("NativeArray.reserve.elementValuesSurviveAReallocatingReserve")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    array.element(0)[0] = 10;
+    array.element(1)[0] = 20;
+    array.element(2)[0] = 30;
+
+    array.reserve(100_000);
+
+    array.element(0)[0].should == 10;
+    array.element(1)[0].should == 20;
+    array.element(2)[0].should == 30;
+}
+
+
+@("NativeArray.reserve.doesNotChangeLength")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.reserve(100_000);
+
+    array.length.should == 3;
+}
+
+
+@("NativeArray.reserve.zeroLengthArrayYieldsCapacityAtLeastRequested")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 0);
+    const n = 100_000;
+
+    array.reserve(n);
+
+    (array.capacity >= n).should == true;
+}
+
+
+@("NativeArray.reserve.reallocationKeepsConservativeScanPolicy")
+unittest {
+    import core.memory: GC;
+
+    auto array = NativeArray.allocate(Type.tvoidptr, 3);
+
+    array.reserve(100_000);
+
+    array.scan.should == NativeBlock.Scan.conservative;
+    const attr = GC.getAttr(GC.addrOf(array.block.address));
+    (attr & GC.BlkAttr.NO_SCAN).should == 0;
+}
+
+
+// The two success paths of `reserve` (in-place GC.extend, or reallocate)
+// must leave the handle in the same observable state: `block.byteLength`
+// exactly `n * stride`, and every byte beyond the live `length * stride`
+// zero. This pins that unified post-condition regardless of which path
+// actually ran.
+@("NativeArray.reserve.blockByteLengthEqualsRequestedCapacityTimesStride")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    const n = 100_000;
+
+    array.reserve(n);
+
+    array.block.byteLength.should == n * array.stride;
+}
+
+
+@("NativeArray.reserve.reservedTailBeyondLengthIsZero")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    array.element(0)[0] = 10;
+    array.element(1)[0] = 20;
+    array.element(2)[0] = 30;
+
+    array.reserve(100_000);
+
+    const liveBytes = array.length * array.stride;
+    foreach (byte_; array.block.bytes[liveBytes .. $])
+        byte_.should == 0;
+}
+
+
+@("NativeArray.reserve.overflowingLengthTimesStrideThrows")
+unittest {
+    // An 8-byte element type (`tint64`) and 3 elements means 24 live bytes.
+    // This `n` wraps `n * stride` to exactly 24 -- the same live byte
+    // count -- so a raw (unchecked) multiply would let `reserve` silently
+    // "succeed" with a block no bigger than the one it already has, while
+    // the caller believes it reserved room for size_t.max/2 elements.
+    // `reserve` reuses the same overflow-checked `byteLength` helper as
+    // `allocate`, so it throws instead.
+    auto array = NativeArray.allocate(Type.tint64, 3);
+    const n = size_t.max / 2 + 4;
+
+    array.reserve(n).shouldThrow!Exception;
+}
+
+
+// A default-constructed `NativeArray.init` has no element type, hence no
+// stride (`_stride == 0`). Before the fix, `capacity` computed
+// `_block.trueByteSize / _stride` unconditionally -- 0 / 0, a hardware
+// division trap that kills the process instead of failing cleanly. This
+// pins the honest answer: a handle with no element type has no capacity.
+@("NativeArray.init.capacityIsZero")
+unittest {
+    NativeArray array;
+
+    array.capacity.should == 0;
+}
+
+
+// Pins the pre-existing `.init`-tolerance that the `capacity` fix relies
+// on: a default-constructed handle already reports a sane `length`.
+@("NativeArray.init.lengthIsZero")
+unittest {
+    NativeArray array;
+
+    array.length.should == 0;
+}
+
+
+// `reserve` on a strideless handle must not silently "succeed" with
+// `capacity == 0 < n` -- growing an array with no element type is a
+// programming error, not a no-op, so it fails loudly instead.
+@("NativeArray.reserve.onInitHandleThrows")
+unittest {
+    NativeArray array;
+
+    array.reserve(1).shouldThrow!Exception;
+}

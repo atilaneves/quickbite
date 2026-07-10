@@ -132,3 +132,70 @@ unittest {
 
     block.scan.should == NativeBlock.Scan.no;
 }
+
+
+@("NativeBlock.allocate.trueByteSizeIsAtLeastRequestedByteLength")
+unittest {
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
+
+    (block.trueByteSize >= block.byteLength).should == true;
+}
+
+
+@("NativeBlock.borrow.trueByteSizeIsZero")
+@system
+unittest {
+    ubyte[4] callerOwned = [1, 2, 3, 4];
+    auto block = NativeBlock.borrow(callerOwned.ptr, callerOwned.length);
+
+    block.trueByteSize.should == 0;
+}
+
+
+@("NativeBlock.allocate.zeroLengthTrueByteSizeIsZero")
+unittest {
+    auto block = NativeBlock.allocate(0, NativeBlock.Scan.no);
+
+    block.trueByteSize.should == 0;
+}
+
+
+@("NativeBlock.tryExtendTo.smallBlockCannotExtendAndIsLeftUntouched")
+unittest {
+    // A small (small-bin) GC allocation can never be extended in place --
+    // druntime's `GC.extend` only ever grows large-object (page) blocks
+    // (core/internal/gc/impl/conservative/gc.d, ~line 843: `!pool.
+    // isLargeObject` returns 0 unconditionally). That makes this
+    // deterministic rather than allocator-state-dependent: `tryExtendTo`
+    // must return false and leave the block's address and byte length
+    // exactly as they were.
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
+    const address = block.address;
+
+    block.tryExtendTo(100_000).should == false;
+
+    block.address.should == address;
+    block.byteLength.should == 4;
+}
+
+
+@("NativeBlock.tryExtendTo.nonGrowingRequestReturnsFalseAndLeavesBlockUnchanged")
+unittest {
+    // `newByteLength <= byteLength` is not a growth request. Both the
+    // equal-length and shrinking cases must report false and leave the
+    // block untouched -- without that guard, the shrinking case computes
+    // `newByteLength - oldByteLength`, which wraps to a huge value.
+    auto block = NativeBlock.allocate(4, NativeBlock.Scan.no);
+    block.bytes[] = [1, 2, 3, 4];
+    const address = block.address;
+
+    block.tryExtendTo(4).should == false; // equal length
+    block.byteLength.should == 4;
+    block.bytes.should == [1, 2, 3, 4];
+    block.address.should == address;
+
+    block.tryExtendTo(2).should == false; // shrinking
+    block.byteLength.should == 4;
+    block.bytes.should == [1, 2, 3, 4];
+    block.address.should == address;
+}

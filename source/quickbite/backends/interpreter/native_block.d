@@ -90,6 +90,61 @@ public struct NativeBlock {
     public inout(void)* address() inout pure nothrow @nogc @safe {
         return blockAddress(_bytes);
     }
+
+    // The true byte size of this block's underlying GC allocation, read
+    // from `core.memory.GC.sizeOf` -- the GC's own bin size, not a size we
+    // invent or cache ourselves (item 7's guardrail: layout facts stay the
+    // GC/DMD's single source of truth, never a second copy of our own).
+    // Per `GC.sizeOf`'s own doc comment (core/memory.d, ~line 721): memory
+    // not allocated by this GC, the interior of a block, or a null
+    // pointer, all honestly report 0. That makes this 0 for a *borrowed*
+    // block (never GC memory) and for a *zero-length* block (its `address`
+    // is null, since `GC.calloc(0, ...)` returns null) -- both are real,
+    // expected zeros, not something to paper over. Not `pure`: the
+    // `const scope void*` overload of `GC.sizeOf` used below (see
+    // `trueByteSizeOf`) is itself not `pure` (druntime marks it
+    // `/* FIXME pure */`); reaching the other, `pure`, `void*` overload
+    // would need casting away `address`'s constness, which would fake a
+    // purity this function doesn't have.
+    public size_t trueByteSize() const nothrow @nogc @safe {
+        return trueByteSizeOf(address);
+    }
+
+    // Tries to grow this block's allocation in place to `newByteLength`.
+    // This only ever grows the block: a `newByteLength` that does not
+    // exceed the current `byteLength` is not a growth request, so it
+    // returns false without touching the block -- "I did not extend" is
+    // the honest answer for a no-op request, and it keeps the subtraction
+    // below (`newByteLength - oldByteLength`) provably wrap-free rather
+    // than relying on the GC to refuse an absurd (wrapped) size. Beyond
+    // that guard, returns false if the GC cannot extend it, in which case
+    // the caller must reallocate. On success the block spans exactly
+    // `newByteLength` bytes and the newly available tail is zeroed, so an
+    // extended block is indistinguishable from a freshly allocated one of
+    // the same size -- `GC.extend` itself leaves extension bytes
+    // uninitialised. The block's scan attribute (`NO_SCAN` vs
+    // conservative) needs no update: `GC.extend` grows the same
+    // underlying allocation rather than creating a new one, so whatever
+    // attribute was set at `allocate` time still applies. A null
+    // `address` -- this block's own zero-length case, since
+    // `GC.calloc(0, ...)` returns null -- simply makes the GC report
+    // "cannot extend" (see `extendBlock`'s comment below), so this
+    // returns false and the caller reallocates; no special-casing needed
+    // here.
+    public bool tryExtendTo(in size_t newByteLength) pure nothrow @safe {
+        const oldByteLength = _bytes.length;
+        if (newByteLength <= oldByteLength)
+            return false;
+
+        auto ptr = address;
+        const extended = extendBlock(ptr, newByteLength - oldByteLength);
+        if (extended == 0)
+            return false;
+
+        _bytes = resliceBytes(ptr, newByteLength);
+        _bytes[oldByteLength .. $] = 0;
+        return true;
+    }
 }
 
 // Building a slice view over caller-owned memory needs raw pointer
@@ -118,4 +173,46 @@ private ubyte[] allocateBytes(in size_t byteLength, in NativeBlock.Scan scan) pu
 // past-the-end pointer for an empty slice); contain that here.
 private inout(void)* blockAddress(inout(ubyte)[] bytes) pure nothrow @nogc @trusted {
     return bytes.ptr;
+}
+
+// `GC.sizeOf` takes a raw, unbounded pointer; this is the @trusted
+// boundary. Uses the `const scope void*` overload rather than the `pure`
+// `void*` one: `NativeBlock.address` returns `inout(void)*`, which resolves
+// to `const(void)*` from a `const` method, matching this parameter exactly
+// with no cast needed.
+private size_t trueByteSizeOf(const scope void* ptr) nothrow @nogc @trusted {
+    import core.memory: GC;
+
+    return GC.sizeOf(ptr);
+}
+
+// `GC.extend` takes a raw, unbounded pointer and is not `@safe`; this is
+// the `@trusted` boundary. Passing `p == null` -- this block's own
+// zero-length case, since `GC.calloc(0, ...)` returns null -- is exactly
+// the precondition druntime documents: `p` is "a pointer to the root of a
+// valid memory block or to null" (core/memory.d, ~line 610), and
+// internally `findPool(null)` finds no pool and returns 0, so a null `p`
+// just reports "cannot extend" rather than misbehaving. Returns the
+// extended block's byte size, or zero if no extension occurred
+// (core/memory.d, ~line 618).
+private size_t extendBlock(void* p, in size_t extension) pure nothrow @trusted {
+    import core.memory: GC;
+
+    return GC.extend(p, extension, extension);
+}
+
+// Reinterpreting a raw pointer as a slice is not `@safe`; this is the
+// `@trusted` boundary. Called only after `tryExtendTo`'s own guard has
+// confirmed `newByteLength` is strictly greater than the block's prior
+// byte length, and `extendBlock` has confirmed the GC extended the
+// allocation at `ptr` to accommodate at least that many bytes (per
+// `GC.extend`'s documented contract: it returns 0 or the extended size,
+// never a size short of the requested minimum) -- so the slice this
+// returns stays within that (now larger) allocation. Provable from
+// `tryExtendTo`'s own guard and `GC.extend`'s contract alone; it does not
+// rest on any allocator implementation detail (e.g. how a shrinking or
+// no-op request happens to be rejected), because that case never reaches
+// here at all.
+private ubyte[] resliceBytes(void* ptr, in size_t newByteLength) pure nothrow @trusted {
+    return (cast(ubyte*) ptr)[0 .. newByteLength];
 }
