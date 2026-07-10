@@ -500,3 +500,119 @@ unittest {
         ~ "this array's block address is a live GC pointer",
     );
 }
+
+
+// The centrepiece for read-back: `sliceField` reconstructs a `NativeArray`
+// from the header `writeSliceHeader` wrote, aliasing the SAME element
+// block rather than copying it -- a write through the read-back handle
+// must be visible through the original `elements` handle too.
+@("NativeStruct.sliceField.roundTripAliasesWriteSliceHeaderSourceArray")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct WithSlice { int[] xs; } }, "WithSlice");
+    auto struct_ = NativeStruct.allocate(type);
+    auto elements = NativeArray.allocate(Type.tint32, 3);
+    *cast(int*) elements.element(0).ptr = 1;
+    *cast(int*) elements.element(1).ptr = 2;
+    *cast(int*) elements.element(2).ptr = 3;
+    elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(0));
+
+    auto readBack = struct_.sliceField(0);
+    readBack.length.should == 3;
+
+    *cast(int*) readBack.element(1).ptr = 99;
+    (*cast(int*) elements.element(1).ptr).should == 99;
+}
+
+
+// The honest contract, pinned directly rather than inferred from a
+// `GC.collect` survival test: per this plan's own "ownership vs
+// GC-visibility" note, a collect afterwards cannot distinguish a correct
+// scan policy from a stale stack bit pattern, so it proves nothing and is
+// deliberately not used here. `ownership`/`scan`/`capacity` come from
+// `NativeBlock.borrow`'s own contract regardless of the fact that the
+// pointed-to element block is, in this test, a real, conservatively
+// scanned GC allocation kept alive by the (scanned) struct field itself.
+@("NativeStruct.sliceField.readBackArrayReportsBorrowedOwnershipAndNoScanRegardlessOfElementBlockScanPolicy")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct WithSlice { int[] xs; } }, "WithSlice");
+    auto struct_ = NativeStruct.allocate(type);
+    auto elements = NativeArray.allocate(Type.tint32, 3);
+    elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(0));
+
+    auto readBack = struct_.sliceField(0);
+
+    readBack.ownership.should == NativeBlock.Ownership.borrowed;
+    readBack.scan.should == NativeBlock.Scan.no;
+    readBack.capacity.should == 0;
+}
+
+
+// Exercises `fieldByteOffset` at a non-zero offset for real (`xs` is the
+// second field of `Header`, mirroring the write-side non-zero-offset test
+// above), and confirms the sibling `tag` field is untouched, against the
+// host compiler's own `Header.xs` as the oracle for the read-back length
+// and elements.
+@("NativeStruct.sliceField.nonZeroOffsetMatchesHostCompilerSliceLeavingSiblingFieldUntouched")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct Header { long tag; int[] xs; } }, "Header");
+    auto struct_ = NativeStruct.allocate(type);
+    *cast(long*) struct_.field(0).ptr = 99;
+    auto elements = NativeArray.allocate(Type.tint32, 2);
+    *cast(int*) elements.element(0).ptr = 7;
+    *cast(int*) elements.element(1).ptr = 8;
+    elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(1));
+
+    auto guest = *cast(Header*) struct_.block.address;
+    auto xs = struct_.sliceField(1);
+
+    xs.length.should == guest.xs.length;
+    (*cast(int*) xs.element(0).ptr).should == guest.xs[0];
+    (*cast(int*) xs.element(1).ptr).should == guest.xs[1];
+    guest.tag.should == 99;
+}
+
+
+// A field that was never written keeps the block's zero-initialised
+// `{ length: 0, ptr: null }` bytes -- the same header a default-initialised
+// `int[]` guest variable has -- and must read back as a real, empty array
+// rather than throwing.
+@("NativeStruct.sliceField.zeroLengthNullHeaderReadsBackAsEmptyBorrowedArray")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct WithSlice { int[] xs; } }, "WithSlice");
+    auto struct_ = NativeStruct.allocate(type);
+
+    auto xs = struct_.sliceField(0);
+
+    xs.length.should == 0;
+    xs.ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+@("NativeStruct.sliceField.outOfRangeIndexThrows")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct WithSlice { int[] xs; } }, "WithSlice");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.sliceField(1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_struct.NativeStruct."
+        ~ "sliceField: index out of range",
+    );
+}
+
+
+@("NativeStruct.sliceField.indexOfStaticArrayFieldThrows")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct Holder { int[3] xs; } }, "Holder");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.sliceField(0).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_struct.NativeStruct."
+        ~ "sliceField: field is not a dynamic array",
+    );
+}

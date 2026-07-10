@@ -228,4 +228,133 @@ public struct NativeStruct {
         const length = staticArrayLength(arrayType);
         return NativeArray.adopt(_block.subRange(offset, fieldSize), arrayType.next, length);
     }
+
+    // Views field `index` -- a dynamic-array-typed field (DMD's
+    // `TypeDArray`, e.g. `int[]`) -- as a `NativeArray` over the element
+    // block its stored slice header currently points at. Unlike
+    // `structField`/`arrayField` above, this is NOT a `NativeBlock.subRange`
+    // of the parent's own block: a slice header's `ptr` names a separately
+    // tracked allocation somewhere else entirely (wherever `writeSliceHeader`
+    // last wrote it from), so the only way to view "the elements this field
+    // currently points at" is to read the `{ length, ptr }` bytes back out
+    // of the field and reconstruct a handle from them -- exactly
+    // `NativeArray.borrow`'s job, under the same caller-enforced,
+    // unverifiable precondition `borrow` already documents (here, the
+    // precondition is vouched for by whoever last wrote a valid header into
+    // this field, typically `writeSliceHeader` itself). That unverifiable
+    // reconstruction is why this is `@system`, unlike `structField`/
+    // `arrayField`: those only ever slice an already-verified block with
+    // ordinary bounds-checked D; this reconstructs a slice from a pointer
+    // this code reads out of memory and cannot itself verify. The raw
+    // two-value read itself is behind a small private helper,
+    // `readSliceHeaderBytes`, marked `@trusted` rather than `@system`:
+    // copying two fixed-size values out of an already bounds-checked byte
+    // range into local storage cannot itself violate memory safety no
+    // matter what bit pattern they contain -- it never dereferences the
+    // pointer it reads. Only USING that pointer to reconstruct a slice
+    // (`NativeArray.borrow`, below) is where the real, unverifiable trust
+    // happens, and that call stays in this function, not the helper.
+    //
+    // `index` is bounds-checked first, matching every other field
+    // accessor's discipline; a field whose type is not a dynamic array
+    // throws its own message before any header bytes are read, since
+    // `TypeDArray.next` would be meaningless applied to the wrong DMD type.
+    //
+    // The contract for the read-back header:
+    //
+    // - A zero-length/null header (`{ length: 0, ptr: null }` -- a
+    //   struct's zero-initialised block before anything ever wrote to the
+    //   field) reads back as a real, empty `NativeArray`: `NativeArray.
+    //   borrow(elementType, null, 0)` is legal for the same reason
+    //   `NativeBlock.borrow`'s own null/zero-length case already is.
+    // - The returned array's `ownership` is always `borrowed`: this field
+    //   does not own the element block, it only names it, so `reserve` on
+    //   the returned handle throws exactly as for any other borrowed
+    //   array.
+    // - Its `scan`/`capacity` are `Scan.no`/`0` unconditionally, per
+    //   `NativeBlock.borrow`'s own contract -- even when the pointed-to
+    //   block is a real, conservatively-scanned GC allocation that this
+    //   very struct field keeps alive (per `writeSliceHeader`'s
+    //   scanned-destination contract, that is the only way the field
+    //   could legally hold a live GC pointer at all). That is not
+    //   dishonest: `NativeBlock.borrow` cannot know, from a bare
+    //   pointer/length pair, that the memory it wraps happens to be GC
+    //   memory this same interpreter also owns elsewhere -- it makes the
+    //   same conservative "assume nothing" choice for every borrowed
+    //   block, GC-backed or not. Who keeps the element block alive is
+    //   unchanged by any of this: the struct field itself, via the GC's
+    //   own scan of it (or, for an unscanned struct, whatever else still
+    //   references it) -- never the handle returned here, which has
+    //   nothing of its own to grow or free either way.
+    // - This aliases, not snapshots: the returned `NativeArray` wraps the
+    //   SAME address `writeSliceHeader` wrote, not a copy of its bytes. A
+    //   write through the returned array is visible through any other
+    //   array handle over the same block (including the one
+    //   `writeSliceHeader` was called on), and vice versa, for as long as
+    //   this field's header keeps pointing at that address. Nothing here
+    //   re-reads the field on later access: a handle returned by an
+    //   earlier `sliceField` call goes stale exactly like any other stale
+    //   pointer once the field is overwritten or the element block moves
+    //   (e.g. a grown, owned array reallocated elsewhere by `NativeArray.
+    //   reserve`).
+    public NativeArray sliceField(in size_t index) @system {
+        import quickbite.backends.interpreter.layout: fieldByteOffset;
+
+        if (index >= _fields.length)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_struct.NativeStruct."
+                ~ "sliceField: index out of range",
+            );
+
+        auto declaration = _fields[index];
+        auto arrayType = declaration.type.isTypeDArray;
+        if (arrayType is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_struct.NativeStruct."
+                ~ "sliceField: field is not a dynamic array",
+            );
+
+        const offset = fieldByteOffset(declaration);
+        // `auto`, not `const`: `header.ptr` is passed on to `NativeArray.
+        // borrow`, which takes a mutable `void*` -- `const` here would
+        // narrow it to `const(void*)` and fail to match that parameter.
+        auto header = readSliceHeaderBytes(
+            _block.bytes[offset .. offset + NativeArray.sliceHeaderByteLength]);
+
+        return NativeArray.borrow(arrayType.next, header.ptr, header.length);
+    }
+}
+
+// The two values a D dynamic-array slice header holds, read back out of a
+// struct field's bytes rather than written -- the counterpart to
+// `NativeArray.writeSliceHeaderBytes`'s write path.
+private struct SliceHeaderBytes {
+    size_t length;
+    void* ptr;
+}
+
+// Reads a slice header's bytes back as `{ length, ptr }` -- the exact
+// layout `NativeArray.writeSliceHeaderBytes` writes (length at offset 0,
+// pointer at offset `size_t.sizeof`; see `native_array.d`'s own `static
+// assert` pinning `(void[]).sizeof == 2 * size_t.sizeof`). `memcpy`, not a
+// pointer-typed load, for the same alignment reason `writeSliceHeaderBytes`
+// gives: `src` is a field's interior view into a block at an arbitrary
+// byte offset, not guaranteed to be `size_t`-aligned.
+//
+// This only copies two fixed-size values out of an already bounds-checked
+// byte range into local storage -- it never dereferences `ptr`, so nothing
+// here can violate memory safety no matter what bit pattern the bytes
+// contain. That is this function's own `@trusted` boundary: reading is
+// always safe; USING the resulting `ptr` to reconstruct a slice
+// (`NativeStruct.sliceField`, via `NativeArray.borrow`) is where the real,
+// unverifiable trust happens, which is why `sliceField` itself -- not this
+// helper -- is `@system`.
+private SliceHeaderBytes readSliceHeaderBytes(in ubyte[] src) @trusted
+in (src.length == size_t.sizeof + (void*).sizeof) {
+    import core.stdc.string: memcpy;
+
+    SliceHeaderBytes header;
+    memcpy(&header.length, src.ptr, size_t.sizeof);
+    memcpy(&header.ptr, src.ptr + size_t.sizeof, (void*).sizeof);
+    return header;
 }

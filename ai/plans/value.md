@@ -833,6 +833,88 @@ to a sub-range "for free, with no new code" (only `reserve`'s did); and
 nested aggregate field views as remaining work now that this commit
 (and its predecessor) delivered them.
 
+Progress 2026-07-10 (dynamic-array-field read-back): item 7's last named
+"what remains" item -- reading an existing slice-header field back as a
+`NativeArray`, distinct from writing one (`NativeArray.writeSliceHeader`)
+and from the sub-range views (`NativeStruct.structField`/`arrayField`) --
+is done. `NativeStruct` gains `sliceField(index) @system -> NativeArray`.
+`index` is bounds-checked against `fieldCount` first, matching every other
+field accessor's discipline; a field whose type is not `TypeDArray`
+(`Type.isTypeDArray` returns null) throws its own message before any
+header bytes are read, exactly the shape `structField`/`arrayField`
+already use for their own wrong-type field.
+
+Unlike `structField`/`arrayField`, this is NOT a `NativeBlock.subRange` of
+the parent's own block: a slice header's `ptr` names a separately tracked
+allocation somewhere else entirely (wherever `writeSliceHeader` last wrote
+it from), so the only way to view "the elements this field currently
+points at" is to read the `{ length, ptr }` bytes back out of the field
+and reconstruct a handle from them -- `NativeArray.borrow`'s job, under
+the same caller-enforced, unverifiable precondition `borrow` already
+documents (the precondition here is vouched for by whoever last wrote a
+valid header into the field, typically `writeSliceHeader` itself). That
+unverifiable reconstruction is why `sliceField` is `@system`, unlike
+`structField`/`arrayField`, which only ever slice an already-verified
+block with ordinary bounds-checked D. The raw two-value read itself --
+`memcpy`, not a pointer-typed load, for the same alignment reason
+`writeSliceHeaderBytes` gives, since a field's byte offset is not
+guaranteed `size_t`-aligned -- lives behind a small private helper,
+`readSliceHeaderBytes`, marked `@trusted` rather than `@system`: copying
+two fixed-size values out of an already bounds-checked byte range into
+local storage cannot itself violate memory safety no matter what bit
+pattern they contain, since it never dereferences the pointer it reads.
+Only USING that pointer to reconstruct a slice (`NativeArray.borrow`) is
+where the actual, unverifiable trust happens, and that call stays inside
+`sliceField` itself, not the helper.
+
+The contract, spelled out: a zero-length/null header (`{ length: 0,
+ptr: null }` -- a struct's zero-initialised block before anything ever
+wrote to the field) reads back as a real, empty `NativeArray`;
+`NativeArray.borrow(elementType, null, 0)` is legal for the same reason
+`NativeBlock.borrow`'s own null/zero-length case already is. The returned
+array's `ownership` is always `borrowed` -- this field does not own the
+element block, it only names it, so `reserve` on the returned handle
+throws exactly as for any other borrowed array. Its `scan`/`capacity` are
+`Scan.no`/`0` unconditionally, per `NativeBlock.borrow`'s own contract --
+even when the pointed-to block is a real, conservatively-scanned GC
+allocation the struct field itself keeps alive (per `writeSliceHeader`'s
+scanned-destination contract, that is the only way the field could
+legally hold a live GC pointer at all). That is not dishonest:
+`NativeBlock.borrow` cannot know, from a bare pointer/length pair, that
+the memory it wraps happens to be GC memory this same interpreter also
+owns elsewhere -- it makes the same conservative "assume nothing" choice
+for every borrowed block, GC-backed or not. Who keeps the element block
+alive is unchanged by any of this: the struct field itself, via the GC's
+own scan of it (or, for an unscanned struct, whatever else references
+it) -- never the returned handle, which has nothing of its own to grow or
+free. Finally, this aliases rather than snapshots: the returned
+`NativeArray` wraps the SAME address `writeSliceHeader` wrote, so a write
+through the read-back handle is visible through the original array and
+vice versa, for as long as the field's header keeps pointing at that
+address; nothing here re-reads the field on later access, so a read-back
+handle goes stale exactly like any other stale pointer once the field is
+overwritten or the element block moves.
+
+Regression tests, in `tests/ut/backends/interpreter/native_struct.d`:
+`NativeStruct.sliceField.roundTripAliasesWriteSliceHeaderSourceArray`
+(write through the read-back handle observed through the original
+`NativeArray`, not a copy); `.readBackArrayReportsBorrowedOwnershipAnd
+NoScanRegardlessOfElementBlockScanPolicy` (the ownership/scan/capacity
+honesty above, pinned directly rather than inferred from a `GC.collect`
+-- per this plan's own "ownership vs GC-visibility" note, a
+collect-survival test cannot distinguish a correct scan policy from a
+stale stack bit pattern, so it is deliberately not used here); `.
+nonZeroOffsetMatchesHostCompilerSliceLeavingSiblingFieldUntouched`
+(`struct Header { long tag; int[] xs; }`, exercising `fieldByteOffset`
+for real and confirming the sibling field is untouched, against the host
+compiler's own `Header.xs`); `.
+zeroLengthNullHeaderReadsBackAsEmptyBorrowedArray`; `.
+outOfRangeIndexThrows`; and `.indexOfStaticArrayFieldThrows`.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring, no `interpreter.md`
+§9.10 shim retired, no class objects. The interpreter still boxes
+everything; none of this native storage has a caller yet.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1245,18 +1327,22 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    now — the "no nested-struct or array-typed field composition" gaps noted
    above are closed; see the Status "nested aggregate field views" progress
    note above for `NativeBlock.subRange`/`NativeStruct.structField`/
-   `arrayField`. None of this has a user-visible display or FFI change yet,
-   and no shim is retired yet. What remains: dynamic-array-field read-back
-   (reading an existing slice-header field back as a `NativeArray` over its
-   pointed-to element block — distinct from writing one, which already
-   existed, and from the sub-range views just landed, since a slice header
-   points at a separately tracked block rather than being inline), then the
-   interpreter call site (`impl.d`/`Walker`/`Value`) that actually gives
-   these types somewhere to be used instead of sitting unwired, and only
-   after that, shim retirement one `interpreter.md` §9.10 entry at a time,
-   each proven by its ratchet fixtures staying green through the real path.
-   Class objects stay third in the migration order, per the "Migration
-   order" bullet above. Latency is measured only once the
+   `arrayField`. Dynamic-array-field read-back is also done now
+   (`NativeStruct.sliceField` — reading an existing slice-header field
+   back as a `NativeArray` over its pointed-to element block, distinct
+   from writing one and from the sub-range views above since a slice
+   header points at a separately tracked block rather than being inline;
+   see the Status "dynamic-array-field read-back" progress note above for
+   the `@system`/`@trusted` boundary and the ownership/scan/capacity
+   contract) — item 7's array/struct correctness work has no other named
+   gap left. None of this has a user-visible display or FFI change yet,
+   and no shim is retired yet. What remains: the interpreter call site
+   (`impl.d`/`Walker`/`Value`) that actually gives these types somewhere
+   to be used instead of sitting unwired, and only after that, shim
+   retirement one `interpreter.md` §9.10 entry at a time, each proven by
+   its ratchet fixtures staying green through the real path. Class
+   objects stay third in the migration order, per the "Migration order"
+   bullet above. Latency is measured only once the
    array and struct correctness gates are green and a real suite actually
    reaches native storage; item 6 already showed the benchmark suite never
    crossed the old marshaller seam. Until then, native layout is justified by
