@@ -5120,3 +5120,13 @@ initialized fields; this records that Bytecode already matches compiled D's
 field-granular void-initialization semantics on this path. Verification:
 focused Bytecode row, `ninja bin/ut`, and `bin/ut --random` passed (seed
 `720749549`).
+
+`staticArrayCopyRunsPostblitAndDtors` promoted to `Bytecode`, 2026-07-10:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The focused Bytecode row passed on its first candidate run, so no
+production change was needed. The fixture copies a two-element static array of
+structs, checks that each element's postblit runs once, and confirms that both
+source and copy elements run their destructors at scope exit. This is a stale
+coverage gap after the existing static-array copy, postblit, and destructor
+lowering. Verification: focused Bytecode row, `ninja bin/ut`, and
+`bin/ut --random` passed (seed `3793348702`).
