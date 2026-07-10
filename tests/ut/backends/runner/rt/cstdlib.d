@@ -209,12 +209,8 @@ static foreach (backend; AliasSeq!(IR)) {
     }
 }
 
-// Bytecode is omitted: promoting malloc.pointerRoundTrip (a `void*` return
-// with `size_t` args) made `malloc` itself compile, so this fixture no
-// longer fails on the malloc leaf pinned below. It still fails honestly -
-// now on `free(ptr)`'s implicit `ubyte*` -> `void*` conversion, a
-// CastExp-wrapped pointer argument the narrow gate does not match - but that
-// is a different diagnostic than this block pins.
+// Bytecode is omitted: this row is still unpromoted in the current
+// incremental PR, while the IR backend remains pinned at the malloc leaf.
 static foreach (backend; AliasSeq!(IR)) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
     unittest {
@@ -298,10 +294,9 @@ enum reallocNullSource = q{
     }
 };
 
-// Bytecode is omitted: `calloc`/`realloc` share malloc's promoted shape (two
-// `size_t`/`void*` args, a `void*` return), so both now compile past the leaf
-// this block pins - they fail later instead, honestly, on the same
-// `free(ptr)` CastExp-argument gap as malloc.pointerReturn above.
+// IR is still pinned at the native leaf. Bytecode has real rows below:
+// `calloc` and `realloc(null, size)` now cross the same libc bridge shape as
+// `malloc` (`size_t`/`void*` args, `void*` return) and free the result.
 static foreach (backend; AliasSeq!(IR)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
@@ -316,13 +311,21 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
+)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(callocZeroedSource);
     }
+}
+
+
+static foreach (backend; AliasSeq!(
+    Interpreter, Bytecode, SystemLinker, LLVMJit,
+)) {
 
     @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -359,10 +362,8 @@ enum reallocGrowSource = q{
     }
 };
 
-// IR fails at the first malloc leaf; the Interpreter reaches realloc.
-// Bytecode is omitted: malloc's promoted shape makes the leaf this block
-// pins compile now; it fails later instead, honestly, on the same
-// `free(ptr)`/`realloc(ptr, ...)` CastExp-argument gap as the blocks above.
+// IR fails at the first malloc leaf; the Interpreter and Bytecode reach
+// `realloc`, and both have real rows below.
 static foreach (backend; AliasSeq!(IR)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
@@ -372,7 +373,7 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)

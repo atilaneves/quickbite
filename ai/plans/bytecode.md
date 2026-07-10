@@ -235,6 +235,16 @@ rendering knowledge beyond "these bytes at this type".
   thunks before classes do (see Runtime type metadata) — not by the
   classes/vtable slice; the calling convention must not preclude either
   mechanism.
+- The inbound trampoline is not a boxed marshalling layer. Native layout can
+  let the trampoline bind native arguments directly to bytecode frame slots,
+  hand existing slot addresses to the callee, and write the result straight
+  back to the ABI return location. The trampoline is still required because
+  native code can only call an executable address with the host ABI, while a
+  bytecode callback is a VM callable plus context, frame setup, lifetime
+  state, and re-entry rules. The trampoline supplies that native-callable
+  address, recovers the callback identity, enters the bytecode machine, and
+  handles ABI details such as hidden context/receiver/sret slots, argument
+  order, narrow returns, and out/ref parameters.
 - Exposing tests for the call mechanism (compiled oracle, byte
   for byte): call a precompiled extern function taking a 24-byte struct by
   value and returning one (forces memory-class classification and `sret`);
@@ -327,7 +337,7 @@ Before creating or handing off a PR, check the PR diff against `master`.
 Production bytecode changes must be paired with relevant `tests/` changes,
 and the production-code diff should stay below 200 changed lines. If the diff
 is too small and still under that limit, continue with another block from
-this track's backlog (see "Current Next Step") — not with `repl.d` display
+this track's backlog (see "Post-Flip Backlog") — not with `repl.d` display
 promotion — instead of opening a tiny PR.
 
 ### Slice roadmap
@@ -336,10 +346,9 @@ existing discipline: red test (or an already-green matrix behaviour moved to
 the new core), minimal implementation, green suite, benchmark checkpoint.
 
 **Superseded as a work order (2026-07-09).** The slices below record the
-design, not what to do next. Every remaining slice is deferred behind
-deleting the old core — see "Current Next Step". Only the three
-null-class-reference diagnostics of slice 9 and the `pow` intrinsic of
-slice 1's math surface are in scope before the flip.
+design, not what to do next. The pre-flip diagnostic and `pow` intrinsic
+items were completed before the default flip; every remaining slice now lives
+in "Post-Flip Backlog".
 
 1. Scalar core: typed frames, specialised arithmetic/comparison opcodes,
    locals, calls, returns, assert diagnostics, and minimal scalar `Value`
@@ -385,10 +394,11 @@ slice 1's math surface are in scope before the flip.
     building, and whatever Phobos surface the formatter's body demands.
     Entry criteria (sharpened 2026-07-07): at minimum, associative arrays
     (slice 7) and the Phobos string-building surface the formatter's body
-    uses must execute on the new core — i.e. Current Next Step backlog
-    item 1 is closed. Starting before items 2-3 (FFI bridge, classes) is a
+    uses must execute on the new core — i.e. the post-flip associative-array
+    backlog item is closed. Starting before the FFI bridge and classes is a
     judgment call on what the formatter body actually demands; starting
-    before item 1 is not. Exit criteria: `BytecodeNewCore` overrides
+    before associative arrays is not. Exit criteria: `BytecodeNewCore`
+    overrides
     `supportsReplPreludeFormatter()` to `true`, the frozen `repl.d` display
     rows are re-earned through the formatter, and the deletion inventory
     (Core Architecture) is deleted in the same slice. This is the only
@@ -1096,18 +1106,13 @@ switch; `Bytecode` still defaults to the old core):
   support for associative-array literals with struct values, static
   associative-array storage, and delegate-valued AA lookup/invocation.
 - `tests/ut/backends/runner/rt/cstdlib.d` (module order 2) is reconciled on
-  the new core as explicit native-runtime deferral. The seven existing
-  Bytecode/IR design-driving no-source diagnostics now include
-  `BytecodeNewCore`: `free.null.voidReturn`,
-  `malloc.pointerReturn.nativeMemory`, `calloc.multiArg.zeroedNativeMemory`,
-  `realloc.null.pointerArgPointerReturn`,
-  `realloc.grow.preservesNativeMemory`, `div.structReturn`, and
-  `ldiv.structReturn.longArgs`. The promotion first failed because the new
-  core reported a generic unsupported-call diagnostic for body-less libc
-  leaves; it now reports the established `` `name` cannot be interpreted at
-  compile time, because it has no available source code `` diagnostic at the
-  `FuncDeclaration.fbody is null` boundary. Real `SystemLinker`-backed libc
-  execution remains deferred until the native-runtime/host-FFI bridge.
+  the new core. The flipped `Bytecode` backend now runs the scalar/pointer
+  libc value rows recorded in the Current Coverage State below, including
+  `calloc.multiArg.zeroedNativeMemory`,
+  `realloc.null.pointerArgPointerReturn`, and
+  `realloc.grow.preservesNativeMemory`. Remaining native-runtime refusals are
+  the rows whose ABI/value shape is still outside the bridge, such as
+  `malloc.pointerReturn.nativeMemory` and the `div`/`ldiv` struct returns.
 - `repl.backend.localDeclarationsCanRebindNames` and
   `repl.backend.localRebindingPreservesInterveningReferences` in
   `tests/ut/bin/repl.d` now cover `BytecodeNewCore`. The focused promotion
@@ -1192,12 +1197,15 @@ dual-mode model and the `ExecutionMode` enum have been removed
 (`ai/plans/single-oracle.md`); the VM targets full D against the
 `SystemLinker` oracle.
 
-## Current Next Step: flip the default, delete the old core
+## Completed Default Flip
 
 Re-scoped 2026-07-09.
 
-**The single goal is deleting the old core. Do not start any other bytecode
-work before the flip lands.**
+Completed 2026-07-09.
+
+**Historical status:** this section records the pre-flip decision and work
+order that led to deleting the old core. It is no longer the current next
+step; remaining live work is tracked in "Post-Flip Backlog" below.
 
 The overriding goal of this project is unittest latency (`AGENTS.md`). The
 old core buys none of it and costs a second engine to keep green. The
@@ -1207,8 +1215,8 @@ the same change.* Measured on 2026-07-09, that is nearly true, and the work
 order had drifted away from it.
 
 Measured state (`bin/ut -l`, 2026-07-09): the new core carries far more
-matrix rows than the old core. Exactly nine `Bytecode` rows have no
-`BytecodeNewCore` counterpart, and only **four are behaviours**:
+matrix rows than the old core. Exactly four `Bytecode` rows have no
+`BytecodeNewCore` counterpart, and all four are behaviours:
 
 1. `ct/diagnostics.d`: `nullClassFieldReadReportsDiagnostic`,
    `nullClassMethodCallReportsDiagnostic`, and
@@ -1223,17 +1231,14 @@ matrix rows than the old core. Exactly nine `Bytecode` rows have no
    `emplace` by identifier), so `pow` on float inputs needs intrinsic
    lowering.
 
-The other five are not behaviours and need no new-core implementation:
+Two additional stale-row cases are not behaviours and need no new-core
+implementation:
 
 - `ct/diagnostics.d`: `voidInitializedScalarReadReportsUninitialized`. See
   "The `= void` row is a fossil" below — narrow it, do not implement it.
-- `rt/cstdlib.d`: `calloc.multiArg.zeroedNativeMemory`,
-  `realloc.null.pointerArgPointerReturn`,
-  `realloc.grow.preservesNativeMemory`, and
-  `malloc.pointerReturn.nativeMemory` are pinned *refusals* on
-  `Bytecode`/`IR`, not behaviours the old core performs. Per the
-  omit-don't-pin convention they are dropped from `Bytecode` in the flip
-  commit, exactly as they are already absent from `BytecodeNewCore`.
+- `rt/cstdlib.d`: `malloc.pointerReturn.nativeMemory` is not a behaviour the
+  old core performed. It is simply unpromoted in this incremental PR, not
+  blocked on a current native-memory indexing gap.
 
 ### The `= void` row is a fossil
 
@@ -1257,42 +1262,41 @@ it on native-layout frames means per-slot initialization state and a checked
 load on the hot path. Removed slice 2 was exactly that machinery, and it was
 removed with the CTFE-replacement goal.
 
-**Action: narrow the block to `AliasSeq!(Ctfe)`**, with a comment naming the
-divergence, per `single-oracle.md`'s explicit rule for divergent rows. The
-fixture body does not change. This is a test change and needs owner approval
-before the edit. Do **not** implement uninitialized-read detection in the
-new core to satisfy it.
+**Completed action:** the block was narrowed to `AliasSeq!(Ctfe)`, with a
+comment naming the divergence, per `single-oracle.md`'s explicit rule for
+divergent rows. The fixture body did not change. No uninitialized-read
+detection was added to the new core to satisfy it.
 
 Owner decision (2026-07-09): quickbite's value proposition is speed, not UB
 detection. If a definite-assignment lint is ever wanted it is a compile-time
 check applied uniformly across every backend, with its own plan entry — not
 runtime tagging in one engine, and not a reason to delay the flip.
 
-### Work order
+### Completed Work Order
 
 1. Null-class-reference diagnostics on the new core (3 rows).
 2. `pow` float intrinsic on the new core (1 row).
-3. Narrow the `= void` row to `AliasSeq!(Ctfe)` (owner approval required).
-4. **The flip, one change**: `Bytecode`'s default constructor selects
-   `Engine.typedFrames`; delete the `BytecodeNewCore` handle class; delete
-   the old core (`backends/bytecode/{compiler,vm,builtins,instructions}.d`);
-   drop `Bytecode` from the four `rt/cstdlib.d` refusal blocks; rename the
-   `.BytecodeNewCore` matrix rows to `.Bytecode`. The legacy-core entry in
-   the Deletion Inventory (enum member-name and struct-literal display in
-   `bytecode/compiler.d`) dies here too.
+3. Narrow the `= void` row to `AliasSeq!(Ctfe)`.
+4. **The flip, one change**: `Bytecode`'s default constructor selected
+   `Engine.typedFrames`; the `BytecodeNewCore` handle class was deleted; the
+   old core (`backends/bytecode/{compiler,vm,builtins,instructions}.d`) was
+   deleted; `malloc.pointerReturn.nativeMemory` stayed unpromoted while the
+   promoted `rt/cstdlib.d` native-memory rows stayed covered; the
+   `.BytecodeNewCore` matrix rows were renamed to `.Bytecode`. The
+   legacy-core entry in the Deletion Inventory (enum member-name and
+   struct-literal display in `bytecode/compiler.d`) died here too.
 
-Nothing else gates the flip. The old core has **no production consumers**:
-outside its own package, only the separately-doomed `executors/` tree names
-`Bytecode`, and `Bytecode()` is constructed only by the test matrix.
+Nothing else gated the flip. The old core had **no production consumers**:
+outside its own package, only the separately-doomed `executors/` tree named
+`Bytecode`, and `Bytecode()` was constructed only by the test matrix.
 
-### Explicitly deferred until after the flip
+### Moved To Post-Flip Backlog
 
-None of these are behaviours the old core has, so none of them shortens the
-path to deleting it. Do not start them first:
+None of these were behaviours the old core had, so none of them shortened the
+path to deleting it. They now remain in the post-flip backlog:
 
-- The rest of slice 8 (`calloc`, `realloc`, cast-converted pointer
-  arguments, indexing through a returned pointer, `div`/`ldiv` struct
-  returns). These are *refusals* on the old core.
+- The rest of slice 8 (indexing through a returned pointer and `div`/`ldiv`
+  struct returns). These are *refusals* on the old core.
 - Slice 9 beyond the three null-reference diagnostics.
 - Slice 11, prelude formatter execution. The `repl.d` display rows it
   governs are frozen for **both** engines, so deleting the old core costs
@@ -1306,9 +1310,9 @@ production consumers, the blast radius is tests.
 
 ## Post-Flip Backlog
 
-Everything below is deferred until the old core is deleted (see "Current
-Next Step"). It records what the new core has already re-earned, and what
-comes after the flip. It is not a work order for the next agent.
+Everything below was deferred until the old core was deleted. It records what
+the new core has already re-earned, and what comes after the flip. It is the
+live backlog for future bytecode work.
 
 `eval.d` (module order 1), `rt/cstdlib.d` (2), `integrals.d` (3),
 `logic.d` (4), `results.d` (5), `diagnostics.d` (6), `math.d` (7),
@@ -1318,28 +1322,17 @@ reconciled on the new core (see Rewrite Coverage State).
 
 `rt/cstdlib.d` has promoted `atoi.value`, `strtol.endptr`,
 `free.null.voidReturn`, `malloc.pointerRoundTrip`, `abs.scalar`,
-`labs.widerScalar`, `ctype.toupperTolower`, `atof.floatReturn`, and
-`strtod.floatReturn.endptr` to `BytecodeNewCore` (across #383 and this
-branch) now that the outbound native libc-call bridge covers arity-N
-arguments, out-parameter write-back, void returns, and pointer returns.
-Still deferred on `BytecodeNewCore`: `div.structReturn` and
-`ldiv.structReturn.longArgs` keep their own pinned no-source-diagnostic
-refusal row on `BytecodeNewCore` itself (struct returns stay excluded from
-the return-type gate). `calloc.multiArg.zeroedNativeMemory`,
-`realloc.null.pointerArgPointerReturn`,
-`realloc.grow.preservesNativeMemory`, and
-`malloc.pointerReturn.nativeMemory` have no `BytecodeNewCore` row at all —
-`BytecodeNewCore` is excluded from those blocks' `AliasSeq` (pinned as
-refusals on `Bytecode`/`IR` only) because they share `malloc`/`free`'s
-promoted `void*`/`size_t` shape and would compile past the pinned leaf
-without actually working: `malloc.pointerReturn.nativeMemory` indexes
-through the returned pointer (`ptr[0] = ...`) rather than just
-round-tripping it, and all four still fail honestly on a
-`CastExp`-wrapped pointer argument to `free`/`realloc`. These value rows
-stay on `Interpreter`, `SystemLinker`, and `LLVMJit` until `calloc`/
-`realloc` get their own native-call support, cast-converted pointer
-arguments are handled, and a GC/ownership model exists for VM-tracked
-native allocations.
+`labs.widerScalar`, `ctype.toupperTolower`, `atof.floatReturn`,
+`strtod.floatReturn.endptr`, `calloc.multiArg.zeroedNativeMemory`,
+`realloc.null.pointerArgPointerReturn`, and
+`realloc.grow.preservesNativeMemory` to the flipped `Bytecode` backend
+(across #383 and this branch) now that the outbound native libc-call bridge
+covers arity-N arguments, out-parameter write-back, void returns, pointer
+returns, and these native-memory value rows. Still deferred on `Bytecode`:
+`div.structReturn` and `ldiv.structReturn.longArgs` keep their own pinned
+no-source-diagnostic refusal row (struct returns stay excluded from the
+return-type gate), and `malloc.pointerReturn.nativeMemory` still has no
+`Bytecode` row because this incremental PR did not promote it.
 
 The next concrete module candidate per
 `ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
@@ -1432,11 +1425,9 @@ execution). The current backlog for this track, in order:
    `malloc.pointerRoundTrip` (a bare `void*` return, a `size_t` argument,
    and a pointer local passed by value into `free`) turned out to be a
    rung after all, not the larger slice this plan predicted — see the
-   entry below. What remains genuinely larger: `calloc`/`realloc`
-   fixtures that index through the returned pointer (`ptr[0] = ...`) or
-   pass a cast-converted pointer local (DMD wraps `ubyte*` -> `void*` in
-   a `CastExp` the narrow by-value argument shape does not match), and
-   `div`/`ldiv` struct returns.
+   entry below. What remains genuinely larger: fixtures that index
+   through returned native memory (`ptr[0] = ...`) and `div`/`ldiv`
+   struct returns.
 3. Slice 9, classes.
 4. Slice 11, prelude formatter execution — which re-earns the frozen
    `repl.d` display rows and deletes the interim display scaffolding
@@ -1501,13 +1492,13 @@ message. The implementation fix is deliberately limited to named functions
 with no available body, preserving the runtime deferral while producing the
 same diagnostic shape as the existing design-driving tests.
 
-No real libc value tests were promoted. The deferred set includes scalar calls
-(`atoi`, `abs`, `labs`, `ctype`), pointer and out-parameter calls (`strtol`,
-`strtod`), allocation calls (`malloc`, `calloc`, `realloc`, `free`), and
-struct-return calls (`div`, `ldiv`). These require the native-runtime slice:
-libffi-style outbound calls, pointer identity across VM memory and native
-memory, out-parameter writes, native allocation ownership, and ABI struct
-returns.
+At the time no real libc value tests were promoted. That analysis has since
+been superseded by the native-runtime slice and the Current Coverage State:
+scalar calls, pointer/out-parameter calls, `free`, `malloc`,
+`calloc.multiArg.zeroedNativeMemory`,
+`realloc.null.pointerArgPointerReturn`, and
+`realloc.grow.preservesNativeMemory` now have real `Bytecode` rows.
+Struct-return calls (`div`, `ldiv`) remain deferred.
 
 ## math.d Promotion Analysis (BytecodeNewCore)
 
@@ -4439,7 +4430,7 @@ are re-earned in slice 11 by executing the prelude formatter, not by
 extending `ResultType`/`reify.d` display metadata. The non-display failures
 from the sweep (`moduleLevelVariablesAreVisibleToFunctions`, Phobos
 import/range/`ref`-argument execution) are this track's language-feature
-backlog — see "Current Next Step".
+backlog — see "Post-Flip Backlog".
 
 Module-level scalar assignment first rung, 2026-07-07: the new core now
 allocates VM-owned mutable module data for scalar `VarDeclaration`s, emits
@@ -4922,39 +4913,34 @@ statement-compilation fix, not a native-memory one — confirmed by
 unaffected.
 
 With the crash fixed, `malloc.pointerReturn.nativeMemory.BytecodeNewCore`
-still fails, but now on a different, later diagnostic: `` `free` cannot
-be interpreted... `` instead of `` `malloc` ``. Its `free(ptr)` argument
-is `ptr: ubyte*` implicitly converted to `free`'s `void*` parameter; DMD
-wraps that conversion in a `CastExp`, which the new by-value argument
-shape does not match (it matches only a bare `VarExp`) — correctly,
-since no approved test needs the cast-wrapped shape, and matching it
-would let compilation reach the fixture's indexed writes through native
-memory (`ptr[0] = 0x11`), an unimplemented and unverified shape. The
-pinned `` `malloc` `` diagnostic is therefore false for `BytecodeNewCore`
-now (malloc genuinely has available source); narrowed that block's
-`AliasSeq` from `Bytecode, BytecodeNewCore, IR` to `Bytecode, IR`, per
-the `free.null.voidReturn` precedent, with a comment explaining why.
+still failed in that rung, but now on a different, later diagnostic:
+`` `free` cannot be interpreted... `` instead of `` `malloc` ``. At the
+time, its `free(ptr)` argument's implicit `ubyte*` -> `void*` conversion
+was an unimplemented `CastExp` wrapper. Later FFI-track promotions covered
+the returned-pointer cast/indexing shapes through the `calloc` and `realloc`
+rows, so this is no longer the current reason
+`malloc.pointerReturn.nativeMemory` lacks a `Bytecode` row; it is simply
+unpromoted in this incremental PR. The pinned `` `malloc` `` diagnostic was
+therefore false for `BytecodeNewCore` then (malloc genuinely had available
+source); narrowed that block's `AliasSeq` from
+`Bytecode, BytecodeNewCore, IR` to `Bytecode, IR`, per the
+`free.null.voidReturn` precedent.
 
 The same shape collision — a `void*`/`size_t` return-and-argument shape
 identical to `malloc`/`free`'s — invalidated two more negative blocks
 that happen to share it: `calloc(size_t, size_t) -> void*` and
-`realloc(void*, size_t) -> void*`. `calloc.multiArg.zeroedNativeMemory`
-and `realloc.null.pointerArgPointerReturn` (one shared `AliasSeq` block)
-and `realloc.grow.preservesNativeMemory` (a separate block whose fixture
-leads with a `cast(ubyte*) malloc(...)` leaf) were all confirmed, by
-running each focused test, to still fail honestly — just past their
-pinned function name, on the same `free`/`realloc` `CastExp`-argument
-gap. Narrowed both blocks' `AliasSeq` the same way. `div`/`ldiv`'s
-struct-return negative block was confirmed unaffected (struct returns
-stay excluded from the return-type gate) by running it unchanged.
+`realloc(void*, size_t) -> void*`. This was superseded by the 2026-07-09
+FFI-track promotions: `calloc.multiArg.zeroedNativeMemory`,
+`realloc.null.pointerArgPointerReturn`, and
+`realloc.grow.preservesNativeMemory` now have real `Bytecode` rows.
+`div`/`ldiv`'s struct-return negative block was confirmed unaffected
+(struct returns stay excluded from the return-type gate) by running it
+unchanged.
 
-No production code changed to chase any of the four negative blocks
-further; native-memory *indexing* (reading/writing through a returned
-pointer, e.g. `ptr[0] = ...`), `calloc`/`realloc`'s own native-call
-support, cast-converted pointer arguments, and any GC/ownership model
-for VM-tracked native allocations all remain unimplemented — genuinely
-larger slices than this rung, matching the corrected forward-looking
-bullet above.
+No production code changed to chase the remaining negative blocks further.
+Later FFI-track promotions covered native-memory indexing in the `calloc` and
+`realloc` rows, so `malloc.pointerReturn.nativeMemory` is simply unpromoted in
+this incremental PR rather than blocked on that old gap.
 
 Verification: `ninja bin/ut`; the full `rt/cstdlib.d` module (87 tests, 0
 failed); the `BytecodeNewCore` rows of `ct/arrays` (289 tests, 0 failed)
