@@ -41,7 +41,8 @@ private struct Compiler {
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
         AssocArrayLiteralExp, AssertExp,
-        AssignExp, BinExp, BlitExp, CallExp, CastExp, CatElemAssignExp, CatExp,
+        AssignExp, BinExp, BlitExp, CallExp, CastExp, CatAssignExp,
+        CatElemAssignExp, CatExp,
         CmpExp, CondExp, ConstructExp, DelegateFuncptrExp, DelegatePtrExp,
         DivExp, DotIdExp, DotVarExp, Expression,
         IdentityExp, IndexExp, LogicalExp, MulExp, FuncExp, DelegateExp,
@@ -1789,11 +1790,13 @@ private struct Compiler {
                 return compileAssignExpression(blit);
 
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
-        // `concatenateElemAssign`); detect by op, not name. Whole-array
-        // `arr ~= other` (op `concatenateAssign`) is a different node and is
-        // not handled here.
+        // `concatenateElemAssign`); whole-array `arr ~= other` arrives as the
+        // distinct CatAssignExp (`concatenateAssign`).
         if (auto append = expression.isCatElemAssignExp)
             return compileAppendElement(append);
+
+        if (auto concatenate = expression.isCatAssignExp)
+            return compileConcatenationAssign(concatenate);
 
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
@@ -6426,6 +6429,26 @@ private struct Compiler {
             appendElementOp(elementSize),
             descriptor.offset,
             value.offset,
+        );
+        writeBackDynamicArrayDescriptor(descriptor);
+        return Operand(descriptor.offset, descriptor.elementType);
+    }
+
+    // `arr ~= other`: concatenate both array descriptors into fresh backing
+    // memory, then overwrite the local's descriptor with the result.
+    private Operand compileConcatenationAssign(CatAssignExp concatenate) {
+        const descriptor = dynamicArrayDescriptor(concatenate.e1);
+        const right = arrayDescriptorOffset(
+            descriptor.elementType, concatenate.e2,
+        );
+        const elementSize = dynamicArrayElementSize(
+            concatenate.e1.type, descriptor.elementType,
+        );
+        _code ~= Instruction(
+            concatArraysOp(elementSize),
+            descriptor.offset,
+            descriptor.offset,
+            right,
         );
         writeBackDynamicArrayDescriptor(descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
