@@ -600,9 +600,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
 // field-granular: only reads of still-void scalars/fields are reported, not the
 // whole-aggregate read that `return res;` performs. Mirrors Phobos
 // `trustedVoidInit`, which the interpreter previously rejected before reaching
-// any libc call. Bytecode/Bytecode/IR do not yet support whole-aggregate
-// void reads, so they are excluded pending their own fix.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+// any libc call. Bytecode supports this whole-aggregate path; IR does not yet
+// support it.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("voidInitializedStructReturnedWholeIsUsable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
