@@ -202,9 +202,13 @@ public struct NativeBlock {
     // further out, whatever *this* block borrowed from), and it keeps the
     // memory alive for exactly as long as this sub-range needs it to.
     // Reusing `borrowed` rather than inventing a third `Ownership` value
-    // means every existing borrowed-block guard (`NativeArray.reserve`'s
-    // "cannot reallocate a borrowed block") already applies correctly to a
-    // sub-range for free.
+    // means `NativeArray.reserve`'s existing "cannot reallocate a borrowed
+    // block" guard already applies correctly to a sub-range for free --
+    // though it was the only one that did: `NativeBlock.tryExtendTo` and
+    // `trueByteSize` had no guard of their own at the time and each had to
+    // grow one once `borrowed` started covering both non-GC foreign memory
+    // and interior views of an owned GC allocation (see the Status
+    // "ownership vs GC-visibility" note).
     public NativeBlock subRange(in size_t byteOffset, in size_t byteLength) pure @safe {
         import core.checkedint: addu;
 

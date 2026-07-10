@@ -149,11 +149,12 @@ public struct NativeArray {
 
     // The bytes of element `index`: an interior view into the block at
     // `index * stride .. (index + 1) * stride`. `index` is checked against
-    // `_length` first, and only then multiplied by `_stride`: `allocate`
-    // already proved `_length * _stride` doesn't overflow `size_t`
-    // (`byteLength`'s `mulu` check), so once `index < _length` holds,
-    // `index * _stride < _length * _stride` is provably wrap-free too --
-    // there is no need for a second overflow check on the multiply itself.
+    // `_length` first, and only then multiplied by `_stride`: every
+    // construction path (`allocate`, `borrow`, `adopt`) already routes
+    // `_length * _stride` through the overflow-checked `byteLength` helper,
+    // so once `index < _length` holds, `index * _stride < _length *
+    // _stride` is provably wrap-free too -- there is no need for a second
+    // overflow check on the multiply itself.
     // Without the bounds check first, a large enough `index` makes
     // `index * _stride` wrap and land inside the block, silently aliasing
     // a different element instead of failing.
@@ -199,8 +200,8 @@ public struct NativeArray {
     //    hazard `NativeBlock.Scan` exists to avoid for the block itself.
     //
     //    This is keyed on whether this array's block address is
-    //    *GC-visible* -- a mechanical fact read from `core.memory.GC.
-    //    addrOf` (wrapped in `gcAddrOf` below), which returns non-null for
+    //    *GC-visible* -- a mechanical fact read directly from
+    //    `core.memory.GC.addrOf`, which returns non-null for
     //    a pointer into any GC allocation, INCLUDING an interior pointer
     //    into a larger one (it returns that allocation's base address) --
     //    never from this array's `NativeBlock.Ownership`. Ownership
@@ -217,7 +218,7 @@ public struct NativeArray {
     //    would let such a sub-range's address be written into an unscanned
     //    destination and silently escape the collector's view, which is
     //    exactly the hazard this check exists to prevent. So this throws
-    //    exactly when `gcAddrOf(_block.address) !is null` and
+    //    exactly when `GC.addrOf(_block.address) !is null` and
     //    `dest.scan != Scan.conservative`. One case stays legal despite a
     //    `Scan.no` destination:
     //      - A zero-length array's block address is `null`
@@ -227,7 +228,7 @@ public struct NativeArray {
     //        nothing there for the GC to lose track of.
     //    Genuinely non-GC memory -- `malloc`'d, FFI, or any other memory a
     //    `borrowed` block wraps that was never a GC allocation in the
-    //    first place -- also reports `gcAddrOf(...) is null`, so it stays
+    //    first place -- also reports `GC.addrOf(...) is null`, so it stays
     //    legal for exactly the reason the old ownership-keyed exemption
     //    was actually written for: keeping that memory alive is the
     //    borrower/owner's job (`NativeBlock.borrow`'s own contract), not
@@ -237,6 +238,7 @@ public struct NativeArray {
     // `length` is the element count, not a byte length.
     public void writeSliceHeader(NativeBlock dest, in size_t byteOffset) const @safe {
         import core.checkedint: addu;
+        import core.memory: GC;
 
         bool overflow;
         const end = addu(byteOffset, sliceHeaderByteLength, overflow);
@@ -247,7 +249,7 @@ public struct NativeArray {
                 ~ "does not fit within dest.byteLength",
             );
 
-        if (gcAddrOf(_block.address) !is null
+        if (GC.addrOf(_block.address) !is null
             && dest.scan != NativeBlock.Scan.conservative)
             throw new Exception(
                 "quickbite.backends.interpreter.native_array.NativeArray."
@@ -382,21 +384,6 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
         );
 
     return bytes;
-}
-
-// `GC.addrOf` reports whether `ptr` lies within any GC allocation -- root
-// or interior -- returning that allocation's base address, or `null` if
-// `ptr` is not GC memory at all (or is itself `null`); this is exactly the
-// mechanical "is this address GC-visible?" fact `writeSliceHeader`'s
-// scanned-destination check needs, deliberately NOT inferred from this
-// array's `NativeBlock.Ownership` (see that function's comment for why).
-// `GC.addrOf` is not `@safe`; this is the module's own `@trusted`
-// boundary, justified because the call only reads an address and hands
-// back another address -- it dereferences nothing.
-private inout(void)* gcAddrOf(inout(void)* ptr) nothrow @nogc @trusted {
-    import core.memory: GC;
-
-    return GC.addrOf(ptr);
 }
 
 // Writing a raw pointer's bit pattern into a byte range is not @safe; this

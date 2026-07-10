@@ -544,6 +544,23 @@ alive, not this destination's scan policy). `writeSliceHeader` still has
 no caller in production code; this closes the open question from item
 7 below without wiring anything in yet.
 
+Correction (2026-07-09, see the "ownership vs GC-visibility" note
+below): the paragraph above keyed the scanned-destination check on
+this array's own block being `owned` (`Ownership`), and exempted a
+*borrowed* source address on the grounds that it "is not GC memory the
+collector tracks in the first place." That was false once
+`NativeBlock.subRange` existed: a sub-range is `borrowed` but can still
+be live GC memory (e.g. a struct's inline array field), so a borrowed
+sub-range's address sailing through into an unscanned destination was
+exactly the hazard this check exists to prevent. The check is now
+keyed on the mechanical fact `GC.addrOf(_block.address) !is null`, not
+on `Ownership`; the two cases that stay legal despite an unscanned
+destination are a null block address (a zero-length array) and a
+genuinely non-GC source address (`malloc`'d/FFI memory) -- a borrowed
+sub-range of GC memory now throws. See the Status "ownership vs
+GC-visibility" note below for the full account and the regression
+tests that pin it.
+
 Progress 2026-07-09 (struct phase: native block + DMD field offsets):
 item 7's migration order moves to its second phase -- "a struct is one
 block laid out with DMD field offsets" -- reusing the array phase's
@@ -1205,10 +1222,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    `writeSliceHeader`'s scanned-destination contract is no longer open:
    `dest` is now a `(NativeBlock, byteOffset)` pair, and the function
    throws before writing a GC-owned pointer into a destination the
-   collector never scans (see Status's "scanned-destination contract"
+   collector never scans (see Status's "ownership vs GC-visibility"
    note above for the exact rule and the cases -- a zero-length array's
-   null pointer, a borrowed source address -- that stay legal despite an
-   unscanned destination).
+   null block address, or a genuinely non-GC source address -- that
+   stay legal despite an unscanned destination).
 
    Progress against the "Next PR" list below: the array-native block handle
    skeleton is done (`NativeArray`: stable block, `Type`, length, stride,

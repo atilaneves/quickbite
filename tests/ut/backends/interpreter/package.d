@@ -14,8 +14,12 @@ public TypeStruct structTypeOf(in string source, in string name) {
 
     foreach (member; *moduleResult.module_.members)
         if (auto struct_ = member.isStructDeclaration)
-            if (struct_.ident.toString == name)
-                return cast(TypeStruct) struct_.type;
+            if (struct_.ident.toString == name) {
+                auto structType = struct_.type.isTypeStruct;
+                assert(structType !is null,
+                    "struct `" ~ name ~ "`'s type is not a TypeStruct");
+                return structType;
+            }
 
     assert(false, "struct `" ~ name ~ "` not found in parsed snippet");
 }
