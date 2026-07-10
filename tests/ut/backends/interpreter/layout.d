@@ -2,10 +2,10 @@ module ut.backends.interpreter.layout;
 
 
 import ut;
+import ut.backends.interpreter: structTypeOf;
 import quickbite.backends.interpreter.layout:
     typeByteSize, typeHasPointers, structFields, fieldByteOffset;
-import quickbite.frontend.compiler: parseSnippet;
-import dmd.mtype: Type, TypeStruct;
+import dmd.mtype: Type;
 
 private:
 
@@ -105,19 +105,4 @@ unittest {
 
     // D gives an empty struct `.sizeof == 1`.
     typeByteSize(type).should == E.sizeof;
-}
-
-
-// Parses `source`, finds the `struct` named `name` among the module's
-// top-level members, and returns its (now semantically analysed)
-// `TypeStruct`.
-TypeStruct structTypeOf(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-
-    foreach (member; *moduleResult.module_.members)
-        if (auto struct_ = member.isStructDeclaration)
-            if (struct_.ident.toString == name)
-                return cast(TypeStruct) struct_.type;
-
-    assert(false, "struct `" ~ name ~ "` not found in parsed snippet");
 }

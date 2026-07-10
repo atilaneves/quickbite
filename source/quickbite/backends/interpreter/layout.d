@@ -74,6 +74,14 @@ private bool typeHasPointersImpl(imported!"dmd.mtype".Type type) @trusted {
 // on `SIZE_INVALID`, so calling it first reuses DMD's own layout logic
 // instead of duplicating it. `TypeStruct` converts to `Type` implicitly, so
 // this costs no cast.
+
+// The returned slice is safe for a caller to cache past this call: once
+// `typeByteSize` above forces layout, `sizeok == Sizeok.done` freezes
+// `sym.fields` (`dsymbolsem.d`'s `determineSize`/`determineFields` both
+// early-return on that state), and DMD never frees AST memory, so the
+// slice's backing storage stays valid for the process lifetime. A future
+// DMD that re-lays-out or appends fields after `sizeok` is done would
+// invalidate a cache built on this.
 public imported!"dmd.declaration".VarDeclaration[] structFields(
     imported!"dmd.mtype".TypeStruct type,
 ) @safe {
@@ -92,7 +100,7 @@ public uint fieldByteOffset(imported!"dmd.declaration".VarDeclaration field) @sa
 
 
 // The element count DMD recorded for a static-array type (`TypeSArray.
-// dim`), read via `dim.toUInteger()` -- DMD's own authoritative source for
+// dim`), read via `dim.toUInteger` -- DMD's own authoritative source for
 // "how many elements this static array type has", not re-derived from a
 // byte-size division. `typeByteSize(type) / typeByteSize(type.next)` would
 // give the same answer for every real static-array type (D packs array
@@ -113,5 +121,5 @@ public size_t staticArrayLength(imported!"dmd.mtype".TypeSArray type) @safe {
 // narrowing it with the same cast-only trust `typeByteSizeImpl` above
 // applies to `Type.size`.
 private size_t staticArrayLengthImpl(imported!"dmd.mtype".TypeSArray type) @trusted {
-    return cast(size_t) type.dim.toUInteger();
+    return cast(size_t) type.dim.toUInteger;
 }

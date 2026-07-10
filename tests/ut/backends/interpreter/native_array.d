@@ -570,7 +570,10 @@ unittest {
     auto backing = new int[3];
     auto array = NativeArray.borrow(Type.tint32, backing.ptr, backing.length);
 
-    array.element(1)[0] = 42;
+    // Full 4-byte store, not `element(1)[0] = ...`: writing only byte 0 of a
+    // 4-byte `int` would be endian-dependent (and rely on the block already
+    // being zeroed for the other three bytes to read back as 0).
+    *cast(int*) array.element(1).ptr = 42;
 
     backing[1].should == 42;
 }

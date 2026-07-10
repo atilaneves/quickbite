@@ -2,11 +2,11 @@ module ut.backends.interpreter.native_struct;
 
 
 import ut;
+import ut.backends.interpreter: structTypeOf;
 import quickbite.backends.interpreter.native_struct: NativeStruct;
 import quickbite.backends.interpreter.native_array: NativeArray;
 import quickbite.backends.interpreter.native_block: NativeBlock;
-import quickbite.frontend.compiler: parseSnippet;
-import dmd.mtype: TypeStruct, Type;
+import dmd.mtype: Type;
 
 private:
 
@@ -250,8 +250,11 @@ unittest {
 
     {
         auto elements = NativeArray.allocate(Type.tint32, 2);
-        elements.element(0)[0] = 7;
-        elements.element(1)[0] = 8;
+        // Full 4-byte stores, not `element(i)[0] = ...`: writing only byte 0
+        // of a 4-byte `int` would be endian-dependent (and rely on the block
+        // already being zeroed for the other three bytes to read back as 0).
+        *cast(int*) elements.element(0).ptr = 7;
+        *cast(int*) elements.element(1).ptr = 8;
         elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(1));
     }
 
@@ -496,19 +499,4 @@ unittest {
         ~ "writeSliceHeader: dest is not scanned by the GC, but "
         ~ "this array's block address is a live GC pointer",
     );
-}
-
-
-// Parses `source`, finds the `struct` named `name` among the module's
-// top-level members, and returns its (now semantically analysed)
-// `TypeStruct`.
-TypeStruct structTypeOf(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-
-    foreach (member; *moduleResult.module_.members)
-        if (auto struct_ = member.isStructDeclaration)
-            if (struct_.ident.toString == name)
-                return cast(TypeStruct) struct_.type;
-
-    assert(false, "struct `" ~ name ~ "` not found in parsed snippet");
 }
