@@ -1340,6 +1340,85 @@ raw bytes, but there is no `arrayElement`/`sliceElement` counterpart to
 `structElement` the way `NativeStruct` has both `structField` and
 `arrayField`/`sliceField` for its own fields.
 
+Progress 2026-07-10 (array-element aggregate views): the previous note's
+own named gap is closed. `NativeArray` gains `arrayElement(index) @safe ->
+NativeArray` and `sliceElement(index) @system -> NativeArray`, the
+counterparts to `structElement` for an array whose `elementType` is itself
+a static array (`int[3][4]`) or a dynamic array (`int[][]`), exactly
+mirroring `NativeStruct.arrayField`/`sliceField` one level down: an array
+element, not a struct field, is the aggregate being viewed. The
+struct/array composition matrix is now symmetric on both axes -- a struct
+can view any of its fields (struct, static array, or slice) as a handle,
+and an array can view any of its elements (struct, static array, or slice)
+as a handle, with no accessor left one-directional.
+
+`arrayElement` stays `@safe`: this element's bytes ARE the nested array's
+inline storage, `stride` bytes at `index * stride` inside this array's own
+block, so it only ever slices an already-verified block via `NativeBlock.
+subRange`, exactly `structElement`'s own argument. `index` is
+bounds-checked against `length` first, reusing `element`'s wrap-free
+argument rather than re-deriving it; an `elementType` that is not a static
+array throws before any offset arithmetic runs. The returned handle's
+`length` is `layout.staticArrayLength(elementType)` and its element type is
+`elementType.next`, built through `NativeArray.adopt` rather than by hand.
+Ownership/scan/`trueByteSize`: `Ownership.borrowed` and the parent's `Scan`
+via `adopt`'s own `subRange`-backed construction, and `block.trueByteSize`
+is 0 -- an array element is not an independent allocation, so nothing about
+it can be grown; growing the OUTER array stays `reserve`/`setLength`'s job.
+
+`sliceElement` is `@system`, unlike `arrayElement`: this element's bytes
+are NOT inline storage, they ARE a slice header (`{ length, ptr }`) naming
+a separately tracked block elsewhere, so the only way to view "the
+elements this slot currently points at" is to read that header back out of
+memory and reconstruct a handle via `NativeArray.borrow` -- an
+unverifiable reconstruction from a pointer this code reads out of memory,
+exactly `NativeStruct.sliceField`'s own reason for being `@system`. `index`
+is bounds-checked first, reusing `element`'s wrap-free argument; an
+`elementType` that is not a dynamic array throws before any header bytes
+are read. The read-back contract is identical to `sliceField`'s: a
+zero-length/null header reads back as a real, empty `NativeArray`; the
+returned array's `ownership` is always `borrowed`, its `scan`/`capacity`
+are `Scan.no`/`0` unconditionally per `NativeBlock.borrow`'s own contract
+even when the pointed-to block is a real, conservatively-scanned GC
+allocation this element keeps alive; and it aliases, not snapshots -- a
+write through the returned handle is visible through any other handle over
+the same block, and it goes stale exactly as any other stale pointer once
+this element's header is overwritten or the pointed-to block moves.
+
+The de-duplication the task asked for: `sliceField` and `sliceElement` both
+need the exact two-value `{ length, ptr }` header read, so the helper that
+does it, `readSliceHeaderBytes` (and its `SliceHeaderBytes` return type),
+moved from being `native_struct.d`-private to living in `native_array.d`,
+`public`, alongside `sliceHeaderByteLength`/`writeSliceHeaderBytes` -- the
+other two pieces of this module's own slice-header layout. `NativeStruct.
+sliceField` now imports and calls it rather than keeping a second,
+driftable `memcpy` of the same two fields; its own tests were not touched
+and still pass unchanged.
+
+Regression tests, in `tests/ut/backends/interpreter/native_array.d`, using
+`NativeStruct.fieldDeclaration(0).type` (an `Int3Holder`/`SliceHolder`
+struct's own field type, straight from the host compiler) as each
+fixture's `elementType`, exactly as `NativeStruct.arrayField`/`sliceField`
+already read their own field types this way:
+`NativeArray.arrayElement.lengthAndStrideMatchElementTypeAndByteLength
+MatchesHostCompilerInt3x4Sizeof` (pinned against `int[3][4].sizeof`);
+`.writeThroughElementViewIsVisibleInParentElementBytes` and `.
+writeThroughParentElementBytesIsVisibleThroughElementView` (aliasing, both
+directions); `.elementTypeNotStaticArrayThrows`; `.outOfRangeIndexThrows`;
+`NativeArray.sliceElement.roundTripAliasesWriteSliceHeaderSourceArray`
+(aliasing, not a snapshot); `.
+zeroLengthNullHeaderReadsBackAsEmptyBorrowedArray`; `.
+elementTypeNotDynamicArrayThrows`; and `.outOfRangeIndexThrows`. No
+`GC.collect`-based liveness test was added, per this plan's own "ownership
+vs GC-visibility" note. All 189 focused `ut.backends.interpreter` tests
+pass.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring (no guest expression
+reaches `arrayElement`/`sliceElement`, `structElement`, `arrayField`, or
+`sliceField` yet -- there is no interpreter call site for any of this
+composition), no class objects, and every `interpreter.md` §9.10 shim
+remains unretired.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1793,14 +1872,19 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    Status "array-of-struct element views" progress note above for the
    bounds/stride argument, the `Ownership.borrowed`/zero-`trueByteSize`
    contract, and the oversized-block decision `adopt` shares with
-   `NativeArray.adopt`. That note also names the one remaining, narrower
-   composition gap: an array-typed array element (`Point[][]`, or an array
-   of static arrays) has no `arrayElement`/`sliceElement` counterpart yet,
-   the way `NativeStruct` has both `structField` and `arrayField`/
-   `sliceField` for its own fields — `element(index)` already hands back
-   that element's raw bytes, but nothing wraps them as a handle. None of
-   this has a user-visible display or FFI change yet, and no shim is
-   retired yet. What remains: the interpreter call site (`impl.d`/
+   `NativeArray.adopt`. That note's own remaining, narrower composition gap
+   — an array-typed array element (`Point[][]`, or an array of static
+   arrays) had no `arrayElement`/`sliceElement` counterpart, the way
+   `NativeStruct` has both `structField` and `arrayField`/`sliceField` for
+   its own fields — is also closed now: see the Status "array-element
+   aggregate views" progress note above for the `@safe`/`@system` split
+   (identical in shape to `structElement`/`sliceField`'s own) and the
+   `readSliceHeaderBytes` de-duplication it required. The struct/array
+   composition matrix is now symmetric on both axes — struct→{struct,
+   static array, slice} fields and array→{struct, static array, slice}
+   elements — with no accessor left one-directional. None of this has a
+   user-visible display or FFI change yet, and no shim is retired yet.
+   What remains, the sole next step: the interpreter call site (`impl.d`/
    `Walker`/`Value`) that actually gives these types somewhere to be used
    instead of sitting unwired — including, for `slice` specifically, the
    guest-level `~=`-on-a-slice reallocation semantics the "array

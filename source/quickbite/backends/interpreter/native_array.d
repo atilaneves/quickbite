@@ -335,6 +335,131 @@ public struct NativeArray {
         return NativeStruct.adopt(_block.subRange(start, _stride), structType);
     }
 
+    // Views element `index` -- an array whose `elementType` is itself a
+    // static array (DMD's `TypeSArray`, e.g. `int[3]`, making this array
+    // `int[3][4]`) -- as its own `NativeArray` over the SAME inline bytes:
+    // this element's bytes ARE the nested array's storage, `stride` bytes at
+    // `index * stride` inside this array's own block, not a slice header
+    // pointing elsewhere. This is `structElement`'s own argument (see its
+    // comment) applied to a static-array-typed element instead of a
+    // struct-typed one -- a write through the returned handle is visible in
+    // this array's `element(index)` bytes and vice versa, for as long as
+    // both stay live.
+    //
+    // `index` is bounds-checked against `_length` first, before any offset
+    // arithmetic runs on it, reusing `element`'s own wrap-free argument
+    // rather than re-deriving one (see `element`'s comment). An
+    // `elementType` that is not a static array (`Type.isTypeSArray` returns
+    // null) throws its own message before the sub-range is ever taken,
+    // since `layout.staticArrayLength`/`NativeArray.adopt`'s own layout
+    // machinery would be meaningless applied to the wrong DMD type.
+    //
+    // Routes through `NativeBlock.subRange` -- never the `@system`
+    // raw-pointer `NativeBlock.borrow` path -- for exactly `structElement`'s
+    // own reason: `index * stride .. index * stride + stride` is a
+    // sub-range of an already-verified block, ordinary bounds-checked D, not
+    // a pointer this code would need to reconstruct and cannot itself
+    // verify. That is why this stays `@safe`, unlike `sliceElement` below.
+    // The handle itself is built with `NativeArray.adopt` over that
+    // sub-range, `length` from `layout.staticArrayLength(elementType)`
+    // (DMD's own element count for the nested static-array type -- a bare
+    // `NativeBlock` carries bytes, not a D array length) and the nested
+    // array's own element type from `elementType.next`, rather than
+    // constructed by hand.
+    //
+    // The returned `NativeArray` is `Ownership.borrowed`, via `adopt`'s own
+    // `NativeBlock.subRange`-backed construction: an array element is not an
+    // independent allocation, so its `block.trueByteSize` is 0 and nothing
+    // about it can be grown -- growing the OUTER array is `reserve`/
+    // `setLength`'s job, not this view's. `scan` is carried forward from
+    // this array's own block by `subRange` unchanged, exactly as for
+    // `structElement`/`slice` -- `Scan` is an attribute of the whole
+    // underlying GC allocation, not of any one element's view into it.
+    public NativeArray arrayElement(in size_t index) @safe {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+
+        if (index >= _length)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "arrayElement: index out of range",
+            );
+
+        auto arrayType = _elementType.isTypeSArray;
+        if (arrayType is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "arrayElement: elementType is not a static array",
+            );
+
+        const start = index * _stride;
+        const length = staticArrayLength(arrayType);
+        return NativeArray.adopt(_block.subRange(start, _stride), arrayType.next, length);
+    }
+
+    // Views element `index` -- an array whose `elementType` is a dynamic
+    // array (DMD's `TypeDArray`, e.g. `int[]`, making this array `int[][]`)
+    // -- as a `NativeArray` over the element block its stored slice header
+    // currently points at. Unlike `arrayElement` above, this element's
+    // bytes are NOT the nested array's storage: they ARE a slice header
+    // (`{ length, ptr }`) naming a separately tracked block somewhere else
+    // entirely (wherever `writeSliceHeader` last wrote it from), exactly
+    // `NativeStruct.sliceField`'s own situation (see its comment) applied to
+    // an array element's bytes instead of a struct field's. The only way to
+    // view "the elements this slot currently points at" is to read that
+    // header back out of memory and reconstruct a handle from it via
+    // `NativeArray.borrow`, under the same caller-enforced, unverifiable
+    // precondition `borrow`/`sliceField` already document -- here, vouched
+    // for by whoever last wrote a valid header into this element. That
+    // unverifiable reconstruction from a pointer read out of memory, rather
+    // than a sub-range of an already-verified block, is why this is
+    // `@system`, unlike `arrayElement`/`structElement` above.
+    //
+    // `index` is bounds-checked against `_length` first, reusing `element`'s
+    // own wrap-free argument rather than re-deriving one, and before any
+    // header bytes are read. An `elementType` that is not a dynamic array
+    // (`Type.isTypeDArray` returns null) throws its own message before any
+    // of that, since `TypeDArray.next` would be meaningless applied to the
+    // wrong DMD type.
+    //
+    // Reuses `readSliceHeaderBytes` -- the exact same header-reading helper
+    // `NativeStruct.sliceField` uses, moved here alongside
+    // `sliceHeaderByteLength`/`writeSliceHeaderBytes`, the other two pieces
+    // of this module's own slice-header layout -- rather than a second
+    // `memcpy` of the same two fields.
+    //
+    // The contract for the read-back header, ownership, and scan is
+    // identical to `sliceField`'s own (see its comment in full): a
+    // zero-length/null header reads back as a real, empty `NativeArray`;
+    // the returned array's `ownership` is always `borrowed` (this element
+    // does not own the pointed-to block, only names it) and its `scan`/
+    // `capacity` are `Scan.no`/`0` unconditionally, per `NativeBlock.
+    // borrow`'s own contract, even when the pointed-to block is a real,
+    // conservatively-scanned GC allocation this same element keeps alive;
+    // and this aliases, not snapshots -- the returned handle wraps the SAME
+    // address `writeSliceHeader` wrote, so a write through it is visible
+    // through any other handle over the same block, and it goes stale
+    // exactly as any other stale pointer once this element's header is
+    // overwritten or the pointed-to block moves.
+    public NativeArray sliceElement(in size_t index) @system {
+        if (index >= _length)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "sliceElement: index out of range",
+            );
+
+        auto arrayType = _elementType.isTypeDArray;
+        if (arrayType is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "sliceElement: elementType is not a dynamic array",
+            );
+
+        const start = index * _stride;
+        auto header = readSliceHeaderBytes(_block.bytes[start .. start + sliceHeaderByteLength]);
+
+        return NativeArray.borrow(arrayType.next, header.ptr, header.length);
+    }
+
     // The byte length of a D dynamic-array slice header (`{ length, ptr }`):
     // how many bytes `writeSliceHeader` writes at its `byteOffset` into a
     // destination block, which need not be exactly this many bytes itself
@@ -717,4 +842,42 @@ in (dest.length == NativeArray.sliceHeaderByteLength) {
 
     memcpy(dest.ptr, &length, size_t.sizeof);
     memcpy(dest.ptr + size_t.sizeof, &ptr, (void*).sizeof);
+}
+
+// The two values a D dynamic-array slice header holds, read back out of a
+// field's or an element's bytes rather than written -- the counterpart to
+// `writeSliceHeaderBytes` above. `public`, not `private`: this is the read
+// half of this module's own slice-header layout (alongside
+// `sliceHeaderByteLength`/`writeSliceHeaderBytes`), shared by
+// `NativeArray.sliceElement` above and `NativeStruct.sliceField`, which
+// would otherwise need a second, driftable `memcpy` of the same two fields.
+public struct SliceHeaderBytes {
+    size_t length;
+    void* ptr;
+}
+
+// Reads a slice header's bytes back as `{ length, ptr }` -- the exact
+// layout `writeSliceHeaderBytes` writes (length at offset 0, pointer at
+// offset `size_t.sizeof`; see this file's own `static assert` pinning
+// `(void[]).sizeof == 2 * size_t.sizeof`). `memcpy`, not a pointer-typed
+// load, for the same alignment reason `writeSliceHeaderBytes` gives: `src`
+// is an interior view into a block at an arbitrary byte offset, not
+// guaranteed to be `size_t`-aligned.
+//
+// This only copies two fixed-size values out of an already bounds-checked
+// byte range into local storage -- it never dereferences `ptr`, so nothing
+// here can violate memory safety no matter what bit pattern the bytes
+// contain. That is this function's own `@trusted` boundary: reading is
+// always safe; USING the resulting `ptr` to reconstruct a slice
+// (`NativeArray.sliceElement`/`NativeStruct.sliceField`, via `NativeArray.
+// borrow`) is where the real, unverifiable trust happens, which is why
+// those callers -- not this helper -- are `@system`.
+public SliceHeaderBytes readSliceHeaderBytes(in ubyte[] src) @trusted
+in (src.length == size_t.sizeof + (void*).sizeof) {
+    import core.stdc.string: memcpy;
+
+    SliceHeaderBytes header;
+    memcpy(&header.length, src.ptr, size_t.sizeof);
+    memcpy(&header.ptr, src.ptr + size_t.sizeof, (void*).sizeof);
+    return header;
 }

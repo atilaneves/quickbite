@@ -282,8 +282,11 @@ public struct NativeStruct {
     // `arrayField`: those only ever slice an already-verified block with
     // ordinary bounds-checked D; this reconstructs a slice from a pointer
     // this code reads out of memory and cannot itself verify. The raw
-    // two-value read itself is behind a small private helper,
-    // `readSliceHeaderBytes`, marked `@trusted` rather than `@system`:
+    // two-value read itself is behind a small helper, `readSliceHeaderBytes`
+    // -- living in `native_array.d`, alongside `sliceHeaderByteLength`/
+    // `writeSliceHeaderBytes`, the other two pieces of that module's own
+    // slice-header layout, and shared with `NativeArray.sliceElement`'s
+    // identical read-back need -- marked `@trusted` rather than `@system`:
     // copying two fixed-size values out of an already bounds-checked byte
     // range into local storage cannot itself violate memory safety no
     // matter what bit pattern they contain -- it never dereferences the
@@ -335,6 +338,7 @@ public struct NativeStruct {
     //   reserve`).
     public NativeArray sliceField(in size_t index) @system {
         import quickbite.backends.interpreter.layout: fieldByteOffset;
+        import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
 
         if (index >= _fields.length)
             throw new Exception(
@@ -359,38 +363,4 @@ public struct NativeStruct {
 
         return NativeArray.borrow(arrayType.next, header.ptr, header.length);
     }
-}
-
-// The two values a D dynamic-array slice header holds, read back out of a
-// struct field's bytes rather than written -- the counterpart to
-// `NativeArray.writeSliceHeaderBytes`'s write path.
-private struct SliceHeaderBytes {
-    size_t length;
-    void* ptr;
-}
-
-// Reads a slice header's bytes back as `{ length, ptr }` -- the exact
-// layout `NativeArray.writeSliceHeaderBytes` writes (length at offset 0,
-// pointer at offset `size_t.sizeof`; see `native_array.d`'s own `static
-// assert` pinning `(void[]).sizeof == 2 * size_t.sizeof`). `memcpy`, not a
-// pointer-typed load, for the same alignment reason `writeSliceHeaderBytes`
-// gives: `src` is a field's interior view into a block at an arbitrary
-// byte offset, not guaranteed to be `size_t`-aligned.
-//
-// This only copies two fixed-size values out of an already bounds-checked
-// byte range into local storage -- it never dereferences `ptr`, so nothing
-// here can violate memory safety no matter what bit pattern the bytes
-// contain. That is this function's own `@trusted` boundary: reading is
-// always safe; USING the resulting `ptr` to reconstruct a slice
-// (`NativeStruct.sliceField`, via `NativeArray.borrow`) is where the real,
-// unverifiable trust happens, which is why `sliceField` itself -- not this
-// helper -- is `@system`.
-private SliceHeaderBytes readSliceHeaderBytes(in ubyte[] src) @trusted
-in (src.length == size_t.sizeof + (void*).sizeof) {
-    import core.stdc.string: memcpy;
-
-    SliceHeaderBytes header;
-    memcpy(&header.length, src.ptr, size_t.sizeof);
-    memcpy(&header.ptr, src.ptr + size_t.sizeof, (void*).sizeof);
-    return header;
 }

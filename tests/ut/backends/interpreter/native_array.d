@@ -1224,3 +1224,161 @@ unittest {
     auto guest = *cast(Holder*) array.element(1).ptr;
     guest.xs[2].should == 42;
 }
+
+
+// The symmetric gap `structElement`'s own plan note named: an array whose
+// `elementType` is itself a static array (`int[3][4]`) had no element-view
+// accessor, the way `NativeStruct.arrayField` already has for a
+// static-array-typed *field*. `Int3Holder.xs`'s own field type -- `int[3]`,
+// straight from the host compiler via the same `NativeStruct.
+// fieldDeclaration` DMD nodes `NativeStruct.arrayField` reads internally --
+// is this fixture's `elementType` oracle; `Int3x4` pins the whole array's
+// byte length against the host compiler's own `int[3][4].sizeof`.
+struct Int3Holder {
+    int[3] xs;
+}
+
+
+alias Int3x4 = int[3][4];
+
+
+@("NativeArray.arrayElement.lengthAndStrideMatchElementTypeAndByteLengthMatchesHostCompilerInt3x4Sizeof")
+unittest {
+    auto holderType = structTypeOf(q{ struct Int3Holder { int[3] xs; } }, "Int3Holder");
+    auto elementType = NativeStruct.allocate(holderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 4);
+
+    array.arrayElement(1).length.should == 3;
+    array.arrayElement(1).stride.should == int.sizeof;
+    array.block.byteLength.should == Int3x4.sizeof;
+}
+
+
+@("NativeArray.arrayElement.writeThroughElementViewIsVisibleInParentElementBytes")
+unittest {
+    auto holderType = structTypeOf(q{ struct Int3Holder { int[3] xs; } }, "Int3Holder");
+    auto elementType = NativeStruct.allocate(holderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 4);
+
+    array.arrayElement(1).element(2)[] = [0x11, 0x22, 0x33, 0x44];
+
+    array.element(1)[2 * int.sizeof .. 3 * int.sizeof]
+        .should == [0x11, 0x22, 0x33, 0x44];
+}
+
+
+@("NativeArray.arrayElement.writeThroughParentElementBytesIsVisibleThroughElementView")
+unittest {
+    auto holderType = structTypeOf(q{ struct Int3Holder { int[3] xs; } }, "Int3Holder");
+    auto elementType = NativeStruct.allocate(holderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 4);
+
+    array.element(1)[2 * int.sizeof .. 3 * int.sizeof] = [0x11, 0x22, 0x33, 0x44];
+
+    array.arrayElement(1).element(2).should == [0x11, 0x22, 0x33, 0x44];
+}
+
+
+@("NativeArray.arrayElement.elementTypeNotStaticArrayThrows")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.arrayElement(1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "arrayElement: elementType is not a static array",
+    );
+}
+
+
+@("NativeArray.arrayElement.outOfRangeIndexThrows")
+unittest {
+    auto holderType = structTypeOf(q{ struct Int3Holder { int[3] xs; } }, "Int3Holder");
+    auto elementType = NativeStruct.allocate(holderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 4);
+
+    array.arrayElement(4).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "arrayElement: index out of range",
+    );
+}
+
+
+// The other half of the symmetric gap: an array whose `elementType` is a
+// dynamic array (`int[][]`) had no element-view accessor either, the way
+// `NativeStruct.sliceField` already has for a dynamic-array-typed *field*.
+// `SliceHolder.xs`'s own field type -- `int[]` -- is this fixture's
+// `elementType` oracle, exactly mirroring `Int3Holder` above.
+struct SliceHolder {
+    int[] xs;
+}
+
+
+// The centrepiece for read-back: `sliceElement` reconstructs a `NativeArray`
+// from the header `writeSliceHeader` wrote into element 1's bytes, aliasing
+// the SAME element block rather than copying it -- a write through the
+// read-back handle must be visible through the original `elements` handle
+// too, mirroring `NativeStruct.sliceField.
+// roundTripAliasesWriteSliceHeaderSourceArray` exactly.
+@("NativeArray.sliceElement.roundTripAliasesWriteSliceHeaderSourceArray")
+@system
+unittest {
+    auto sliceHolderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    auto elementType = NativeStruct.allocate(sliceHolderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 2);
+    auto elements = NativeArray.allocate(Type.tint32, 3);
+    *cast(int*) elements.element(0).ptr = 1;
+    *cast(int*) elements.element(1).ptr = 2;
+    *cast(int*) elements.element(2).ptr = 3;
+    elements.writeSliceHeader(array.block, 1 * array.stride);
+
+    auto readBack = array.sliceElement(1);
+    readBack.length.should == 3;
+
+    *cast(int*) readBack.element(1).ptr = 99;
+    (*cast(int*) elements.element(1).ptr).should == 99;
+}
+
+
+// An element that was never written keeps the block's zero-initialised
+// `{ length: 0, ptr: null }` bytes -- the same header a default-initialised
+// `int[]` guest variable has -- and must read back as a real, empty array
+// rather than throwing, mirroring `NativeStruct.sliceField.
+// zeroLengthNullHeaderReadsBackAsEmptyBorrowedArray`.
+@("NativeArray.sliceElement.zeroLengthNullHeaderReadsBackAsEmptyBorrowedArray")
+@system
+unittest {
+    auto sliceHolderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    auto elementType = NativeStruct.allocate(sliceHolderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 2);
+
+    auto readBack = array.sliceElement(0);
+
+    readBack.length.should == 0;
+    readBack.ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+@("NativeArray.sliceElement.elementTypeNotDynamicArrayThrows")
+@system
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.sliceElement(1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "sliceElement: elementType is not a dynamic array",
+    );
+}
+
+
+@("NativeArray.sliceElement.outOfRangeIndexThrows")
+@system
+unittest {
+    auto sliceHolderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    auto elementType = NativeStruct.allocate(sliceHolderType).fieldDeclaration(0).type;
+    auto array = NativeArray.allocate(elementType, 2);
+
+    array.sliceElement(2).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "sliceElement: index out of range",
+    );
+}
