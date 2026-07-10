@@ -5092,3 +5092,13 @@ operands through the native argument slot, and takes the frame address of the
 static-array symbol. This does not add struct returns, arbitrary native
 marshalling, or formatter work. Verification: focused red then green and
 `ninja bin/ut` passed; `bin/ut --random` passed (seed `1104894086`).
+
+`struct.templatedConstructorPreservesDynamicArrayField` promoted to
+`Bytecode`, 2026-07-10: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row passed on
+its first candidate run, so no production change was needed. The fixture
+instantiates a templated struct constructor, stores a dynamic-array parameter
+in a field, and reads the field back through the constructed value. This is a
+stale coverage gap after the existing struct constructor, template, dynamic
+array descriptor, and field-read paths. Verification: focused Bytecode row,
+`ninja bin/ut`, and `bin/ut --random` passed (seed `2694263265`).
