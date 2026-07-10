@@ -2448,9 +2448,8 @@ unittest {
 
 // A dependency image retains an interpreted extern(D) delegate beyond the
 // registering FFI call, then invokes it through a later native call (ffi.md
-// §35.4). SystemLinker proves D permits this; until the durable inbound
-// trampoline registry exists, Interpreter must reject the registration with a
-// named diagnostic rather than hand native code a call-scoped trampoline.
+// §35.4). SystemLinker proves D permits this; Interpreter must keep the native
+// entry point and interpreted closure alive across both FFI calls.
 @("dependencyImage.externDDurableDelegateCallback.Interpreter")
 @Tags("Interpreter")
 unittest {
@@ -2518,10 +2517,7 @@ unittest {
         const interpreted = (new Interpreter([imagePath]))
             .runTests(moduleResult.module_);
         interpreted.length.should == 1;
-        interpreted[0].passed.should == false;
-        interpreted[0].message.should ==
-            "`registerCallback` cannot be called natively: durable inbound " ~
-            "trampoline unsupported";
+        interpreted[0].passed.should == true;
     }
 }
 

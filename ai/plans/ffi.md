@@ -3906,3 +3906,21 @@ passed), and `bin/ut --seed 861487285` green.
 `Bytecode`. The row was already green in the current tree, matching
 the prior temporary check above, so no production code changed. Verification:
 `ninja bin/ut`, the focused promoted `realloc` row, and `bin/ut --random`.
+
+**Ledger 2026-07-10 (durable inbound trampoline registry).** Advanced the
+approved `dependencyImage.externDDurableDelegateCallback.Interpreter` fixture
+from the prior fail-closed diagnostic to the terminal `42` result. Its
+SystemLinker oracle remained green; after changing only the expectation, the
+Interpreter was red (`Expected: true`, `Got: false`). `InboundTrampolineRegistry`
+now owns durable libffi closures, CIFs, executable code pointers, and
+GC-visible closure contexts. An interpreted `Walker` owns the paired session
+table of callback ids to rooted `Value` delegates and supplies the registry's
+callback-id invoker. Thus a durable closure re-enters by callback id plus ABI
+buffers, rather than retaining the forward call's `NativeMarshaller` or
+argument index. The existing scoped-delegate route remains call-scoped and
+frees its closure on forward-call exit. The first implementation is
+Interpreter-only: Bytecode supplies its interface stub and still reports its
+existing unsupported native-call shape. It covers top-level `extern(D)`
+delegate parameters only; function pointers and runtime slots remain future
+consumers of the shared registry. Verification: `ninja bin/ut`; durable,
+scoped-void, ordinary, and multi-argument delegate callback fixtures green.

@@ -212,6 +212,40 @@ public interface NativeMarshaller {
         void*[] argumentBuffers,
         ubyte[] resultBuffer,
     );
+
+    // Registers the current delegate argument in the backend session and
+    // returns its opaque callback id. The registry re-enters solely through
+    // that id after the forward native call has returned (ffi.md §35.4).
+    size_t durableInboundCallbackId(in size_t argumentIndex);
+}
+
+// Backend-neutral re-entry route for durable callbacks. The backend owns the
+// callback-id table and roots its callable values; the bridge owns libffi's
+// executable closure/CIF pair for the same session lifetime.
+public alias DurableInboundInvoker = void delegate(
+    in size_t callbackId,
+    imported!"dmd.mtype".Type returnType,
+    imported!"dmd.mtype".Type[] parameterTypes,
+    void*[] argumentBuffers,
+    ubyte[] resultBuffer,
+);
+
+public struct InboundTrampolineRegistry {
+    private DurableInboundInvoker _invoke;
+    private DurableClosureContext*[] _contexts;
+    private void*[] _closures;
+
+    public this(DurableInboundInvoker invoke) {
+        _invoke = invoke;
+    }
+
+    public void setupDelegateArgument(
+        ubyte[] buffer,
+        imported!"dmd.mtype".Type delegateType,
+        in size_t callbackId,
+    ) {
+        setupDurableDelegateArgument(buffer, delegateType, callbackId, &this);
+    }
 }
 
 // `argumentTypes` are the call site's actual argument types (one per argument).
@@ -225,6 +259,7 @@ public bool callNative(
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
+    InboundTrampolineRegistry* durableInboundRegistry = null,
 ) {
     return callNativeImpl(
         function_,
@@ -232,6 +267,7 @@ public bool callNative(
         marshaller,
         argumentTypes,
         addressOfLocalArguments,
+        durableInboundRegistry,
     );
 }
 
@@ -247,6 +283,7 @@ public bool assignNativeRefReturn(
         marshaller,
         argumentTypes,
         addressOfLocalArguments,
+        null,
         RefReturnMode.write,
     );
 }
@@ -296,6 +333,7 @@ public bool callNativeDelegate(
         marshaller,
         argumentTypes,
         addressOfLocalArguments,
+        null,
         RefReturnMode.read,
     );
 }
@@ -382,6 +420,7 @@ private bool callNativeImpl(
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
+    InboundTrampolineRegistry* durableInboundRegistry = null,
     in RefReturnMode refReturnMode = RefReturnMode.read,
 ) {
     import dmd.astenums: LINK, VarArg;
@@ -422,6 +461,7 @@ private bool callNativeImpl(
         marshaller,
         argumentTypes,
         addressOfLocalArguments,
+        durableInboundRegistry,
         refReturnMode,
     );
 }
@@ -518,6 +558,7 @@ private bool callViaLibffi(
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
+    InboundTrampolineRegistry* durableInboundRegistry,
     in RefReturnMode refReturnMode,
 ) {
     import quickbite.ffi.libffi:
@@ -701,17 +742,26 @@ private bool callViaLibffi(
             argumentValues[index] = cast(void*) address;
         } else if (isDelegateParameter(parameterTypes[index])) {
             argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
-            // Build a native trampoline whose calls re-enter the backend to run
-            // the interpreted closure, and write the {context, funcptr} delegate
-            // into the argument buffer.
-            setupDelegateArgument(
-                argumentBuffers[index],
-                parameterTypes[index],
-                index,
-                marshaller,
-                closuresToFree,
-                closureContexts,
-            );
+            if (!isScopedDelegateParameter(type, index)) {
+                if (durableInboundRegistry is null)
+                    return false;
+                durableInboundRegistry.setupDelegateArgument(
+                    argumentBuffers[index],
+                    parameterTypes[index],
+                    marshaller.durableInboundCallbackId(index),
+                );
+            } else {
+                // A scoped parameter cannot escape this native call, so retain
+                // the existing call-scoped closure route (§34.16).
+                setupDelegateArgument(
+                    argumentBuffers[index],
+                    parameterTypes[index],
+                    index,
+                    marshaller,
+                    closuresToFree,
+                    closureContexts,
+                );
+            }
             argumentValues[index] = argumentBuffers[index].ptr;
         } else if (isOutParameter(parameterTypes[index], addressOfLocal)) {
             argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
@@ -945,10 +995,36 @@ private struct ClosureContext {
     imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
 }
 
+// Durable counterpart of ClosureContext. It holds no forward-call marshaller or
+// argument index: all re-entry state is resolved from its session registry and
+// opaque callback id (§35.4).
+private struct DurableClosureContext {
+    InboundTrampolineRegistry* registry;
+    size_t callbackId;
+    imported!"dmd.mtype".Type returnType;
+    imported!"dmd.mtype".Type[] parameterTypes;
+    size_t returnSize;
+    imported!"quickbite.ffi.libffi".ffi_cif* cif;
+    imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
+}
+
 private bool isDelegateParameter(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
     return type.ty == TY.Tdelegate;
+}
+
+private bool isScopedDelegateParameter(
+    imported!"dmd.mtype".TypeFunction functionType,
+    in size_t index,
+) {
+    import dmd.astenums: STC;
+
+    if (functionType.parameterList.parameters is null ||
+        index >= functionType.parameterList.parameters.length)
+        return false;
+    return ((*functionType.parameterList.parameters)[index].storageClass &
+        STC.scope_) != STC.none;
 }
 
 // Prepare a libffi closure for an interpreted delegate argument and write the
@@ -1024,6 +1100,59 @@ private void setupDelegateArgument(
     *cast(void**) (buffer.ptr + (void*).sizeof) = code;
 }
 
+private void setupDurableDelegateArgument(
+    ubyte[] buffer,
+    imported!"dmd.mtype".Type delegateType,
+    in size_t callbackId,
+    InboundTrampolineRegistry* registry,
+) {
+    import quickbite.ffi.libffi:
+        ffi_cif, ffi_type, ffi_type_pointer, ffi_prep_cif, ffi_closure,
+        ffi_closure_alloc, ffi_prep_closure_loc, FFI_DEFAULT_ABI;
+    import dmd.astenums: LINK;
+    import dmd.mtype: Type, TypeFunction;
+
+    auto functionType = cast(TypeFunction) delegateType.nextOf;
+    auto returnType = functionType.next.toBasetype;
+    auto returnFfi = ffiTypeFor(returnType);
+    const np = functionType.parameterList.parameters is null
+        ? 0
+        : functionType.parameterList.parameters.length;
+    auto parameterTypes = new Type[](np);
+    foreach (index; 0 .. np)
+        parameterTypes[index] =
+            (*functionType.parameterList.parameters)[index].type.toBasetype;
+
+    auto argumentFfiTypes = new ffi_type*[](1 + np);
+    argumentFfiTypes[0] = &ffi_type_pointer;
+    foreach (abiIndex; 0 .. np)
+        argumentFfiTypes[1 + abiIndex] =
+            ffiArgumentTypeFor(parameterTypes[abiSourceIndex(LINK.d, np, abiIndex)]);
+
+    auto cif = new ffi_cif;
+    ffi_prep_cif(cif, FFI_DEFAULT_ABI, cast(uint) (1 + np), returnFfi,
+        argumentFfiTypes.ptr);
+
+    auto context = new DurableClosureContext;
+    context.registry = registry;
+    context.callbackId = callbackId;
+    context.returnType = returnType;
+    context.parameterTypes = parameterTypes;
+    context.returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
+    context.cif = cif;
+    context.argumentFfiTypes = argumentFfiTypes;
+    registry._contexts ~= context;
+
+    void* code;
+    auto writable = ffi_closure_alloc(ffi_closure.sizeof, &code);
+    ffi_prep_closure_loc(cast(ffi_closure*) writable, cif,
+        &durableClosureTrampoline, cast(void*) context, code);
+    registry._closures ~= writable;
+
+    *cast(void**) buffer.ptr = cast(void*) context;
+    *cast(void**) (buffer.ptr + (void*).sizeof) = code;
+}
+
 // Invoked by native code through the libffi closure. `args[0]` is the delegate
 // context (ignored — the backend resolves the closure by argument index);
 // `args[1 ..]` are the explicit arguments in ABI (reversed) order, restored to
@@ -1045,6 +1174,28 @@ private extern(C) void closureTrampoline(
 
     context.marshaller.invokeClosure(
         context.argumentIndex,
+        context.returnType,
+        context.parameterTypes,
+        sourceArguments,
+        (cast(ubyte*) ret)[0 .. context.returnSize],
+    );
+}
+
+private extern(C) void durableClosureTrampoline(
+    imported!"quickbite.ffi.libffi".ffi_cif* cif,
+    void* ret,
+    void** args,
+    void* userData,
+) {
+    import dmd.astenums: LINK;
+
+    auto context = cast(DurableClosureContext*) userData;
+    const np = context.parameterTypes.length;
+    auto sourceArguments = new void*[](np);
+    foreach (abiIndex; 0 .. np)
+        sourceArguments[abiSourceIndex(LINK.d, np, abiIndex)] = args[1 + abiIndex];
+    context.registry._invoke(
+        context.callbackId,
         context.returnType,
         context.parameterTypes,
         sourceArguments,

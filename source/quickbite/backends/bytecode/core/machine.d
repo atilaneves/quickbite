@@ -2824,6 +2824,9 @@ private final class BytecodeNativeMarshaller:
         Type[] parameterTypes, void*[] argumentBuffers, ubyte[] resultBuffer)
     { unsupportedNativeCall; }
 
+    public size_t durableInboundCallbackId(in size_t argumentIndex)
+    { unsupportedNativeCall; return 0; }
+
     private void unsupportedNativeCall() {
         throw new Exception("Unsupported bytecode native call shape.");
     }
