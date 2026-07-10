@@ -5130,3 +5130,13 @@ source and copy elements run their destructors at scope exit. This is a stale
 coverage gap after the existing static-array copy, postblit, and destructor
 lowering. Verification: focused Bytecode row, `ninja bin/ut`, and
 `bin/ut --random` passed (seed `3793348702`).
+
+`dynamicArrayTruthinessControlsEnforceFallback` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The focused Bytecode row passed on its first candidate
+run, so no production change was needed. The fixture verifies null and
+zero-length dynamic arrays are false in `if`, `!`, and conditional-expression
+contexts, while a non-empty array is true. This is a stale coverage gap after
+the existing dynamic-array length and truthiness lowering. Verification:
+focused Bytecode row, `ninja bin/ut`, and `bin/ut --random` passed (seed
+`3227994507`).

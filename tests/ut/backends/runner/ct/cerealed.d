@@ -1468,7 +1468,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("dynamicArrayTruthinessControlsEnforceFallback." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
