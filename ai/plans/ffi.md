@@ -3924,3 +3924,14 @@ existing unsupported native-call shape. It covers top-level `extern(D)`
 delegate parameters only; function pointers and runtime slots remain future
 consumers of the shared registry. Verification: `ninja bin/ut`; durable,
 scoped-void, ordinary, and multi-argument delegate callback fixtures green.
+
+**Ledger 2026-07-10 (durable registry teardown).** The durable registry now
+releases each `ffi_closure_alloc` writable allocation exactly once when the
+owning Interpreter `Walker` evaluation session ends, then drops its CIF/context
+and callback-id roots. The executable code pointer is not an allocation token;
+libffi requires `ffi_closure_free` on the paired writable pointer. No new
+language-surface fixture can safely observe this teardown: after the owning
+evaluation ends, calling a dependency image's retained callback is deliberately
+outside that session and would be use-after-free UB; proving free-counts would
+need libffi instrumentation, not the SystemLinker behavior oracle. Existing
+durable and call-scoped callback fixtures remain the behavior verification.

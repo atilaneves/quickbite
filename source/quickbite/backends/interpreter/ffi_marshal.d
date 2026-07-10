@@ -46,6 +46,17 @@ public struct InterpreterInboundTrampolineSession {
         return _callbacks.length - 1;
     }
 
+    // Durable callbacks are valid only while their owning Walker can service
+    // re-entry. Release the executable libffi closures and callback roots as
+    // that session ends (§35.4).
+    public void close() {
+        if (_registry !is null)
+            _registry.close;
+        _registry = null;
+        _callbacks = null;
+        _invokeDelegate = null;
+    }
+
     private void invoke(
         in size_t callbackId,
         imported!"dmd.mtype".Type returnType,

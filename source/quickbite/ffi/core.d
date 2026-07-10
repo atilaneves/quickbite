@@ -246,6 +246,19 @@ public struct InboundTrampolineRegistry {
     ) {
         setupDurableDelegateArgument(buffer, delegateType, callbackId, &this);
     }
+
+    // The owning backend session calls this after native code can no longer
+    // re-enter it. The writable allocation, not the executable code pointer,
+    // is libffi's ownership token.
+    public void close() {
+        import quickbite.ffi.libffi: ffi_closure_free;
+
+        foreach (closure; _closures)
+            ffi_closure_free(closure);
+        _closures = null;
+        _contexts = null;
+        _invoke = null;
+    }
 }
 
 // `argumentTypes` are the call site's actual argument types (one per argument).

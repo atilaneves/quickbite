@@ -29,6 +29,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     public override EvalResult eval(FuncDeclaration function_) {
         try {
             Walker walker;
+            scope(exit) walker.closeDurableInboundSession;
             walker.inUnitTest = function_.isUnitTestDeclaration !is null;
             walker.runStatement(function_.fbody);
             return EvalResult(displayString(walker.result, function_));
@@ -123,6 +124,7 @@ private struct Walker {
     private bool hasThis;
     private Value pendingFinallyBodyException;
     private bool hasPendingFinallyBodyException;
+
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
     private bool addressOfRefReturn;
@@ -132,6 +134,12 @@ private struct Walker {
     private Statement pendingSwitchTarget;
     private LoopControl loopControl;
     private string loopControlLabel;
+
+    private void closeDurableInboundSession() {
+        if (durableInboundSession !is null)
+            durableInboundSession.close;
+        durableInboundSession = null;
+    }
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null)
