@@ -640,7 +640,6 @@ private void marshalArgument(
 ) {
     import dmd.astenums: TY;
     import dmd.mtype: TypeStruct;
-    import dmd.typesem: size;
 
     switch (type.ty) {
         // native_scalar.writeScalar is `layout.d`'s single scalar<->bytes
@@ -704,33 +703,43 @@ private void marshalArgument(
             marshalSliceArgument(buffer, type, value, keepAliveBuffers);
             return;
 
-        case TY.Tstruct:
-            auto sym = (cast(TypeStruct) type).sym;
-            foreach (index; 0 .. sym.fields.length) {
-                auto field = sym.fields[index];
-                auto fieldType = field.type.toBasetype;  // mutable for size()
-                const fieldSize = cast(size_t) size(fieldType);
+        case TY.Tstruct: {
+            // Routed through the item 7 container handle rather than a
+            // hand-rolled `sym.fields[i].offset`/`size(fieldType)` walk
+            // (ai/plans/value.md item 7's guardrail). `field(index)` is a
+            // writable sub-slice of `buffer` (the block borrows the
+            // caller's own mutable buffer), and `fieldDeclaration(index).
+            // type` is the DECLARED field type -- `.toBasetype` below
+            // reproduces the exact same recursive dispatch the old code's
+            // `field.type.toBasetype` performed.
+            import quickbite.backends.interpreter.native_struct: NativeStruct;
+
+            auto ns = NativeStruct.borrow(cast(TypeStruct) type, buffer.ptr);
+            foreach (index; 0 .. ns.fieldCount)
                 marshalArgument(
-                    buffer[field.offset .. field.offset + fieldSize],
-                    fieldType,
+                    ns.field(index),
+                    ns.fieldDeclaration(index).type.toBasetype,
                     value.structFieldAt(index),
                     stableString,
                     keepAlive,
                     keepAliveBuffers,
                 );
-            }
             return;
+        }
 
         case TY.Tsarray: {
+            // Same consolidation as the Tstruct arm above, for a static
+            // array's inline elements.
             import dmd.mtype: TypeSArray;
+            import quickbite.backends.interpreter.native_array: NativeArray;
 
             auto staticArray = cast(TypeSArray) type;
-            auto elementType = staticArray.next.toBasetype;  // mutable for size()
-            const elementSize = cast(size_t) size(elementType);
+            auto elementType = staticArray.next.toBasetype;
             const length = cast(size_t) staticArray.dim.toInteger;
+            auto na = NativeArray.borrow(elementType, buffer.ptr, length);
             foreach (index; 0 .. length)
                 marshalArgument(
-                    buffer[index * elementSize .. (index + 1) * elementSize],
+                    na.element(index),
                     elementType,
                     value[index],
                     stableString,
@@ -1096,19 +1105,21 @@ private imported!"quickbite.lang".Value unmarshalStaticArray(
 ) {
     import quickbite.lang: Value;
     import dmd.mtype: TypeSArray;
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.native_array: NativeArray;
 
+    // Routed through the item 7 container handle rather than a hand-rolled
+    // `index * elementSize` walk (ai/plans/value.md item 7's guardrail).
+    // `elementType` is resolved to its basetype up front, exactly as the
+    // old code did, and reused both to build the handle and to dispatch
+    // the recursive unmarshal.
     auto staticArray = cast(TypeSArray) type;
-    auto elementType = staticArray.next.toBasetype;  // mutable for size()
-    const elementSize = cast(size_t) size(elementType);
+    auto elementType = staticArray.next.toBasetype;
     const length = cast(size_t) staticArray.dim.toInteger;
+    auto na = NativeArray.borrow(elementType, cast(void*) buffer.ptr, length);
 
     Value[] elements;
     foreach (index; 0 .. length)
-        elements ~= unmarshalValue(
-            elementType,
-            buffer[index * elementSize .. (index + 1) * elementSize],
-        );
+        elements ~= unmarshalValue(elementType, na.element(index));
 
     return Value.arrayValue(elements);
 }
@@ -1237,22 +1248,24 @@ private imported!"quickbite.lang".Value unmarshalStruct(
     in ubyte[] buffer,
 ) {
     import quickbite.lang: Value;
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.native_struct: NativeStruct;
     import std.string: fromStringz;
 
-    auto sym = type.sym;
+    // Routed through the item 7 container handle rather than a hand-rolled
+    // `sym.fields[i].offset`/`size(fieldType)` walk (ai/plans/value.md
+    // item 7's "must not grow a second set of D layout rules" guardrail).
+    // `NativeStruct.fieldDeclaration(index).type` is the DECLARED field
+    // type, not the basetype the old code dispatched on -- `.toBasetype`
+    // below reproduces the exact same recursive dispatch.
+    auto ns = NativeStruct.borrow(type, cast(void*) buffer.ptr);
     Value[] fields;
-    foreach (index; 0 .. sym.fields.length) {
-        auto field = sym.fields[index];
-        auto fieldType = field.type.toBasetype;  // mutable for size()
-        const fieldSize = cast(size_t) size(fieldType);
+    foreach (index; 0 .. ns.fieldCount)
         fields ~= unmarshalValue(
-            fieldType,
-            buffer[field.offset .. field.offset + fieldSize],
+            ns.fieldDeclaration(index).type.toBasetype,
+            ns.field(index),
         );
-    }
 
-    return Value.structValue(fromStringz(sym.toChars).idup, fields);
+    return Value.structValue(fromStringz(type.sym.toChars).idup, fields);
 }
 
 // Marshal a backend value into a NUL-terminated C string valid for the

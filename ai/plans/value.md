@@ -1790,6 +1790,104 @@ not a second set of layout *rules* -- it reuses the same `scalarBits`/
 documents as kept in agreement -- it is an ABI-width concern specific to
 libffi's calling convention that a fixed-width leaf codec should not absorb.
 
+Progress 2026-07-10 (aggregate handles get their first production caller):
+this is the milestone item 7's headline names -- `NativeStruct`/`NativeArray`
+had container machinery (allocate/borrow/adopt, field/element views, slice
+headers, growth) but no caller anywhere in the interpreter until now.
+`ffi_marshal.d` was walking DMD struct/array layout by hand a fourth time
+(after `impl.d`'s two retired copies and the FFI marshaller's own scalar
+arms, both closed by the two progress notes above) -- `unmarshalStruct` and
+`marshalArgument`'s `Tstruct` arm read/wrote `sym.fields[i].offset ..
++ size(fieldType)` directly; `unmarshalStaticArray` and `marshalArgument`'s
+`Tsarray` arm did the equivalent `index * elementSize` walk. All four now
+view their buffer as a `NativeStruct`/`NativeArray` and use `field(index)`/
+`element(index)` for the byte sub-slice and `fieldDeclaration(index).type`/
+the array's own `elementType` for the recursive dispatch type -- both the
+read side (`unmarshalStruct`, `unmarshalStaticArray`) and the write side
+(`marshalArgument`'s `Tstruct`/`Tsarray` arms).
+
+Three things were proven, not assumed, before touching a line:
+
+- Basetype dispatch. The old code recursed on `field.type.toBasetype`/
+  `elementType.toBasetype`; `NativeStruct.fieldDeclaration(index).type` and
+  a `NativeArray`'s `elementType` are the DECLARED type. Every new call site
+  calls `.toBasetype` explicitly before recursing (for the array sites, once,
+  since the same resolved `elementType` local is reused both to build the
+  handle and to dispatch), reproducing the exact old dispatch. No enum-typed
+  struct field or array element exists in the `rt/` FFI fixtures to exercise
+  this at runtime (grepped `tests/ut/backends/runner/rt/` for a struct with
+  an `enum`-typed field; none), so this is proven structurally instead: DMD's
+  own `size(Type, Loc)` (`dmd/compiler/src/dmd/typesem.d`) has `case Tenum:
+  return t.isTypeEnum().sym.getMemtype(loc).size(loc);` -- an enum's declared-
+  type size IS its basetype's size, verbatim, so `typeByteSize` cannot
+  diverge between the two for a struct field or array element regardless of
+  whether a fixture exercises it.
+- Offset/size identity is not merely equal, it is IDENTICAL data. `layout.
+  structFields(type)` (`NativeStruct.borrow`'s field list) returns `type.sym.
+  fields[]` verbatim -- the same array, same order, same `VarDeclaration`
+  objects -- so `NativeStruct.fieldDeclaration(index)` for any index is
+  literally the same object the old code read via `sym.fields[index]`, not a
+  separately-derived equal one. `NativeStruct.field(index)`'s offset comes
+  from `layout.fieldByteOffset`, which returns `field.offset` verbatim (the
+  same number the old code read directly), and its size from `layout.
+  typeByteSize(declaration.type)`, which -- per the basetype finding above --
+  equals `size(declaration.type.toBasetype)`, the old code's own number. The
+  byte range `NativeStruct.field`/`NativeArray.element` return is therefore
+  byte-for-byte the same sub-slice the hand-rolled walk produced, for every
+  real type, not just the ones covered by a running fixture.
+- Mutability. `NativeStruct.borrow`/`NativeArray.borrow` wrap the caller's
+  own buffer (`NativeBlock.borrow` stores the raw `ubyte[]` unchanged, still
+  mutable); `field`/`element` are non-`const`, non-`inout`-narrowed accessors
+  that return a writable `ubyte[]` when called on a non-const handle. So the
+  write side (`marshalArgument`'s `Tstruct`/`Tsarray` arms, which write INTO
+  the sub-slice) needed no fallback to the old hand-rolled path -- both read
+  and write sides consolidate cleanly through the same handles.
+
+`@system`: `NativeStruct.borrow`/`NativeArray.borrow` are `@system` (raw
+pointer); the four call sites live in `unmarshalStruct`, `unmarshalStaticArray`,
+and `marshalArgument`, none of which are `@safe`, so no `@trusted` wrapper was
+needed or added. The now-unused `import dmd.typesem: size;` was removed from
+`marshalArgument` and the two `unmarshal*` functions once their last direct
+`size(...)`/`sym.fields[i].offset` call was replaced.
+
+No test was added or modified; the proof is the existing FFI/runtime suites
+staying green end to end, plus the structural identity arguments above (this
+call site's correctness does not rest on fixture coverage the way a value
+computation would -- the handle reads the exact same DMD objects and numbers
+the old code did). Focused runs: `bin/ut -s ut.backends.interpreter` (216
+tests, 0 failed, unchanged), `bin/ut -s ut.backends.interpreter.native_struct
+ut.backends.interpreter.native_array` (148 tests, 0 failed), `bin/ut -s ut.
+backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image` (146
+tests, 0 failed, unchanged), `bin/ut -s ut.backends.runner.rt.concurrency ut.
+backends.runner.rt.file ut.backends.runner.rt.random ut.backends.runner.rt.
+inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.llvm_jit` (16
+tests, 0 failed, unchanged), and `bin/ut -s ut.backends.runner.ct.expressions
+ut.backends.runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
+evaluator.eval` (772 tests, 0 failed, 6 expected `@ShouldFail`, identical to
+the pre-change baseline). The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
+
+To be precise about the milestone: this gives `NativeStruct`/`NativeArray` a
+real production caller for the first time, closing the "somewhere to be
+used" gap the item's headline names -- but it is the FFI seam, not the
+interpreter's core value representation. The tree-walking Walker's locals
+(`locals[VarDeclaration]`) are still `Value[VarDeclaration]`; every guest
+expression that reads or writes a struct/array local still boxes. No
+`interpreter.md` §9.10 shim is retired by this commit (the shims this item's
+success criteria name -- `gc_*` capacity hooks, `runEmplaceRefCall`/
+`isEmplaceRef`, `writeBackByValueClassArguments` -- are FFI-independent; this
+caller is downstream of DMD's own libffi ABI seam, not the interpreter's own
+local storage). `unmarshalSlice`'s header parsing/char fast-paths,
+`marshalSliceArgument`, the scalar/pointer/class/delegate/float80 arms, the
+writeback machinery, and the union paths (`isOpaqueUnionOutCell` and its
+callers) were left untouched, exactly per this task's scope -- none of them
+walk struct/array layout by hand the way the four consolidated sites did.
+What remains, unchanged from the prior note: a guest-level `&local`/array/
+struct call site for the container types themselves (not just this FFI-seam
+caller) -- no guest expression yet reaches `arrayElement`/`sliceElement`/
+`structElement`/`arrayField`/`sliceField`, and locals still are not stored in
+native layout at all.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -2291,6 +2389,21 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    crossed the old marshaller seam. Until then, native layout is justified by
    the correctness ceiling (`&local`, unions, reinterpret casts, slices into
    locals), not by a benchmark.
+
+   Progress 2026-07-10 (aggregate handles get their first production
+   caller): `NativeStruct`/`NativeArray` themselves -- not just the scalar
+   codec -- now have a real caller: `ffi_marshal.d`'s `unmarshalStruct`/
+   `unmarshalStaticArray` (read side) and `marshalArgument`'s `Tstruct`/
+   `Tsarray` arms (write side) route through `field(index)`/`element(index)`
+   instead of a hand-rolled `sym.fields[i].offset`/`index * elementSize`
+   walk -- see the Status "aggregate handles get their first production
+   caller" progress note above for the full account, including the
+   basetype-dispatch and offset/size-identity proofs. This is still the FFI
+   seam, not the tree-walker's core representation: locals stay boxed, and
+   no guest expression yet reaches `arrayElement`/`sliceElement`/
+   `structElement`/`arrayField`/`sliceField` (the composition accessors this
+   note left untouched) or `&local`/array/struct at all -- that remains the
+   next step described just above.
 
 ## Out of scope
 
