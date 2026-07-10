@@ -2188,6 +2188,19 @@ unrelated `SystemLinker` struct test,
 `ut.backends.runner.ct.structs.struct.scalarFieldReadWrite.SystemLinker`,
 because `mold` could not open a temporary object file under `/tmp`.
 
+**Landed (2026-07-10, signed-byte array reinterpretation frontier).** The
+approved standalone `dynamicArray.castSignedBytesToUbytesPreservesRawBits`
+fixture in `ct/arrays.d` pins compiled D's raw-bit view of a `byte[]` cast to
+`ubyte[]`: the stored `byte` values `-2` and `-4` read back as `254` and
+`252`. `SystemLinker` is green and remains the oracle. `Interpreter` is
+deliberately omitted under §8's representation-ceiling rule: its recursive
+aggregate boxing cannot preserve cast-aliasing/layout reinterpretation, so the
+root belongs to `value.md`'s native-layout track rather than an interpreter
+shim. Ctfe, Bytecode, and LLVMJit are included as the widest currently-green
+matrix. Verification: `ninja bin/ut` built cleanly; the four focused backend
+instances passed (0 failed); and `bin/ut --random` passed with seed
+`919839423`.
+
 ## 10. Done
 
 ```text
