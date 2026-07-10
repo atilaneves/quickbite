@@ -2230,6 +2230,8 @@ private struct Walker {
                 import quickbite.frontend.dmd.types: isCharacterArrayType;
 
                 enforceInterceptionPolicy(call.f, "isStdConvText");
+                // Value no longer preserves the source expression type, but
+                // std.conv.text renders char[] arguments as raw string text.
                 bool[] rawStringArguments;
                 foreach (argumentExpression; argumentExpressions)
                     rawStringArguments ~= isCharacterArrayType(
