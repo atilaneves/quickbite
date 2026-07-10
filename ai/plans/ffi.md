@@ -3451,6 +3451,15 @@ point can outlive one native call.
   §34.16's non-escaping delegate case. Consumers may pass the native pointer
   to dependency code or write it into synthesized native-layout runtime slots,
   but must not own the closure memory.
+- **Allocation-time re-entry binding.** `target` must include a
+  session-owned, callback-id-based invoker that is valid independently of any
+  forward native call. It must not be the current `NativeMarshaller` or an
+  argument index: §34.16's `ClosureContext` holds both, and the Interpreter
+  resolves the target as `_arguments[argumentIndex]`; both cease to name a
+  callback when that forward call returns. The registry roots this invoker and
+  target together with the entry. A durable trampoline therefore re-enters by
+  `(callbackId, native argument buffers, native return buffer)`, while the
+  call-scoped helper may retain the existing marshaller/argument-index route.
 - **Re-entry behavior.** The common trampoline decodes native arguments using
   the registered source signature, restores D source argument order where
   required, invokes the backend handle, writes the native return buffer, and
@@ -3475,6 +3484,12 @@ a runtime slot and invoking it from native code.
 **Ledger 2026-07-09.** Turned §35.4 from an ownership observation into a
 bridge-core work order: one durable registry, session lifetime, opaque ids,
 shared API, fail-closed diagnostics, and the first future oracle fixture shape.
+
+**Ledger 2026-07-10.** The current `ClosureContext` is tied to one forward
+`NativeMarshaller` and its delegate-argument index, and Bytecode's
+`invokeClosure` is explicitly unsupported. Clarified that durable allocation
+binds a rooted session invoker by callback id, so a future fixture cannot
+accidentally retain call-scoped state after the registering call returns.
 
 ### 35.5 The escape contracts are unenforceable — the boundary is fail-open
 
