@@ -883,15 +883,19 @@ private ubyte[] marshalSliceArgument(
     in imported!"quickbite.lang".Value value,
     ref ubyte[][] keepAliveBuffers,
 ) {
-    import dmd.typesem: size;
+    // Routed through the item 7 container handle rather than a hand-rolled
+    // `new ubyte[](length * elementSize)` + `index * elementSize` walk
+    // (ai/plans/value.md item 7's guardrail). `elementType` is resolved to
+    // its basetype up front, exactly as the old code did, and reused both
+    // to build the handle and to dispatch the recursive marshal.
+    import quickbite.backends.interpreter.native_array: NativeArray;
 
-    auto elementType = type.nextOf.toBasetype;  // mutable for size()
-    const elementSize = cast(size_t) size(elementType);
-    auto bytes = new ubyte[](value.length * elementSize);
+    auto elementType = type.nextOf.toBasetype;
+    auto na = NativeArray.allocate(elementType, value.length);
     const(char)*[] keepAlive;
     foreach (index; 0 .. value.length) {
         marshalArgument(
-            bytes[index * elementSize .. (index + 1) * elementSize],
+            na.element(index),
             elementType,
             value[index],
             false,
@@ -900,6 +904,13 @@ private ubyte[] marshalSliceArgument(
         );
     }
 
+    // `na.block.bytes` is the same kind of GC-owned, zeroed byte range the
+    // old `new ubyte[](...)` was (`NativeBlock.allocate` routes through
+    // `GC.calloc`, which zeroes exactly as `new ubyte[]` did): kept alive by
+    // being appended to `keepAliveBuffers` below and by `_sliceWritebacks`
+    // (this module's `fillArgument`), and stable because `NativeBlock`'s GC
+    // allocation never moves.
+    auto bytes = na.block.bytes;
     keepAliveBuffers ~= bytes;
     *cast(size_t*) buffer.ptr = value.length;
     *cast(void**) (buffer.ptr + size_t.sizeof) = bytes.ptr;
@@ -1131,7 +1142,6 @@ private imported!"quickbite.lang".Value unmarshalSlice(
     import quickbite.ffi: isSupportedFfiSlice;
     import quickbite.lang: Value;
     import dmd.astenums: TY;
-    import dmd.typesem: size;
 
     assert(isSupportedFfiSlice(type));
 
@@ -1142,9 +1152,7 @@ private imported!"quickbite.lang".Value unmarshalSlice(
     if (data is null)
         throw new Exception("Native slice return has null data.");
 
-    auto elementType = type.nextOf.toBasetype;  // mutable for size()
-    const elementSize = cast(size_t) size(elementType);
-    const bytes = (cast(const(ubyte)*) data)[0 .. length * elementSize];
+    auto elementType = type.nextOf.toBasetype;
     switch (elementType.ty) with (TY) {
         case Tchar:
             const chars = cast(const(char)*) data;
@@ -1159,13 +1167,18 @@ private imported!"quickbite.lang".Value unmarshalSlice(
             return Value.stringValue(chars[0 .. length].dup);
 
         default:
+            // Routed through the item 7 container handle rather than a
+            // hand-rolled `index * elementSize` walk (ai/plans/value.md
+            // item 7's guardrail). `data` is native memory this function
+            // did not allocate -- exactly `NativeArray.borrow`'s own
+            // documented precondition, vouched for here by the native call
+            // that filled this return buffer.
+            import quickbite.backends.interpreter.native_array: NativeArray;
+
+            auto na = NativeArray.borrow(elementType, cast(void*) data, length);
             Value[] elements;
-            foreach (index; 0 .. length) {
-                elements ~= unmarshalValue(
-                    elementType,
-                    bytes[index * elementSize .. (index + 1) * elementSize],
-                );
-            }
+            foreach (index; 0 .. length)
+                elements ~= unmarshalValue(elementType, na.element(index));
             return Value.arrayValue(elements);
     }
 }

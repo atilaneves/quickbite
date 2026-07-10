@@ -1888,6 +1888,94 @@ caller) -- no guest expression yet reaches `arrayElement`/`sliceElement`/
 `structElement`/`arrayField`/`sliceField`, and locals still are not stored in
 native layout at all.
 
+Progress 2026-07-10 (slice element layout joins the aggregate authority): the
+previous note consolidated `unmarshalStruct`/`unmarshalStaticArray`/
+`marshalArgument`'s `Tstruct`/`Tsarray` arms through `NativeStruct`/
+`NativeArray`, but left two more hand-rolled element walks in
+`ffi_marshal.d` untouched: `marshalSliceArgument` (write side, a dynamic
+`T[]` argument) allocated its own `new ubyte[](value.length * elementSize)`
+and sub-sliced it by hand; `unmarshalSlice`'s `default:` arm (read side, a
+returned/callback `T[]` whose element type is not `char`/`wchar`/`dchar`)
+did the matching `bytes[index * elementSize .. (index + 1) * elementSize]`
+walk over the returned `{length, ptr}` header's pointee. Both now go through
+`NativeArray`: `marshalSliceArgument` calls `NativeArray.allocate(
+elementType, value.length)` and writes each element into `na.element(
+index)`; `unmarshalSlice`'s `default:` arm calls `NativeArray.borrow(
+elementType, cast(void*) data, length)` and reads each element from `na.
+element(index)`. The header parse (`length`, `data`) and the `Tchar`/
+`Twchar`/`Tdchar` fast-paths in `unmarshalSlice` are untouched, exactly per
+this task's scope -- neither walks element layout by hand. This closes the
+last two hand-rolled per-element layout walks in the FFI marshaller; every
+site that sub-slices a struct/array/slice buffer by index now goes through
+`NativeStruct`/`NativeArray`.
+
+Two things were confirmed, not assumed, before touching a line:
+
+- Basetype dispatch and stride/offset identity, same argument as the prior
+  note applied to a slice's element rather than a struct's field or a static
+  array's element. Both call sites resolve `elementType = type.nextOf.
+  toBasetype` once and reuse it both to build the `NativeArray` handle and
+  to dispatch the recursive `marshalArgument`/`unmarshalValue` call, exactly
+  reproducing the old code's `elementType.toBasetype`-then-`size(
+  elementType)` sequence. `NativeArray`'s `stride` is `layout.
+  typeByteSize(elementType)` (`native_array.d`'s `allocate`/`borrow`, both
+  called here); `layout.typeByteSize` reads `type.size` (`layout.d`'s
+  `typeByteSizeImpl`), which is `dmd.mtype.Type.size`'s own property --
+  DMD's `dmd.typesem.size(Type, Loc)` under the hood, the exact function the
+  old code called directly as `size(elementType)`. Same DMD number, not
+  merely an equal one, so `element(index)`'s `index * stride .. (index + 1)
+  * stride` is byte-for-byte the same sub-slice the hand-rolled
+  `index * elementSize .. (index + 1) * elementSize` produced.
+- Lifetime, for the write side specifically (the read side borrows caller-
+  owned native memory it never allocates, so there is no lifetime question
+  on that side beyond what `unmarshalStaticArray`'s prior note already
+  covered). The old `bytes = new ubyte[](value.length * elementSize)` was a
+  GC-allocated, zero-initialised `ubyte[]` kept alive by two things: being
+  appended to `keepAliveBuffers` (this call's own borrowed-argument
+  lifetime) and being stored in `_sliceWritebacks` (`fillArgument`'s own
+  field, alive for the marshaller's whole session, used to reify the
+  callee's writes back into a `Value` after the call). `NativeArray.
+  allocate`'s block is also GC memory (`NativeBlock.allocate` routes through
+  `GC.calloc`), also zero-initialised (`GC.calloc` zeroes; verified in
+  `native_block.d`'s own `allocateBytes` comment) and also a non-moving GC
+  allocation, so `na.block.bytes` -- the `ubyte[]` this commit now returns
+  and stores in the same two places (`keepAliveBuffers`, `_sliceWritebacks`)
+  -- is kept alive and stable by the identical mechanism the old `bytes`
+  local was. `NativeBlock.allocate`'s zeroing and `new ubyte[]`'s zeroing
+  agree exactly (both zero every byte); there is no behavioural difference
+  to note there. One incidental improvement, not requested but worth
+  recording: `NativeArray.allocate` picks its block's GC scan policy from
+  `typeHasPointers(elementType)` (`native_array.d`'s own doc comment), so a
+  slice whose element type carries pointers now gets a conservatively
+  scanned block, where the old `new ubyte[]` -- typed as `ubyte[]`, which
+  itself carries no pointers -- would always have been allocated `NO_SCAN`
+  regardless of what the bytes inside it actually held. No `rt/` fixture
+  exercises a pointer-carrying slice element type today, so this is not
+  proven by a passing test, only by reading `NativeArray.allocate`'s own
+  scan-policy logic against the old `new ubyte[]`'s inferred one.
+
+As with the prior note, this is still the FFI seam, not the tree-walker's
+core value representation: locals stay boxed, and no `interpreter.md` §9.10
+shim is retired by this commit -- this consolidation closes the marshaller's
+own remaining hand-rolled layout walks, it does not change where a guest
+local's storage lives or add a new guest-reachable call site for
+`arrayElement`/`sliceElement`/`structElement`/`arrayField`/`sliceField`.
+
+No test was added or modified; the proof is the existing FFI/runtime suites
+staying green, plus the structural stride/offset-identity argument above.
+Focused runs: `bin/ut -s ut.backends.interpreter` (216 tests, 0 failed,
+unchanged), `bin/ut -s ut.backends.interpreter.native_array ut.backends.
+interpreter.native_struct` (148 tests, 0 failed, unchanged), `bin/ut -s ut.
+backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image ut.
+backends.runner.rt.concurrency ut.backends.runner.rt.file ut.backends.
+runner.rt.random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf
+ut.backends.runner.rt.llvm_jit` (162 tests, 0 failed, unchanged), and
+`bin/ut -s ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
+ut.backends.runner.ct.structs ut.backends.evaluator.eval` (772 tests, 0
+failed, 6 expected `@ShouldFail`, identical to the pre-change baseline). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -2404,6 +2492,19 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    `structElement`/`arrayField`/`sliceField` (the composition accessors this
    note left untouched) or `&local`/array/struct at all -- that remains the
    next step described just above.
+
+   Progress 2026-07-10 (slice element layout joins the aggregate authority):
+   the FFI marshaller's last two hand-rolled per-element layout walks --
+   `marshalSliceArgument` (write side) and `unmarshalSlice`'s `default:` arm
+   (read side) -- now route through `NativeArray.allocate`/`NativeArray.
+   borrow` and `element(index)` too, closing the "must not grow a second set
+   of D layout rules" guardrail for every struct/array/slice sub-slice site
+   in `ffi_marshal.d`. See the Status "slice element layout joins the
+   aggregate authority" progress note above for the full account, including
+   the stride/offset-identity and lifetime proofs. Still the FFI seam, not
+   the tree-walker's core representation, and still no new guest-reachable
+   call site for the composition accessors -- that remains the next step
+   described just above.
 
 ## Out of scope
 
