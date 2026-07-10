@@ -5049,3 +5049,14 @@ production changes. The fixture appends a dynamic `ubyte[]` to a struct field,
 confirming the existing `CatAssignExp` descriptor write-back through a field.
 Verification: focused Bytecode row, `ninja bin/ut`, and `bin/ut --random`
 passed (seed `4115980552`).
+
+`struct.staticCharArrayFieldDefaultInit` promoted to `Bytecode`, 2026-07-10:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The focused Bytecode row was red with `Unsupported struct initializer
+in bytecode core: b`. DMD lowers this default struct initializer through an
+init-symbol `VarExp`; the `char[16]` field's logical initializer is a sparse
+`ArrayLiteralExp` with `char.init` as its basis. The narrowly scoped fallback
+uses DMD's field offset and static-array size to write that basis into inline
+`char` fields. It does not add pointer, general-array, FFI, formatter, or
+reification support. Verification: focused red then green; `ninja bin/ut` and
+`bin/ut --random` passed (seed `2579798018`).

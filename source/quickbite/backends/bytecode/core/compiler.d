@@ -3200,10 +3200,46 @@ private struct Compiler {
             return;
         }
 
+        if (source.isVarExp !is null &&
+            compileDefaultStaticCharArrayFields(offset, declaration))
+            return;
+
         throw new Exception(text(
             "Unsupported struct initializer in bytecode core: ",
             declarationChars(variable),
         ));
+    }
+
+    // DMD lowers `S value;` through an init-symbol VarExp. For a `char[N]`
+    // field, that symbol holds a sparse ArrayLiteralExp whose null elements
+    // mean `basis`; use the field offsets DMD computed for the struct.
+    private bool compileDefaultStaticCharArrayFields(
+        in ushort base,
+        imported!"dmd.dstruct".StructDeclaration declaration,
+    ) {
+        import dmd.astenums: TY;
+
+        bool materialised;
+        foreach (field; declaration.fields) {
+            auto fieldType = field.type;
+            if (fieldType.toBasetype.ty != TY.Tsarray ||
+                fieldType.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
+                continue;
+
+            const elementSize = size(ScalarType.char_);
+            const elementCount =
+                cast(uint) staticArraySize(fieldType) / elementSize;
+            const basis = compileSizeConstant(char.init);
+            foreach (index; 0 .. elementCount)
+                _code ~= Instruction(
+                    Op.copy,
+                    cast(ushort) (base + field.offset + index * elementSize),
+                    basis,
+                    cast(ushort) elementSize,
+                );
+            materialised = true;
+        }
+        return materialised;
     }
 
     private ushort allocateStructBlock(Type type) {

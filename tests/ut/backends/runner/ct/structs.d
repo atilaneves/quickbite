@@ -1315,7 +1315,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // element null, the char.init value carried in `basis`.
 // Bytecode ("Unsupported struct initializer in bytecode core: b")
 // cannot run struct default initializers yet.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.staticCharArrayFieldDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
