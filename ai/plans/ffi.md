@@ -2965,10 +2965,8 @@ would have to unwind through the `extern(C)` libffi closure and native frames,
 which is fragile EH territory, not a marshalling rung; **class-method** and
 `extern(C)` **function-pointer** callbacks (the latter has no `{context,
 funcptr}` pair, so the trampoline's `args[0]`-is-context assumption needs a
-separate no-context path); and durable (**escaping**) callbacks that outlive
-the call — these need the GC-visible closure registry of §14, and detecting
-escape would require analysis the Interpreter cannot do over opaque native
-code, so the call-scoped closure here stays the boundary.
+separate no-context path). Durable `extern(D)` delegate callbacks are covered
+by the session-owned registry described in §35.4.
 
 **Contract.** The §14 reverse bridge: pass an interpreted closure to a native
 dependency API that calls it back (`sort!`, `setTimer`, etc.). This is the
@@ -2981,20 +2979,21 @@ that invokes the delegate; source under test passes an interpreted lambda
 capturing a local and asserts the result.
 
 **In scope.** A backend closure invoked through a generated native trampoline,
-delegate context lifetime bounded by the call, closure state kept GC-visible
-(§14). **Out of scope.** Callbacks that outlive the call/test without a durable
-owner; template-heavy APIs where the callback is part of instantiated
+with call-scoped or session-owned lifetime and GC-visible closure state (§14).
+**Out of scope.** `extern(C)` function-pointer callbacks, class-method
+callbacks, and template-heavy APIs where the callback is part of instantiated
 dependency code (those are interpreted, per §21/§23).
 
 **Implementation.** Use libffi closures: bind `ffi_closure_alloc` /
 `ffi_prep_closure_loc` in `libffi.d`, register interpreted closures in a
 GC-visible table keyed by callback id, and generate a trampoline whose user
 data is that id; the trampoline re-enters `Walker` to run the closure and
-marshals across as the forward path does in reverse. Define and enforce the
-delegate-context lifetime: reject a callback that can escape the call boundary.
+marshals across as the forward path does in reverse. Use the call-scoped helper
+for `scope` delegates and the session-owned registry for durable delegates.
 
-**Done.** Callback fixture green on both backends; no forward-path fixture
-regresses; escaping callbacks are rejected with a clear diagnostic.
+**Done.** Callback fixtures green on both backends; no forward-path fixture
+regresses; durable top-level `extern(D)` delegate callbacks are supported by
+the session-owned registry.
 
 ### 34.17 Increment 23 — extern(C++) ABI
 
@@ -3465,25 +3464,24 @@ point can outlive one native call.
   required, invokes the backend handle, writes the native return buffer, and
   reports unsupported argument or return shapes through the existing native
   call diagnostic path.
-- **Rejection behavior.** Until the durable registry exists, any API that
-  needs an escaping callback, durable function pointer, TypeInfo/vtable slot,
-  GC finalizer, or AA key-method entry must fail closed with a named
-  "durable inbound trampoline unsupported" diagnostic. The existing
-  call-scoped §34.16 delegate helper remains valid only for callbacks whose
-  lifetime is bounded by the native call.
+- **Current support boundary.** The Interpreter registers top-level
+  `extern(D)` delegate parameters in this registry, so native code may retain
+  and invoke them for the owning `Walker` session. The existing call-scoped
+  §34.16 helper remains the route for explicitly `scope` delegate parameters.
+  `extern(C)` function pointers, TypeInfo/vtable slots, GC finalizers, and AA
+  key-method entries remain future registry consumers.
 
 **First future oracle fixture sketch.** Add a dependency-image fixture only
 after test approval: native code stores an `extern(D)` delegate callback in a
 module-global slot, returns to interpreted code, and a second native function
 invokes the stored callback. `SystemLinker` is the oracle; the Interpreter
-should initially fail closed with the named durable-trampoline diagnostic, then
-pass once the registry is implemented. A bytecode-native-runtime fixture can
+passes through the durable registry. A bytecode-native-runtime fixture can
 later consume the same registry by installing a synthesized method pointer into
 a runtime slot and invoking it from native code.
 
 **Ledger 2026-07-09.** Turned §35.4 from an ownership observation into a
 bridge-core work order: one durable registry, session lifetime, opaque ids,
-shared API, fail-closed diagnostics, and the first future oracle fixture shape.
+shared API, and the first future oracle fixture shape.
 
 **Ledger 2026-07-10.** The current `ClosureContext` is tied to one forward
 `NativeMarshaller` and its delegate-argument index, and Bytecode's
@@ -3491,34 +3489,17 @@ shared API, fail-closed diagnostics, and the first future oracle fixture shape.
 binds a rooted session invoker by callback id, so a future fixture cannot
 accidentally retain call-scoped state after the registering call returns.
 
-**Ledger 2026-07-10 (durable callback fail-closed).** Added
-`dependencyImage.externDDurableDelegateCallback.Interpreter`: a compiled
-dependency image stores an `extern(D)` `int delegate(int)` in a module global;
-the interpreted test captures `base = 40`, registers the callback, and a later
-native call invokes it with `2`. `SystemLinker` passes with `42`. Before the
-guard, Interpreter also happened to pass: the scope-exit-freed libffi closure
-remained executable, demonstrating fail-open use-after-free rather than a
-reliable failure. Until the registry exists, the Interpreter now rejects a
-void native call with a top-level delegate parameter before libffi allocation.
-The check is mechanically derived from the DMD signature, not the symbol name:
-a void result provides no proof that native code consumed the call-scoped
-callback during that call. It reports `` `registerCallback` cannot be called
-natively: durable inbound trampoline unsupported ``. Value-returning callback
-calls remain on the existing §34.16 call-scoped path. This deliberately does
-not allocate, retain, or free any durable closure; the registry contract above
-is still the next implementation step. Focused fixture: green after the guard.
-
-**Ledger 2026-07-10 (scoped callback contract).** Added
-`dependencyImage.externDScopedVoidDelegateCallback.Interpreter`: a compiled
-dependency image declares and defines `void dependencyVisit(int, scope void
-delegate(int))`, invokes the callback synchronously, and the interpreted
-closure records `42`. `SystemLinker` is green. The fixture was red on
-Interpreter under the conservative void/delegate guard, then green after the
-guard consulted DMD's `Parameter.storageClass & STC.scope_`: explicitly scoped
-delegates retain §34.16's call-scoped trampoline path, while the unscoped
-durable-storage fixture retains its named fail-closed diagnostic. This is an
-ABI-independent parameter contract, not a function-name exception; it does
-not provide the durable registry deferred by §35.4.
+**Ledger 2026-07-10 (callback support boundary).** The durable fixture
+`dependencyImage.externDDurableDelegateCallback.Interpreter` is terminally
+green with its `SystemLinker` oracle: a compiled dependency image stores an
+`extern(D)` `int delegate(int)` and later invokes the interpreted closure with
+`2`, producing `42`. The scoped fixture
+`dependencyImage.externDScopedVoidDelegateCallback.Interpreter` remains on the
+call-scoped route and is also green. The durable registry supersedes the
+temporary signature-based rejection, which has been removed: unscoped
+top-level `extern(D)` delegates use the registry; explicitly `scope` delegates
+use the call-scoped helper. Function pointers and runtime slots remain outside
+this implemented boundary.
 
 ### 35.5 The escape contracts are unenforceable — the boundary is fail-open
 
@@ -3526,12 +3507,12 @@ not provide the durable registry deferred by §35.4.
 §34.16: "reject a callback that can escape the call boundary".
 
 **Reality.** There is no escape analysis over opaque native code and there
-cannot be; there is no general rejection. §35.4 now conservatively rejects a
-void native call with a top-level delegate parameter, but other escaping
+cannot be; there is no general rejection. §35.4 gives top-level `extern(D)`
+delegate parameters a session-owned durable trampoline, but other escaping
 shapes remain fail-open. Pins (`GC.addRoot`, keep-alive buffers, closure
 contexts) last exactly for the call. A dependency that retains a passed
-pointer, slice, or delegate past the call dangles with no diagnostic — the
-failure is a later crash or silent corruption, not a named error.
+pointer or slice past the call dangles with no diagnostic — the failure is a
+later crash or silent corruption, not a named error.
 
 **Honest statement, recorded as documentation not as a rung:** the boundary
 is fail-open on escape. No fixture can pin this deterministically (it is
@@ -3935,3 +3916,10 @@ evaluation ends, calling a dependency image's retained callback is deliberately
 outside that session and would be use-after-free UB; proving free-counts would
 need libffi instrumentation, not the SystemLinker behavior oracle. Existing
 durable and call-scoped callback fixtures remain the behavior verification.
+
+**Ledger 2026-07-10 (remove obsolete callback guard).** Removed the unused
+`durableInboundTrampolineUnsupportedMessage` helper after the durable registry
+landed. It described a pre-registry rejection policy and had no remaining call
+site. The support boundary is now explicit: the Interpreter supports durable
+top-level `extern(D)` delegates for a `Walker` session and call-scoped `scope`
+delegates; function pointers and runtime slots remain future consumers.
