@@ -1331,8 +1331,7 @@ covers arity-N arguments, out-parameter write-back, void returns, pointer
 returns, and these native-memory value rows. Still deferred on `Bytecode`:
 `div.structReturn` and `ldiv.structReturn.longArgs` keep their own pinned
 no-source-diagnostic refusal row (struct returns stay excluded from the
-return-type gate), and `malloc.pointerReturn.nativeMemory` still has no
-`Bytecode` row because this incremental PR did not promote it.
+return-type gate).
 
 The next concrete module candidate per
 `ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
@@ -5006,3 +5005,78 @@ rows were collapsed onto the compiled-oracle `Bytecode` expectation. Focused
 stale-name scans found no `BytecodeNewCore` references in `source/` or
 `tests/`, no duplicate generated test names remained, and
 `bin/ut --random` passed.
+
+`malloc.pointerReturn.nativeMemory` promoted to `SystemLinker` and
+`Bytecode`, 2026-07-10: pre-approved promotion of the existing positive
+runtime matrix fixture. The exact fixture had only an `Interpreter` row, so
+`SystemLinker` was added and run first to establish the direct compiled-D
+oracle; it passed unchanged. Adding `Bytecode` then passed on its first red
+candidate run, with no production changes. The fixture exercises a
+`malloc(8)` return cast to `ubyte*`, scoped `free`, non-null check, and
+indexed native-memory writes and reads. The separate IR-only no-source block
+above it is intentionally unchanged. Verification: `ninja bin/ut` passed and
+`bin/ut --random` passed with seed `2640497437`.
+
+`realloc.sliceAssignWritesNativeMemory` promoted to `Bytecode`, 2026-07-10:
+pre-approved promotion of the existing direct-SystemLinker-backed runtime
+fixture. The first Bytecode run was red: the raw-pointer destination slice
+wrote `8` where the fixture expected `'a'`. The minimal lowering change lets
+the existing dynamic-slice assignment path accept a raw-pointer base, obtain
+its element type from the result slice, and reuse the existing pointer-slice
+descriptor plus `sliceCopy` write-through instructions. No fixture body or
+other behaviour changed. Also removed the immediately stale Post-Flip Backlog
+claim that `malloc.pointerReturn.nativeMemory` lacked a `Bytecode` row;
+`cee09a4f` had already promoted it. Verification: focused red then green for
+this Bytecode row; `ninja bin/ut` and `bin/ut --random` passed with seed
+`543446273`.
+
+`dynamicArray.localConcatenationAssignment` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time matrix fixture. The focused Bytecode run was red with
+`Unsupported expression in bytecode core: values ~= chunk`. The minimal
+lowering recognizes DMD's distinct `CatAssignExp` node for whole-array
+`arr ~= other`, reuses the existing descriptor materialization and
+`concatArrays` opcode, writes the fresh descriptor back to the local, and
+yields that descriptor as the expression result. Element append and all other
+concatenation forms are unchanged. Verification: focused red then green for
+this Bytecode row; `ninja bin/ut` passed. The orchestrator owns the required
+full randomized verification.
+
+`dynamicArray.fieldConcatenationAssignment` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time matrix fixture. The first Bytecode candidate run passed without
+production changes. The fixture appends a dynamic `ubyte[]` to a struct field,
+confirming the existing `CatAssignExp` descriptor write-back through a field.
+Verification: focused Bytecode row, `ninja bin/ut`, and `bin/ut --random`
+passed (seed `4115980552`).
+
+`struct.staticCharArrayFieldDefaultInit` promoted to `Bytecode`, 2026-07-10:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The focused Bytecode row was red with `Unsupported struct initializer
+in bytecode core: b`. DMD lowers this default struct initializer through an
+init-symbol `VarExp`; the `char[16]` field's logical initializer is a sparse
+`ArrayLiteralExp` with `char.init` as its basis. The narrowly scoped fallback
+uses DMD's field offset and static-array size to write that basis into inline
+`char` fields. It does not add pointer, general-array, FFI, formatter, or
+reification support. Verification: focused red then green; `ninja bin/ut` and
+`bin/ut --random` passed (seed `2579798018`).
+
+`struct.defaultInitPreservesExplicitFieldInitializers` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The focused Bytecode row passed on its first candidate
+run, so no production fallback was needed. The fixture verifies that
+`Header.init` retains explicit `ubyte` and `int` field initializers at DMD's
+field offsets. Verification: `ninja bin/ut` and focused Bytecode row passed;
+`bin/ut --random` passed (seed `1914209150`).
+
+Reviewer fix, 2026-07-10:
+`struct.defaultInitPreservesStaticCharArrayAndScalarFieldDefaults` adds the
+missing direct SystemLinker-backed check for `Header header;` when `Header` has
+both `char[2] label = "OK"` and `int revision = 42`. Its Bytecode row was red
+(`'\xff' != 'O'`). The init-symbol fallback now materialises each field's own
+explicit initializer at its DMD field offset, retains the prior implicit
+`char.init` handling, and leaves implicit zero-valued scalar fields in the
+zeroed frame. This is limited to this struct-default-init path; it does not add
+general struct initialization, pointer, FFI, or display work. Verification:
+focused red then green; `ninja bin/ut` and `bin/ut --random` passed (seed
+`1598476746`).

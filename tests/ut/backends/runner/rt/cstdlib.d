@@ -237,7 +237,7 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, Bytecode)) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -402,7 +402,9 @@ enum reallocSliceAssignSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, SystemLinker, Bytecode, LLVMJit,
+)) {
 
     @("realloc.sliceAssignWritesNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)

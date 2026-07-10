@@ -41,7 +41,8 @@ private struct Compiler {
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
         AssocArrayLiteralExp, AssertExp,
-        AssignExp, BinExp, BlitExp, CallExp, CastExp, CatElemAssignExp, CatExp,
+        AssignExp, BinExp, BlitExp, CallExp, CastExp, CatAssignExp,
+        CatElemAssignExp, CatExp,
         CmpExp, CondExp, ConstructExp, DelegateFuncptrExp, DelegatePtrExp,
         DivExp, DotIdExp, DotVarExp, Expression,
         IdentityExp, IndexExp, LogicalExp, MulExp, FuncExp, DelegateExp,
@@ -1789,11 +1790,13 @@ private struct Compiler {
                 return compileAssignExpression(blit);
 
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
-        // `concatenateElemAssign`); detect by op, not name. Whole-array
-        // `arr ~= other` (op `concatenateAssign`) is a different node and is
-        // not handled here.
+        // `concatenateElemAssign`); whole-array `arr ~= other` arrives as the
+        // distinct CatAssignExp (`concatenateAssign`).
         if (auto append = expression.isCatElemAssignExp)
             return compileAppendElement(append);
+
+        if (auto concatenate = expression.isCatAssignExp)
+            return compileConcatenationAssign(concatenate);
 
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
@@ -3197,10 +3200,82 @@ private struct Compiler {
             return;
         }
 
+        if (source.isVarExp !is null &&
+            compileDefaultStructFields(offset, declaration))
+            return;
+
         throw new Exception(text(
             "Unsupported struct initializer in bytecode core: ",
             declarationChars(variable),
         ));
+    }
+
+    // DMD lowers `S value;` through an init-symbol VarExp. Materialise each
+    // field's explicit initializer at the offset DMD computed for the struct;
+    // fields without one retain the frame's zeroed bytes, except `char[N]`,
+    // whose implicit value is `char.init`.
+    private bool compileDefaultStructFields(
+        in ushort base,
+        imported!"dmd.dstruct".StructDeclaration declaration,
+    ) {
+        import dmd.astenums: TY;
+
+        bool materialised;
+        foreach (field; declaration.fields) {
+            auto fieldType = field.type;
+            const fieldOffset = cast(ushort) (base + field.offset);
+            auto initializer =
+                field._init is null ? null : field._init.isExpInitializer;
+
+            if (fieldType.toBasetype.ty == TY.Tsarray &&
+                fieldType.toBasetype.nextOf.toBasetype.ty == TY.Tchar) {
+                if (initializer !is null) {
+                    auto string_ = stringLiteralOf(
+                        initializerExpression(initializer.exp),
+                    );
+                    if (string_ is null)
+                        return false;
+
+                    loadStaticString(
+                        fieldOffset,
+                        cast(uint) staticArraySize(fieldType),
+                        string_,
+                    );
+                    materialised = true;
+                    continue;
+                }
+
+                const elementSize = size(ScalarType.char_);
+                const elementCount =
+                    cast(uint) staticArraySize(fieldType) / elementSize;
+                const basis = compileSizeConstant(char.init);
+                foreach (index; 0 .. elementCount)
+                    _code ~= Instruction(
+                        Op.copy,
+                        cast(ushort) (fieldOffset + index * elementSize),
+                        basis,
+                        cast(ushort) elementSize,
+                    );
+                materialised = true;
+                continue;
+            }
+
+            if (initializer is null)
+                continue;
+
+            const type = scalarType(fieldType);
+            const value = compileExpression(
+                initializerExpression(initializer.exp),
+            );
+            _code ~= Instruction(
+                Op.copy,
+                fieldOffset,
+                value.offset,
+                cast(ushort) size(type),
+            );
+            materialised = true;
+        }
+        return materialised;
     }
 
     private ushort allocateStructBlock(Type type) {
@@ -6431,6 +6506,26 @@ private struct Compiler {
         return Operand(descriptor.offset, descriptor.elementType);
     }
 
+    // `arr ~= other`: concatenate both array descriptors into fresh backing
+    // memory, then overwrite the local's descriptor with the result.
+    private Operand compileConcatenationAssign(CatAssignExp concatenate) {
+        const descriptor = dynamicArrayDescriptor(concatenate.e1);
+        const right = arrayDescriptorOffset(
+            descriptor.elementType, concatenate.e2,
+        );
+        const elementSize = dynamicArrayElementSize(
+            concatenate.e1.type, descriptor.elementType,
+        );
+        _code ~= Instruction(
+            concatArraysOp(elementSize),
+            descriptor.offset,
+            descriptor.offset,
+            right,
+        );
+        writeBackDynamicArrayDescriptor(descriptor);
+        return Operand(descriptor.offset, descriptor.elementType);
+    }
+
     private void writeBackDynamicArrayDescriptor(
         in DynamicArrayLocal descriptor,
     ) {
@@ -6820,19 +6915,21 @@ private struct Compiler {
         return result;
     }
 
-    // `arr[lo .. hi] = rhs` for a dynamic-array local: form the destination
-    // sub-slice descriptor sharing `arr`'s backing memory, materialise the rhs
-    // into a source descriptor, and emit a write-through element copy. Null if
-    // the slice target is not a known dynamic-array local.
+    // `arr[lo .. hi] = rhs` or `p[lo .. hi] = rhs`: form the destination
+    // sub-slice descriptor sharing the array or raw pointer's backing memory,
+    // materialise the rhs into a source descriptor, and emit a write-through
+    // element copy. Null if the slice target is neither shape.
     private Operand* tryDynamicArraySliceAssign(
         SliceExp slice,
         Expression rhs,
     ) {
         auto descriptor = dynamicArrayDescriptorOrNull(slice.e1);
-        if (descriptor is null)
+        if (descriptor is null && !isPointerType(slice.e1.type))
             return null;
 
-        const elementType = descriptor.elementType;
+        const elementType = descriptor is null
+            ? dynamicArrayElementType(slice.type)
+            : descriptor.elementType;
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileSliceInto(destination, elementType, slice);
 

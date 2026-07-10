@@ -1315,7 +1315,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // element null, the char.init value carried in `basis`.
 // Bytecode ("Unsupported struct initializer in bytecode core: b")
 // cannot run struct default initializers yet.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.staticCharArrayFieldDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1329,6 +1329,27 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 
                 assert(b.buf[0] == char.init);
                 assert(b.buf[15] == char.init);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("struct.defaultInitPreservesStaticCharArrayAndScalarFieldDefaults." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Header {
+                char[2] label = "OK";
+                int revision = 42;
+            }
+
+            unittest {
+                Header header;
+
+                assert(header.label[0] == 'O');
+                assert(header.label[1] == 'K');
+                assert(header.revision == 42);
             }
         });
     }
