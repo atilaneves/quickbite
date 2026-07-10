@@ -1111,6 +1111,134 @@ type) has no dedicated pinning test yet. By inspection `structField`/
 expected to already work the same way struct-in-struct nesting does, but
 it has not been exercised the way the facts above were.
 
+Progress 2026-07-10 (array length assignment): `NativeArray` gains
+`setLength(n)`, the handle-level primitive behind a guest `arr.length = n`,
+built on the existing `capacity`/`reserve`/`tryExtendTo` machinery rather
+than re-deriving it. This is item 7's last named container primitive for
+the array phase; it is also the last thing standing between
+`interpreter.md` §9.10's `gc_*` capacity-hook shims and retirement, since
+those shims exist only because boxed interpreter arrays were never
+addressable GC blocks.
+
+The contract was established by reading compiled D's own
+`_d_arraysetlengthT`/`_d_arraysetlengthT_` (`core/internal/array/
+capacity.d`, local druntime source) and `_d_arrayappendcTX_`
+(`core/internal/array/appending.d`), plus a compiled probe script, rather
+than assumed. Shrink (`n <= _length`) is a pure length change: the block's
+address, `capacity`, and every byte (even ones now past the new length)
+are untouched -- matching `_d_arraysetlengthT_`'s own shrink path exactly
+(`arr = arr[0 .. newlength]`, no GC call at all). This is also why compiled
+D's `arr.length--; arr ~= x;` footgun is real: `_d_arrayappendcTX_` can
+reuse that untouched tail in place via `gc_expandArrayUsed`'s "used size"
+bookkeeping, with no zeroing of its own, unlike `setLength`'s own grow path.
+
+Grow (`n > _length`) always zeroes every byte from the OLD `_length *
+stride` up to the new `n * stride`, regardless of whether the block itself
+needed to grow to hold them. This is NOT implied by `reserve`'s own
+zeroing: `reserve` only zeroes bytes past whatever `block.byteLength` was
+when IT ran, and a shrink never touches `block.byteLength` -- so a
+grow-back after a shrink re-exposes stale bytes from before the shrink,
+not room `reserve` ever zeroed. Compiled D agrees: `_d_arraysetlengthT_`'s
+own zeroing (`memset(newdata + oldsize, 0, newsize - oldsize)`) runs
+unconditionally on every grow, keyed on the CURRENT (possibly
+already-shrunk) length, regardless of whether the allocation grew in place
+or was replaced -- pinned against a compiled probe (shrinking `[1, 2, 3,
+4, 5]` to length 2 then growing back to 5 reads back `[1, 2, 0, 0, 0]`,
+never the original `3, 4, 5`). `setLength.
+shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating` pins this without
+reallocating (`_block.byteLength` already covered the regrown span).
+
+Whether the block itself needs to grow is decided by `requiredBytes >
+_block.byteLength` -- deliberately NOT `n > capacity`. The two differ
+exactly when it matters: after a shrink, `_block.byteLength` still covers
+the pre-shrink span, so growing back within it needs no reallocation
+regardless of what `capacity` (the GC's own bin size divided by stride --
+a different, unrelated bound) would say. When `_block.byteLength` is
+genuinely exceeded, growth reuses `reserve`'s own reallocating machinery,
+factored out into a new private `growBlockTo(requiredBytes)` shared by both
+callers -- a pure, behaviour-preserving extraction; `reserve`'s own tests
+are unchanged.
+
+The borrowed decision: growth is allowed whenever `requiredBytes <=
+_block.byteLength`, even for a borrowed array such as a `NativeArray.
+slice` result -- shrink it, then grow back within that same span, and the
+bytes are demonstrably still there, since `_block.bytes` is already an
+ordinary, bounds-checked view into real, live storage (`NativeBlock.
+subRange`'s own construction already proved that). Only growth BEYOND
+`_block.byteLength` -- needing more bytes than this handle's own block was
+ever given -- throws, because that genuinely would require reallocating
+memory this handle does not own. This is keyed on `_block.byteLength` (a
+mechanical fact about THIS handle's own block), never on `capacity` (which
+is 0 for every borrowed block unconditionally, so it could never say "yes"
+for a borrowed array at all) and never on `Ownership` directly (which only
+answers "may this be reallocated?", not "are these particular bytes
+already here?"). `capacity`'s GC-bin-size meaning is untouched: it still
+means "how big could `reserve` grow this WITHOUT reallocating," a question
+that is moot for a borrowed handle, which can never reallocate at all --
+`byteLength` and `capacity` stay two different bounds on purpose.
+
+This produces an honest, documented divergence from compiled D, pinned in
+`setLength.onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent`'s
+own comment: because `slice` is a real, bidirectional aliasing view (its
+own already-shipped contract), the re-zeroing from a bounded borrowed
+grow-back is visible through the parent too. Checked against a second
+compiled probe, real D does NOT do this -- a shrunk-then-regrown sub-slice
+(`a[1 .. 4]` shrunk to length 1, grown back to 3) gets a NEW address, and
+`a` itself is untouched. That specific choice comes from druntime's "used
+size" bookkeeping (`gc_expandArrayUsed`'s `existingUsed == blockUsed`
+check) recognising only the block's current tail owner as extendable in
+place -- a mechanism this simpler model does not have and item 7 does not
+ask for. The divergence is accepted because nothing in this model's
+`setLength` ever reads or writes outside what `NativeBlock.subRange`'s own
+bounds check already verified belongs to the handle in question, so no
+byte belonging to some OTHER, uninvolved handle is ever at risk.
+
+Strideless (`NativeArray.init`, `_stride == 0`) mirrors `reserve`'s own
+guard, in the same position: checked first, unconditionally, before even
+asking whether `n` would grow or shrink anything, so `setLength(0)` on
+`NativeArray.init` throws even though `0 == _length` would otherwise make
+it a trivial no-op -- the identical ordering rationale `reserve` already
+uses (a strideless handle is not a properly constructed array, a more
+fundamental defect than any question of growing or shrinking it).
+`n * stride` is computed with the existing overflow-checked `byteLength`
+helper, never re-derived, and only inside the grow branch.
+
+What this does NOT model: `~=` (append) is still a call-site operation
+(allocate-and-rebind), unimplemented, with no call site yet, per the plan.
+Also not modelled: keeping a previously written slice header
+(`NativeArray.writeSliceHeader`) in sync with a later `setLength` that
+reallocates. A header is a snapshot of `{ length, ptr }` taken at write
+time, not a live view of this handle; once `setLength` reallocates, any
+previously written header still names the OLD address and length, exactly
+as stale as any other pointer into a moved block -- compiled D's own
+slices go stale the same way once a variable's `.length` is reassigned out
+from under an earlier alias. Keeping such a header in sync is the call
+site's problem, the moment it rebinds the guest variable this array backs,
+not this container's -- there is no such call site yet.
+
+Regression tests, in `tests/ut/backends/interpreter/native_array.d`:
+`NativeArray.setLength.growWithinAlreadyReservedCapacityLeavesAddressUnchanged`
+and `.growWithinAlreadyReservedCapacityZeroesNewElements` (grow within a
+block already committed by an explicit prior `reserve` call -- deliberately
+not a bare post-`allocate` `capacity`, since a plain allocation's `GC.
+sizeOf` bin-rounding slack is real but is not reflected in `block.
+byteLength` without an explicit `reserve`/`setLength` call committing it,
+and this container does not claim to use that slack for free); `.
+growBeyondBlockByteLengthPreservesElementsAcrossReallocation` and `.
+growBeyondBlockByteLengthTailIsZero`; `.shrinkUpdatesLength`; `.
+shrinkLeavesAddressCapacityAndBytesUnchanged`; `.
+shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating`; `.
+sameLengthIsANoOp`; `.onInitHandleZeroThrows` and `.
+onInitHandleNonZeroThrows`; `.overflowingLengthTimesStrideThrows`; `.
+onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent` and `.
+onSliceGrowBeyondBlockByteLengthThrows` (the borrowed decision, both
+directions). All 166 focused `ut.backends.interpreter` tests pass.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring for `setLength` (no
+guest `arr.length = n` reaches it yet), no `interpreter.md` §9.10 shim
+retired, and `~=` remains unimplemented per the "what this does NOT model"
+paragraph above.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1549,16 +1677,28 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    above for what DMD reports for a plain union's zero-offset fields and
    an anonymous union's flattened, overlapping ones, and why the
    block-wide conservative `Scan` policy is the only safe rounding for a
-   pointer-bearing union — item 7's array/struct correctness work has no
-   other named gap left. None of
+   pointer-bearing union. Array length assignment is also done now
+   (`NativeArray.setLength` — the handle-level primitive behind a guest
+   `arr.length = n`, built on the existing `capacity`/`reserve`/
+   `tryExtendTo` machinery; see the Status "array length assignment"
+   progress note above for the compiled-D-checked shrink/grow contract,
+   the borrowed bounded-growth decision and its documented divergence from
+   compiled D, and the shrink-then-grow re-zeroing subtlety) — this was
+   the last named container primitive the array phase needed, so item 7's
+   array/struct correctness work has no other named gap left. None of
    this has a user-visible display or FFI change yet, and no shim is
    retired yet. What remains: the interpreter call site (`impl.d`/
    `Walker`/`Value`) that actually gives these types somewhere to be used
    instead of sitting unwired — including, for `slice` specifically, the
    guest-level `~=`-on-a-slice reallocation semantics the "array
-   sub-slicing" progress note explicitly does not model — and only after
-   that, shim retirement one `interpreter.md` §9.10 entry at a time, each
-   proven by its ratchet fixtures staying green through the real path.
+   sub-slicing" progress note explicitly does not model, and, for
+   `setLength`, guest-level `~=`/append more generally (still a call-site
+   allocate-and-rebind operation, per the "array length assignment"
+   progress note) and keeping a previously written slice header in sync
+   with a later reallocating `setLength` (the call site's problem, not
+   this container's, exactly as for a stale compiled-D slice) — and only
+   after that, shim retirement one `interpreter.md` §9.10 entry at a time,
+   each proven by its ratchet fixtures staying green through the real path.
    Class objects stay third in the migration order, per the "Migration
    order" bullet above. Latency is measured only once the
    array and struct correctness gates are green and a real suite actually

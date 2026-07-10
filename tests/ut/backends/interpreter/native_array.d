@@ -829,3 +829,230 @@ unittest {
 
     array.element(3)[0].should == 99;
 }
+
+
+// `reserve` first, establishing real, committed capacity (`block.
+// byteLength == 8 * stride`) through its own already-tested reallocating
+// path -- this is the honest way to get `setLength` room to grow into
+// without moving the block, since a bare `GC.sizeOf` bin-rounding "slack"
+// beyond what `block.byteLength` already spans is NOT something `setLength`
+// claims to use without an explicit `reserve` (see `setLength`'s own
+// comment on why its trigger is `block.byteLength`, not `capacity`).
+@("NativeArray.setLength.growWithinAlreadyReservedCapacityLeavesAddressUnchanged")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    array.reserve(8);
+    const address = array.block.address;
+
+    array.setLength(6);
+
+    array.block.address.should == address;
+}
+
+
+@("NativeArray.setLength.growWithinAlreadyReservedCapacityZeroesNewElements")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    array.reserve(8);
+    array.element(0)[0] = 10;
+    array.element(1)[0] = 20;
+    array.element(2)[0] = 30;
+
+    array.setLength(6);
+
+    foreach (i; 3 .. 6)
+        array.element(i)[0].should == 0;
+}
+
+
+@("NativeArray.setLength.growBeyondBlockByteLengthPreservesElementsAcrossReallocation")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    array.element(0)[0] = 10;
+    array.element(1)[0] = 20;
+    array.element(2)[0] = 30;
+
+    array.setLength(100_000);
+
+    array.block.byteLength.should == 100_000 * array.stride;
+    array.element(0)[0].should == 10;
+    array.element(1)[0].should == 20;
+    array.element(2)[0].should == 30;
+}
+
+
+@("NativeArray.setLength.growBeyondBlockByteLengthTailIsZero")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+
+    array.setLength(100_000);
+
+    const liveBytes = 3 * array.stride;
+    foreach (byte_; array.block.bytes[liveBytes .. $])
+        byte_.should == 0;
+}
+
+
+@("NativeArray.setLength.shrinkUpdatesLength")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+
+    array.setLength(2);
+
+    array.length.should == 2;
+}
+
+
+// Shrink touches no storage: the block's address, `capacity`, and every
+// byte -- including the ones now past the new length -- are untouched.
+@("NativeArray.setLength.shrinkLeavesAddressCapacityAndBytesUnchanged")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    array.element(2)[0] = 3;
+    const address = array.block.address;
+    const capacity = array.capacity;
+    const blockByteLength = array.block.byteLength;
+
+    array.setLength(2);
+
+    array.block.address.should == address;
+    array.capacity.should == capacity;
+    array.block.byteLength.should == blockByteLength;
+    array.block.bytes[8 .. 12].should == [3, 0, 0, 0];
+}
+
+
+// The tricky case this container must get right: `reserve` only zeroes
+// bytes past whatever `block.byteLength` was at the moment IT ran, and a
+// shrink never touches `block.byteLength` at all -- so the bytes between a
+// shrunk length and the block's own still-live span are stale leftovers
+// from before the shrink, not fresh room anything already zeroed. Growing
+// back must zero them itself. Compiled D agrees (checked against a
+// compiled probe): shrinking `[1, 2, 3, 4, 5]` to length 2 then growing
+// back to 5 reads back `[1, 2, 0, 0, 0]`, never the original `3, 4, 5` --
+// `_d_arraysetlengthT_` (core/internal/array/capacity.d) always re-zeroes
+// from the CURRENT (possibly already-shrunk) length up to the new one,
+// regardless of whether the allocation itself needed to grow.
+@("NativeArray.setLength.shrinkThenGrowBackRezeroesStaleBytesWithoutReallocating")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    array.element(0)[0] = 1;
+    array.element(1)[0] = 2;
+    array.element(2)[0] = 3;
+    array.element(3)[0] = 4;
+    array.element(4)[0] = 5;
+    const address = array.block.address;
+
+    array.setLength(2);
+    array.setLength(5);
+
+    array.block.address.should == address;
+    array.element(0)[0].should == 1;
+    array.element(1)[0].should == 2;
+    array.element(2)[0].should == 0;
+    array.element(3)[0].should == 0;
+    array.element(4)[0].should == 0;
+}
+
+
+@("NativeArray.setLength.sameLengthIsANoOp")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 3);
+    array.element(0)[0] = 42;
+    const address = array.block.address;
+
+    array.setLength(3);
+
+    array.length.should == 3;
+    array.block.address.should == address;
+    array.element(0)[0].should == 42;
+}
+
+
+@("NativeArray.setLength.onInitHandleZeroThrows")
+unittest {
+    NativeArray array;
+
+    array.setLength(0).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "setLength: element stride is zero, so the array cannot be "
+        ~ "resized",
+    );
+}
+
+
+@("NativeArray.setLength.onInitHandleNonZeroThrows")
+unittest {
+    NativeArray array;
+
+    array.setLength(3).shouldThrow!Exception;
+}
+
+
+@("NativeArray.setLength.overflowingLengthTimesStrideThrows")
+unittest {
+    // Same shape as `NativeArray.reserve.overflowingLengthTimesStrideThrows`:
+    // this count wraps `length * stride` back to a small, in-range value
+    // under a raw multiply, which `setLength` must reject rather than
+    // silently truncating the block it grows to.
+    auto array = NativeArray.allocate(Type.tint64, 3);
+    const n = size_t.max / 8 + 4;
+
+    array.setLength(n).shouldThrow!Exception;
+}
+
+
+// A `NativeArray.slice` result's own `block.byteLength` is EXACTLY its own
+// original length * stride (no slack) -- `subRange`'s own construction
+// already proved those bytes genuinely belong to this handle. Shrinking,
+// then growing back within that same span needs no reallocation and
+// violates no ownership claim, so it succeeds even though the handle is
+// `borrowed`. Because `slice` is a real aliasing view (its own documented
+// contract: writes through it are visible in the parent and vice versa),
+// the re-zeroing is visible through the parent too -- this diverges from
+// compiled D, which reallocates a shrunk-then-regrown sub-slice instead of
+// reusing the parent's storage (checked against a compiled probe: `a[1 ..
+// 4]` shrunk to length 1 then grown back to 3 gets a NEW address, and `a`
+// itself is untouched). That specific choice comes from druntime's "used
+// size" bookkeeping (`gc_expandArrayUsed`'s `existingUsed == blockUsed`
+// check, `core/internal/array/appending.d`) recognising only the block's
+// current tail owner as extendable in place -- a mechanism this simpler
+// model does not have and item 7 does not ask for. Divergence accepted:
+// nothing here reads or writes outside what `subRange`'s own bounds check
+// already verified belongs to this handle.
+@("NativeArray.setLength.onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    array.element(1)[0] = 2;
+    array.element(2)[0] = 3;
+    array.element(3)[0] = 4;
+    auto sub = array.slice(1, 4);
+    const address = sub.block.address;
+
+    sub.setLength(1);
+    sub.setLength(3);
+
+    sub.block.address.should == address;
+    sub.element(0)[0].should == 2;
+    sub.element(1)[0].should == 0;
+    sub.element(2)[0].should == 0;
+    array.element(2)[0].should == 0;
+    array.element(3)[0].should == 0;
+}
+
+
+// Growth BEYOND a borrowed handle's own `block.byteLength` -- needing more
+// bytes than this handle was ever given -- genuinely would require
+// reallocating memory it does not own, so it throws exactly as `reserve`
+// does for the same reason.
+@("NativeArray.setLength.onSliceGrowBeyondBlockByteLengthThrows")
+unittest {
+    auto array = NativeArray.allocate(Type.tint32, 5);
+    auto sub = array.slice(1, 4);
+
+    sub.setLength(4).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "setLength: cannot grow this array beyond its own block's bytes; "
+        ~ "the block is borrowed, so its memory is owned elsewhere",
+    );
+}

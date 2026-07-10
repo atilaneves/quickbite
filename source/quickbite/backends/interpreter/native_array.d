@@ -379,26 +379,27 @@ public struct NativeArray {
     // Guarantees capacity for at least `n` elements, mirroring compiled D's
     // `arr.reserve(n)`. A no-op when `n <= capacity`: the block's address
     // and every existing element are untouched. Otherwise grows through
-    // real storage, trying first `NativeBlock.tryExtendTo` to extend the
-    // existing GC allocation in place -- that path leaves the address
-    // unchanged. If extension fails, allocates a new block of the required
-    // byte length with this array's own scan policy, copies the live
-    // `length * stride` bytes across, and adopts the new block: the
-    // address legitimately changes here. Per item 7's Address-stability
-    // bullet, that is correct -- stale pointers into the old block go
-    // stale exactly as compiled D loses append capacity on reallocation,
-    // and no boxed/old-block value is ever copied back as the authority.
-    // Both paths leave the SAME observable state: `block.byteLength ==
-    // n * stride` and every byte beyond the live `length * stride` is
-    // zero -- `tryExtendTo` establishes that itself on the extend path,
-    // and `NativeBlock.allocate`'s `GC.calloc` zeroes the whole new block
-    // on the reallocating path, so an extended block is indistinguishable
-    // from a freshly allocated one. A borrowed block cannot legitimately be
-    // reallocated -- we don't own that memory, so silently adopting a new
-    // block here would detach the handle from memory its owner still
-    // holds, while that owner keeps reading and writing the original
-    // address. Reaching the reallocating path with `_block.ownership ==
-    // borrowed` now throws instead (see `NativeArray.borrow`).
+    // real storage via `growBlockTo` (below) -- trying first `NativeBlock.
+    // tryExtendTo` to extend the existing GC allocation in place, that path
+    // leaving the address unchanged; if extension fails, allocating a new
+    // block of the required byte length with this array's own scan policy,
+    // copying the live `length * stride` bytes across, and adopting the new
+    // block, where the address legitimately changes. Per item 7's
+    // Address-stability bullet, that is correct -- stale pointers into the
+    // old block go stale exactly as compiled D loses append capacity on
+    // reallocation, and no boxed/old-block value is ever copied back as the
+    // authority. Both paths leave the SAME observable state: `block.
+    // byteLength == n * stride` and every byte beyond the live `length *
+    // stride` is zero -- `tryExtendTo` establishes that itself on the
+    // extend path, and `NativeBlock.allocate`'s `GC.calloc` zeroes the
+    // whole new block on the reallocating path, so an extended block is
+    // indistinguishable from a freshly allocated one. A borrowed block
+    // cannot legitimately be reallocated -- we don't own that memory, so
+    // silently adopting a new block here would detach the handle from
+    // memory its owner still holds, while that owner keeps reading and
+    // writing the original address. Reaching the reallocating path with
+    // `_block.ownership == borrowed` now throws instead (see `NativeArray.
+    // borrow`).
     //
     // That guard sits after the `n <= capacity` no-op, not before it:
     // `reserve(0)`, like any `n` already within capacity, is a legitimate
@@ -445,8 +446,21 @@ public struct NativeArray {
                 ~ "is owned elsewhere",
             );
 
-        const requiredBytes = byteLength(n, _stride);
+        growBlockTo(byteLength(n, _stride));
+    }
 
+    // The shared tail of `reserve`'s and `setLength`'s own grow paths:
+    // grows this array's block to span at least `requiredBytes`, trying
+    // `NativeBlock.tryExtendTo` first (extend in place, address unchanged),
+    // and falling back to a fresh, same-scan-policy allocation plus a copy
+    // of the live `length * stride` bytes when extension fails -- see
+    // `reserve`'s own comment for the address-stability and zeroing
+    // argument this establishes; factored out here once `setLength` needed
+    // the identical machinery under a DIFFERENT trigger condition than
+    // `reserve`'s (see `setLength`'s own comment for why). Both callers
+    // have already ruled out a borrowed block reaching here; neither calls
+    // this on one.
+    private void growBlockTo(in size_t requiredBytes) @safe {
         if (_block.tryExtendTo(requiredBytes))
             return;
 
@@ -454,6 +468,139 @@ public struct NativeArray {
         const liveBytes = _length * _stride;
         newBlock.bytes[0 .. liveBytes] = _block.bytes[0 .. liveBytes];
         _block = newBlock;
+    }
+
+    // Resizes this array to `n` elements: the handle-level expression of a
+    // guest `arr.length = n`. Checked against compiled D's own
+    // `_d_arraysetlengthT`/`_d_arraysetlengthT_` (core/internal/array/
+    // capacity.d, read from the local druntime source) rather than assumed.
+    //
+    // Shrink (`n <= _length`): only `_length` falls -- the block's address,
+    // `capacity`, and every byte (including the ones now past the new
+    // length) are untouched. This matches compiled D's own shrink path
+    // exactly: `_d_arraysetlengthT_` does `if (newlength <= arr.length) {
+    // arr = arr[0 .. newlength]; return newlength; }`, a pure slice
+    // truncation with no GC call at all. It is also why compiled D's
+    // classic footgun -- `arr.length--; arr ~= x;` silently overwriting
+    // what used to be the popped element -- is real: `~=` (`core/internal/
+    // array/appending.d`'s `_d_arrayappendcTX_`) can reuse that untouched
+    // tail in place via `gc_expandArrayUsed`'s "used size" bookkeeping,
+    // with NO zeroing of its own (the caller is about to fill the appended
+    // slot immediately) -- unlike `setLength`'s own grow path below, which
+    // always zeroes.
+    //
+    // Grow (`n > _length`): every byte from the OLD `_length * stride` up
+    // to the new `n * stride` is zeroed, whether or not the block itself
+    // needed to grow to hold them. This is NOT implied by `reserve`'s own
+    // zeroing: `reserve` only zeroes bytes past whatever `_block.
+    // byteLength` was at the moment it ran, and a shrink never touches
+    // `_block.byteLength` at all -- so if this array was shrunk and is now
+    // growing back to (or within) its old span, the bytes between the new
+    // `_length` and the block's own already-live span are stale leftovers
+    // from before the shrink, not fresh room `reserve` ever zeroed.
+    // Compiled D agrees: `_d_arraysetlengthT_`'s own zeroing (`memset
+    // (newdata + oldsize, 0, newsize - oldsize)`) runs unconditionally on
+    // every grow, keyed on the CURRENT (possibly already-shrunk) `arr.
+    // length`, regardless of whether `gc_expandArrayUsed` grew the
+    // allocation in place or a fresh one was made -- a grow-back after a
+    // shrink is re-zeroed there too (confirmed against a compiled probe:
+    // shrinking `[1, 2, 3, 4, 5]` to length 2 then growing back to 5 reads
+    // back `[1, 2, 0, 0, 0]`, never the original `3, 4, 5`).
+    //
+    // Whether the block itself needs to grow is decided by `requiredBytes >
+    // _block.byteLength` -- this array's own already-verified block span --
+    // deliberately NOT `n > capacity`. The two differ exactly when it
+    // matters: after a shrink, `_block.byteLength` still covers the
+    // pre-shrink span, so growing back within it needs no reallocation at
+    // all, regardless of what `capacity` (the GC's own bin size divided by
+    // stride -- a DIFFERENT, unrelated bound, see below) would say. When
+    // `_block.byteLength` genuinely is exceeded, growth reuses `reserve`'s
+    // own reallocating machinery (`growBlockTo` above) rather than
+    // re-deriving it, throwing for a borrowed block for the identical
+    // reason `reserve` does: this handle cannot legitimately grow memory it
+    // does not own.
+    //
+    // The borrowed decision: growth is allowed whenever `requiredBytes <=
+    // _block.byteLength`, even for a borrowed array such as a `NativeArray.
+    // slice` result -- shrink it, then grow back within that same span, and
+    // the bytes are demonstrably still there: `_block.bytes` is already an
+    // ordinary, bounds-checked view into real, live storage (`NativeBlock.
+    // subRange`'s own construction already proved that), so reading or
+    // writing within it needs no reallocation and violates no ownership
+    // claim. Only growth BEYOND `_block.byteLength` -- needing more bytes
+    // than this handle's own block was ever given -- reaches the borrowed
+    // guard and throws, because that genuinely would require reallocating
+    // memory this handle does not own. This is deliberately keyed on
+    // `_block.byteLength` (a mechanical fact: how many bytes THIS handle's
+    // own block spans), never on `capacity` (which is 0 for every borrowed
+    // block, unconditionally, per `NativeBlock.trueByteSize`'s own
+    // `Ownership` guard, so it could never say "yes" for a borrowed array
+    // at all) and never on `Ownership` directly (which only answers "may
+    // this be reallocated?", not "are these particular bytes already
+    // here?"). `capacity`'s GC-bin-size meaning is untouched by this: it
+    // keeps meaning "how big could `reserve` grow this WITHOUT
+    // reallocating," a question that is simply moot for a borrowed handle,
+    // which can never reallocate at all -- `byteLength` and `capacity` stay
+    // two different bounds on purpose, and this reuses the one that is
+    // actually true of a borrowed handle's memory. See `NativeArray.
+    // setLength.onSliceGrowWithinBlockByteLengthSucceedsAndIsVisibleInParent`
+    // for the honest divergence from compiled D this choice produces (a
+    // shrunk-then-regrown compiled-D sub-slice reallocates instead of
+    // reusing its parent's storage, per that test's own comment) and why it
+    // is accepted.
+    //
+    // Strideless (`NativeArray.init`, `_stride == 0`): mirrors `reserve`'s
+    // own guard, in the same position -- checked first, unconditionally,
+    // before even asking whether `n` would grow or shrink anything.
+    // `reserve` throws even for `reserve(0)` on a strideless handle, for
+    // the reason given there: a handle with no element type is not a
+    // properly constructed array, a more fundamental defect than any
+    // question of growing or shrinking it. `setLength(0)` on `NativeArray.
+    // init` throws for the identical reason, even though `0 == _length`
+    // would otherwise make it a trivial no-op.
+    //
+    // `n * stride` is computed with the existing overflow-checked
+    // `byteLength` helper (`allocate`/`reserve`/`adopt`'s own), never
+    // re-derived, and only inside the grow branch -- a shrink or no-op
+    // never multiplies anything.
+    //
+    // What this does NOT do: update any slice header a prior
+    // `writeSliceHeader` call already wrote from this array. A header is a
+    // snapshot of `{ length, ptr }` taken at write time, not a live view of
+    // this handle; once `setLength` reallocates, any previously written
+    // header still names the OLD address and length, exactly as stale as
+    // any other pointer into a moved block -- compiled D's own slices go
+    // stale the same way once a variable's `.length` is reassigned out from
+    // under an earlier alias. Keeping such a header in sync is the call
+    // site's problem, the moment it rebinds the guest variable this array
+    // backs, not this container's -- there is no such call site yet.
+    public void setLength(in size_t n) @safe {
+        if (_stride == 0)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "setLength: element stride is zero, so the array cannot "
+                ~ "be resized",
+            );
+
+        if (n > _length) {
+            const requiredBytes = byteLength(n, _stride);
+
+            if (requiredBytes > _block.byteLength) {
+                if (_block.ownership == NativeBlock.Ownership.borrowed)
+                    throw new Exception(
+                        "quickbite.backends.interpreter.native_array."
+                        ~ "NativeArray.setLength: cannot grow this array "
+                        ~ "beyond its own block's bytes; the block is "
+                        ~ "borrowed, so its memory is owned elsewhere",
+                    );
+
+                growBlockTo(requiredBytes);
+            }
+
+            _block.bytes[_length * _stride .. requiredBytes] = 0;
+        }
+
+        _length = n;
     }
 }
 
