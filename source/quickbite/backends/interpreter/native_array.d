@@ -94,6 +94,17 @@ public struct NativeArray {
     // array length; `stride` is still computed from `elementType`, exactly
     // as `allocate`/`borrow` do, so it never becomes a second, driftable
     // copy of DMD's own element size.
+    //
+    // Unlike `allocate`/`borrow`, `block` already exists at a fixed byte
+    // length that `adopt` did not choose, so a caller-supplied `length`
+    // that does not actually fit `block` must be rejected here rather than
+    // silently accepted: `element`'s own wrap-free bounds-check argument
+    // rests on `length * stride` never having been allowed to outrun the
+    // block's real bytes in the first place (see `element`'s comment).
+    // Reuses the same overflow-checked `byteLength` helper `allocate`/
+    // `borrow` already route through, so an overflowing `length * stride`
+    // is rejected the same way there; a non-overflowing but too-large
+    // product is rejected by the explicit comparison below.
     public static NativeArray adopt(
         NativeBlock block,
         Type elementType,
@@ -101,7 +112,15 @@ public struct NativeArray {
     ) @safe {
         import quickbite.backends.interpreter.layout: typeByteSize;
 
-        return NativeArray(block, elementType, length, typeByteSize(elementType));
+        const stride = typeByteSize(elementType);
+        const bytes = byteLength(length, stride);
+        if (bytes > block.byteLength)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "adopt: length * stride does not fit within block's byteLength",
+            );
+
+        return NativeArray(block, elementType, length, stride);
     }
 
     public inout(Type) elementType() inout pure nothrow @nogc @safe {
@@ -174,30 +193,45 @@ public struct NativeArray {
     //    and pass a bounds check it should fail.
     //
     // 2. Scanned destination. Writing this array's block address into a
-    //    destination the GC never scans (`Scan.no`, or borrowed non-GC
-    //    memory) would make the element block invisible to the collector,
-    //    which could then free it while the guest's `T[]` variable still
-    //    points at it -- exactly the hazard `NativeBlock.Scan` exists to
-    //    avoid for the block itself. So this throws exactly when this
-    //    array's own block is `owned`, its address is non-null, and
-    //    `dest.scan != Scan.conservative`. Two cases stay legal despite a
+    //    destination the GC never scans (`Scan.no`) would make the element
+    //    block invisible to the collector, which could then free it while
+    //    the guest's `T[]` variable still points at it -- exactly the
+    //    hazard `NativeBlock.Scan` exists to avoid for the block itself.
+    //
+    //    This is keyed on whether this array's block address is
+    //    *GC-visible* -- a mechanical fact read from `core.memory.GC.
+    //    addrOf` (wrapped in `gcAddrOf` below), which returns non-null for
+    //    a pointer into any GC allocation, INCLUDING an interior pointer
+    //    into a larger one (it returns that allocation's base address) --
+    //    never from this array's `NativeBlock.Ownership`. Ownership
+    //    answers a different question ("may this block legitimately be
+    //    reallocated/extended?"), not "is this address one the GC can
+    //    lose track of?". Those two questions used to have the same
+    //    answer, because the only way to get a `borrowed` block was
+    //    `NativeBlock.borrow`, wrapping genuinely non-GC (FFI/host)
+    //    memory. `NativeBlock.subRange` broke that coincidence: a
+    //    sub-range is `borrowed` (it cannot be grown/reallocated
+    //    independently of its parent) but its address can very well be
+    //    live GC memory -- e.g. `NativeStruct.arrayField`'s view of a
+    //    struct's own inline array field. Keying this check on ownership
+    //    would let such a sub-range's address be written into an unscanned
+    //    destination and silently escape the collector's view, which is
+    //    exactly the hazard this check exists to prevent. So this throws
+    //    exactly when `gcAddrOf(_block.address) !is null` and
+    //    `dest.scan != Scan.conservative`. One case stays legal despite a
     //    `Scan.no` destination:
     //      - A zero-length array's block address is `null`
-    //        (`GC.calloc(0, ...)` returns `null`); writing a null pointer
+    //        (`GC.calloc(0, ...)` returns `null`, and `GC.addrOf(null)` is
+    //        also `null` per its own contract); writing a null pointer
     //        into an unscanned destination loses nothing, since there is
     //        nothing there for the GC to lose track of.
-    //      - A *borrowed* source array's address is not GC memory the
-    //        collector tracks in the first place, so `dest`'s scan policy
-    //        cannot make it any more or less visible; `NativeBlock.borrow`
-    //        already puts keeping that memory alive on the borrower/owner,
-    //        not on wherever the address later gets written. (Caveat: a
-    //        borrowed block could itself wrap GC memory one layer further
-    //        out -- e.g. a borrowed pointer into a `T[]` some other owned
-    //        block backs. If so, it is the borrow precondition -- the
-    //        owner outlives every handle derived from it -- that keeps
-    //        that memory alive, not this destination's scan policy; this
-    //        function has no way to see through a borrowed pointer to
-    //        check that precondition holds.)
+    //    Genuinely non-GC memory -- `malloc`'d, FFI, or any other memory a
+    //    `borrowed` block wraps that was never a GC allocation in the
+    //    first place -- also reports `gcAddrOf(...) is null`, so it stays
+    //    legal for exactly the reason the old ownership-keyed exemption
+    //    was actually written for: keeping that memory alive is the
+    //    borrower/owner's job (`NativeBlock.borrow`'s own contract), not
+    //    this destination's scan policy's.
     //
     // The written `ptr` is the element block's address; the written
     // `length` is the element count, not a byte length.
@@ -213,8 +247,7 @@ public struct NativeArray {
                 ~ "does not fit within dest.byteLength",
             );
 
-        if (_block.ownership == NativeBlock.Ownership.owned
-            && _block.address !is null
+        if (gcAddrOf(_block.address) !is null
             && dest.scan != NativeBlock.Scan.conservative)
             throw new Exception(
                 "quickbite.backends.interpreter.native_array.NativeArray."
@@ -231,8 +264,12 @@ public struct NativeArray {
     // field would be a second, driftable copy of it (item 7's guardrail).
     // For an owned array this is `>= length` (the GC's bin size rounds up
     // from the requested `length * stride`); for a borrowed or
-    // zero-length array `_block.trueByteSize` is 0, so this is 0 too.
-    // `_stride == 0` is `NativeArray.init`'s own case: a default-
+    // zero-length array `_block.trueByteSize` is 0, so this is 0 too --
+    // unconditionally for `borrowed`, per `trueByteSize`'s own explicit
+    // `Ownership` guard (not merely an interior-pointer side effect of
+    // `GC.sizeOf`, which alone would still leak a zero-offset sub-range's
+    // parent's true bin size here). `_stride == 0` is `NativeArray.init`'s
+    // own case: a default-
     // constructed handle has no element type, hence no stride, hence no
     // capacity -- asking is not an error, mirroring `length` and `block`,
     // which are already `.init`-tolerant in exactly this way. Guard it
@@ -273,12 +310,14 @@ public struct NativeArray {
     // `reserve(0)`, like any `n` already within capacity, is a legitimate
     // no-op on any array -- borrowed or not -- exactly like compiled D's
     // `arr.reserve(n)`, which never touches storage it doesn't need to
-    // grow. A borrowed block's `capacity` is always 0 (see `capacity`'s
-    // comment), so that no-op is only reached for a borrowed array when
-    // `n == 0`; any `n >= 1` falls through to the borrowed guard, which is
-    // the right place for it, since only then is a reallocation actually
-    // being requested. Not `nothrow`: `byteLength` throws on overflow; not
-    // `@nogc`/`pure`: the reallocating path allocates.
+    // grow. A borrowed block's `capacity` is always 0 -- unconditionally,
+    // per `NativeBlock.trueByteSize`'s explicit `Ownership` guard (see
+    // `capacity`'s comment) -- so that no-op is only reached for a
+    // borrowed array when `n == 0`; any `n >= 1` falls through to the
+    // borrowed guard, which is the right place for it, since only then is
+    // a reallocation actually being requested. Not `nothrow`: `byteLength`
+    // throws on overflow; not `@nogc`/`pure`: the reallocating path
+    // allocates.
     //
     // A strideless handle (`NativeArray.init`, `_stride == 0`) gets a
     // guard of its own, checked first: `byteLength(n, 0)` never overflows
@@ -329,8 +368,8 @@ public struct NativeArray {
 // allocate` would then silently succeed with a block far too small for
 // the handle's `length`. Throws rather than returning an inconsistent
 // handle, matching `layout.typeByteSize`'s failure style. Called from
-// both `allocate` and `reserve`, so the message names the operation
-// (`length * stride`), not either caller.
+// `allocate`, `reserve`, and `adopt`, so the message names the operation
+// (`length * stride`), not any one caller.
 private size_t byteLength(in size_t length, in size_t stride) pure @safe {
     import core.checkedint: mulu;
 
@@ -343,6 +382,21 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
         );
 
     return bytes;
+}
+
+// `GC.addrOf` reports whether `ptr` lies within any GC allocation -- root
+// or interior -- returning that allocation's base address, or `null` if
+// `ptr` is not GC memory at all (or is itself `null`); this is exactly the
+// mechanical "is this address GC-visible?" fact `writeSliceHeader`'s
+// scanned-destination check needs, deliberately NOT inferred from this
+// array's `NativeBlock.Ownership` (see that function's comment for why).
+// `GC.addrOf` is not `@safe`; this is the module's own `@trusted`
+// boundary, justified because the call only reads an address and hands
+// back another address -- it dereferences nothing.
+private inout(void)* gcAddrOf(inout(void)* ptr) nothrow @nogc @trusted {
+    import core.memory: GC;
+
+    return GC.addrOf(ptr);
 }
 
 // Writing a raw pointer's bit pattern into a byte range is not @safe; this

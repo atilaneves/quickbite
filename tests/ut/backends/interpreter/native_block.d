@@ -278,6 +278,22 @@ unittest {
 }
 
 
+// A ZERO-offset sub-range's address IS the parent's own base pointer --
+// not an interior one -- and `GC.sizeOf` on a block's base reports the
+// allocation's bin size, not 0 (that is precisely what makes the base/
+// interior distinction load-bearing: see `trueByteSize`'s own comment).
+// Without an explicit `Ownership.borrowed` guard in `trueByteSize`, this
+// case would report the PARENT's true bin size here, contradicting
+// `trueByteSize`'s own "0 for borrowed" claim and letting `NativeArray.
+// capacity` believe a sub-range view has real room to grow in place.
+@("NativeBlock.subRange.zeroOffsetTrueByteSizeIsZero")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+
+    block.subRange(0, 12).trueByteSize.should == 0;
+}
+
+
 @("NativeBlock.subRange.outOfBoundsThrowsWithoutCorruptingParentBytes")
 unittest {
     auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
@@ -306,4 +322,27 @@ unittest {
         ~ "subRange: byteOffset + byteLength does not fit within this "
         ~ "block's byteLength",
     );
+}
+
+
+// A zero-offset sub-range's address IS the parent's own head -- a real
+// large-object GC allocation -- so without a `tryExtendTo` ownership guard,
+// `GC.extend` genuinely resolves and extends the PARENT's allocation, and
+// `tryExtendTo` then zeroes bytes past the sub-range's own 8-byte span --
+// corrupting bytes 8..64 of the parent's own live data. The large-object
+// threshold is `PAGESIZE / 2` (2048 bytes, core/internal/gc/impl/
+// conservative/gc.d ~line 739); this uses a size well past it so the
+// allocation is unambiguously large-object, and `tryExtendTo` deterministic
+// (not allocator-state-dependent), matching `smallBlockCannotExtendAndIsLeft
+// Untouched`'s reasoning above.
+@("NativeBlock.tryExtendTo.borrowedSubRangeReturnsFalseAndLeavesParentBytesUntouched")
+unittest {
+    auto parent = NativeBlock.allocate(4096 + 1, NativeBlock.Scan.no);
+    parent.bytes[] = 0xAA;
+    auto sub = parent.subRange(0, 8);
+
+    sub.tryExtendTo(64).should == false;
+
+    foreach (b; parent.bytes[8 .. 64])
+        b.should == 0xAA;
 }

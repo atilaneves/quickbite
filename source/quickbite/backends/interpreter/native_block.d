@@ -95,35 +95,67 @@ public struct NativeBlock {
     // from `core.memory.GC.sizeOf` -- the GC's own bin size, not a size we
     // invent or cache ourselves (item 7's guardrail: layout facts stay the
     // GC/DMD's single source of truth, never a second copy of our own).
-    // Per `GC.sizeOf`'s own doc comment (core/memory.d, ~line 721): memory
-    // not allocated by this GC, the interior of a block, or a null
-    // pointer, all honestly report 0. That makes this 0 for a *borrowed*
-    // block (never GC memory) and for a *zero-length* block (its `address`
-    // is null, since `GC.calloc(0, ...)` returns null) -- both are real,
-    // expected zeros, not something to paper over. Not `pure`: the
-    // `const scope void*` overload of `GC.sizeOf` used below (see
-    // `trueByteSizeOf`) is itself not `pure` (druntime marks it
-    // `/* FIXME pure */`); reaching the other, `pure`, `void*` overload
-    // would need casting away `address`'s constness, which would fake a
-    // purity this function doesn't have.
+    //
+    // `Ownership.borrowed` returns 0 unconditionally, checked explicitly
+    // rather than left to fall out of `GC.sizeOf`'s own contract. That
+    // contract (core/memory.d, ~line 721) is: memory not allocated by this
+    // GC, or a null pointer, report 0 -- AND so does the *interior* of a
+    // block, but NOT its base/head, which reports the allocation's bin
+    // size. A `NativeBlock.subRange(0, ...)` -- a zero-offset sub-range --
+    // has an address that IS the parent's own base pointer, not an
+    // interior one, so relying on the interior-pointer rule alone would
+    // report the PARENT's true bin size here: phantom growth room on a
+    // block that cannot legitimately be extended at all (`Ownership.
+    // borrowed`'s whole point). Explicitly gating on `Ownership` makes this
+    // 0 for every borrowed block regardless of its address's offset within
+    // whatever it is a sub-range of, matching `Ownership`'s own meaning
+    // ("may this be reallocated/extended?" -- no) rather than depending on
+    // a GC-visibility side effect. This also still reports 0 for a
+    // *zero-length owned* block (its `address` is null, since
+    // `GC.calloc(0, ...)` returns null, and `GC.sizeOf(null)` is 0 per the
+    // same contract) -- a real, expected zero, not something to paper
+    // over. Not `pure`: the `const scope void*` overload of `GC.sizeOf`
+    // used below (see `trueByteSizeOf`) is itself not `pure` (druntime
+    // marks it `/* FIXME pure */`); reaching the other, `pure`, `void*`
+    // overload would need casting away `address`'s constness, which would
+    // fake a purity this function doesn't have.
     public size_t trueByteSize() const nothrow @nogc @safe {
+        if (_ownership == Ownership.borrowed)
+            return 0;
+
         return trueByteSizeOf(address);
     }
 
     // Tries to grow this block's allocation in place to `newByteLength`.
-    // This only ever grows the block: a `newByteLength` that does not
-    // exceed the current `byteLength` is not a growth request, so it
-    // returns false without touching the block -- "I did not extend" is
-    // the honest answer for a no-op request, and it keeps the subtraction
-    // below (`newByteLength - oldByteLength`) provably wrap-free rather
-    // than relying on the GC to refuse an absurd (wrapped) size. Beyond
-    // that guard, returns false if the GC cannot extend it, in which case
-    // the caller must reallocate. On success the block spans exactly
-    // `newByteLength` bytes and the newly available tail is zeroed, so an
-    // extended block is indistinguishable from a freshly allocated one of
-    // the same size -- `GC.extend` itself leaves extension bytes
-    // uninitialised. The block's scan attribute (`NO_SCAN` vs
-    // conservative) needs no update: `GC.extend` grows the same
+    //
+    // `Ownership.borrowed` returns false immediately, before anything else
+    // runs. `GC.extend` resolves whatever real GC allocation `address`
+    // points into -- root or interior -- via the allocator's own page
+    // lookup (`pagenumOf`), not by checking whether this handle claims to
+    // own that allocation. A `borrowed` block's address can be a
+    // `NativeBlock.subRange`'s -- itself the head of the PARENT's owned GC
+    // allocation, not a separate one -- so without this guard `GC.extend`
+    // can genuinely succeed on the parent's real allocation, and the
+    // zeroing below would then zero the parent's own live bytes past this
+    // sub-range's span. "I did not extend" is the honest, and only
+    // legitimate, answer for a block this handle cannot grow: `GC.extend`/
+    // `GC.calloc` operate on whole allocations, and a `borrowed` block
+    // never owns one outright (see `subRange`'s and `borrow`'s own
+    // comments).
+    //
+    // Beyond that guard: this only ever grows the block. A `newByteLength`
+    // that does not exceed the current `byteLength` is not a growth
+    // request, so it returns false without touching the block -- "I did
+    // not extend" is the honest answer for a no-op request, and it keeps
+    // the subtraction below (`newByteLength - oldByteLength`) provably
+    // wrap-free rather than relying on the GC to refuse an absurd
+    // (wrapped) size. Beyond that guard, returns false if the GC cannot
+    // extend it, in which case the caller must reallocate. On success the
+    // block spans exactly `newByteLength` bytes and the newly available
+    // tail is zeroed, so an extended block is indistinguishable from a
+    // freshly allocated one of the same size -- `GC.extend` itself leaves
+    // extension bytes uninitialised. The block's scan attribute (`NO_SCAN`
+    // vs conservative) needs no update: `GC.extend` grows the same
     // underlying allocation rather than creating a new one, so whatever
     // attribute was set at `allocate` time still applies. A null
     // `address` -- this block's own zero-length case, since
@@ -132,6 +164,9 @@ public struct NativeBlock {
     // returns false and the caller reallocates; no special-casing needed
     // here.
     public bool tryExtendTo(in size_t newByteLength) pure nothrow @safe {
+        if (_ownership == Ownership.borrowed)
+            return false;
+
         const oldByteLength = _bytes.length;
         if (newByteLength <= oldByteLength)
             return false;
@@ -241,17 +276,20 @@ private size_t extendBlock(void* p, in size_t extension) pure nothrow @trusted {
 }
 
 // Reinterpreting a raw pointer as a slice is not `@safe`; this is the
-// `@trusted` boundary. Called only after `tryExtendTo`'s own guard has
-// confirmed `newByteLength` is strictly greater than the block's prior
-// byte length, and `extendBlock` has confirmed the GC extended the
-// allocation at `ptr` to accommodate at least that many bytes (per
-// `GC.extend`'s documented contract: it returns 0 or the extended size,
-// never a size short of the requested minimum) -- so the slice this
-// returns stays within that (now larger) allocation. Provable from
-// `tryExtendTo`'s own guard and `GC.extend`'s contract alone; it does not
-// rest on any allocator implementation detail (e.g. how a shrinking or
-// no-op request happens to be rejected), because that case never reaches
-// here at all.
+// `@trusted` boundary. Called only after `tryExtendTo`'s own guards have
+// confirmed: the block is `Ownership.owned` (a `borrowed` block returns
+// false before ever reaching here, so `ptr` is never a sub-range's alias
+// into some other allocation this reslice could over-claim); and
+// `newByteLength` is strictly greater than the block's prior byte length.
+// `extendBlock` has then confirmed the GC extended the allocation at
+// `ptr` to accommodate at least that many bytes (per `GC.extend`'s
+// documented contract: it returns 0 or the extended size, never a size
+// short of the requested minimum) -- so the slice this returns stays
+// within that (now larger) allocation. Provable from `tryExtendTo`'s own
+// guards and `GC.extend`'s contract alone; it does not rest on any
+// allocator implementation detail (e.g. how a shrinking or no-op request,
+// or a borrowed block, happens to be rejected), because none of those
+// cases ever reach here at all.
 private ubyte[] resliceBytes(void* ptr, in size_t newByteLength) pure nothrow @trusted {
     return (cast(ubyte*) ptr)[0 .. newByteLength];
 }

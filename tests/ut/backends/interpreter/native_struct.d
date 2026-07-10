@@ -446,6 +446,23 @@ unittest {
 }
 
 
+// `Holder.xs` is field 0 -- a ZERO-offset sub-range of `struct_`'s block --
+// so its address IS the parent's own base pointer: a real 16-byte GC bin
+// for this 12-byte struct. Without `NativeBlock.trueByteSize`'s borrowed
+// guard, `GC.sizeOf` on that base address would report the bin size (16),
+// making `capacity` claim 4 elements of phantom growth room on a view that
+// cannot legitimately grow at all (`reserve` refuses to reallocate any
+// borrowed block).
+@("NativeStruct.arrayField.capacityIsZeroForZeroOffsetSubRangeView")
+unittest {
+    auto type = structTypeOf(q{ struct Holder { int[3] xs; } }, "Holder");
+    auto struct_ = NativeStruct.allocate(type);
+    auto xs = struct_.arrayField(0);
+
+    xs.capacity.should == 0;
+}
+
+
 @("NativeStruct.arrayField.outOfRangeIndexThrows")
 unittest {
     auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
@@ -454,6 +471,30 @@ unittest {
     struct_.arrayField(3).shouldThrowWithMessage(
         "quickbite.backends.interpreter.native_struct.NativeStruct."
         ~ "arrayField: index out of range",
+    );
+}
+
+
+// `arrayField`'s array is a *borrowed* sub-range of `struct_`'s own owned GC
+// block (`NativeBlock.subRange`'s `Ownership.borrowed`), but that block is
+// still live GC memory -- exactly the case `writeSliceHeader`'s scanned-
+// destination check must not wave through just because the source's
+// `Ownership` is `borrowed`. `Holder` has no pointer-bearing fields, so
+// `struct_` itself is `Scan.no`; that is irrelevant here -- the hazard is
+// writing `xs`'s (GC-visible) block address into `dest`, a *different*,
+// unscanned block, which would leave the struct's own bytes reachable only
+// through unscanned storage.
+@("NativeStruct.arrayField.writeSliceHeaderOfBorrowedSubRangeIntoNoScanDestinationThrows")
+unittest {
+    auto type = structTypeOf(q{ struct Holder { int[3] xs; } }, "Holder");
+    auto struct_ = NativeStruct.allocate(type);
+    auto xs = struct_.arrayField(0);
+    auto dest = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.no);
+
+    xs.writeSliceHeader(dest, 0).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: dest is not scanned by the GC, but "
+        ~ "this array's block address is a live GC pointer",
     );
 }
 
