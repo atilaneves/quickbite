@@ -544,6 +544,58 @@ alive, not this destination's scan policy). `writeSliceHeader` still has
 no caller in production code; this closes the open question from item
 7 below without wiring anything in yet.
 
+Progress 2026-07-09 (struct phase: native block + DMD field offsets):
+item 7's migration order moves to its second phase -- "a struct is one
+block laid out with DMD field offsets" -- reusing the array phase's
+block/offset machinery rather than growing a parallel set of layout
+rules. `layout.d` gains `structFields`, which returns a `TypeStruct`'s
+fields, in declaration order, as DMD's own `VarDeclaration`s
+(`TypeStruct.sym.fields`, sliced to a plain array), and
+`fieldByteOffset`, which returns one field's byte offset verbatim from
+DMD's own `VarDeclaration.offset`. Both take DMD's own node types
+(`TypeStruct`, `VarDeclaration`) rather than a bare `Type` cast at the
+call site, so the type system -- not a runtime check -- rejects a
+non-struct caller. The layout-forcing subtlety: `sym.fields` and every
+field's `offset` are only meaningful once DMD has laid the struct out
+(`determineSize`/`finalizeSize`), and can be empty or meaningless
+before that. `structFields` forces that layout by calling the
+already-existing `typeByteSize` first -- `Type.size` on a `Tstruct`
+calls `aggregateDeclSize`, which calls `determineSize` ->
+`determineFields` + `finalizeSize` -- reusing DMD's own layout pass
+rather than duplicating it, and inheriting `typeByteSize`'s existing
+`SIZE_INVALID` guard for free. `typeAlignment` is still not exported:
+DMD hands us field offsets directly and `structsize` already includes
+padding, so there is still no reader that would need it.
+
+A new module, `native_struct.d`, adds `NativeStruct`: one `NativeBlock`
+plus the DMD `TypeStruct`, mirroring `NativeArray`'s shape. `allocate`
+sizes the block from `layout.typeByteSize(type)` -- DMD's own
+`structsize`, padding included, never summed from field sizes -- and
+picks the block's scan policy from `layout.typeHasPointers(type)`
+exactly as `NativeArray.allocate` does from the element type: a struct
+with any pointer/slice/class/AA field gets a conservatively scanned
+block, since a block's scan policy is one attribute for its whole byte
+range, not per field. `borrow` wraps memory owned elsewhere through
+`NativeBlock.borrow`, under the same caller-enforced, unverifiable
+precondition as `NativeBlock.borrow`/`NativeArray.borrow`. `fieldCount`
+and `fieldDeclaration` expose the underlying `VarDeclaration`s;
+`field(index)` returns the interior `ubyte[]` view of field `index`,
+spanning `offset .. offset + typeByteSize(fieldType)`. `index` is
+bounds-checked against `fieldCount` first, before any offset or size is
+read, mirroring `NativeArray.element`'s discipline of failing on a bad
+index before any arithmetic runs on it. Unlike `NativeArray.element`,
+there is no overflow to guard in the arithmetic itself -- `offset` and
+`fieldByteSize` are both DMD's own numbers, not a product of two
+caller-controlled values -- so `field` relies on, rather than
+re-derives, DMD's own guarantee that every field lies fully within
+`structsize`.
+
+None of this is wired in yet: no `impl.d`/`Walker`/`Value` integration,
+no `interpreter.md` §9.10 shim retired, no nested-struct or
+array-typed field *composition* (only the raw byte view of one field
+at a time), no class objects, and no writes beyond that raw byte view.
+Alignment remains unexported, per the paragraph above.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

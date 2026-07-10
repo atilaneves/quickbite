@@ -60,3 +60,32 @@ private bool typeHasPointersImpl(imported!"dmd.mtype".Type type) @trusted {
 
     return type.hasPointers;
 }
+
+
+// `type`'s fields, in declaration order, as DMD's own `VarDeclaration`s
+// (`TypeStruct.sym.fields`, sliced to a plain array). Takes a `TypeStruct`
+// rather than a `Type` so the type system -- not a runtime cast -- rejects
+// a non-struct caller; `Type.isTypeStruct` narrows a bare `Type` for callers
+// that only have one. Field offsets are only meaningful once DMD has laid
+// the struct out -- before `determineSize`/`finalizeSize` runs, `sym.fields`
+// can still be empty. `typeByteSize` already forces exactly that layout pass
+// (`Type.size` on a `Tstruct` calls `aggregateDeclSize`, which calls
+// `determineSize` -> `determineFields` + `finalizeSize`) and already throws
+// on `SIZE_INVALID`, so calling it first reuses DMD's own layout logic
+// instead of duplicating it. `TypeStruct` converts to `Type` implicitly, so
+// this costs no cast.
+public imported!"dmd.declaration".VarDeclaration[] structFields(
+    imported!"dmd.mtype".TypeStruct type,
+) @safe {
+    typeByteSize(type);
+    return type.sym.fields[];
+}
+
+
+// The byte offset DMD assigned `field` within its enclosing struct's block
+// (`VarDeclaration.offset`), verbatim. Only meaningful once the enclosing
+// struct has been laid out -- i.e. for a `field` obtained from
+// `structFields`, which already forces that.
+public uint fieldByteOffset(imported!"dmd.declaration".VarDeclaration field) @safe {
+    return field.offset;
+}
