@@ -5041,3 +5041,11 @@ yields that descriptor as the expression result. Element append and all other
 concatenation forms are unchanged. Verification: focused red then green for
 this Bytecode row; `ninja bin/ut` passed. The orchestrator owns the required
 full randomized verification.
+
+`dynamicArray.fieldConcatenationAssignment` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time matrix fixture. The first Bytecode candidate run passed without
+production changes. The fixture appends a dynamic `ubyte[]` to a struct field,
+confirming the existing `CatAssignExp` descriptor write-back through a field.
+Verification: focused Bytecode row, `ninja bin/ut`, and `bin/ut --random`
+passed (seed `4115980552`).
