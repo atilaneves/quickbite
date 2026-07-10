@@ -1470,6 +1470,17 @@ private struct Compiler {
         if (auto array = expression.isArrayLiteralExp)
             return compileArrayLiteralExpression(array);
 
+        if (auto tuple = expression.isTupleExp) {
+            if (tuple.e0 !is null)
+                compileExpression(tuple.e0);
+
+            auto result = Operand.init;
+            if (tuple.exps !is null)
+                foreach (element; *tuple.exps)
+                    result = compileExpression(element);
+            return result;
+        }
+
         if (auto typeid_ = expression.isTypeidExp)
             return compileTypeidExpression(typeid_);
 

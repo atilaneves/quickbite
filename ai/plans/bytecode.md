@@ -5156,3 +5156,16 @@ Verification: focused red then green and `ninja bin/ut` passed. The required
 because it did not throw. The same focused failure reproduced with this rung's
 struct-ref lookup temporarily removed, so it is unrelated and remains outside
 this no-pointer-slice commit.
+
+`struct.tupleofAssignmentCopiesFields` promoted to `Bytecode`, 2026-07-10:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The first Bytecode run was red with `Unsupported expression in
+bytecode core: AliasSeq!(target.head = source.head, target.tail = source.tail)`:
+DMD lowers this `.tupleof` assignment to a `TupleExp` containing the two
+already-supported scalar field assignments. The minimal compiler support runs
+the optional tuple side-effect expression, then each tuple element in order,
+returning the final element's operand. No fixture body changed. This covers
+the generic sequence form while relying on the existing field write path for
+the actual copies. Verification: focused red then green, `ninja bin/ut`, and
+`bin/ut --random` passed (seed `1010252269`). The known unrelated pointer-slice
+diagnostic row is left unchanged.
