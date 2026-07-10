@@ -44,6 +44,35 @@ public string unsupportedNativeTypeMessage(
     );
 }
 
+// Returns a named fail-closed diagnostic for a native call that may retain an
+// interpreted delegate beyond the call. Until the durable trampoline registry
+// exists (§35.4), a void result cannot demonstrate that the native side invoked
+// the callback during this call, so a delegate parameter is conservatively
+// treated as escaping.
+public string durableInboundTrampolineUnsupportedMessage(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeFunction;
+    import std.conv: text;
+
+    auto type = cast(TypeFunction) function_.type;
+    if (type is null || type.next.toBasetype.ty != TY.Tvoid ||
+        type.parameterList.parameters is null)
+        return null;
+
+    foreach (parameter; *type.parameterList.parameters)
+        if (parameter.type.toBasetype.ty == TY.Tdelegate)
+            return text(
+                "`",
+                function_.toChars,
+                "` cannot be called natively: durable inbound trampoline " ~
+                "unsupported",
+            );
+
+    return null;
+}
+
 // The basetype of `type` if it is an associative array the bridge cannot cross,
 // else null.
 private imported!"dmd.mtype".Type uncrossableAssocArray(

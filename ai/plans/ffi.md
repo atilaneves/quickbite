@@ -3491,16 +3491,35 @@ shared API, fail-closed diagnostics, and the first future oracle fixture shape.
 binds a rooted session invoker by callback id, so a future fixture cannot
 accidentally retain call-scoped state after the registering call returns.
 
+**Ledger 2026-07-10 (durable callback fail-closed).** Added
+`dependencyImage.externDDurableDelegateCallback.Interpreter`: a compiled
+dependency image stores an `extern(D)` `int delegate(int)` in a module global;
+the interpreted test captures `base = 40`, registers the callback, and a later
+native call invokes it with `2`. `SystemLinker` passes with `42`. Before the
+guard, Interpreter also happened to pass: the scope-exit-freed libffi closure
+remained executable, demonstrating fail-open use-after-free rather than a
+reliable failure. Until the registry exists, the Interpreter now rejects a
+void native call with a top-level delegate parameter before libffi allocation.
+The check is mechanically derived from the DMD signature, not the symbol name:
+a void result provides no proof that native code consumed the call-scoped
+callback during that call. It reports `` `registerCallback` cannot be called
+natively: durable inbound trampoline unsupported ``. Value-returning callback
+calls remain on the existing §34.16 call-scoped path. This deliberately does
+not allocate, retain, or free any durable closure; the registry contract above
+is still the next implementation step. Focused fixture: green after the guard.
+
 ### 35.5 The escape contracts are unenforceable — the boundary is fail-open
 
 **Claim.** §34.10: "reject any signature that lets the slice escape".
 §34.16: "reject a callback that can escape the call boundary".
 
 **Reality.** There is no escape analysis over opaque native code and there
-cannot be; nothing rejects anything. Pins (`GC.addRoot`, keep-alive buffers,
-closure contexts) last exactly for the call. A dependency that retains a
-passed pointer, slice, or delegate past the call dangles with no diagnostic
-— the failure is a later crash or silent corruption, not a named error.
+cannot be; there is no general rejection. §35.4 now conservatively rejects a
+void native call with a top-level delegate parameter, but other escaping
+shapes remain fail-open. Pins (`GC.addRoot`, keep-alive buffers, closure
+contexts) last exactly for the call. A dependency that retains a passed
+pointer, slice, or delegate past the call dangles with no diagnostic — the
+failure is a later crash or silent corruption, not a named error.
 
 **Honest statement, recorded as documentation not as a rung:** the boundary
 is fail-open on escape. No fixture can pin this deterministically (it is

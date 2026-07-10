@@ -41,7 +41,11 @@ public bool tryCallNative(
     out imported!"quickbite.lang".Value[] argumentWritebacks,
     out PointerElementsWriteback[] pointerWritebacks,
 ) {
-    import quickbite.ffi: callNative;
+    import quickbite.ffi:
+        callNative, durableInboundTrampolineUnsupportedMessage;
+
+    if (const unsupported = durableInboundTrampolineUnsupportedMessage(function_))
+        throw new Exception(unsupported);
 
     auto marshaller = new InterpreterNativeMarshaller(
         arguments,

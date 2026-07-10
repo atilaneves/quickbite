@@ -2384,6 +2384,85 @@ unittest {
     }
 }
 
+// A dependency image retains an interpreted extern(D) delegate beyond the
+// registering FFI call, then invokes it through a later native call (ffi.md
+// §35.4). SystemLinker proves D permits this; until the durable inbound
+// trampoline registry exists, Interpreter must reject the registration with a
+// named diagnostic rather than hand native code a call-scoped trampoline.
+@("dependencyImage.externDDurableDelegateCallback.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_durable_callback_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_durable_callback_fixture;
+
+            extern(D) {
+                int delegate(int) storedCallback;
+
+                void registerCallback(int delegate(int) callback) {
+                    storedCallback = callback;
+                }
+
+                int invokeRegisteredCallback(int value) {
+                    return storedCallback(value);
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_durable_callback_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_durable_callback_fixture;
+
+            extern(D) {
+                void registerCallback(int delegate(int) callback);
+                int invokeRegisteredCallback(int value);
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_durable_callback_fixture;
+
+                unittest {
+                    int base = 40;
+                    int value = 2;
+                    int delegate(int) callback = (int n) => n + base;
+
+                    registerCallback(callback);
+                    assert(invokeRegisteredCallback(value) == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == false;
+        interpreted[0].message.should ==
+            "`registerCallback` cannot be called natively: durable inbound " ~
+            "trampoline unsupported";
+    }
+}
+
 // A multi-argument interpreted delegate passed into native code (ffi.md §34.16).
 // The callback subtracts its arguments, so a wrong explicit-argument order would
 // return -7; a passing result proves the trampoline restores the reversed
