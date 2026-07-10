@@ -1976,6 +1976,79 @@ failed, 6 expected `@ShouldFail`, identical to the pre-change baseline). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
 
+Progress 2026-07-10 (single byte-size authority): the prior two notes
+routed `impl.d`/`ffi_marshal.d`'s hand-rolled per-field/per-element byte
+walks through `NativeStruct`/`NativeArray`, but both files still called
+`dmd.typesem.size` directly at eleven remaining sites to get a bare
+type's byte size, each casting DMD's `SIZE_INVALID` sentinel to
+`size_t` in place -- silently, unlike `layout.typeByteSize`, which
+throws instead. This commit routes every one of those sites through
+`layout.typeByteSize`, completing this branch's single-layout-authority
+theme: `layout.typeByteSize` is now the only place in the interpreter
+package that calls `dmd.typesem.size` for a byte size. Converted, all in
+`ffi_marshal.d` unless noted: `InterpreterInboundTrampolineSession.
+invoke`'s callback-argument size, `pointerWritebacks`'s element size,
+`writeRefResult`'s ref-result size, `invokeClosure`'s callback-argument
+size, `marshalPointerElements`'s element size, `unmarshalNative`'s and
+`marshalNative`'s pointee size (both `public`, called from `impl.d`),
+and in `impl.d`: `symbolOffsetLocalValue`'s static-array element size,
+`runMemcpyCall`'s source-element size, and `loadNativePointerElement`/
+`storeNativePointerElement`'s element size. Each converted call's now-
+solitary `import dmd.typesem: size;` was removed and replaced with
+`import quickbite.backends.interpreter.layout: typeByteSize;`; the
+`cast(size_t)` these sites all wrapped `size(...)` in is gone too,
+since `typeByteSize` already returns `size_t`. A couple of these sites
+carried a `// hand-rolled ... size(fieldType) walk` style comment
+referencing the old direct call; those were left alone where they
+describe a *different*, already-converted walk (the `Tstruct`/`Tsarray`
+arms noted in the 2026-07-10 "aggregate handles" note above), since
+they document history, not this commit's lines.
+
+Per-site `SIZE_INVALID`-unreachable check: every converted call sits on
+a type that is actively being marshalled, indexed, or dereferenced at
+that point -- a callback/argument/ref-result/receiver type mid-FFI-call,
+a static array's own element type (whose enclosing static array is
+already known-sized, which DMD cannot compute without first sizing the
+element), a memcpy source pointer's pointee (memcpy requires a known
+element stride to advance by), or a native-pointer element being read
+or written through `loadNativePointerElement`/
+`storeNativePointerElement` (native memory access needs a known byte
+width). None of these can legitimately reach `Type.terror`/an unsized
+type in practice, so replacing the silent `SIZE_INVALID`-as-huge-
+`size_t` cast with `typeByteSize`'s throw is a hardening -- an
+unreachable-in-practice guard becoming loud instead of silent -- not a
+behaviour change.
+
+One site was deliberately left on raw DMD access:
+`impl.d`'s `pointerElementSize` (pointer-arithmetic scaling) reads
+`element.size` as a property (UFCS on the same `dmd.typesem.size`, but
+call-free syntax, not the `cast(size_t) size(type)` shape this task's
+grep targeted) and casts the result to `long`, not `size_t`. Casting
+`SIZE_INVALID` (`~cast(ulong) 0`, all bits set) to a signed `long`
+reinterprets it as `-1`, and the function already throws
+"Unsupported pointer element type." whenever `elementSize <= 0` -- so,
+unlike the eleven converted sites, this one already turns
+`SIZE_INVALID` into a loud failure by an existing, independent guard.
+Converting it would still be a legitimate future cleanup, but it is a
+different shape than the pattern this task scoped, so it was left
+alone and is reported here rather than silently folded in.
+
+No layout number, offset walk, or aggregate-handling behaviour changed;
+this is purely internal call routing. No test was added or modified.
+Focused runs: `bin/ut -s ut.backends.interpreter` (216 tests, 0 failed,
+unchanged), `bin/ut -s ut.backends.interpreter.native_scalar ut.
+backends.interpreter.native_array ut.backends.interpreter.native_struct
+ut.backends.interpreter.layout` (182 tests, 0 failed, unchanged),
+`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
+dependency_image ut.backends.runner.rt.concurrency ut.backends.runner.
+rt.file ut.backends.runner.rt.random ut.backends.runner.rt.inline_asm
+ut.backends.runner.rt.elf ut.backends.runner.rt.llvm_jit` (162 tests, 0
+failed, unchanged), and `bin/ut -s ut.backends.runner.ct.expressions ut.
+backends.runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
+evaluator.eval` (772 tests, 0 failed, 6 expected `@ShouldFail`,
+identical to the pre-change baseline). The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

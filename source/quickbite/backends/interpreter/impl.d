@@ -1816,10 +1816,10 @@ private struct Walker {
                 locals[variable] = defaultValue(variable);
 
             if (auto current = variable in locals) {
-                import dmd.typesem: size;
+                import quickbite.backends.interpreter.layout: typeByteSize;
 
                 auto elementType = variable.type.toBasetype.nextOf.toBasetype;
-                const elementSize = cast(size_t) size(elementType);
+                const elementSize = typeByteSize(elementType);
                 const elementOffset = elementSize == 0
                     ? 0
                     : cast(size_t) symbol.offset / elementSize;
@@ -2535,7 +2535,7 @@ private struct Walker {
     }
 
     private Value runMemcpyCall(imported!"dmd.expression".CallExp call) {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         if (call.arguments is null || call.arguments.length < 2)
             throw new Exception("Unsupported eval call.");
@@ -2545,7 +2545,7 @@ private struct Walker {
         const destination = runExpression(destinationExpression);
         const sourcePointer = runExpression(sourceExpression);
         auto sourcePointerType = memcpyElementPointerType(sourceExpression);
-        const elementSize = cast(size_t) size(
+        const elementSize = typeByteSize(
             sourcePointerType.toBasetype.nextOf.toBasetype,
         );
         const count = call.arguments.length < 3
@@ -5714,7 +5714,7 @@ private struct Walker {
         in size_t index,
     ) {
         import quickbite.backends.interpreter.ffi_marshal: unmarshalNative;
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         return unmarshalNative(
@@ -5722,7 +5722,7 @@ private struct Walker {
             nativeElementAddress(
                 pointer.asNativePointer,
                 index,
-                cast(size_t) size(elementType),
+                typeByteSize(elementType),
             ),
         );
     }
@@ -5734,7 +5734,7 @@ private struct Walker {
         in Value value,
     ) {
         import quickbite.backends.interpreter.ffi_marshal: marshalNative;
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         marshalNative(
@@ -5742,7 +5742,7 @@ private struct Walker {
             nativeElementAddress(
                 pointer.asNativePointer,
                 index,
-                cast(size_t) size(elementType),
+                typeByteSize(elementType),
             ),
             value,
         );

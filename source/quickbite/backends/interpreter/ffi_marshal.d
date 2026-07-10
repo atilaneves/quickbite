@@ -66,12 +66,12 @@ public struct InterpreterInboundTrampolineSession {
     ) {
         import dmd.astenums: TY;
         import dmd.mtype: Type;
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         assert(callbackId < _callbacks.length, "unknown durable callback id");
         Value[] callbackArguments;
         foreach (index, parameterType; parameterTypes) {
-            const argumentSize = cast(size_t) size(parameterType);
+            const argumentSize = typeByteSize(parameterType);
             callbackArguments ~= unmarshalValue(
                 parameterType,
                 (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
@@ -403,11 +403,11 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     }
 
     public PointerElementsWriteback[] pointerWritebacks() {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         PointerElementsWriteback[] result;
         foreach (writeback; _pointerWritebacks) {
-            const elementSize = cast(size_t) size(writeback.elementType);
+            const elementSize = typeByteSize(writeback.elementType);
             Value[] elements;
             foreach (index; 0 .. writeback.bytes.length / elementSize)
                 elements ~= unmarshalValue(
@@ -522,10 +522,10 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         marshalArgument(
-            mutableNativeBytes(address, cast(size_t) size(type)),
+            mutableNativeBytes(address, typeByteSize(type)),
             type,
             _refResultValue,
             stableString,
@@ -548,7 +548,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ubyte[] resultBuffer,
     ) {
         import dmd.astenums: TY;
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         assert(_invokeDelegate !is null, "native callback with no delegate invoker");
 
@@ -557,7 +557,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         // buffer (ffi.md §34.16).
         Value[] callbackArguments;
         foreach (index, parameterType; parameterTypes) {
-            const argumentSize = cast(size_t) size(parameterType);
+            const argumentSize = typeByteSize(parameterType);
             callbackArguments ~= unmarshalValue(
                 parameterType,
                 (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
@@ -815,9 +815,9 @@ private ubyte[] marshalPointerElements(
     in imported!"quickbite.lang".Value pointer,
 ) {
     import quickbite.lang: Value;
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.layout: typeByteSize;
 
-    const elementSize = cast(size_t) size(elementType);
+    const elementSize = typeByteSize(elementType);
     const offset = cast(size_t) pointer.pointerElementOffset;
     const length = pointer.pointerLength - offset;
     auto bytes = new ubyte[](length * elementSize);
@@ -1210,9 +1210,9 @@ public imported!"quickbite.lang".Value unmarshalNative(
     imported!"dmd.mtype".Type type,
     in void* address,
 ) {
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.layout: typeByteSize;
 
-    return unmarshalValue(type, nativeBytes(address, cast(size_t) size(type)));
+    return unmarshalValue(type, nativeBytes(address, typeByteSize(type)));
 }
 
 // Write a Value into native memory. String and slice fields are backed by
@@ -1223,12 +1223,12 @@ public void marshalNative(
     void* address,
     in imported!"quickbite.lang".Value value,
 ) {
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.layout: typeByteSize;
 
     const(char)*[] keepAlive;
     ubyte[][] keepAliveBuffers;
     marshalArgument(
-        mutableNativeBytes(address, cast(size_t) size(type)),
+        mutableNativeBytes(address, typeByteSize(type)),
         type,
         value,
         true,
