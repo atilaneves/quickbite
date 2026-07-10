@@ -234,6 +234,9 @@ private string stdConvTextArgument(
     in imported!"quickbite.lang".Value argument,
     in bool rawStringArgument,
 ) @safe pure {
+    // `rawStringArgument` comes from the original D expression type; after
+    // evaluation, `char[]` is only a Value array, but `std.conv.text` renders
+    // it as string text instead of an element range.
     return rawStringArgument || argument.isStringDisplayArray
         ? argument.asCharArrayString
         : argument.dText;
