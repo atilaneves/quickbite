@@ -89,3 +89,29 @@ public imported!"dmd.declaration".VarDeclaration[] structFields(
 public uint fieldByteOffset(imported!"dmd.declaration".VarDeclaration field) @safe {
     return field.offset;
 }
+
+
+// The element count DMD recorded for a static-array type (`TypeSArray.
+// dim`), read via `dim.toUInteger()` -- DMD's own authoritative source for
+// "how many elements this static array type has", not re-derived from a
+// byte-size division. `typeByteSize(type) / typeByteSize(type.next)` would
+// give the same answer for every real static-array type (D packs array
+// elements back-to-back with no inter-element padding), but that is an
+// indirect derivation through two other DMD numbers plus an assumption
+// about packing, whereas `dim` is the one field that IS the count --
+// reading it directly keeps DMD as the single source of truth for this
+// fact, the same way `fieldByteOffset` above reads `VarDeclaration.offset`
+// directly rather than re-deriving it from anything else.
+public size_t staticArrayLength(imported!"dmd.mtype".TypeSArray type) @safe {
+    return staticArrayLengthImpl(type);
+}
+
+// `Expression.toUInteger` is not @safe/pure/nothrow; this is the @trusted
+// boundary -- it only reads DMD's own already-computed integer constant
+// for `dim` (a `TypeSArray`'s dimension is semantically analysed down to a
+// constant by the time `structFields`/`typeByteSize` have forced layout),
+// narrowing it with the same cast-only trust `typeByteSizeImpl` above
+// applies to `Type.size`.
+private size_t staticArrayLengthImpl(imported!"dmd.mtype".TypeSArray type) @trusted {
+    return cast(size_t) type.dim.toUInteger();
+}

@@ -145,6 +145,45 @@ public struct NativeBlock {
         _bytes[oldByteLength .. $] = 0;
         return true;
     }
+
+    // A sub-range view over this block's own bytes -- a nested aggregate
+    // field (a struct-typed or static-array-typed field) is not a separate
+    // allocation, just a shorter span of this block at its own DMD offset.
+    // Slicing `_bytes` is ordinary, bounds-checked `@safe` D; no raw pointer
+    // is ever formed, unlike `borrow`.
+    //
+    // `Scan` is carried forward from this block unchanged: it is a
+    // property of the underlying GC allocation (whether the whole thing
+    // gets scanned on collect), not of any particular sub-range someone
+    // happens to be viewing, so a sub-range must report exactly what its
+    // parent would.
+    //
+    // `Ownership.borrowed`: a sub-range does not own an independent
+    // allocation -- it cannot legitimately be grown or reallocated in
+    // place, since `GC.extend`/`GC.calloc` operate on whole allocations,
+    // not on some byte range in the middle of one. That is exactly
+    // `borrowed`'s existing contract ("memory owned elsewhere; the owner
+    // keeps it alive"): the owner here is this block itself (or, one level
+    // further out, whatever *this* block borrowed from), and it keeps the
+    // memory alive for exactly as long as this sub-range needs it to.
+    // Reusing `borrowed` rather than inventing a third `Ownership` value
+    // means every existing borrowed-block guard (`NativeArray.reserve`'s
+    // "cannot reallocate a borrowed block") already applies correctly to a
+    // sub-range for free.
+    public NativeBlock subRange(in size_t byteOffset, in size_t byteLength) pure @safe {
+        import core.checkedint: addu;
+
+        bool overflow;
+        const end = addu(byteOffset, byteLength, overflow);
+        if (overflow || end > _bytes.length)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_block.NativeBlock."
+                ~ "subRange: byteOffset + byteLength does not fit within "
+                ~ "this block's byteLength",
+            );
+
+        return NativeBlock(_bytes[byteOffset .. end], Ownership.borrowed, _scan);
+    }
 }
 
 // Building a slice view over caller-owned memory needs raw pointer

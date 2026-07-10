@@ -632,6 +632,99 @@ Still not done: no `impl.d`/`Walker`/`Value` wiring, no `interpreter.md`
 static-array-inline field, no class objects. The interpreter still
 boxes everything; none of this native storage has a caller yet.
 
+Progress 2026-07-09 (nested aggregate field views): the two remaining
+"Storage shape" gaps just above are closed for the *view* case (reading
+an existing field as its own handle, not allocating new storage). Both
+are proven true now: a struct-typed field (`struct Outer { int a; Inner
+inner; }`) is a sub-range of `Outer`'s one block at DMD's own offset for
+`inner`, laid out with `Inner`'s own field offsets relative to that
+sub-range, not to `Outer`'s block from byte 0; a static-array-typed field
+(`struct Holder { int[3] xs; }`) is 12 bytes inline in `Holder`'s block,
+not a slice header (`Holder.sizeof == 12` is the host-compiler oracle for
+that -- a slice-header field would make it 16), viewed as a `NativeArray`
+over the same bytes. Both alias the parent: a write through the nested
+view lands in the parent's bytes and vice versa, and neither allocates a
+byte.
+
+The new surface: `NativeBlock.subRange(byteOffset, byteLength) @safe`,
+`NativeStruct.structField(index) @safe -> NativeStruct`, and
+`NativeStruct.arrayField(index) @safe -> NativeArray`, plus
+`layout.staticArrayLength(TypeSArray) @safe` and a new `NativeArray.
+adopt(block, elementType, length) @safe` factory that wraps an existing
+block instead of allocating one (needed because `arrayField` must hand
+back an array *over* the struct's own sub-range, not a fresh
+allocation).
+
+`subRange` is the answer to "what does a block that is a sub-range of
+another block look like": it slices `_bytes` with ordinary
+bounds-checked D (no raw pointer, unlike `borrow`), and is reachable only
+through this `@safe` factory, never through the `@system` raw-pointer
+`borrow` path -- deriving a sub-slice of an existing `ubyte[]` needs no
+unsafe cast, so routing it through `borrow` would have been a strictly
+worse boundary. Its `Scan` is carried forward from the parent unchanged:
+`Scan` is an attribute of the whole underlying GC allocation (whether the
+collector scans it on collect at all), not of any particular sub-range
+of it, so a sub-range has no legitimate way to disagree with its parent
+about that. Its `Ownership` is `borrowed`: a sub-range is not an
+independent allocation and cannot legitimately be grown or reallocated in
+place (`GC.extend`/`GC.calloc` operate on whole allocations, not a byte
+range in the middle of one), which is exactly `borrowed`'s existing
+contract -- "memory owned elsewhere; the owner keeps it alive" -- with
+the owner here being the parent block itself (or, one level further out,
+whatever the parent itself borrowed from). Reusing `borrowed` rather than
+inventing a third `Ownership` value means every existing borrowed-block
+guard (starting with `NativeArray.reserve`'s refusal to reallocate a
+borrowed block) already applies correctly to a sub-range for free, with
+no new code.
+
+That choice makes `trueByteSize`/`capacity` honest for an interior view
+without any extra guarding: `GC.sizeOf` on an interior pointer (not the
+head of an allocation) returns 0 by its own documented contract, so a
+non-zero-offset `subRange`'s `trueByteSize` is pinned at 0 -- the same
+honest "I don't know" a borrowed block already reports, not the parent's
+true size, which would otherwise mislead a caller like `NativeArray.
+capacity` (which divides `trueByteSize` by stride) into believing a
+sub-range has room to grow in place when it does not. Nothing new had to
+enforce that; it falls out of `Ownership.borrowed` plus `GC.sizeOf`'s own
+contract.
+
+The static array's element count comes from `TypeSArray.dim.toUInteger()`
+(wrapped in a `@trusted` boundary, `Expression.toUInteger` not being
+`@safe`/`pure`/`nothrow`), not from `typeByteSize(fieldType) /
+typeByteSize(elementType)`. Both give the same answer for every real
+static-array type (D packs array elements back-to-back with no
+inter-element padding), but `dim` is the one DMD field that IS the
+element count, where the division is an indirect re-derivation through
+two other DMD numbers plus an assumption about packing. Reading `dim`
+directly keeps DMD as the single source of truth for this fact, exactly
+as `fieldByteOffset` already reads `VarDeclaration.offset` directly
+rather than re-deriving it.
+
+Test correction in the same commit: the pre-existing
+`writeSliceHeaderIntoSliceFieldReinterpretsAsHostCompilerSlice` test's
+`GC.collect` and nested scope are removed. D's GC conservatively scans
+the stack and registers, so a collect afterwards cannot distinguish "the
+element block is kept alive by the scanned struct field" (the property
+under test) from "a stale pointer bit-pattern happens to still sit in an
+unreused stack slot" -- it would pass even with a wrong scan policy,
+proving nothing, and is flaky by construction. The real, deterministic
+test of the scan policy is `allocate.pointerBearingFieldYieldsScannedBlock`,
+which already asserts `Scan.conservative` directly. What remains is
+honestly just a header-round-trips-as-a-host-slice test, which is what
+it is now documented as. The same test's `elements.element(i)[0] = ...`
+byte-0-only writes are also replaced with full 4-byte int stores, since
+writing only the first byte of a 4-byte `int` is endian-dependent (and
+was relying on the rest of the block already being zeroed).
+
+Still not done: dynamic-array-field *read-back* (reading an existing
+slice-header field back as a `NativeArray` over its pointed-to element
+block -- distinct from writing one, which already existed, and from the
+sub-range views added here, since a slice header points at a separately
+tracked block rather than being inline); class objects; the interpreter
+call site (`impl.d`/`Walker`/`Value`); and every `interpreter.md` §9.10
+shim. The interpreter still boxes everything; none of this native
+storage has a caller yet.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

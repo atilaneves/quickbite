@@ -85,6 +85,25 @@ public struct NativeArray {
         );
     }
 
+    // Adopts an existing block rather than allocating a new one -- a
+    // static-array-typed struct field's bytes are already storage (a
+    // `NativeBlock.subRange` of the enclosing struct's own block); this
+    // views them as an array without copying or allocating a byte.
+    // `length` comes from the caller (`layout.staticArrayLength` for a
+    // static-array field) since a bare `NativeBlock` carries bytes, not a D
+    // array length; `stride` is still computed from `elementType`, exactly
+    // as `allocate`/`borrow` do, so it never becomes a second, driftable
+    // copy of DMD's own element size.
+    public static NativeArray adopt(
+        NativeBlock block,
+        Type elementType,
+        in size_t length,
+    ) @safe {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        return NativeArray(block, elementType, length, typeByteSize(elementType));
+    }
+
     public inout(Type) elementType() inout pure nothrow @nogc @safe {
         return _elementType;
     }

@@ -183,27 +183,30 @@ unittest {
 // `writeSliceHeader`'s scanned-destination check demands -- the two
 // contracts were written independently and this is where they meet.
 //
-// The element block is allocated and written to inside a nested scope, so
-// by the time `GC.collect` runs, the only surviving reference to it is
-// through the (conservatively scanned) struct field itself, not a
-// `NativeArray` handle still live on this frame -- otherwise this would
-// pass merely because `elements` was still on the stack.
+// This is honestly just a header-round-trips-as-a-host-slice test, not a
+// liveness test: no `GC.collect` is attempted here (unlike an earlier
+// version of this test). D's GC conservatively scans the stack and
+// registers, so a collect afterwards cannot distinguish "the element block
+// is kept alive by the scanned struct field" from "a stale pointer
+// bit-pattern happens to still sit in an unreused stack slot" -- it would
+// pass even with a wrong scan policy, proving nothing. The real,
+// deterministic test of the scan policy itself is
+// `allocate.pointerBearingFieldYieldsScannedBlock` above, which asserts
+// `Scan.conservative` directly rather than inferring it from survival
+// after a collection.
 @("NativeStruct.field.writeSliceHeaderIntoSliceFieldReinterpretsAsHostCompilerSlice")
 @system
 unittest {
-    import core.memory: GC;
-
     auto type = structTypeOf(q{ struct WithSlice { int[] xs; } }, "WithSlice");
     auto struct_ = NativeStruct.allocate(type);
-
-    {
-        auto elements = NativeArray.allocate(Type.tint32, 3);
-        elements.element(0)[0] = 1;
-        elements.element(1)[0] = 2;
-        elements.element(2)[0] = 3;
-        elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(0));
-    }
-    GC.collect;
+    auto elements = NativeArray.allocate(Type.tint32, 3);
+    // Full 4-byte stores, not `element(i)[0] = ...`: writing only byte 0 of
+    // a 4-byte `int` would be endian-dependent (and rely on the block
+    // already being zeroed for the other three bytes to read back as 0).
+    *cast(int*) elements.element(0).ptr = 1;
+    *cast(int*) elements.element(1).ptr = 2;
+    *cast(int*) elements.element(2).ptr = 3;
+    elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(0));
 
     auto guest = *cast(WithSlice*) struct_.block.address;
     guest.xs.should == [1, 2, 3];
@@ -279,6 +282,179 @@ unittest {
     struct_.field(1)[] = [0x11, 0x22, 0x33, 0x44];
 
     (cast(ubyte*) &backing.b)[0 .. 4].should == [0x11, 0x22, 0x33, 0x44];
+}
+
+
+struct Inner {
+    int x;
+    long y;
+}
+
+
+struct Outer {
+    int a;
+    Inner inner;
+}
+
+
+// The centrepiece for struct-in-struct: `outer.structField(1)` is not a
+// separate block, it is a sub-range of `Outer`'s one block at DMD's own
+// offset for `inner`, laid out with `Inner`'s own field offsets relative
+// to that sub-range. A write through the nested view's field 1 (`Inner.y`)
+// must land at `Outer.inner.offsetof + Inner.y.offsetof` in the *parent's*
+// bytes -- proving the nested view aliases the parent rather than copying
+// it, and that its own field offsets are relative to the sub-range, not
+// to the parent's block from byte 0.
+@("NativeStruct.structField.writeThroughNestedFieldViewLandsAtOffsetRelativeToParentInHostCompilerBytes")
+unittest {
+    auto type = structTypeOf(
+        q{ struct Inner { int x; long y; } struct Outer { int a; Inner inner; } },
+        "Outer",
+    );
+    auto outer = NativeStruct.allocate(type);
+
+    outer.structField(1).field(1)[] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    const offset = Outer.inner.offsetof + Inner.y.offsetof;
+    outer.block.bytes[offset .. offset + long.sizeof].should == [1, 2, 3, 4, 5, 6, 7, 8];
+}
+
+
+@("NativeStruct.structField.reportsBorrowedOwnershipEvenThoughParentIsOwned")
+unittest {
+    auto type = structTypeOf(
+        q{ struct Inner { int x; long y; } struct Outer { int a; Inner inner; } },
+        "Outer",
+    );
+    auto outer = NativeStruct.allocate(type);
+
+    outer.ownership.should == NativeBlock.Ownership.owned;
+    outer.structField(1).ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+struct InnerWithSlice {
+    int[] xs;
+}
+
+
+struct OuterWithSlice {
+    int a;
+    InnerWithSlice inner;
+}
+
+
+// A struct-in-struct view shares the parent's `Scan` policy exactly:
+// `Scan` is an attribute of the whole underlying GC allocation, chosen
+// once at `allocate` time from whether *any* field, at any nesting depth,
+// carries pointers -- not a per-sub-range attribute the view could
+// legitimately disagree with its parent about.
+@("NativeStruct.structField.sharesParentConservativeScanPolicy")
+unittest {
+    auto type = structTypeOf(
+        q{ struct InnerWithSlice { int[] xs; } struct OuterWithSlice { int a; InnerWithSlice inner; } },
+        "OuterWithSlice",
+    );
+    auto outer = NativeStruct.allocate(type);
+
+    outer.scan.should == NativeBlock.Scan.conservative;
+    outer.structField(1).scan.should == NativeBlock.Scan.conservative;
+}
+
+
+@("NativeStruct.structField.indexOfNonStructFieldThrows")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.structField(1).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_struct.NativeStruct."
+        ~ "structField: field is not a struct",
+    );
+}
+
+
+@("NativeStruct.structField.outOfRangeIndexThrows")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.structField(3).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_struct.NativeStruct."
+        ~ "structField: index out of range",
+    );
+}
+
+
+struct Holder {
+    int[3] xs;
+}
+
+
+// The oracle for "inline, not a slice header": a slice-header field
+// (`{ size_t length; int* ptr; }`) would make `Holder.sizeof == 16`;
+// `int[3]` packed inline is `Holder.sizeof == 12`, three `int`s and
+// nothing else.
+@("NativeStruct.allocate.staticArrayFieldByteSizeIsInlineNotASliceHeader")
+unittest {
+    auto type = structTypeOf(q{ struct Holder { int[3] xs; } }, "Holder");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.byteSize.should == Holder.sizeof;
+    Holder.sizeof.should == 12;
+}
+
+
+@("NativeStruct.arrayField.lengthAndStrideMatchHostCompilerElementCountAndElementSizeof")
+unittest {
+    auto type = structTypeOf(q{ struct Holder { int[3] xs; } }, "Holder");
+    auto struct_ = NativeStruct.allocate(type);
+    auto xs = struct_.arrayField(0);
+
+    xs.length.should == 3;
+    xs.stride.should == int.sizeof;
+}
+
+
+// Writing element 2 through the array view must land at
+// `Holder.xs.offsetof + 2 * int.sizeof` in the parent's bytes -- read back
+// by reinterpreting the struct's block as the host compiler's own
+// `Holder`, the same oracle discipline the slice-header tests above use.
+@("NativeStruct.arrayField.writeThroughViewIsVisibleAtHostCompilerOffsetForElement2")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct Holder { int[3] xs; } }, "Holder");
+    auto struct_ = NativeStruct.allocate(type);
+    auto xs = struct_.arrayField(0);
+
+    *cast(int*) xs.element(2).ptr = 42;
+
+    auto guest = *cast(Holder*) struct_.block.address;
+    guest.xs[2].should == 42;
+}
+
+
+@("NativeStruct.arrayField.indexOfDynamicArrayFieldThrows")
+unittest {
+    auto type = structTypeOf(q{ struct WithSlice { int[] xs; } }, "WithSlice");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.arrayField(0).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_struct.NativeStruct."
+        ~ "arrayField: field is not a static array",
+    );
+}
+
+
+@("NativeStruct.arrayField.outOfRangeIndexThrows")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.arrayField(3).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_struct.NativeStruct."
+        ~ "arrayField: index out of range",
+    );
 }
 
 

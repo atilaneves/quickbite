@@ -199,3 +199,111 @@ unittest {
     block.bytes.should == [1, 2, 3, 4];
     block.address.should == address;
 }
+
+
+@("NativeBlock.subRange.byteLengthIsRequestedLength")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+
+    block.subRange(4, 8).byteLength.should == 8;
+}
+
+
+@("NativeBlock.subRange.writeThroughSubRangeIsVisibleInParent")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+    auto sub = block.subRange(4, 8);
+
+    sub.bytes[0] = 42;
+
+    block.bytes[4].should == 42;
+}
+
+
+@("NativeBlock.subRange.writeThroughParentIsVisibleInSubRange")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+    auto sub = block.subRange(4, 8);
+
+    block.bytes[4] = 99;
+
+    sub.bytes[0].should == 99;
+}
+
+
+@("NativeBlock.subRange.carriesParentsConservativeScanPolicy")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.conservative);
+
+    block.subRange(4, 8).scan.should == NativeBlock.Scan.conservative;
+}
+
+
+@("NativeBlock.subRange.carriesParentsNoScanPolicy")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+
+    block.subRange(4, 8).scan.should == NativeBlock.Scan.no;
+}
+
+
+@("NativeBlock.subRange.reportsBorrowedOwnership")
+unittest {
+    // Not an independent allocation: it cannot legitimately be grown or
+    // reallocated in place (`GC.extend`/`GC.calloc` operate on whole
+    // allocations, not a byte range in the middle of one), which is
+    // exactly `borrowed`'s existing contract -- the owner here is the
+    // parent block itself.
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+
+    block.subRange(4, 8).ownership.should == NativeBlock.Ownership.borrowed;
+}
+
+
+// `GC.sizeOf` on an interior pointer -- not the head of an allocation --
+// returns 0, per its own documented contract (see `trueByteSize`'s
+// comment above). A non-zero-offset sub-range's address is never the head
+// of the parent's allocation, so this pins that `trueByteSize` reports
+// that same honest "I don't know" here, rather than the parent's true
+// size, which would otherwise mislead a caller (e.g. `NativeArray.
+// capacity`, which divides `trueByteSize` by stride) into believing a
+// sub-range has room to grow in place when it does not -- `NativeArray.
+// reserve` already separately refuses to reallocate any `borrowed` block
+// regardless of what `trueByteSize`/`capacity` report.
+@("NativeBlock.subRange.trueByteSizeIsZeroForAnInteriorOffset")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+
+    block.subRange(4, 8).trueByteSize.should == 0;
+}
+
+
+@("NativeBlock.subRange.outOfBoundsThrowsWithoutCorruptingParentBytes")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+    block.bytes[] = 0xAA;
+
+    block.subRange(12, 8).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_block.NativeBlock."
+        ~ "subRange: byteOffset + byteLength does not fit within this "
+        ~ "block's byteLength",
+    );
+
+    foreach (b; block.bytes)
+        b.should == 0xAA;
+}
+
+
+@("NativeBlock.subRange.byteOffsetNearSizeTMaxOverflowsInsteadOfWrapping")
+unittest {
+    auto block = NativeBlock.allocate(16, NativeBlock.Scan.no);
+
+    // byteOffset + byteLength overflows size_t and would wrap to a tiny
+    // value that fits `byteLength` if computed with a plain `+` instead of
+    // `core.checkedint.addu`.
+    block.subRange(size_t.max - 1, 8).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_block.NativeBlock."
+        ~ "subRange: byteOffset + byteLength does not fit within this "
+        ~ "block's byteLength",
+    );
+}
