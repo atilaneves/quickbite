@@ -5006,3 +5006,14 @@ rows were collapsed onto the compiled-oracle `Bytecode` expectation. Focused
 stale-name scans found no `BytecodeNewCore` references in `source/` or
 `tests/`, no duplicate generated test names remained, and
 `bin/ut --random` passed.
+
+`malloc.pointerReturn.nativeMemory` promoted to `SystemLinker` and
+`Bytecode`, 2026-07-10: pre-approved promotion of the existing positive
+runtime matrix fixture. The exact fixture had only an `Interpreter` row, so
+`SystemLinker` was added and run first to establish the direct compiled-D
+oracle; it passed unchanged. Adding `Bytecode` then passed on its first red
+candidate run, with no production changes. The fixture exercises a
+`malloc(8)` return cast to `ubyte*`, scoped `free`, non-null check, and
+indexed native-memory writes and reads. The separate IR-only no-source block
+above it is intentionally unchanged. Verification: `ninja bin/ut` passed and
+`bin/ut --random` passed with seed `2640497437`.

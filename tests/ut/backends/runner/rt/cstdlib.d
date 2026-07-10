@@ -237,7 +237,7 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, Bytecode)) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
     unittest {
         enum source = q{
