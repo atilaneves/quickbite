@@ -105,6 +105,28 @@ public struct NativeStruct {
         return _fields[index];
     }
 
+    // The DMD byte offset of field `index`, verbatim from `layout.
+    // fieldByteOffset`. `index` is bounds-checked against `fieldCount`
+    // first, matching `fieldDeclaration`/`field`'s own discipline above --
+    // a caller must not reach DMD's own offset lookup on an index that
+    // isn't a real field. This is what a slice-header write into a struct
+    // field needs directly: `array.writeSliceHeader(s.block,
+    // s.fieldByteOffset(i))`. Not `const`, for the same reason as `field`
+    // above: `layout.fieldByteOffset` takes a plain, unqualified
+    // `VarDeclaration`, matching how DMD nodes are handled everywhere else
+    // in this codebase.
+    public size_t fieldByteOffset(in size_t index) @safe {
+        import quickbite.backends.interpreter.layout: layoutFieldByteOffset = fieldByteOffset;
+
+        if (index >= _fields.length)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_struct.NativeStruct."
+                ~ "fieldByteOffset: index out of range",
+            );
+
+        return layoutFieldByteOffset(_fields[index]);
+    }
+
     // The bytes of field `index`: an interior view into the block at DMD's
     // own `offset .. offset + fieldByteSize`. `index` is checked against
     // `fieldCount` first, before `fieldDeclaration`, `layout.

@@ -596,6 +596,42 @@ array-typed field *composition* (only the raw byte view of one field
 at a time), no class objects, and no writes beyond that raw byte view.
 Alignment remains unexported, per the paragraph above.
 
+Progress 2026-07-09 (array/struct composition): `NativeStruct` and
+`NativeArray` have now been composed for the first time. `NativeStruct`
+gains `fieldByteOffset(index)` -- the DMD byte offset of field `index`,
+bounds-checked against `fieldCount` exactly like `field`/
+`fieldDeclaration`, and returned as `size_t` so it plugs directly into
+`writeSliceHeader`'s `byteOffset` parameter with no cast at the call
+site. No other production surface was added: the composition itself is
+expressed at the call site, `array.writeSliceHeader(s.block,
+s.fieldByteOffset(i))`, not behind a new "write this array into that
+field" convenience method.
+
+This is now true: a dynamic-array field of a native struct is a real D
+slice header (`ptr`, `length`) over a separately tracked element block,
+verified against the host compiler's own struct layout by reinterpreting
+the struct's block bytes as the host's own equivalent `struct { ...
+T[] xs; }` and reading `.xs` back. A second case pins this at a
+non-zero offset (`struct Header { long tag; int[] xs; }`), confirming
+`fieldByteOffset` is exercised for real and that the header write does
+not disturb a sibling field. And the struct's scan policy -- chosen
+from `layout.typeHasPointers(type)` at `allocate` time, per the struct
+phase above -- is exactly what makes that header write legal:
+`writeSliceHeader`'s scanned-destination contract throws unless the
+destination block is `Scan.conservative`, and a struct with a slice
+field gets exactly that, while an all-scalar struct gets `Scan.no` and
+writing a slice header into one of its fields throws with
+`writeSliceHeader`'s own "dest is not scanned by the GC" message. The
+two contracts -- `NativeStruct.allocate`'s scan-policy choice and
+`NativeArray.writeSliceHeader`'s scanned-destination check -- were
+written independently, in separate PRs, and this composition is where
+they are shown to fit rather than merely asserted to.
+
+Still not done: no `impl.d`/`Walker`/`Value` wiring, no `interpreter.md`
+§9.10 shim retired, no nested *struct*-in-struct field views, no
+static-array-inline field, no class objects. The interpreter still
+boxes everything; none of this native storage has a caller yet.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -990,16 +1026,34 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    null pointer, a borrowed source address -- that stay legal despite an
    unscanned destination).
 
-   Next PR: the array-native block handle skeleton — an interpreter-owned array
-   value carrying a stable block, `Type*`, length, stride, ownership, and scan
-   policy, with no user-visible display or FFI change and no shim retired. Then
-   static arrays inline, dynamic-array slice headers, interior addresses,
-   conservative roots, and capacity through real storage, in that order.
-   Latency is measured only once the array and struct correctness gates are
-   green and a real suite actually reaches native storage; item 6 already
-   showed the benchmark suite never crossed the old marshaller seam. Until
-   then, native layout is justified by the correctness ceiling (`&local`,
-   unions, reinterpret casts, slices into locals), not by a benchmark.
+   Progress against the "Next PR" list below: the array-native block handle
+   skeleton is done (`NativeArray`: stable block, `Type`, length, stride,
+   ownership, scan policy); capacity and growth through real storage are done
+   (`capacity`, `reserve`, extending in place or reallocating, per the
+   `NativeBlock.tryExtendTo`/GC-realloc progress notes above); a borrowed-block
+   guard on `reserve` is done; `writeSliceHeader`'s scanned-destination
+   contract is done (see above); and the struct phase (`NativeStruct`: one
+   block sized and laid out with DMD's own `structsize`/field offsets, the
+   same conservative-vs-no-scan choice `NativeArray.allocate` makes) is done.
+   Most recently, the two have been composed: a struct's `T[]` field now
+   carries a real slice header written by `NativeArray.writeSliceHeader` at
+   `NativeStruct.fieldByteOffset`, verified against the host compiler's own
+   layout, proving the scan-policy and scanned-destination contracts were
+   designed to fit together. None of this has a user-visible display or FFI
+   change yet, and no shim is retired yet. What remains: nested aggregate
+   field views (a struct field that is itself a struct, or a static array
+   inline field — the "no nested-struct or array-typed field composition"
+   gaps noted above), then the interpreter call site (`impl.d`/`Walker`/
+   `Value`) that actually gives these types somewhere to be used instead of
+   sitting unwired, and only after that, shim retirement one `interpreter.md`
+   §9.10 entry at a time, each proven by its ratchet fixtures staying green
+   through the real path. Class objects stay third in the migration order,
+   per the "Migration order" bullet above. Latency is measured only once the
+   array and struct correctness gates are green and a real suite actually
+   reaches native storage; item 6 already showed the benchmark suite never
+   crossed the old marshaller seam. Until then, native layout is justified by
+   the correctness ceiling (`&local`, unions, reinterpret casts, slices into
+   locals), not by a benchmark.
 
 ## Out of scope
 

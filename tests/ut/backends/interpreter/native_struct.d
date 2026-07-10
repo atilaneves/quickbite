@@ -3,9 +3,10 @@ module ut.backends.interpreter.native_struct;
 
 import ut;
 import quickbite.backends.interpreter.native_struct: NativeStruct;
+import quickbite.backends.interpreter.native_array: NativeArray;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.frontend.compiler: parseSnippet;
-import dmd.mtype: TypeStruct;
+import dmd.mtype: TypeStruct, Type;
 
 private:
 
@@ -93,6 +94,29 @@ unittest {
 }
 
 
+@("NativeStruct.fieldByteOffset.matchesHostCompilerOffsetofForEachField")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.fieldByteOffset(0).should == S.a.offsetof;
+    struct_.fieldByteOffset(1).should == S.b.offsetof;
+    struct_.fieldByteOffset(2).should == S.c.offsetof;
+}
+
+
+@("NativeStruct.fieldByteOffset.outOfRangeIndexThrows")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.fieldByteOffset(3).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_struct.NativeStruct."
+        ~ "fieldByteOffset: index out of range",
+    );
+}
+
+
 struct E {
 }
 
@@ -144,6 +168,93 @@ unittest {
 
     (attr & GC.BlkAttr.NO_SCAN).should == GC.BlkAttr.NO_SCAN;
     struct_.scan.should == NativeBlock.Scan.no;
+}
+
+
+// The centrepiece: a struct's `int[]` field gets a real D slice header,
+// written by `NativeArray.writeSliceHeader` at the field's own
+// `fieldByteOffset`, and read back by reinterpreting the struct's block
+// bytes as the host compiler's own `WithSlice` -- the same
+// host-compiler-as-oracle discipline `native_array.d`'s reinterpret tests
+// use to pin slice field order, now applied across the array/struct
+// composition. `WithSlice` gets its `Scan.conservative` block from
+// `typeHasPointers` (pinned above by
+// `allocate.pointerBearingFieldYieldsScannedBlock`), which is exactly what
+// `writeSliceHeader`'s scanned-destination check demands -- the two
+// contracts were written independently and this is where they meet.
+//
+// The element block is allocated and written to inside a nested scope, so
+// by the time `GC.collect` runs, the only surviving reference to it is
+// through the (conservatively scanned) struct field itself, not a
+// `NativeArray` handle still live on this frame -- otherwise this would
+// pass merely because `elements` was still on the stack.
+@("NativeStruct.field.writeSliceHeaderIntoSliceFieldReinterpretsAsHostCompilerSlice")
+@system
+unittest {
+    import core.memory: GC;
+
+    auto type = structTypeOf(q{ struct WithSlice { int[] xs; } }, "WithSlice");
+    auto struct_ = NativeStruct.allocate(type);
+
+    {
+        auto elements = NativeArray.allocate(Type.tint32, 3);
+        elements.element(0)[0] = 1;
+        elements.element(1)[0] = 2;
+        elements.element(2)[0] = 3;
+        elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(0));
+    }
+    GC.collect;
+
+    auto guest = *cast(WithSlice*) struct_.block.address;
+    guest.xs.should == [1, 2, 3];
+}
+
+
+// A struct with only scalar fields gets a `Scan.no` block (pinned above by
+// `allocate.allScalarFieldsYieldNoScanBlock`); writing a slice header into
+// it must throw exactly as it would into any other unscanned destination --
+// this is the other half of the contract meeting: a struct whose fields
+// don't need scanning is not a legal slice-header destination.
+@("NativeStruct.field.writeSliceHeaderIntoScalarOnlyStructFieldThrows")
+unittest {
+    auto type = structTypeOf(q{ struct S { byte a; int b; long c; } }, "S");
+    auto struct_ = NativeStruct.allocate(type);
+    auto elements = NativeArray.allocate(Type.tint32, 3);
+
+    elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(0)).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.native_array.NativeArray."
+        ~ "writeSliceHeader: dest is not scanned by the GC, but "
+        ~ "this array's block address is a live GC pointer",
+    );
+}
+
+
+struct Header {
+    long tag;
+    int[] xs;
+}
+
+
+// Exercises `fieldByteOffset` at a non-zero offset for real: `xs` is the
+// second field, so the header write must land past `tag`, leave `tag`
+// untouched, and the reinterpret oracle must confirm both fields.
+@("NativeStruct.field.writeSliceHeaderAtNonZeroOffsetLeavesOtherFieldUntouched")
+@system
+unittest {
+    auto type = structTypeOf(q{ struct Header { long tag; int[] xs; } }, "Header");
+    auto struct_ = NativeStruct.allocate(type);
+    *cast(long*) struct_.field(0).ptr = 99;
+
+    {
+        auto elements = NativeArray.allocate(Type.tint32, 2);
+        elements.element(0)[0] = 7;
+        elements.element(1)[0] = 8;
+        elements.writeSliceHeader(struct_.block, struct_.fieldByteOffset(1));
+    }
+
+    auto guest = *cast(Header*) struct_.block.address;
+    guest.tag.should == 99;
+    guest.xs.should == [7, 8];
 }
 
 
