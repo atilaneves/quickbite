@@ -2028,6 +2028,166 @@ fixtures above, acceptance criteria for deleting the
 when interpreted arrays become native-layout GC allocations, both must
 go green with `Interpreter` added to their matrices.
 
+**Fresh baseline (2026-07-09).** On current branch `HEAD` `1a430048`,
+after the owed-fixtures work, `ninja bin/ut` built successfully before
+the bench run. `bin/bench.sh -b interpreter --dub cerealed` then
+discovered/prepared 32/32 modules and skipped at the next visible
+interpreter frontier:
+
+```text
+Unsupported cast to bool from Array
+```
+
+Build generation and the bench needed escalation only because `~/.dub`
+writes are outside the sandbox.
+
+**Landed (2026-07-09, conditional array truthiness).** The approved
+`grainBitsBoolWritesScalar` fixture was added to `ct/cerealed.d` before
+production changes, but it did not reproduce the package failure: both
+oracle and interpreter were already green in focused runs:
+
+```text
+bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.SystemLinker
+bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.Interpreter
+```
+
+The red signal for this rung therefore stayed the package bench above:
+`bin/bench.sh -b interpreter --dub cerealed` skipped with
+`Unsupported cast to bool from Array`. Temporary probes showed the failing
+value was not the `grainBitsT` scalar `uint` path. It was Phobos
+`std.exception.enforce`: cerealed passes a lazy string diagnostic to
+`enforce`, then `bailOut` evaluates `msg ? msg.idup : ...`. D accepts an
+array in a condition even though explicit `cast(bool) array` is rejected.
+A small compiled-D check confirmed the conditional rule: null and empty
+dynamic arrays are false, non-empty arrays are true.
+
+The fix is intentionally local to interpreter control-flow truthiness in
+`impl.d`: `Value.Array` is truthy when `length != 0`, while explicit
+`Value.castTo!bool` remains unchanged. This covers `if`, loop conditions,
+logical expressions, `assert`, and `?:` without adding a broad cast shim.
+
+**Reviewer Finding 1 resolved (2026-07-09).** The original
+`grainBitsBoolWritesScalar` fixture did not directly pin the package failure,
+so the follow-up fixture
+`dynamicArrayTruthinessControlsEnforceFallback` now exercises dynamic-array
+truthiness directly in interpreter control-flow contexts: `if`, `?:`, and
+`!`. It is standalone in `ct/cerealed.d`, backed by `SystemLinker`, and covers
+compiled D's null/empty false and non-empty true rule.
+
+Red/green evidence:
+
+```text
+# 705cd1ed + fixture only, parent of the production truthiness fix:
+dynamicArrayTruthinessControlsEnforceFallback.SystemLinker
+# 1 test(s) run, 0 failed.
+dynamicArrayTruthinessControlsEnforceFallback.Interpreter
+# Unsupported cast to bool from Array
+
+# current HEAD:
+dynamicArrayTruthinessControlsEnforceFallback.SystemLinker
+# 1 test(s) run, 0 failed.
+dynamicArrayTruthinessControlsEnforceFallback.Interpreter
+# 1 test(s) run, 0 failed.
+```
+
+Verification after the fix:
+
+```text
+ninja bin/ut
+bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.SystemLinker
+bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.Interpreter
+bin/bench.sh -b interpreter --dub cerealed
+```
+
+The cerealed bench advanced past `Unsupported cast to bool from Array` and
+now reaches the next visible frontier, an expected-message mismatch beginning
+with:
+
+```text
+Expected: "Not enough bytes left to decerealise ubyte[] of 8 elements
+```
+
+`bin/ut --random` was also attempted. It ran 2973 tests and failed one
+unrelated, order-sensitive `LLVMJit` test:
+`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`.LLVMJit`.
+The same test passed when rerun focused. The required seed check was then
+run with `bin/ut --seed 3098732115`; it failed a different unrelated runner
+path,
+`ut.backends.runner.rt.dependency_image.dependencyImage.pointerGlobalRead`
+`.Interpreter`, with `SystemLinker` reporting
+`unittest symbol not found in shared library` during that test's setup.
+
+**Landed (2026-07-09, `std.conv.text` string-array rendering).** The
+approved `arrayTooShortExceptionMessageIncludesBytes` fixture was added to
+`ct/cerealed.d` before production changes. Red-first evidence: `SystemLinker`
+passed, while `Interpreter` failed with quoted fragments in the message:
+
+```text
+""Not enough bytes left to decerealise ubyte[] of "8" elements
+""Bytes left: "2", Needed: "8", bytes: "[1, 2]"
+```
+
+The first local fix made the fixture pass but did not clear the package rung:
+the real cerealed path builds the expected message with
+`shouldThrowWithMessage`, where `e.msg.array.dup.text` passed a `char[]` to
+`std.conv.text`. The interpreter was rendering that character array as a
+normal range, producing `[N, o, t, ...]`.
+
+The fix keeps the `std.conv.text` interception local. It renders operands raw
+when their expression type is a character array, and still uses normal array
+display for non-string arrays such as the fixture's `ubyte[]` payload.
+Existing string-display values remain raw through the same helper.
+
+Verification after the fix:
+
+```text
+ninja bin/ut
+bin/ut <arrayTooShortExceptionMessageIncludesBytes.SystemLinker>
+bin/ut <arrayTooShortExceptionMessageIncludesBytes.Interpreter>
+```
+
+The focused oracle and interpreter fixture are both green. The cerealed package
+remeasure used both backends:
+
+```text
+bin/bench.sh -b system-linker -b interpreter --dub cerealed
+```
+
+It prepared 32/32 modules and the previous
+`Not enough bytes left to decerealise ubyte[] of 8 elements` mismatch is gone.
+The current first visible mismatch is now the signed-byte/value frontier:
+
+```text
+Expected: [1, 3, 254, 5, 252]
+```
+
+**Reviewer Finding 2 resolved (2026-07-09).** The standalone
+`stdConvTextRendersCharArrayExpressionRaw` fixture now pins the direct
+`e.msg.array.dup.text`-style call path in `ct/cerealed.d`. Red evidence from a
+detached worktree at pre-fix commit `17a1dde7`: `SystemLinker` passed, while
+`Interpreter` failed with the rendered message
+`[c, e, r, e, a, l, e, d,  , b, y, t, e, s]`. Current HEAD green evidence:
+
+```text
+ninja bin/ut
+bin/ut <stdConvTextRendersCharArrayExpressionRaw.SystemLinker>
+bin/ut <stdConvTextRendersCharArrayExpressionRaw.Interpreter>
+bin/ut --random
+```
+
+Both focused fixture runs pass on current HEAD, directly covering the
+`rawStringArguments` path the reviewer called out. The randomized suite also
+passed 2822 tests, with 6 expected failures, using seed `1255702531`.
+
+`bin/ut --random` ran 2975 tests with seed `3364058692` and failed one
+unrelated order-sensitive `LLVMJit` struct test,
+`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`.LLVMJit`. The required seed check, `bin/ut --seed 3364058692`, failed one
+unrelated `SystemLinker` struct test,
+`ut.backends.runner.ct.structs.struct.scalarFieldReadWrite.SystemLinker`,
+because `mold` could not open a temporary object file under `/tmp`.
+
 ## 10. Done
 
 ```text

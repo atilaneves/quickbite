@@ -219,14 +219,27 @@ package bool isStdConvText(imported!"dmd.func".FuncDeclaration function_) {
 
 package imported!"quickbite.lang".Value stdConvTextCall(
     in imported!"quickbite.lang".Value[] arguments,
+    in bool[] rawStringArguments,
 ) @safe pure {
     import quickbite.lang: Value;
 
     string rendered;
-    foreach (ref argument; arguments)
-        rendered ~= argument.dText;
+    foreach (index, ref argument; arguments)
+        rendered ~= stdConvTextArgument(argument, rawStringArguments[index]);
 
     return Value(rendered);
+}
+
+private string stdConvTextArgument(
+    in imported!"quickbite.lang".Value argument,
+    in bool rawStringArgument,
+) @safe pure {
+    // `rawStringArgument` comes from the original D expression type; after
+    // evaluation, `char[]` is only a Value array, but `std.conv.text` renders
+    // it as string text instead of an element range.
+    return rawStringArgument || argument.isStringDisplayArray
+        ? argument.asCharArrayString
+        : argument.dText;
 }
 
 package size_t interpreterBuiltinArgumentCount(

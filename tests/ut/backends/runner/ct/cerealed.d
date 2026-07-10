@@ -1075,6 +1075,67 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("arrayTooShortExceptionMessageIncludesBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.conv: text;
+
+            void failIfTooShort(ubyte[] bytes, ulong length) {
+                const needed = length;
+                if (needed > bytes.length)
+                    throw new Exception(text(
+                        "Not enough bytes left to decerealise ubyte[] of ",
+                        length,
+                        " elements\n",
+                        "Bytes left: ",
+                        bytes.length,
+                        ", Needed: ",
+                        needed,
+                        ", bytes: ",
+                        bytes,
+                    ));
+            }
+
+            unittest {
+                try {
+                    failIfTooShort([1, 2], 8);
+                    assert(false);
+                } catch (Exception exception) {
+                    assert(
+                        exception.msg ==
+                        "Not enough bytes left to decerealise ubyte[] of 8 elements\n" ~
+                        "Bytes left: 2, Needed: 8, bytes: [1, 2]",
+                        exception.msg,
+                    );
+                }
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("stdConvTextRendersCharArrayExpressionRaw." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.array: array;
+            import std.conv: text;
+
+            unittest {
+                try {
+                    throw new Exception("cerealed bytes".idup);
+                } catch (Exception exception) {
+                    const rendered = exception.msg.array.dup.text;
+
+                    assert(rendered == "cerealed bytes", rendered);
+                }
+            }
+        });
+    }
+}
+
 
 
 /++
@@ -1371,6 +1432,71 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
                 fill(box);
 
                 assert(box.value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("grainBitsBoolWritesScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reader {
+                uint next;
+
+                void grainBits(ref uint value, int bits) {
+                    value = next;
+                }
+            }
+
+            void grainBitsT(C, T)(ref C cereal, ref T value, int bits) {
+                uint realValue = value;
+                cereal.grainBits(realValue, bits);
+                value = cast(T) realValue;
+            }
+
+            unittest {
+                auto reader = Reader(1);
+                bool value;
+
+                grainBitsT(reader, value, 1);
+
+                assert(value == true);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("dynamicArrayTruthinessControlsEnforceFallback." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int classify(ubyte[] bytes) {
+                int result;
+
+                if (bytes)
+                    result += 1;
+                else
+                    result += 10;
+
+                result += bytes ? 2 : 20;
+
+                if (!bytes)
+                    result += 100;
+
+                return result;
+            }
+
+            unittest {
+                ubyte[] nullBytes;
+                ubyte[] emptyBytes = [];
+                ubyte[] fullBytes = [cast(ubyte) 42];
+
+                assert(classify(nullBytes) == 130);
+                assert(classify(emptyBytes) == 130);
+                assert(classify(fullBytes) == 3);
             }
         });
     }
