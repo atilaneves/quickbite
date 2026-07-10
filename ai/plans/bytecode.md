@@ -5060,3 +5060,11 @@ uses DMD's field offset and static-array size to write that basis into inline
 `char` fields. It does not add pointer, general-array, FFI, formatter, or
 reification support. Verification: focused red then green; `ninja bin/ut` and
 `bin/ut --random` passed (seed `2579798018`).
+
+`struct.defaultInitPreservesExplicitFieldInitializers` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The focused Bytecode row passed on its first candidate
+run, so no production fallback was needed. The fixture verifies that
+`Header.init` retains explicit `ubyte` and `int` field initializers at DMD's
+field offsets. Verification: `ninja bin/ut` and focused Bytecode row passed;
+`bin/ut --random` passed (seed `1914209150`).
