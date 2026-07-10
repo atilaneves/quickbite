@@ -1334,6 +1334,27 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("struct.defaultInitPreservesStaticCharArrayAndScalarFieldDefaults." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Header {
+                char[2] label = "OK";
+                int revision = 42;
+            }
+
+            unittest {
+                Header header;
+
+                assert(header.label[0] == 'O');
+                assert(header.label[1] == 'K');
+                assert(header.revision == 42);
+            }
+        });
+    }
+}
+
 // DMD lowers a `Tuple` construction's field assignment into a `TupleExp` in
 // expression position (per-field assignments). The interpreter evaluates the
 // prefix `e0` then each element in order.

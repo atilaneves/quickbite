@@ -5068,3 +5068,15 @@ run, so no production fallback was needed. The fixture verifies that
 `Header.init` retains explicit `ubyte` and `int` field initializers at DMD's
 field offsets. Verification: `ninja bin/ut` and focused Bytecode row passed;
 `bin/ut --random` passed (seed `1914209150`).
+
+Reviewer fix, 2026-07-10:
+`struct.defaultInitPreservesStaticCharArrayAndScalarFieldDefaults` adds the
+missing direct SystemLinker-backed check for `Header header;` when `Header` has
+both `char[2] label = "OK"` and `int revision = 42`. Its Bytecode row was red
+(`'\xff' != 'O'`). The init-symbol fallback now materialises each field's own
+explicit initializer at its DMD field offset, retains the prior implicit
+`char.init` handling, and leaves implicit zero-valued scalar fields in the
+zeroed frame. This is limited to this struct-default-init path; it does not add
+general struct initialization, pointer, FFI, or display work. Verification:
+focused red then green; `ninja bin/ut` and `bin/ut --random` passed (seed
+`1598476746`).

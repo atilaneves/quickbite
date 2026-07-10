@@ -3201,7 +3201,7 @@ private struct Compiler {
         }
 
         if (source.isVarExp !is null &&
-            compileDefaultStaticCharArrayFields(offset, declaration))
+            compileDefaultStructFields(offset, declaration))
             return;
 
         throw new Exception(text(
@@ -3210,10 +3210,11 @@ private struct Compiler {
         ));
     }
 
-    // DMD lowers `S value;` through an init-symbol VarExp. For a `char[N]`
-    // field, that symbol holds a sparse ArrayLiteralExp whose null elements
-    // mean `basis`; use the field offsets DMD computed for the struct.
-    private bool compileDefaultStaticCharArrayFields(
+    // DMD lowers `S value;` through an init-symbol VarExp. Materialise each
+    // field's explicit initializer at the offset DMD computed for the struct;
+    // fields without one retain the frame's zeroed bytes, except `char[N]`,
+    // whose implicit value is `char.init`.
+    private bool compileDefaultStructFields(
         in ushort base,
         imported!"dmd.dstruct".StructDeclaration declaration,
     ) {
@@ -3222,21 +3223,56 @@ private struct Compiler {
         bool materialised;
         foreach (field; declaration.fields) {
             auto fieldType = field.type;
-            if (fieldType.toBasetype.ty != TY.Tsarray ||
-                fieldType.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
+            const fieldOffset = cast(ushort) (base + field.offset);
+            auto initializer =
+                field._init is null ? null : field._init.isExpInitializer;
+
+            if (fieldType.toBasetype.ty == TY.Tsarray &&
+                fieldType.toBasetype.nextOf.toBasetype.ty == TY.Tchar) {
+                if (initializer !is null) {
+                    auto string_ = stringLiteralOf(
+                        initializerExpression(initializer.exp),
+                    );
+                    if (string_ is null)
+                        return false;
+
+                    loadStaticString(
+                        fieldOffset,
+                        cast(uint) staticArraySize(fieldType),
+                        string_,
+                    );
+                    materialised = true;
+                    continue;
+                }
+
+                const elementSize = size(ScalarType.char_);
+                const elementCount =
+                    cast(uint) staticArraySize(fieldType) / elementSize;
+                const basis = compileSizeConstant(char.init);
+                foreach (index; 0 .. elementCount)
+                    _code ~= Instruction(
+                        Op.copy,
+                        cast(ushort) (fieldOffset + index * elementSize),
+                        basis,
+                        cast(ushort) elementSize,
+                    );
+                materialised = true;
+                continue;
+            }
+
+            if (initializer is null)
                 continue;
 
-            const elementSize = size(ScalarType.char_);
-            const elementCount =
-                cast(uint) staticArraySize(fieldType) / elementSize;
-            const basis = compileSizeConstant(char.init);
-            foreach (index; 0 .. elementCount)
-                _code ~= Instruction(
-                    Op.copy,
-                    cast(ushort) (base + field.offset + index * elementSize),
-                    basis,
-                    cast(ushort) elementSize,
-                );
+            const type = scalarType(fieldType);
+            const value = compileExpression(
+                initializerExpression(initializer.exp),
+            );
+            _code ~= Instruction(
+                Op.copy,
+                fieldOffset,
+                value.offset,
+                cast(ushort) size(type),
+            );
             materialised = true;
         }
         return materialised;
