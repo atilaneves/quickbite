@@ -1008,6 +1008,109 @@ Still not done: no `impl.d`/`Walker`/`Value` wiring for `slice` (no guest
 reallocation semantics for a sliced array, per the "what this does NOT
 model" paragraph above.
 
+Progress 2026-07-10 (unions and overlapping fields): item 7's last named
+open question for the native-layout handles -- "unions and overlapping
+fields, which the conservative whole-range root policy handles but the
+layout model does not yet describe" -- is closed. A D `union` is a
+`TypeStruct` whose `sym` is DMD's `UnionDeclaration`
+(`dmd.dstruct.UnionDeclaration extends StructDeclaration`, adding nothing
+to `fields`/`structsize`/`hasPointerField`, only overriding `kind()`), so
+every existing `NativeStruct` accessor (`allocate`, `field`, `structField`,
+`arrayField`) already operates on it unmodified: none of them branch on
+struct-vs-union, they only ever read DMD's own per-field `offset`/byte-size
+for whichever index is asked for. `structTypeOf` (`tests/ut/backends/
+interpreter/package.d`) also needed no change to find a top-level `union`:
+its search loop's `member.isStructDeclaration` is DMD's own classifier,
+and DMD defines `isStructDeclaration` to accept a `DSYM.unionDeclaration`
+node too (`dsymbol.d`), so it already matched. This was verified
+empirically, not assumed: see the new tests below, all green with zero
+production-code changes.
+
+What DMD actually reports, checked against `dmd.dsymbolsem`'s
+`placeField`/`checkOverlappedFields` and confirmed by the tests: for a
+top-level `union U { size_t i; void* p; }`, every member's
+`VarDeclaration.offset` is 0 (`placeField`'s `isunion` parameter suppresses
+advancing `nextoffset` after each member, so every member starts placement
+from the same, unmoved offset), and `layout.typeByteSize` gives the
+union's own `structsize` -- the size of its largest member, since
+`placeField` still grows `aggsize` to each member's own `offset + memsize`
+even though `nextoffset` itself never advances. For overlapping fields
+inside an ordinary struct -- an anonymous union, `struct S { int tag;
+union { int i; float f; } }` -- DMD does not nest a second `TypeStruct`:
+`AnonDeclaration.setFieldOffset` recurses into the anonymous union's own
+members with the SAME enclosing `ad`, resetting its own `FieldState.
+offset` back to the anonymous union's own base offset after each member,
+so `i` and `f` are flattened directly into `S.fields` as two more
+top-level fields (`S.fields.length == 3`: `tag`, `i`, `f`), at the same
+offset as each other and different from `tag`'s. The authoritative overlap
+fact is DMD's own `VarDeclaration.overlapped`/`overlapUnsafe`
+(`dsymbolsem.d`'s `checkOverlappedFields`, run once the aggregate's size is
+finalised, comparing every field pair's own offset/size range) -- `i` and
+`f` both read `overlapped == true`, `tag` reads `false`. Per item 7's
+guardrail, `NativeStruct` does not consume `overlapped` itself and gains
+no accessor for it: `field`/`fieldByteOffset` already return DMD's own
+`offset` verbatim for whichever index is asked for, which is what makes
+two fields alias in the first place -- `overlapped` is a derived fact ABOUT
+those offsets, not a second, independent source of truth a correct
+implementation needs to consult. Inventing an `isOverlapped` reader with no
+caller would be exactly the "speculative surface" this plan's phases have
+consistently avoided elsewhere.
+
+Scan-policy rounding: a union `{ size_t i; void* p; }` has a pointer
+member, so `layout.typeHasPointers` (DMD's `hasPointerField`, OR'd across
+every field regardless of overlap) reports true, and `NativeStruct.
+allocate` picks `Scan.conservative` -- exactly the choice it already makes
+for any struct with a pointer field, with no union-specific branch. That is
+the only safe rounding, reasoned from the two failure directions: scanning
+`i`'s bytes as a possible pointer when `i` is really an unrelated `size_t`
+is a false positive -- at worst the GC retains some address-shaped integer's
+accidental target a little longer than strictly needed, which is wasteful
+but never unsound. Rounding the other way -- `Scan.no`, because some member
+of the union is a non-pointer scalar -- would be a false negative: whenever
+`p` is the union's live member, its target becomes invisible to the
+collector and can be freed while `p` still points at it, a genuine
+use-after-free. A `NativeBlock`'s `Scan` attribute covers its whole byte
+range, not a per-member choice, so it cannot be selectively right for both
+interpretations of the same bytes at once; it must round toward the safe
+failure mode (over-retain) rather than the unsafe one (collect-while-
+reachable). This is exactly why the block-wide `Scan` attribute -- rather
+than some future per-field scan map -- is what makes the safe rounding
+automatic: there is no code path left that could pick `Scan.no` for a
+pointer-bearing union member, because the attribute is decided once, at
+`allocate`, from `typeHasPointers` over the whole type.
+
+Regression tests, in `tests/ut/backends/interpreter/native_struct.d`:
+`NativeStruct.allocate.unionFieldOffsetsAreAllZeroMatchingHostCompilerOffsetof`,
+`.unionByteSizeMatchesHostCompilerSizeof`, and
+`.unionWithPointerMemberYieldsScannedBlock` for the plain-union facts above
+(oracle: a `union U { size_t i; void* p; }` declared directly in the test
+module, using `U.i.offsetof`/`U.p.offsetof`/`U.sizeof` exactly as the
+existing struct tests use `S.b.offsetof`/`S.sizeof`); `NativeStruct.
+field.writeThroughOneUnionMemberIsVisibleThroughTheOther` for the aliasing
+claim (a write through `field(0)` is visible through `field(1)`, both
+being the same 8 bytes at offset 0); and, for the anonymous-union case,
+`NativeStruct.allocate.
+anonymousUnionMembersAreFlattenedIntoParentFieldsAtOverlappingOffsets`,
+`.anonymousUnionMembersAreMarkedOverlappedByDmdItself`, and `NativeStruct.
+field.
+writeThroughOneAnonymousUnionMemberIsVisibleThroughTheOtherTagUntouched`
+(oracle: `struct WithAnonymousUnion { int tag; union { int i; float f; } }`,
+using `WithAnonymousUnion.i.offsetof`/`.f.offsetof` the same way -- D
+promotes anonymous-union member names into the enclosing struct's own
+scope, so the host compiler still gives a direct `.offsetof` oracle for
+each). All 153 focused `ut.backends.interpreter` tests pass, with zero
+production-code changes: this progress note only pins facts the existing
+`layout.d`/`native_struct.d` code already got right.
+
+Still open, narrower than before: a union member that is itself an
+aggregate (a struct- or array-typed member of a union, viewed through
+`structField`/`arrayField` on a `NativeStruct` built over the union's own
+type) has no dedicated pinning test yet. By inspection `structField`/
+`arrayField` have no struct-vs-union branch -- they only ever consult
+`_fields[index]`'s own DMD offset and type -- so this composition is
+expected to already work the same way struct-in-struct nesting does, but
+it has not been exercised the way the facts above were.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1391,9 +1494,14 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    Open questions for the first implementation slice: lifetime contracts for
    blocks borrowed from arbitrary C owners; what a guest pointer into a grown
    array should observe, and whether that deserves a diagnostic rather than
-   compiled D's silent staleness; unions and overlapping fields, which the
-   conservative whole-range root policy handles but the layout model does not
-   yet describe; and class object bodies, deferred wholesale.
+   compiled D's silent staleness; and class object bodies, deferred
+   wholesale. Unions and overlapping fields are no longer an open question --
+   see the Status "unions and overlapping fields" progress note below for
+   what DMD reports and why `NativeStruct` needed no change; the one named
+   residue is a union member that is itself an aggregate (struct- or
+   array-typed) handle view, which has no dedicated pinning test yet, though
+   `structField`/`arrayField`'s offset-and-type-driven implementation has no
+   struct-vs-union branch to get wrong and so applies to it unchanged.
    `writeSliceHeader`'s scanned-destination contract is no longer open:
    `dest` is now a `(NativeBlock, byteOffset)` pair, and the function
    throws before writing a GC-owned pointer into a destination the
@@ -1435,8 +1543,14 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    only ever slices an already-verified block rather than reconstructing
    one from a pointer read out of memory; see the Status "array
    sub-slicing" progress note above for the bounds/overflow argument and
-   the measured `GC.addrOf`-of-a-past-the-end-pointer fact) — item 7's
-   array/struct correctness work has no other named gap left. None of
+   the measured `GC.addrOf`-of-a-past-the-end-pointer fact). Unions and
+   overlapping fields are also closed now — no production code needed a
+   change; see the Status "unions and overlapping fields" progress note
+   above for what DMD reports for a plain union's zero-offset fields and
+   an anonymous union's flattened, overlapping ones, and why the
+   block-wide conservative `Scan` policy is the only safe rounding for a
+   pointer-bearing union — item 7's array/struct correctness work has no
+   other named gap left. None of
    this has a user-visible display or FFI change yet, and no shim is
    retired yet. What remains: the interpreter call site (`impl.d`/
    `Walker`/`Value`) that actually gives these types somewhere to be used

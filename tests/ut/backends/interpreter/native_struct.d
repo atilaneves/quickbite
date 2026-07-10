@@ -616,3 +616,165 @@ unittest {
         ~ "sliceField: field is not a dynamic array",
     );
 }
+
+
+// item 7's "unions and overlapping fields" open question: a D `union` is a
+// `TypeStruct` whose `sym` is DMD's `UnionDeclaration` (`dstruct.d`'s
+// `UnionDeclaration` extends `StructDeclaration` and adds nothing to
+// `fields`/`structsize`/`hasPointerField` -- only its `kind()` differs), so
+// `structTypeOf` -- whose search loop uses `member.isStructDeclaration`,
+// which DMD itself defines to accept a `DSYM.unionDeclaration` node too
+// (`dsymbol.d`) -- finds a top-level `union` unmodified; no change to that
+// helper was needed. `U`'s own layout is the host-compiler oracle for the
+// four tests below, exactly as `S`'s is for the struct tests above.
+union U {
+    size_t i;
+    void* p;
+}
+
+
+@("NativeStruct.allocate.unionFieldOffsetsAreAllZeroMatchingHostCompilerOffsetof")
+unittest {
+    auto type = structTypeOf(q{ union U { size_t i; void* p; } }, "U");
+    auto union_ = NativeStruct.allocate(type);
+
+    union_.fieldCount.should == 2;
+    U.i.offsetof.should == 0;
+    U.p.offsetof.should == 0;
+    union_.fieldByteOffset(0).should == U.i.offsetof;
+    union_.fieldByteOffset(1).should == U.p.offsetof;
+}
+
+
+@("NativeStruct.allocate.unionByteSizeMatchesHostCompilerSizeof")
+unittest {
+    auto type = structTypeOf(q{ union U { size_t i; void* p; } }, "U");
+    auto union_ = NativeStruct.allocate(type);
+
+    union_.byteSize.should == U.sizeof;
+}
+
+
+// The centrepiece: `i` and `p` alias the SAME bytes at offset 0 (pinned
+// above against `U.i.offsetof`/`U.p.offsetof`), so a write through one
+// member's `field` view must be visible through the other's -- unmodified
+// `NativeStruct.field` behaviour, since it only ever reads DMD's own
+// `offset`/byte-size for whichever index is asked for and has no
+// struct-vs-union branch to get wrong.
+@("NativeStruct.field.writeThroughOneUnionMemberIsVisibleThroughTheOther")
+unittest {
+    auto type = structTypeOf(q{ union U { size_t i; void* p; } }, "U");
+    auto union_ = NativeStruct.allocate(type);
+
+    union_.field(0)[] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    union_.field(1).should == [1, 2, 3, 4, 5, 6, 7, 8];
+}
+
+
+// Scan-policy rounding: `U` has a `void*` member, so `layout.
+// typeHasPointers` (DMD's `hasPointerField`, computed by ORing every
+// field's own `hasPointers` regardless of overlap) reports true, and
+// `NativeStruct.allocate` picks `Scan.conservative` exactly as it would for
+// a struct with a pointer field. That is the only safe rounding for a
+// block whose `Scan` attribute covers its whole byte range, not
+// per-member: scanning `i`'s bytes as a possible pointer when `i` is
+// really holding an unrelated `size_t` is, at worst, a false-positive
+// retention (the GC keeps some address-shaped garbage integer's target
+// alive a little longer than needed) -- annoying, never unsound. Rounding
+// the other way -- `Scan.no` because SOME member is a non-pointer scalar --
+// would be a false negative: whenever `p` is the union's live member, its
+// target becomes invisible to the collector and can be freed while `p`
+// still points at it, a use-after-free. A block-wide `Scan` attribute has
+// no way to be selectively right for both members at once, so it must
+// round toward the safe failure mode (retain), never the unsafe one
+// (collect-while-reachable).
+@("NativeStruct.allocate.unionWithPointerMemberYieldsScannedBlock")
+unittest {
+    import core.memory: GC;
+
+    auto type = structTypeOf(q{ union U { size_t i; void* p; } }, "U");
+    auto union_ = NativeStruct.allocate(type);
+    const attr = GC.getAttr(GC.addrOf(union_.block.address));
+
+    (attr & GC.BlkAttr.NO_SCAN).should == 0;
+    union_.scan.should == NativeBlock.Scan.conservative;
+}
+
+
+// Overlapping fields also arise from an ANONYMOUS union inside an ordinary
+// struct -- DMD flattens an anonymous union's members directly into the
+// enclosing struct's own `fields` (`dsymbolsem.d`'s `AnonDeclaration.
+// setFieldOffset` recurses into its members with the SAME `ad`, resetting
+// its own `FieldState.offset` back to 0 after each member so every member
+// starts from the anonymous union's own base offset) rather than nesting a
+// separate `TypeStruct` -- so there is no second aggregate for
+// `NativeStruct` to descend into here; `i` and `f` are just two more
+// top-level fields of `WithAnonymousUnion`, at the same offset as each
+// other. Anonymous-union members are also promoted into the enclosing
+// struct's own name scope, so `WithAnonymousUnion.i`/`.f.offsetof` name
+// them directly, exactly like `WithAnonymousUnion.tag.offsetof` does.
+struct WithAnonymousUnion {
+    int tag;
+    union {
+        int i;
+        float f;
+    }
+}
+
+
+@("NativeStruct.allocate.anonymousUnionMembersAreFlattenedIntoParentFieldsAtOverlappingOffsets")
+unittest {
+    auto type = structTypeOf(
+        q{ struct WithAnonymousUnion { int tag; union { int i; float f; } } },
+        "WithAnonymousUnion",
+    );
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.fieldCount.should == 3;
+    struct_.fieldByteOffset(0).should == WithAnonymousUnion.tag.offsetof;
+    struct_.fieldByteOffset(1).should == WithAnonymousUnion.i.offsetof;
+    struct_.fieldByteOffset(2).should == WithAnonymousUnion.f.offsetof;
+    WithAnonymousUnion.i.offsetof.should == WithAnonymousUnion.f.offsetof;
+}
+
+
+// The authoritative overlap fact, per item 7's guardrail ("DMD-derived
+// layout facts stay the source of truth; the interpreter must not grow a
+// second set of D layout rules"): DMD's own `VarDeclaration.overlapped`,
+// computed by `dsymbolsem.d`'s `checkOverlappedFields` from the fields'
+// own offset/size ranges -- not a second, hand-rolled "do these offsets
+// coincide" check of this codebase's own. `tag` overlaps nothing; `i` and
+// `f` overlap each other.
+@("NativeStruct.allocate.anonymousUnionMembersAreMarkedOverlappedByDmdItself")
+unittest {
+    auto type = structTypeOf(
+        q{ struct WithAnonymousUnion { int tag; union { int i; float f; } } },
+        "WithAnonymousUnion",
+    );
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.fieldDeclaration(0).overlapped.should == false;
+    struct_.fieldDeclaration(1).overlapped.should == true;
+    struct_.fieldDeclaration(2).overlapped.should == true;
+}
+
+
+// A write through one anonymous-union member's `field` view is visible
+// through the other's, and leaves the non-overlapping `tag` field
+// untouched -- unmodified `NativeStruct.field` behaviour again, since
+// `WithAnonymousUnion` is an ordinary (if DMD-flattened) `TypeStruct` as
+// far as this accessor is concerned.
+@("NativeStruct.field.writeThroughOneAnonymousUnionMemberIsVisibleThroughTheOtherTagUntouched")
+unittest {
+    auto type = structTypeOf(
+        q{ struct WithAnonymousUnion { int tag; union { int i; float f; } } },
+        "WithAnonymousUnion",
+    );
+    auto struct_ = NativeStruct.allocate(type);
+
+    struct_.field(1)[] = [1, 2, 3, 4];
+
+    struct_.field(2).should == [1, 2, 3, 4];
+    struct_.field(0).should == [0, 0, 0, 0];
+}
