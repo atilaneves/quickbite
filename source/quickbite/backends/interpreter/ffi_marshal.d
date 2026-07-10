@@ -21,6 +21,75 @@ public alias DelegateInvoker = imported!"quickbite.lang".Value delegate(
     in imported!"quickbite.lang".Value[] arguments,
 );
 
+// Session-owned callback roots and callback-id invoker for durable FFI
+// trampolines. The core registry owns libffi closure memory; this table owns
+// interpreter Values and remains valid for the Walker session (§35.4).
+public struct InterpreterInboundTrampolineSession {
+    import quickbite.lang: Value;
+    import quickbite.ffi: InboundTrampolineRegistry;
+
+    private Value[] _callbacks;
+    private DelegateInvoker _invokeDelegate;
+    private InboundTrampolineRegistry* _registry;
+
+    public this(DelegateInvoker invokeDelegate) {
+        _invokeDelegate = invokeDelegate;
+        _registry = new InboundTrampolineRegistry(&invoke);
+    }
+
+    public InboundTrampolineRegistry* registry() {
+        return _registry;
+    }
+
+    public size_t register(in Value callback) {
+        _callbacks ~= callback;
+        return _callbacks.length - 1;
+    }
+
+    // Durable callbacks are valid only while their owning Walker can service
+    // re-entry. Release the executable libffi closures and callback roots as
+    // that session ends (§35.4).
+    public void close() {
+        if (_registry !is null)
+            _registry.close;
+        _registry = null;
+        _callbacks = null;
+        _invokeDelegate = null;
+    }
+
+    private void invoke(
+        in size_t callbackId,
+        imported!"dmd.mtype".Type returnType,
+        imported!"dmd.mtype".Type[] parameterTypes,
+        void*[] argumentBuffers,
+        ubyte[] resultBuffer,
+    ) {
+        import dmd.astenums: TY;
+        import dmd.mtype: Type;
+        import dmd.typesem: size;
+
+        assert(callbackId < _callbacks.length, "unknown durable callback id");
+        Value[] callbackArguments;
+        foreach (index, parameterType; parameterTypes) {
+            const argumentSize = cast(size_t) size(parameterType);
+            callbackArguments ~= unmarshalValue(
+                parameterType,
+                (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
+            );
+        }
+        const callbackResult = _invokeDelegate(
+            _callbacks[callbackId], callbackArguments,
+        );
+        if (returnType.ty == TY.Tvoid)
+            return;
+
+        const(char)*[] keepAlive;
+        ubyte[][] keepAliveBuffers;
+        marshalArgument(resultBuffer, returnType, callbackResult, false,
+            keepAlive, keepAliveBuffers);
+    }
+}
+
 // A native write through a pointer into interpreter-managed array memory
 // (e.g. posix read filling `buf.ptr + offset`): the pointed-at elements as
 // they stand after the call, for the walker to write back through the
@@ -37,6 +106,7 @@ public bool tryCallNative(
     in bool[] addressOfLocalArguments,
     in imported!"quickbite.lang".Value[] outParameterInputs,
     DelegateInvoker invokeDelegate,
+    InterpreterInboundTrampolineSession* durableSession,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
     out PointerElementsWriteback[] pointerWritebacks,
@@ -46,9 +116,10 @@ public bool tryCallNative(
     auto marshaller = new InterpreterNativeMarshaller(
         arguments,
         outParameterInputs,
-        invokeDelegate,
+        invokeDelegate, durableSession,
     );
-    if (!callNative(function_, marshaller, argumentTypes, addressOfLocalArguments))
+    if (!callNative(function_, marshaller, argumentTypes, addressOfLocalArguments,
+        durableSession is null ? null : durableSession.registry))
         return false;
 
     result = marshaller.result;
@@ -270,15 +341,18 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     // Runs an interpreted delegate passed into native code, supplied by the
     // Walker so the reverse bridge (ffi.md §34.16) can re-enter the interpreter.
     private DelegateInvoker _invokeDelegate;
+    private InterpreterInboundTrampolineSession* _durableSession;
 
     public this(
         in Value[] arguments,
         in Value[] outParameterInputs,
         DelegateInvoker invokeDelegate = null,
+        InterpreterInboundTrampolineSession* durableSession = null,
     ) {
         _arguments = arguments;
         _outParameterInputs = outParameterInputs;
         _invokeDelegate = invokeDelegate;
+        _durableSession = durableSession;
     }
 
     public this(in Value[] arguments, in Value receiver) {
@@ -506,6 +580,11 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
             keepAlive,
             keepAliveBuffers,
         );
+    }
+
+    public override size_t durableInboundCallbackId(in size_t argumentIndex) {
+        assert(_durableSession !is null, "durable callback without session");
+        return _durableSession.register(_arguments[argumentIndex]);
     }
 
     public override void writeOutParameter(

@@ -29,6 +29,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     public override EvalResult eval(FuncDeclaration function_) {
         try {
             Walker walker;
+            scope(exit) walker.closeDurableInboundSession;
             walker.inUnitTest = function_.isUnitTestDeclaration !is null;
             walker.runStatement(function_.fbody);
             return EvalResult(displayString(walker.result, function_));
@@ -99,6 +100,8 @@ private struct Walker {
     private size_t[FuncDeclaration] functionPointerIds;
     private size_t nextFunctionPointerId;
     private RuntimeDelegate[size_t] delegates;
+    private imported!"quickbite.backends.interpreter.ffi_marshal".
+        InterpreterInboundTrampolineSession* durableInboundSession;
     private Expression[VarDeclaration] lazyArgumentExpressions;
     private Value[VarDeclaration][VarDeclaration] lazyArgumentLocals;
     private bool[VarDeclaration] uninitializedLocals;
@@ -121,6 +124,7 @@ private struct Walker {
     private bool hasThis;
     private Value pendingFinallyBodyException;
     private bool hasPendingFinallyBodyException;
+
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
     private bool addressOfRefReturn;
@@ -130,6 +134,12 @@ private struct Walker {
     private Statement pendingSwitchTarget;
     private LoopControl loopControl;
     private string loopControlLabel;
+
+    private void closeDurableInboundSession() {
+        if (durableInboundSession !is null)
+            durableInboundSession.close;
+        durableInboundSession = null;
+    }
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null)
@@ -2382,7 +2392,8 @@ private struct Walker {
                 hasNoAvailableSource, noAvailableSourceMessage;
             import quickbite.ffi: unsupportedNativeTypeMessage;
             import quickbite.backends.interpreter.ffi_marshal:
-                NativeCallException, tryCallNative;
+                InterpreterInboundTrampolineSession, NativeCallException,
+                tryCallNative;
 
             if (hasNoAvailableSource(call.f)) {
                 import quickbite.backends.interpreter.ffi_marshal:
@@ -2392,6 +2403,10 @@ private struct Walker {
                 Value[] writebacks;
                 PointerElementsWriteback[] pointerWritebacks;
                 try {
+                    if (durableInboundSession is null)
+                        durableInboundSession = new InterpreterInboundTrampolineSession(
+                            &invokeNativeCallback,
+                        );
                     if (
                         !call.f.needThis &&
                         tryCallNative(
@@ -2401,6 +2416,7 @@ private struct Walker {
                             nativeAddressOfLocalArguments(argumentExpressions),
                             nativeOutParameterInputValues(argumentExpressions),
                             &invokeNativeCallback,
+                            durableInboundSession,
                             result,
                             writebacks,
                             pointerWritebacks,
