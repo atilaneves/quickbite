@@ -402,7 +402,9 @@ enum reallocSliceAssignSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(
+    Interpreter, SystemLinker, Bytecode, LLVMJit,
+)) {
 
     @("realloc.sliceAssignWritesNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)

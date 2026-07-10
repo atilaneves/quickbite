@@ -6820,19 +6820,21 @@ private struct Compiler {
         return result;
     }
 
-    // `arr[lo .. hi] = rhs` for a dynamic-array local: form the destination
-    // sub-slice descriptor sharing `arr`'s backing memory, materialise the rhs
-    // into a source descriptor, and emit a write-through element copy. Null if
-    // the slice target is not a known dynamic-array local.
+    // `arr[lo .. hi] = rhs` or `p[lo .. hi] = rhs`: form the destination
+    // sub-slice descriptor sharing the array or raw pointer's backing memory,
+    // materialise the rhs into a source descriptor, and emit a write-through
+    // element copy. Null if the slice target is neither shape.
     private Operand* tryDynamicArraySliceAssign(
         SliceExp slice,
         Expression rhs,
     ) {
         auto descriptor = dynamicArrayDescriptorOrNull(slice.e1);
-        if (descriptor is null)
+        if (descriptor is null && !isPointerType(slice.e1.type))
             return null;
 
-        const elementType = descriptor.elementType;
+        const elementType = descriptor is null
+            ? dynamicArrayElementType(slice.type)
+            : descriptor.elementType;
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileSliceInto(destination, elementType, slice);
 

@@ -1331,8 +1331,7 @@ covers arity-N arguments, out-parameter write-back, void returns, pointer
 returns, and these native-memory value rows. Still deferred on `Bytecode`:
 `div.structReturn` and `ldiv.structReturn.longArgs` keep their own pinned
 no-source-diagnostic refusal row (struct returns stay excluded from the
-return-type gate), and `malloc.pointerReturn.nativeMemory` still has no
-`Bytecode` row because this incremental PR did not promote it.
+return-type gate).
 
 The next concrete module candidate per
 `ai/plans/backend-test-modules-order.md` remains `tests/ut/bin/repl.d`
@@ -5017,3 +5016,16 @@ candidate run, with no production changes. The fixture exercises a
 indexed native-memory writes and reads. The separate IR-only no-source block
 above it is intentionally unchanged. Verification: `ninja bin/ut` passed and
 `bin/ut --random` passed with seed `2640497437`.
+
+`realloc.sliceAssignWritesNativeMemory` promoted to `Bytecode`, 2026-07-10:
+pre-approved promotion of the existing direct-SystemLinker-backed runtime
+fixture. The first Bytecode run was red: the raw-pointer destination slice
+wrote `8` where the fixture expected `'a'`. The minimal lowering change lets
+the existing dynamic-slice assignment path accept a raw-pointer base, obtain
+its element type from the result slice, and reuse the existing pointer-slice
+descriptor plus `sliceCopy` write-through instructions. No fixture body or
+other behaviour changed. Also removed the immediately stale Post-Flip Backlog
+claim that `malloc.pointerReturn.nativeMemory` lacked a `Bytecode` row;
+`cee09a4f` had already promoted it. Verification: focused red then green for
+this Bytecode row; `ninja bin/ut` and `bin/ut --random` passed with seed
+`543446273`.
