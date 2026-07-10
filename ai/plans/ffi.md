@@ -3508,6 +3508,18 @@ calls remain on the existing §34.16 call-scoped path. This deliberately does
 not allocate, retain, or free any durable closure; the registry contract above
 is still the next implementation step. Focused fixture: green after the guard.
 
+**Ledger 2026-07-10 (scoped callback contract).** Added
+`dependencyImage.externDScopedVoidDelegateCallback.Interpreter`: a compiled
+dependency image declares and defines `void dependencyVisit(int, scope void
+delegate(int))`, invokes the callback synchronously, and the interpreted
+closure records `42`. `SystemLinker` is green. The fixture was red on
+Interpreter under the conservative void/delegate guard, then green after the
+guard consulted DMD's `Parameter.storageClass & STC.scope_`: explicitly scoped
+delegates retain §34.16's call-scoped trampoline path, while the unscoped
+durable-storage fixture retains its named fail-closed diagnostic. This is an
+ABI-independent parameter contract, not a function-name exception; it does
+not provide the durable registry deferred by §35.4.
+
 ### 35.5 The escape contracts are unenforceable — the boundary is fail-open
 
 **Claim.** §34.10: "reject any signature that lets the slice escape".

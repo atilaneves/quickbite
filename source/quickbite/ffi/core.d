@@ -47,12 +47,13 @@ public string unsupportedNativeTypeMessage(
 // Returns a named fail-closed diagnostic for a native call that may retain an
 // interpreted delegate beyond the call. Until the durable trampoline registry
 // exists (§35.4), a void result cannot demonstrate that the native side invoked
-// the callback during this call, so a delegate parameter is conservatively
-// treated as escaping.
+// the callback during this call, so an unscoped delegate parameter is
+// conservatively treated as escaping. An explicit scope parameter contract
+// instead guarantees the call-scoped lifetime §34.16 supports.
 public string durableInboundTrampolineUnsupportedMessage(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
-    import dmd.astenums: TY;
+    import dmd.astenums: STC, TY;
     import dmd.mtype: TypeFunction;
     import std.conv: text;
 
@@ -62,7 +63,8 @@ public string durableInboundTrampolineUnsupportedMessage(
         return null;
 
     foreach (parameter; *type.parameterList.parameters)
-        if (parameter.type.toBasetype.ty == TY.Tdelegate)
+        if (parameter.type.toBasetype.ty == TY.Tdelegate &&
+            (parameter.storageClass & STC.scope_) == STC.none)
             return text(
                 "`",
                 function_.toChars,
