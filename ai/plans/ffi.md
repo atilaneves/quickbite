@@ -3422,6 +3422,18 @@ behind the FFI bridge-core boundary. Backends request native entry points from
 that registry instead of allocating libffi closures directly when the entry
 point can outlive one native call.
 
+- **Bytecode native-layout contract.** The registry/trampoline contract does
+  not require Bytecode to reintroduce boxed `Value` marshalling. Bytecode's
+  native-layout frame can provide ABI-shaped slots directly, so an inbound
+  trampoline may bind native arguments by slot address/copy and write the
+  result into the ABI return location. The durable trampoline is still needed
+  as the native-callable entry adapter: native code receives only an executable
+  function pointer, while the target is a VM callable plus callback id,
+  context, frame setup, lifetime roots, and backend re-entry rules. This
+  adapter also remains the place that normalizes ABI details such as hidden
+  context/receiver/sret arguments, `extern(D)` source ordering, narrow returns,
+  and out/ref parameter writeback.
+
 - **Ownership and lifetime.** The registry owns each libffi closure, CIF,
   executable code pointer, callback id, and VM callable handle until the
   owning backend session is torn down. It must not free an individual durable

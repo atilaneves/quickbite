@@ -235,6 +235,16 @@ rendering knowledge beyond "these bytes at this type".
   thunks before classes do (see Runtime type metadata) — not by the
   classes/vtable slice; the calling convention must not preclude either
   mechanism.
+- The inbound trampoline is not a boxed marshalling layer. Native layout can
+  let the trampoline bind native arguments directly to bytecode frame slots,
+  hand existing slot addresses to the callee, and write the result straight
+  back to the ABI return location. The trampoline is still required because
+  native code can only call an executable address with the host ABI, while a
+  bytecode callback is a VM callable plus context, frame setup, lifetime
+  state, and re-entry rules. The trampoline supplies that native-callable
+  address, recovers the callback identity, enters the bytecode machine, and
+  handles ABI details such as hidden context/receiver/sret slots, argument
+  order, narrow returns, and out/ref parameters.
 - Exposing tests for the call mechanism (compiled oracle, byte
   for byte): call a precompiled extern function taking a 24-byte struct by
   value and returning one (forces memory-class classification and `sret`);
