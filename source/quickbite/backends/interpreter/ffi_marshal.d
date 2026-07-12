@@ -66,12 +66,12 @@ public struct InterpreterInboundTrampolineSession {
     ) {
         import dmd.astenums: TY;
         import dmd.mtype: Type;
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         assert(callbackId < _callbacks.length, "unknown durable callback id");
         Value[] callbackArguments;
         foreach (index, parameterType; parameterTypes) {
-            const argumentSize = cast(size_t) size(parameterType);
+            const argumentSize = typeByteSize(parameterType);
             callbackArguments ~= unmarshalValue(
                 parameterType,
                 (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
@@ -403,11 +403,11 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     }
 
     public PointerElementsWriteback[] pointerWritebacks() {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         PointerElementsWriteback[] result;
         foreach (writeback; _pointerWritebacks) {
-            const elementSize = cast(size_t) size(writeback.elementType);
+            const elementSize = typeByteSize(writeback.elementType);
             Value[] elements;
             foreach (index; 0 .. writeback.bytes.length / elementSize)
                 elements ~= unmarshalValue(
@@ -522,10 +522,10 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     ) {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         marshalArgument(
-            mutableNativeBytes(address, cast(size_t) size(type)),
+            mutableNativeBytes(address, typeByteSize(type)),
             type,
             _refResultValue,
             stableString,
@@ -548,7 +548,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ubyte[] resultBuffer,
     ) {
         import dmd.astenums: TY;
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         assert(_invokeDelegate !is null, "native callback with no delegate invoker");
 
@@ -557,7 +557,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         // buffer (ffi.md §34.16).
         Value[] callbackArguments;
         foreach (index, parameterType; parameterTypes) {
-            const argumentSize = cast(size_t) size(parameterType);
+            const argumentSize = typeByteSize(parameterType);
             callbackArguments ~= unmarshalValue(
                 parameterType,
                 (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
@@ -640,24 +640,49 @@ private void marshalArgument(
 ) {
     import dmd.astenums: TY;
     import dmd.mtype: TypeStruct;
-    import dmd.typesem: size;
 
     switch (type.ty) {
+        // native_scalar.writeScalar is `layout.d`'s single scalar<->bytes
+        // authority (`ai/plans/value.md` item 7); it needs `dest.length ==
+        // layout.typeByteSize(type)` exactly. That holds for every argument,
+        // receiver, ref-result, and struct/array-field buffer this function
+        // fills. It does NOT hold for a native closure/callback result
+        // buffer (`invokeClosure`/`InterpreterInboundTrampolineSession.
+        // invoke`, ffi.md §34.16): libffi widens a narrow scalar return
+        // buffer to its `ffi_arg` width (>= 8 bytes) and requires the WHOLE
+        // widened buffer to carry a sign/zero-extended copy of the value
+        // for ABI correctness, which a fixed-width `writeScalar` cannot
+        // produce. Route the common exact-size case through the shared
+        // codec and keep the old byte splat for the widened one.
         case TY.Tbool, TY.Tchar, TY.Twchar, TY.Tdchar,
              TY.Tint8, TY.Tuns8, TY.Tint16, TY.Tuns16,
-             TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64:
+             TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64: {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+            if (buffer.length == typeByteSize(type)) {
+                writeScalar(type, buffer, value);
+                return;
+            }
+
             const scalar = scalarBits(type, value);
             foreach (index; 0 .. buffer.length)
                 buffer[index] = cast(ubyte) (scalar >> (8 * index));
             return;
+        }
 
-        case TY.Tfloat32:
-            *cast(float*) buffer.ptr = cast(float) value.asReal;
-            return;
+        case TY.Tfloat32, TY.Tfloat64: {
+            // Unlike the integral case above, the old code here already
+            // writes only `typeByteSize(type)` bytes at `buffer.ptr`
+            // regardless of `buffer.length` (a widened closure-result
+            // buffer's extra bytes were already left untouched), so
+            // slicing down to feed `writeScalar` reproduces it exactly.
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        case TY.Tfloat64:
-            *cast(double*) buffer.ptr = cast(double) value.asReal;
+            writeScalar(type, buffer[0 .. typeByteSize(type)], value);
             return;
+        }
 
         case TY.Tfloat80:
             *cast(real*) buffer.ptr = value.asReal;
@@ -678,33 +703,56 @@ private void marshalArgument(
             marshalSliceArgument(buffer, type, value, keepAliveBuffers);
             return;
 
-        case TY.Tstruct:
-            auto sym = (cast(TypeStruct) type).sym;
-            foreach (index; 0 .. sym.fields.length) {
-                auto field = sym.fields[index];
-                auto fieldType = field.type.toBasetype;  // mutable for size()
-                const fieldSize = cast(size_t) size(fieldType);
+        case TY.Tstruct: {
+            // Routed through the item 7 container handle rather than a
+            // hand-rolled `sym.fields[i].offset`/`size(fieldType)` walk
+            // (ai/plans/value.md item 7's guardrail). `field(index)` is a
+            // writable sub-slice of `buffer` (the block borrows the
+            // caller's own mutable buffer), and `fieldDeclaration(index).
+            // type` is the DECLARED field type -- `.toBasetype` below
+            // reproduces the exact same recursive dispatch the old code's
+            // `field.type.toBasetype` performed.
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_struct: NativeStruct;
+
+            // `NativeStruct.borrow` fabricates its extent from `type`
+            // rather than sub-slicing `buffer`, so a too-short `buffer`
+            // would silently write past its end instead of range-erroring
+            // the way the old hand-rolled sub-slice did. Restore that
+            // fail-fast.
+            assert(buffer.length >= typeByteSize(type));
+            auto ns = NativeStruct.borrow(cast(TypeStruct) type, buffer.ptr);
+            foreach (index; 0 .. ns.fieldCount)
                 marshalArgument(
-                    buffer[field.offset .. field.offset + fieldSize],
-                    fieldType,
+                    ns.field(index),
+                    ns.fieldDeclaration(index).type.toBasetype,
                     value.structFieldAt(index),
                     stableString,
                     keepAlive,
                     keepAliveBuffers,
                 );
-            }
             return;
+        }
 
         case TY.Tsarray: {
+            // Same consolidation as the Tstruct arm above, for a static
+            // array's inline elements.
             import dmd.mtype: TypeSArray;
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_array: NativeArray;
 
             auto staticArray = cast(TypeSArray) type;
-            auto elementType = staticArray.next.toBasetype;  // mutable for size()
-            const elementSize = cast(size_t) size(elementType);
+            auto elementType = staticArray.next.toBasetype;
             const length = cast(size_t) staticArray.dim.toInteger;
+
+            // Same fail-fast restoration as the Tstruct arm above:
+            // `NativeArray.borrow` fabricates its extent from
+            // `elementType`/`length` rather than sub-slicing `buffer`.
+            assert(buffer.length >= length * typeByteSize(elementType));
+            auto na = NativeArray.borrow(elementType, buffer.ptr, length);
             foreach (index; 0 .. length)
                 marshalArgument(
-                    buffer[index * elementSize .. (index + 1) * elementSize],
+                    na.element(index),
                     elementType,
                     value[index],
                     stableString,
@@ -780,9 +828,9 @@ private ubyte[] marshalPointerElements(
     in imported!"quickbite.lang".Value pointer,
 ) {
     import quickbite.lang: Value;
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.layout: typeByteSize;
 
-    const elementSize = cast(size_t) size(elementType);
+    const elementSize = typeByteSize(elementType);
     const offset = cast(size_t) pointer.pointerElementOffset;
     const length = pointer.pointerLength - offset;
     auto bytes = new ubyte[](length * elementSize);
@@ -848,15 +896,19 @@ private ubyte[] marshalSliceArgument(
     in imported!"quickbite.lang".Value value,
     ref ubyte[][] keepAliveBuffers,
 ) {
-    import dmd.typesem: size;
+    // Routed through the item 7 container handle rather than a hand-rolled
+    // `new ubyte[](length * elementSize)` + `index * elementSize` walk
+    // (ai/plans/value.md item 7's guardrail). `elementType` is resolved to
+    // its basetype up front, exactly as the old code did, and reused both
+    // to build the handle and to dispatch the recursive marshal.
+    import quickbite.backends.interpreter.native_array: NativeArray;
 
-    auto elementType = type.nextOf.toBasetype;  // mutable for size()
-    const elementSize = cast(size_t) size(elementType);
-    auto bytes = new ubyte[](value.length * elementSize);
+    auto elementType = type.nextOf.toBasetype;
+    auto na = NativeArray.allocate(elementType, value.length);
     const(char)*[] keepAlive;
     foreach (index; 0 .. value.length) {
         marshalArgument(
-            bytes[index * elementSize .. (index + 1) * elementSize],
+            na.element(index),
             elementType,
             value[index],
             false,
@@ -865,6 +917,13 @@ private ubyte[] marshalSliceArgument(
         );
     }
 
+    // `na.block.bytes` is the same kind of GC-owned, zeroed byte range the
+    // old `new ubyte[](...)` was (`NativeBlock.allocate` routes through
+    // `GC.calloc`, which zeroes exactly as `new ubyte[]` did): kept alive by
+    // being appended to `keepAliveBuffers` below and by `_sliceWritebacks`
+    // (this module's `fillArgument`), and stable because `NativeBlock`'s GC
+    // allocation never moves.
+    auto bytes = na.block.bytes;
     keepAliveBuffers ~= bytes;
     *cast(size_t*) buffer.ptr = value.length;
     *cast(void**) (buffer.ptr + size_t.sizeof) = bytes.ptr;
@@ -903,23 +962,29 @@ private imported!"quickbite.lang".Value unmarshalValue(
     import quickbite.lang: Value;
     import dmd.astenums: TY;
     import dmd.mtype: TypeStruct;
+    import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.native_scalar: readScalar;
 
     switch (type.ty) {
         case TY.Tvoid:     return Value.void_;
-        case TY.Tbool:     return Value(*cast(const bool*) buffer.ptr);
-        case TY.Tchar:     return Value(*cast(const char*) buffer.ptr);
-        case TY.Twchar:    return Value(*cast(const wchar*) buffer.ptr);
-        case TY.Tdchar:    return Value(*cast(const dchar*) buffer.ptr);
-        case TY.Tint8:     return Value(*cast(const byte*) buffer.ptr);
-        case TY.Tuns8:     return Value(*cast(const ubyte*) buffer.ptr);
-        case TY.Tint16:    return Value(*cast(const short*) buffer.ptr);
-        case TY.Tuns16:    return Value(*cast(const ushort*) buffer.ptr);
-        case TY.Tint32:    return Value(*cast(const int*) buffer.ptr);
-        case TY.Tuns32:    return Value(*cast(const uint*) buffer.ptr);
-        case TY.Tint64:    return Value(*cast(const long*) buffer.ptr);
-        case TY.Tuns64:    return Value(*cast(const ulong*) buffer.ptr);
-        case TY.Tfloat32:  return Value(*cast(const float*) buffer.ptr);
-        case TY.Tfloat64:  return Value(*cast(const double*) buffer.ptr);
+
+        // A direct (non-ref) native return buffer is at least libffi's
+        // `ffi_arg` width (>= 8 bytes, `quickbite.ffi.core`'s
+        // `returnSize`), wider than a narrow scalar's own `typeByteSize`;
+        // every other buffer this function reads (a struct/array field, a
+        // slice element, a callback argument, an out-parameter cell) is
+        // already exactly `typeByteSize(type)` long. Slicing to the low
+        // `typeByteSize(type)` bytes is a no-op for the exact-size callers
+        // and, on this little-endian host, reads the same bytes the old
+        // pointer cast read for the widened return buffer too -- reading
+        // needs only those bytes, unlike the sign/zero-extended write-side
+        // case in `marshalArgument`.
+        case TY.Tbool, TY.Tchar, TY.Twchar, TY.Tdchar,
+             TY.Tint8, TY.Tuns8, TY.Tint16, TY.Tuns16,
+             TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64,
+             TY.Tfloat32, TY.Tfloat64:
+            return readScalar(type, buffer[0 .. typeByteSize(type)]);
+
         case TY.Tfloat80:  return Value(*cast(const real*) buffer.ptr);
         case TY.Tpointer:
             return Value.nativePointerValue(*cast(void**) buffer.ptr);
@@ -1064,19 +1129,32 @@ private imported!"quickbite.lang".Value unmarshalStaticArray(
 ) {
     import quickbite.lang: Value;
     import dmd.mtype: TypeSArray;
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.native_array: NativeArray;
 
+    // Routed through the item 7 container handle rather than a hand-rolled
+    // `index * elementSize` walk (ai/plans/value.md item 7's guardrail).
+    // `elementType` is resolved to its basetype up front, exactly as the
+    // old code did, and reused both to build the handle and to dispatch
+    // the recursive unmarshal.
     auto staticArray = cast(TypeSArray) type;
-    auto elementType = staticArray.next.toBasetype;  // mutable for size()
-    const elementSize = cast(size_t) size(elementType);
+    auto elementType = staticArray.next.toBasetype;
     const length = cast(size_t) staticArray.dim.toInteger;
+
+    // `NativeArray.borrow` fabricates its extent from `elementType`/`length`
+    // rather than sub-slicing `buffer`, so a too-short `buffer` would
+    // silently read/write past its end instead of range-erroring the way
+    // the old hand-rolled sub-slice did. Restore that fail-fast.
+    assert(buffer.length >= length * typeByteSize(elementType));
+    // `cast(void*)` strips `buffer`'s `const` only to satisfy `borrow`'s
+    // signature; this function only ever READS through `na` (elements feed
+    // `unmarshalValue(..., in ubyte[])` below), never writes back into
+    // `buffer`.
+    auto na = NativeArray.borrow(elementType, cast(void*) buffer.ptr, length);
 
     Value[] elements;
     foreach (index; 0 .. length)
-        elements ~= unmarshalValue(
-            elementType,
-            buffer[index * elementSize .. (index + 1) * elementSize],
-        );
+        elements ~= unmarshalValue(elementType, na.element(index));
 
     return Value.arrayValue(elements);
 }
@@ -1088,7 +1166,6 @@ private imported!"quickbite.lang".Value unmarshalSlice(
     import quickbite.ffi: isSupportedFfiSlice;
     import quickbite.lang: Value;
     import dmd.astenums: TY;
-    import dmd.typesem: size;
 
     assert(isSupportedFfiSlice(type));
 
@@ -1099,9 +1176,7 @@ private imported!"quickbite.lang".Value unmarshalSlice(
     if (data is null)
         throw new Exception("Native slice return has null data.");
 
-    auto elementType = type.nextOf.toBasetype;  // mutable for size()
-    const elementSize = cast(size_t) size(elementType);
-    const bytes = (cast(const(ubyte)*) data)[0 .. length * elementSize];
+    auto elementType = type.nextOf.toBasetype;
     switch (elementType.ty) with (TY) {
         case Tchar:
             const chars = cast(const(char)*) data;
@@ -1116,13 +1191,30 @@ private imported!"quickbite.lang".Value unmarshalSlice(
             return Value.stringValue(chars[0 .. length].dup);
 
         default:
+            // Routed through the item 7 container handle rather than a
+            // hand-rolled `index * elementSize` walk (ai/plans/value.md
+            // item 7's guardrail). `data` is native memory this function
+            // did not allocate -- exactly `NativeArray.borrow`'s own
+            // documented precondition, vouched for here by the native call
+            // that filled this return buffer. No length precondition to
+            // assert here (unlike `unmarshalStruct`/`unmarshalStaticArray`):
+            // `data`'s allocation size is not derived from any parameter
+            // this function holds, and the old code's own `(cast(const(
+            // ubyte)*) data)[0 .. length * elementSize]` was an equally
+            // unchecked raw-pointer slice, not a bounds-checked sub-slice of
+            // a caller-supplied array -- there is no old fail-fast to
+            // restore.
+            //
+            // `cast(void*)` strips `data`'s `const` only to satisfy
+            // `borrow`'s signature; this function only ever READS through
+            // `na` (elements feed `unmarshalValue(..., in ubyte[])` below),
+            // never writes back through `data`.
+            import quickbite.backends.interpreter.native_array: NativeArray;
+
+            auto na = NativeArray.borrow(elementType, cast(void*) data, length);
             Value[] elements;
-            foreach (index; 0 .. length) {
-                elements ~= unmarshalValue(
-                    elementType,
-                    bytes[index * elementSize .. (index + 1) * elementSize],
-                );
-            }
+            foreach (index; 0 .. length)
+                elements ~= unmarshalValue(elementType, na.element(index));
             return Value.arrayValue(elements);
     }
 }
@@ -1154,9 +1246,9 @@ public imported!"quickbite.lang".Value unmarshalNative(
     imported!"dmd.mtype".Type type,
     in void* address,
 ) {
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.layout: typeByteSize;
 
-    return unmarshalValue(type, nativeBytes(address, cast(size_t) size(type)));
+    return unmarshalValue(type, nativeBytes(address, typeByteSize(type)));
 }
 
 // Write a Value into native memory. String and slice fields are backed by
@@ -1167,12 +1259,12 @@ public void marshalNative(
     void* address,
     in imported!"quickbite.lang".Value value,
 ) {
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.layout: typeByteSize;
 
     const(char)*[] keepAlive;
     ubyte[][] keepAliveBuffers;
     marshalArgument(
-        mutableNativeBytes(address, cast(size_t) size(type)),
+        mutableNativeBytes(address, typeByteSize(type)),
         type,
         value,
         true,
@@ -1205,22 +1297,35 @@ private imported!"quickbite.lang".Value unmarshalStruct(
     in ubyte[] buffer,
 ) {
     import quickbite.lang: Value;
-    import dmd.typesem: size;
+    import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.native_struct: NativeStruct;
     import std.string: fromStringz;
 
-    auto sym = type.sym;
+    // Routed through the item 7 container handle rather than a hand-rolled
+    // `sym.fields[i].offset`/`size(fieldType)` walk (ai/plans/value.md
+    // item 7's "must not grow a second set of D layout rules" guardrail).
+    // `NativeStruct.fieldDeclaration(index).type` is the DECLARED field
+    // type, not the basetype the old code dispatched on -- `.toBasetype`
+    // below reproduces the exact same recursive dispatch.
+    //
+    // `NativeStruct.borrow` fabricates its extent from `type` rather than
+    // sub-slicing `buffer`, so a too-short `buffer` would silently read
+    // past its end instead of range-erroring the way the old hand-rolled
+    // sub-slice did. Restore that fail-fast.
+    assert(buffer.length >= typeByteSize(type));
+    // `cast(void*)` strips `buffer`'s `const` only to satisfy `borrow`'s
+    // signature; this function only ever READS through `ns` (fields feed
+    // `unmarshalValue(..., in ubyte[])` below), never writes back into
+    // `buffer`.
+    auto ns = NativeStruct.borrow(type, cast(void*) buffer.ptr);
     Value[] fields;
-    foreach (index; 0 .. sym.fields.length) {
-        auto field = sym.fields[index];
-        auto fieldType = field.type.toBasetype;  // mutable for size()
-        const fieldSize = cast(size_t) size(fieldType);
+    foreach (index; 0 .. ns.fieldCount)
         fields ~= unmarshalValue(
-            fieldType,
-            buffer[field.offset .. field.offset + fieldSize],
+            ns.fieldDeclaration(index).type.toBasetype,
+            ns.field(index),
         );
-    }
 
-    return Value.structValue(fromStringz(sym.toChars).idup, fields);
+    return Value.structValue(fromStringz(type.sym.toChars).idup, fields);
 }
 
 // Marshal a backend value into a NUL-terminated C string valid for the

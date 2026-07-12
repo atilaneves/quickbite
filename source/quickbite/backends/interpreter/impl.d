@@ -1816,10 +1816,10 @@ private struct Walker {
                 locals[variable] = defaultValue(variable);
 
             if (auto current = variable in locals) {
-                import dmd.typesem: size;
+                import quickbite.backends.interpreter.layout: typeByteSize;
 
                 auto elementType = variable.type.toBasetype.nextOf.toBasetype;
-                const elementSize = cast(size_t) size(elementType);
+                const elementSize = typeByteSize(elementType);
                 const elementOffset = elementSize == 0
                     ? 0
                     : cast(size_t) symbol.offset / elementSize;
@@ -1959,12 +1959,24 @@ private struct Walker {
         );
     }
 
+    // `*cast(T*) &local`: a load of the same bytes at a different static
+    // type, not a hardcoded name/type-pair match (ai/plans/value.md item 7,
+    // "Shim deletion path"). Only taken when both `source` and `target` are
+    // `native_scalar.isNativeScalarType` AND `target` is no wider than
+    // `source`: reading a wider target than the source local owns would
+    // read bytes the local never had, which stays on the passthrough path
+    // below untouched (a pre-existing gap, not this call site's to fix).
+    // For every other pair -- an aggregate, a pointer, `real`, or a
+    // widening read -- this returns `value` unchanged exactly as before.
     private Value reinterpretLocalPointerLoad(
         in Value value,
         imported!"dmd.mtype".Type sourceType,
         imported!"dmd.mtype".Type pointerType,
     ) {
-        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, readScalar, writeScalar;
 
         auto source = sourceType is null ? null : sourceType.toBasetype;
         auto pointer = pointerType is null ? null : pointerType.toBasetype;
@@ -1974,13 +1986,17 @@ private struct Walker {
         if (source is null || target is null)
             return value;
 
-        if (source.ty == TY.Tfloat32 && target.ty == TY.Tuns32)
-            return Value(floatBits(cast(float) value.asReal));
+        if (!isNativeScalarType(source) || !isNativeScalarType(target))
+            return value;
 
-        if (source.ty == TY.Tfloat64 && target.ty == TY.Tuns64)
-            return Value(doubleBits(cast(double) value.asReal));
+        const sourceSize = typeByteSize(source);
+        const targetSize = typeByteSize(target);
+        if (targetSize > sourceSize)
+            return value;
 
-        return value;
+        auto block = NativeBlock.allocate(sourceSize, NativeBlock.Scan.no);
+        writeScalar(source, block.bytes, value);
+        return readScalar(target, block.bytes[0 .. targetSize]);
     }
 
     private Value staticArrayPointerView(
@@ -2519,7 +2535,7 @@ private struct Walker {
     }
 
     private Value runMemcpyCall(imported!"dmd.expression".CallExp call) {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         if (call.arguments is null || call.arguments.length < 2)
             throw new Exception("Unsupported eval call.");
@@ -2529,7 +2545,7 @@ private struct Walker {
         const destination = runExpression(destinationExpression);
         const sourcePointer = runExpression(sourceExpression);
         auto sourcePointerType = memcpyElementPointerType(sourceExpression);
-        const elementSize = cast(size_t) size(
+        const elementSize = typeByteSize(
             sourcePointerType.toBasetype.nextOf.toBasetype,
         );
         const count = call.arguments.length < 3
@@ -4728,17 +4744,23 @@ private struct Walker {
         return backendCastValue(value, target);
     }
 
+    // Delegates to `native_scalar.writeScalar` -- `ai/plans/value.md` item
+    // 7's single scalar<->bytes authority -- rather than re-deriving a
+    // scalar's byte width and bit pattern here; this module must not grow
+    // its own second set of D layout rules alongside that codec's.
     private Value[] scalarBytes(
         imported!"dmd.mtype".Type type,
         in Value value,
     ) {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        const byteCount = cast(size_t) size(type);
-        const bits = cast(ulong) value.asLong;
+        auto raw = new ubyte[](typeByteSize(type));
+        writeScalar(type, raw, value);
+
         Value[] bytes;
-        foreach (index; 0 .. byteCount)
-            bytes ~= Value(cast(ubyte) (bits >> (index * 8)));
+        foreach (byte_; raw)
+            bytes ~= Value(byte_);
         return bytes;
     }
 
@@ -4758,32 +4780,22 @@ private struct Walker {
         return scalarFromBytes(type, bytes);
     }
 
+    // The inverse of `scalarBytes` above, via `native_scalar.readScalar`.
+    // Note this also now succeeds for `float`/`double` -- see `ai/plans/
+    // value.md`'s 2026-07-10 "single scalar<->bytes authority" progress
+    // note for why the old name-matched `switch`'s throw on those two types
+    // was safe to drop.
     private Value scalarFromBytes(
         imported!"dmd.mtype".Type type,
         in Value[] bytes,
     ) {
-        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        ulong bits;
+        auto raw = new ubyte[](bytes.length);
         foreach (index, byte_; bytes)
-            bits |= cast(ulong) cast(ubyte) byte_.asLong << (index * 8);
+            raw[index] = cast(ubyte) byte_.asLong;
 
-        switch (type.toBasetype.ty) with (TY) {
-            case Tbool:   return Value(bits != 0);
-            case Tchar:   return Value(cast(char) bits);
-            case Twchar:  return Value(cast(wchar) bits);
-            case Tdchar:  return Value(cast(dchar) bits);
-            case Tint8:   return Value(cast(byte) bits);
-            case Tuns8:   return Value(cast(ubyte) bits);
-            case Tint16:  return Value(cast(short) bits);
-            case Tuns16:  return Value(cast(ushort) bits);
-            case Tint32:  return Value(cast(int) bits);
-            case Tuns32:  return Value(cast(uint) bits);
-            case Tint64:  return Value(cast(long) bits);
-            case Tuns64:  return Value(cast(ulong) bits);
-            default:
-                throw new Exception("Unsupported scalar byte writeback.");
-        }
+        return readScalar(type, raw);
     }
 
     // Apply the elements a native call wrote through pointers into
@@ -5702,7 +5714,7 @@ private struct Walker {
         in size_t index,
     ) {
         import quickbite.backends.interpreter.ffi_marshal: unmarshalNative;
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         return unmarshalNative(
@@ -5710,7 +5722,7 @@ private struct Walker {
             nativeElementAddress(
                 pointer.asNativePointer,
                 index,
-                cast(size_t) size(elementType),
+                typeByteSize(elementType),
             ),
         );
     }
@@ -5722,7 +5734,7 @@ private struct Walker {
         in Value value,
     ) {
         import quickbite.backends.interpreter.ffi_marshal: marshalNative;
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         marshalNative(
@@ -5730,7 +5742,7 @@ private struct Walker {
             nativeElementAddress(
                 pointer.asNativePointer,
                 index,
-                cast(size_t) size(elementType),
+                typeByteSize(elementType),
             ),
             value,
         );
@@ -7246,22 +7258,6 @@ private imported!"dmd.dstruct".StructDeclaration constructorStructDeclaration(
     // returns an existing declaration reference.
     imported!"dmd.aggregate".AggregateDeclaration aggregate = function_.isThis;
     return aggregate is null ? null : aggregate.isStructDeclaration;
-}
-
-
-private ulong floatBits(in float value) @trusted pure nothrow {
-    // @trusted: reads the bytes of a local float as a same-sized uint for a
-    // single immediate reinterpret load; the pointer never escapes.
-    static assert(float.sizeof == uint.sizeof);
-    return *cast(uint*) &value;
-}
-
-
-private ulong doubleBits(in double value) @trusted pure nothrow {
-    // @trusted: reads the bytes of a local double as a same-sized ulong for a
-    // single immediate reinterpret load; the pointer never escapes.
-    static assert(double.sizeof == ulong.sizeof);
-    return *cast(ulong*) &value;
 }
 
 

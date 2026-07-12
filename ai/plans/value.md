@@ -1520,6 +1520,549 @@ readSliceHeaderBytes.wrongLengthThrows`.
 
 The full focused `ut.backends.interpreter` suite passes.
 
+Progress 2026-07-10 (first interpreter call site: reinterpreted local-pointer
+loads): the native-layout container types landed a caller. A new leaf module
+`source/quickbite/backends/interpreter/native_scalar.d` codes a boxed
+`quickbite.lang.Value` to and from the host's native byte layout for the D
+scalar types (`bool`, `char`/`wchar`/`dchar`, every integral width,
+`float`/`double`; an `enum` with an integral base type dispatches through its
+resolved base and so also works). `real`/`TY.Tfloat80` is deliberately
+excluded: its 80-bit extended-precision layout is host- and ABI-specific
+padding, not a portable byte-for-byte native scalar, and nothing needs it
+yet. `writeScalar`/`readScalar` `memcpy` rather than use a pointer-typed
+load/store, matching `native_array.d`'s `writeSliceHeaderBytes`/
+`readSliceHeaderBytes` alignment reasoning (the destination is an interior
+`NativeBlock` byte range, not guaranteed aligned), and enforce their
+length contract with an unconditional throw rather than only an `in`
+contract, for the same stripped-under-`-release` reason those two give.
+
+`impl.d`'s `reinterpretLocalPointerLoad` -- the exact shim `ai/plans/
+value.md` and `interpreter.md` §9.10 named as this item's next retirement --
+now allocates a `NativeBlock` sized to the source local's type, `writeScalar`s
+the boxed source value into it, and `readScalar`s the target type back out of
+the leading bytes, taking that path only when both the source and target
+types are `isNativeScalarType` AND the target is no wider than the source
+(reading a wider target than the source local owns would read bytes the
+local never had; that stays on the untouched passthrough path, a
+pre-existing gap this call site does not attempt to close). Every other
+pair -- an aggregate, a pointer, `real`, or a widening read -- returns the
+boxed value unchanged exactly as before. The two previously-hardcoded pairs
+(`float`->`uint`, `double`->`ulong`) now produce their pinned results
+(`ut.backends.runner.ct.expressions` `pointer.
+floatBitsThroughUintPointerAreRawBits`/`pointer.
+doubleBitsThroughUlongPointerAreRawBits`) through real bytes instead of a
+name match; both stayed green. The private `floatBits`/`doubleBits` helpers
+at the bottom of `impl.d` had no other caller (confirmed by grep; the
+same-named helpers in `backends/ir/bits.d` and `executor.d` are unrelated
+modules, untouched) and are deleted.
+
+One previously-unhandled pair now takes the new byte-level path where it
+used to fall through unchanged: `dchar` source / `uint` target (4 bytes
+each), exercised by `pointer.
+dcharCompoundAssignThroughUintPointerIsIntegerCompatible.Interpreter`. This
+does not change that test's outcome -- traced before changing anything: the
+test's `==` goes through `impl.d`'s `equalValues`, which already compares a
+character and a numeric scalar by code point regardless of which `Value`
+variant is active, so the old passthrough and the new byte-reinterpreted
+read agree numerically for this pair (a `dchar`'s code-point value already
+equals its raw bits for values in this range). Grepped the whole test suite
+for every `cast(T*) &expr` shape before writing any code (`tests/ut`, no
+`tests/ct`/`tests/rt` top-level trees in this repo) and traced each hit;
+`ut.backends.runner.ct.cerealed.encodeFloatReinterpretsBytes` is the other
+live pointer-reinterpret fixture and is the same, already-covered
+`float`->`uint` pair through a function parameter rather than a plain
+local. No test pinned an old wrong answer for a newly-handled pair, so
+nothing needed weakening or was left un-migrated. The strict-narrowing
+case (target strictly narrower than source, e.g. a `uint` local read
+through a `ushort*`) also newly takes this byte-level path rather than
+the untouched passthrough -- the narrowing behaviour is correct (it reads
+the leading bytes, matching compiled D) but, unlike the `dchar`/`uint`
+pair above, no `ct/`/`rt/` fixture exercises a strict-narrowing
+reinterpret today; it is pinned only at the codec level, by
+`native_scalar.d`'s own narrowing unit test.
+
+New unit tests in `tests/ut/backends/interpreter/native_scalar.d` (added to
+`tests/main.d`'s explicit `runTests!` module list, matching how
+`native_array`/`native_struct` are registered there): round-trip for every
+handled width, `bool`, `char`/`wchar`/`dchar`, an enum with an integral base
+(via a new `enumTypeOf` test helper in `tests/ut/backends/interpreter/
+package.d`, mirroring the existing `structTypeOf`), the host compiler as an
+explicit oracle (`*cast(uint*) &f`/`*cast(ulong*) &d` computed in the test
+and compared against `writeScalar`+`readScalar`'s result), a wrong
+`dest`/`src` length throwing, and an unsupported type (`void*`) throwing.
+Focused runs, all green: `bin/ut -s ut.backends.interpreter.native_scalar`,
+`bin/ut -s ut.backends.interpreter`, `bin/ut -s
+ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
+ut.backends.runner.ct.structs ut.backends.evaluator.eval` (all
+pre-existing `@ShouldFail` rows still fail as expected), and `bin/ut -s
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`. The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
+`ffi_marshal.d`'s `marshalArgument`/`unmarshalValue` already do a narrower
+version of the same integral/float encode/decode for the libffi ABI seam
+(~lines 645-660 and 907-923); `native_scalar.d`'s codec deliberately agrees
+with it rather than diverging, but the two are not consolidated in this
+commit -- `ffi_marshal.d`'s buffer is a libffi cell, not a `NativeBlock`,
+and touching it was out of scope for this call site. Flagged as future
+consolidation, not done.
+
+What this commit does NOT do, to be precise about the state of item 7:
+`reinterpretLocalPointerLoad` itself is not deleted -- it still exists and
+is still the call site, but its body now routes through real native bytes
+instead of a name/type-pair match. The local's authoritative storage is
+still a boxed `Value`; this only changes what a *load through a
+differently-typed pointer* produces, not where the local itself lives --
+`locals[VarDeclaration]` is still `Value[VarDeclaration]`, not a
+`NativeBlock`. No `interpreter.md` §9.10 shim is retired by this commit,
+including this one: the `reinterpretLocalPointerLoad` +
+`floatBits`/`doubleBits` entry's retirement condition is "native layout
+makes ALL reinterpret loads structural", and only the two previously-
+hardcoded pairs (`float`->`uint`, `double`->`ulong`) now go through real
+bytes -- aggregate, pointer, `real`, and widening reinterprets still take
+the untouched boxed/refused passthrough path, so the condition is unmet
+and the entry stays open, merely narrowed (`floatBits`/`doubleBits`
+themselves are deleted; see above). `gc_*` capacity hooks,
+`runEmplaceRefCall`/`isEmplaceRef`, and `writeBackByValueClassArguments`
+are all still exactly as they were. The array/struct container
+composition work from the notes above still has no *other* interpreter
+call site (no guest expression reaches
+`arrayElement`/`sliceElement`/`structElement`/`arrayField`/`sliceField`);
+this commit's call site is scoped to scalar reinterpret-loads only, the
+narrowest slice of "give these types somewhere to be used" that had an
+existing, exactly-named shim entry to narrow.
+
+Progress 2026-07-10 (single scalar<->bytes authority): `impl.d` carried a
+second, older scalar-byte codec alongside `native_scalar.d` -- `scalarBytes`
+(splats a boxed `Value`'s bits into a `Value[]` of individually-boxed
+`ubyte`s) and `scalarFromBytes` (its inverse, reassembling those boxed bytes
+back into a scalar `Value` via a hand-written `switch` over `dmd.astenums.
+TY`), used by `localPointerByteSlice` (`ptr[lower..upper]` byte slices
+through a pointer to a scalar local) and `scalarWithByte`/
+`writeThroughArrayPointer` (single-byte pointer writebacks, e.g. a native
+call filling a buffer that aliases a non-array scalar local). This was
+exactly item 7's "must not grow a second set of D layout rules" guardrail
+being violated by the interpreter's own pre-existing code, not new code --
+`native_scalar.d` already had the byte width and bit-pattern facts for
+every scalar `TY` it claims; `impl.d` was re-deriving them independently.
+
+Both helpers now delegate: `scalarBytes` allocates a `ubyte[layout.
+typeByteSize(type)]`, calls `native_scalar.writeScalar` into it, and maps
+each byte to `Value(ubyte)`; `scalarFromBytes` copies its `Value[]` bytes
+into a `ubyte[]` and calls `native_scalar.readScalar`. Both keep their
+original signatures (`Value[]` in/out) so `localPointerByteSlice`,
+`scalarWithByte`, and `writeThroughArrayPointer` are unchanged.
+
+The float/double question: the old hand-written `scalarFromBytes` `switch`
+had no `Tfloat32`/`Tfloat64` case and threw "Unsupported scalar byte
+writeback." for them -- but that throw was already effectively dead code
+via `scalarBytes`, not `scalarFromBytes`: `scalarBytes` computed its bytes
+via `value.asLong`, and `quickbite.lang.Value.asLong` itself throws
+("Expected integer-compatible scalar.") for a `float`/`double`-holding
+`Value`, since those are separate, non-integral `SumType` members. So a
+float/double local reaching either helper already threw before ever
+reaching `scalarFromBytes`'s own throw branch, just with a different
+message. Grepped the whole `tests/` tree for both exact messages
+("Unsupported scalar byte writeback.", "Expected integer-compatible
+scalar.") and for `ptr[lower..upper]`/compound-assignment-through-scalar-
+pointer fixtures exercising float/double specifically: nothing pins either
+throw. Per the single-oracle rule, `SystemLinker` (real compiled D) has no
+such restriction -- `*cast(ubyte*)&floatLocal` byte-slices or writes back
+fine in compiled D. So this reimplementation is allowed to make float/
+double succeed here, and it does: `native_scalar.writeScalar`/`readScalar`
+handle `Tfloat32`/`Tfloat64` via `Value.asReal`, not `asLong`, so both
+`scalarBytes` and `scalarFromBytes` now succeed for float/double locals
+through this path, matching the `SystemLinker` oracle. This is verified as
+*unpinned* (nothing in `tests/` depended on the old throw), not *proven* by
+a new `ct/`/`rt/` fixture -- no such fixture was added, per this task's
+scope (adding one needs separate TDD approval). Every other previously-
+handled type (`bool`, `char`/`wchar`/`dchar`, every integral width, and an
+`enum` with an integral base, which reaches the codec via `Value.EnumValue`
+regardless of base type) is unchanged: `isNativeScalarType`'s case list is
+a strict superset of the old `switch`'s cases, so no type the old code
+handled is now unhandled.
+
+New unit tests in `tests/ut/backends/interpreter/native_scalar.d`: a round
+trip through an individually-boxed `Value[]` byte array (mirroring `impl.
+d`'s new `scalarBytes`/`scalarFromBytes` composition one level below their
+private, untestable-in-isolation bodies) for a 4-byte integral type, and
+the same composition for `float`/`double` -- the newly-succeeding case.
+Focused runs, all green with the new cases added and nothing else changed:
+`bin/ut -s ut.backends.interpreter.native_scalar`, `bin/ut -s
+ut.backends.interpreter`, `bin/ut -s ut.backends.runner.ct.expressions ut.
+backends.runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
+evaluator.eval` (identical to the pre-change baseline, pre-existing
+`@ShouldFail` rows still fail as expected), and `bin/ut -s
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`
+(identical to baseline). The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
+
+`ffi_marshal.d`'s narrower version of the same encode/decode (noted above)
+is still untouched -- out of scope here too, same reasoning as the prior
+progress note.
+
+Progress 2026-07-10 (scalar authority reaches the FFI marshaller): the
+previous two notes left `ffi_marshal.d`'s own scalar encode/decode as a
+deliberately-unconsolidated third copy of the same D layout rules -- exactly
+item 7's "must not grow a second set of D layout rules" guardrail, this time
+at the libffi ABI seam rather than in `impl.d`. `marshalArgument`'s
+`Tbool`/`Tchar`/`Twchar`/`Tdchar`/every integral width arm and its
+`Tfloat32`/`Tfloat64` arms, and `unmarshalValue`'s matching arms, now route
+through `native_scalar.writeScalar`/`readScalar`. `Tfloat80` (`real`) and
+every aggregate/pointer/class/array/struct/delegate arm are untouched, per
+`native_scalar.d`'s own deliberate exclusion of `real`'s host-specific
+padded layout and this task's scope.
+
+Proving byte-for-byte preservation needed tracing, not assumption, on two
+fronts:
+
+Char/integral agreement: `ffi_marshal.d`'s local `scalarBits(type, value)`
+and `native_scalar.d`'s local `scalarLong(value)` compute a `Value`'s
+integer bits slightly differently in their source text (`scalarBits`
+special-cases `Tchar`/`Twchar`/`Tdchar` by *type*; `scalarLong` special-cases
+by whether the `Value` *itself* `isCharacter`), so they can only diverge when
+the type says char but the value is not character-valued -- concretely, a
+`float`/`double`-holding `Value` reaching a char-typed slot, where
+`scalarBits` would truncate via `castTo!long.asLong` and `scalarLong` would
+throw via a direct `asLong`. Traced whether that is reachable: every
+`marshalArgument`/`unmarshalValue` `type` argument arrives already resolved
+through `.toBasetype` (`quickbite.ffi.core`'s `parameterType`/the `Tarray`/
+`Tstruct` recursions), and every `Value` reaching a char-typed argument
+either comes from `integerValue` (an `IntegerExp` literal, which switches on
+`integer.type.ty` and produces a genuinely char-typed `Value` for a
+char-typed literal) or from an explicit `CastExp`, whose `castValue` routes
+through `quickbite.backends.casts.castValue`'s `char_`/`wchar_`/`dchar_`
+targets -- `value.castTo!char` etc. -- which also produces a genuinely
+char-typed `Value` regardless of the source type. D has no implicit
+narrowing conversion to `char`/`wchar`/`dchar` that would let a float reach
+a char-typed argument slot uncast. So the only inputs either helper can
+receive are ones where both formulas already agree (an integral/bool/char
+`Value` at any of these types); the divergent float-at-char-type case is
+provably unreachable, not merely unobserved.
+
+Buffer-width agreement: unlike the container call site in the prior two
+notes, `ffi_marshal.d`'s buffers are not uniformly `layout.typeByteSize
+(type)`-sized, so `writeScalar`/`readScalar`'s unconditional length-match
+throw needed checking against every call site, not assuming it. Traced all
+of them (`quickbite.ffi.core`'s argument/receiver/ref-result/out-parameter
+cell allocations, and this file's struct-field/static-array/slice-element/
+pointer-element recursive slices): every one is exactly `typeByteSize(type)`
+long, *except* a direct (non-ref) native return buffer and a native closure/
+callback result buffer, both of which `quickbite.ffi.core` widens to at
+least libffi's `ffi_arg` width (>= 8 bytes) for a narrow scalar type -- a
+real, load-bearing libffi ABI convention, not an oversight. For the read
+side (`unmarshalValue`), only the low `typeByteSize(type)` bytes of that
+widened buffer ever mattered (the old pointer-cast read the same bytes,
+oblivious to the rest of the buffer), so slicing to `buffer[0 ..
+typeByteSize(type)]` before calling `readScalar` reproduces the old read
+exactly for both the exact-size and the widened case. For the write side
+(`marshalArgument`), the two are not equivalent: the old integral/char
+arm's byte splat fills the *entire* (possibly widened) buffer with a sign-
+or zero-extended copy of the value, which is what libffi's closure-result
+ABI convention requires when an interpreted delegate is called back into
+from native code and returns a narrow scalar (ffi.md §34.16) -- a fixed-
+width `writeScalar` cannot produce that. This is the one case left
+deliberately unconsolidated: `marshalArgument`'s integral/char arm checks
+`buffer.length == typeByteSize(type)` first and calls `writeScalar` for the
+exact-size case (every argument, receiver, ref-result, and struct/array
+field -- the overwhelming majority of calls), falling back to the original
+`scalarBits`-driven splat only for the widened closure-result case. The
+`Tfloat32`/`Tfloat64` write arms needed no such branch: the old code already
+wrote only `typeByteSize(type)` bytes via a pointer-typed store regardless
+of `buffer.length`, identical to what a sliced `writeScalar` call produces,
+so both consolidate unconditionally.
+
+`scalarBits` is therefore still used (the widened-buffer fallback) and was
+not deleted, per this task's "still used by a path you did not touch, leave
+it" rule -- it is now a narrower, ABI-specific helper rather than the
+general-purpose scalar codec it used to be. `native_scalar.writeScalar`/
+`readScalar` `memcpy` into an exactly-sized slice rather than use a
+pointer-typed load/store; this is strictly safer than the old direct
+pointer casts (alignment-agnostic) and, on this host, produces identical
+bytes -- confirmed by every focused run below staying green, not merely
+argued.
+
+No test was added or modified; the proof for this commit is the existing
+FFI/runtime suites staying green end to end. Focused runs, all unchanged
+from baseline: `bin/ut -s ut.backends.interpreter`, `bin/ut -s
+ut.backends.interpreter.native_scalar`, `bin/ut -s ut.backends.runner.rt.
+cstdlib ut.backends.runner.rt.dependency_image`, `bin/ut -s ut.backends.
+runner.rt.concurrency ut.backends.runner.rt.file ut.backends.runner.rt.
+random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf ut.
+backends.runner.rt.llvm_jit`, and `bin/ut -s ut.
+backends.runner.ct.expressions ut.backends.runner.ct.cerealed ut.backends.
+runner.ct.structs ut.backends.evaluator.eval` (identical to the pre-change
+baseline, pre-existing `@ShouldFail` rows still fail as expected). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
+Item 7's guardrail now holds across both production scalar<->bytes call
+sites the interpreter has: the reinterpret-load container path and the FFI
+marshaller. The one remaining split (the widened closure-result buffer) is
+not a second set of layout *rules* -- it reuses the same `scalarBits`/
+`scalarLong` bit-value formula `native_scalar.d`'s header comment already
+documents as kept in agreement -- it is an ABI-width concern specific to
+libffi's calling convention that a fixed-width leaf codec should not absorb.
+
+Progress 2026-07-10 (aggregate handles get their first production caller):
+this is the milestone item 7's headline names -- `NativeStruct`/`NativeArray`
+had container machinery (allocate/borrow/adopt, field/element views, slice
+headers, growth) but no caller anywhere in the interpreter until now.
+`ffi_marshal.d` was walking DMD struct/array layout by hand a fourth time
+(after `impl.d`'s two retired copies and the FFI marshaller's own scalar
+arms, both closed by the two progress notes above) -- `unmarshalStruct` and
+`marshalArgument`'s `Tstruct` arm read/wrote `sym.fields[i].offset ..
++ size(fieldType)` directly; `unmarshalStaticArray` and `marshalArgument`'s
+`Tsarray` arm did the equivalent `index * elementSize` walk. All four now
+view their buffer as a `NativeStruct`/`NativeArray` and use `field(index)`/
+`element(index)` for the byte sub-slice and `fieldDeclaration(index).type`/
+the array's own `elementType` for the recursive dispatch type -- both the
+read side (`unmarshalStruct`, `unmarshalStaticArray`) and the write side
+(`marshalArgument`'s `Tstruct`/`Tsarray` arms).
+
+Three things were proven, not assumed, before touching a line:
+
+- Basetype dispatch. The old code recursed on `field.type.toBasetype`/
+  `elementType.toBasetype`; `NativeStruct.fieldDeclaration(index).type` and
+  a `NativeArray`'s `elementType` are the DECLARED type. Every new call site
+  calls `.toBasetype` explicitly before recursing (for the array sites, once,
+  since the same resolved `elementType` local is reused both to build the
+  handle and to dispatch), reproducing the exact old dispatch. No enum-typed
+  struct field or array element exists in the `rt/` FFI fixtures to exercise
+  this at runtime (grepped `tests/ut/backends/runner/rt/` for a struct with
+  an `enum`-typed field; none), so this is proven structurally instead: DMD's
+  own `size(Type, Loc)` (`dmd/compiler/src/dmd/typesem.d`) has `case Tenum:
+  return t.isTypeEnum().sym.getMemtype(loc).size(loc);` -- an enum's declared-
+  type size IS its basetype's size, verbatim, so `typeByteSize` cannot
+  diverge between the two for a struct field or array element regardless of
+  whether a fixture exercises it.
+- Offset/size identity is not merely equal, it is IDENTICAL data. `layout.
+  structFields(type)` (`NativeStruct.borrow`'s field list) returns `type.sym.
+  fields[]` verbatim -- the same array, same order, same `VarDeclaration`
+  objects -- so `NativeStruct.fieldDeclaration(index)` for any index is
+  literally the same object the old code read via `sym.fields[index]`, not a
+  separately-derived equal one. `NativeStruct.field(index)`'s offset comes
+  from `layout.fieldByteOffset`, which returns `field.offset` verbatim (the
+  same number the old code read directly), and its size from `layout.
+  typeByteSize(declaration.type)`, which -- per the basetype finding above --
+  equals `size(declaration.type.toBasetype)`, the old code's own number. The
+  byte range `NativeStruct.field`/`NativeArray.element` return is therefore
+  byte-for-byte the same sub-slice the hand-rolled walk produced, for every
+  real type, not just the ones covered by a running fixture.
+- Mutability. `NativeStruct.borrow`/`NativeArray.borrow` wrap the caller's
+  own buffer (`NativeBlock.borrow` stores the raw `ubyte[]` unchanged, still
+  mutable); `field`/`element` are non-`const`, non-`inout`-narrowed accessors
+  that return a writable `ubyte[]` when called on a non-const handle. So the
+  write side (`marshalArgument`'s `Tstruct`/`Tsarray` arms, which write INTO
+  the sub-slice) needed no fallback to the old hand-rolled path -- both read
+  and write sides consolidate cleanly through the same handles.
+
+`@system`: `NativeStruct.borrow`/`NativeArray.borrow` are `@system` (raw
+pointer); the four call sites live in `unmarshalStruct`, `unmarshalStaticArray`,
+and `marshalArgument`, none of which are `@safe`, so no `@trusted` wrapper was
+needed or added. The now-unused `import dmd.typesem: size;` was removed from
+`marshalArgument` and the two `unmarshal*` functions once their last direct
+`size(...)`/`sym.fields[i].offset` call was replaced.
+
+No test was added or modified; the proof is the existing FFI/runtime suites
+staying green end to end, plus the structural identity arguments above (this
+call site's correctness does not rest on fixture coverage the way a value
+computation would -- the handle reads the exact same DMD objects and numbers
+the old code did). Focused runs, all green and unchanged from baseline
+except where noted: `bin/ut -s ut.backends.interpreter`, `bin/ut -s
+ut.backends.interpreter.native_struct ut.backends.interpreter.native_array`,
+`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
+dependency_image`, `bin/ut -s ut.backends.runner.rt.concurrency ut.
+backends.runner.rt.file ut.backends.runner.rt.random ut.backends.runner.rt.
+inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.llvm_jit`, and
+`bin/ut -s ut.backends.runner.ct.expressions ut.backends.runner.ct.
+cerealed ut.backends.runner.ct.structs ut.backends.evaluator.eval`
+(identical to the pre-change baseline, pre-existing `@ShouldFail` rows
+still fail as expected). The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
+
+To be precise about the milestone: this gives `NativeStruct`/`NativeArray` a
+real production caller for the first time, closing the "somewhere to be
+used" gap the item's headline names -- but it is the FFI seam, not the
+interpreter's core value representation. The tree-walking Walker's locals
+(`locals[VarDeclaration]`) are still `Value[VarDeclaration]`; every guest
+expression that reads or writes a struct/array local still boxes. No
+`interpreter.md` §9.10 shim is retired by this commit (the shims this item's
+success criteria name -- `gc_*` capacity hooks, `runEmplaceRefCall`/
+`isEmplaceRef`, `writeBackByValueClassArguments` -- are FFI-independent; this
+caller is downstream of DMD's own libffi ABI seam, not the interpreter's own
+local storage). `unmarshalSlice`'s header parsing/char fast-paths,
+`marshalSliceArgument`, the scalar/pointer/class/delegate/float80 arms, the
+writeback machinery, and the union paths (`isOpaqueUnionOutCell` and its
+callers) were left untouched, exactly per this task's scope -- none of them
+walk struct/array layout by hand the way the four consolidated sites did.
+What remains, unchanged from the prior note: a guest-level `&local`/array/
+struct call site for the container types themselves (not just this FFI-seam
+caller) -- no guest expression yet reaches `arrayElement`/`sliceElement`/
+`structElement`/`arrayField`/`sliceField`, and locals still are not stored in
+native layout at all.
+
+Progress 2026-07-10 (slice element layout joins the aggregate authority): the
+previous note consolidated `unmarshalStruct`/`unmarshalStaticArray`/
+`marshalArgument`'s `Tstruct`/`Tsarray` arms through `NativeStruct`/
+`NativeArray`, but left two more hand-rolled element walks in
+`ffi_marshal.d` untouched: `marshalSliceArgument` (write side, a dynamic
+`T[]` argument) allocated its own `new ubyte[](value.length * elementSize)`
+and sub-sliced it by hand; `unmarshalSlice`'s `default:` arm (read side, a
+returned/callback `T[]` whose element type is not `char`/`wchar`/`dchar`)
+did the matching `bytes[index * elementSize .. (index + 1) * elementSize]`
+walk over the returned `{length, ptr}` header's pointee. Both now go through
+`NativeArray`: `marshalSliceArgument` calls `NativeArray.allocate(
+elementType, value.length)` and writes each element into `na.element(
+index)`; `unmarshalSlice`'s `default:` arm calls `NativeArray.borrow(
+elementType, cast(void*) data, length)` and reads each element from `na.
+element(index)`. The header parse (`length`, `data`) and the `Tchar`/
+`Twchar`/`Tdchar` fast-paths in `unmarshalSlice` are untouched, exactly per
+this task's scope -- neither walks element layout by hand. This closes the
+last two hand-rolled per-element layout walks in the FFI marshaller; every
+site that sub-slices a struct/array/slice buffer by index now goes through
+`NativeStruct`/`NativeArray`.
+
+Two things were confirmed, not assumed, before touching a line:
+
+- Basetype dispatch and stride/offset identity, same argument as the prior
+  note applied to a slice's element rather than a struct's field or a static
+  array's element. Both call sites resolve `elementType = type.nextOf.
+  toBasetype` once and reuse it both to build the `NativeArray` handle and
+  to dispatch the recursive `marshalArgument`/`unmarshalValue` call, exactly
+  reproducing the old code's `elementType.toBasetype`-then-`size(
+  elementType)` sequence. `NativeArray`'s `stride` is `layout.
+  typeByteSize(elementType)` (`native_array.d`'s `allocate`/`borrow`, both
+  called here); `layout.typeByteSize` reads `type.size` (`layout.d`'s
+  `typeByteSizeImpl`), which is `dmd.mtype.Type.size`'s own property --
+  DMD's `dmd.typesem.size(Type, Loc)` under the hood, the exact function the
+  old code called directly as `size(elementType)`. Same DMD number, not
+  merely an equal one, so `element(index)`'s `index * stride .. (index + 1)
+  * stride` is byte-for-byte the same sub-slice the hand-rolled
+  `index * elementSize .. (index + 1) * elementSize` produced.
+- Lifetime, for the write side specifically (the read side borrows caller-
+  owned native memory it never allocates, so there is no lifetime question
+  on that side beyond what `unmarshalStaticArray`'s prior note already
+  covered). The old `bytes = new ubyte[](value.length * elementSize)` was a
+  GC-allocated, zero-initialised `ubyte[]` kept alive by two things: being
+  appended to `keepAliveBuffers` (this call's own borrowed-argument
+  lifetime) and being stored in `_sliceWritebacks` (`fillArgument`'s own
+  field, alive for the marshaller's whole session, used to reify the
+  callee's writes back into a `Value` after the call). `NativeArray.
+  allocate`'s block is also GC memory (`NativeBlock.allocate` routes through
+  `GC.calloc`), also zero-initialised (`GC.calloc` zeroes; verified in
+  `native_block.d`'s own `allocateBytes` comment) and also a non-moving GC
+  allocation, so `na.block.bytes` -- the `ubyte[]` this commit now returns
+  and stores in the same two places (`keepAliveBuffers`, `_sliceWritebacks`)
+  -- is kept alive and stable by the identical mechanism the old `bytes`
+  local was. `NativeBlock.allocate`'s zeroing and `new ubyte[]`'s zeroing
+  agree exactly (both zero every byte); there is no behavioural difference
+  to note there. One incidental improvement, not requested but worth
+  recording: `NativeArray.allocate` picks its block's GC scan policy from
+  `typeHasPointers(elementType)` (`native_array.d`'s own doc comment), so a
+  slice whose element type carries pointers now gets a conservatively
+  scanned block, where the old `new ubyte[]` -- typed as `ubyte[]`, which
+  itself carries no pointers -- would always have been allocated `NO_SCAN`
+  regardless of what the bytes inside it actually held. No `rt/` fixture
+  exercises a pointer-carrying slice element type today, so this is not
+  proven by a passing test, only by reading `NativeArray.allocate`'s own
+  scan-policy logic against the old `new ubyte[]`'s inferred one.
+
+As with the prior note, this is still the FFI seam, not the tree-walker's
+core value representation: locals stay boxed, and no `interpreter.md` §9.10
+shim is retired by this commit -- this consolidation closes the marshaller's
+own remaining hand-rolled layout walks, it does not change where a guest
+local's storage lives or add a new guest-reachable call site for
+`arrayElement`/`sliceElement`/`structElement`/`arrayField`/`sliceField`.
+
+No test was added or modified; the proof is the existing FFI/runtime suites
+staying green, plus the structural stride/offset-identity argument above.
+Focused runs, all green and unchanged from baseline: `bin/ut -s
+ut.backends.interpreter`, `bin/ut -s ut.backends.interpreter.native_array
+ut.backends.interpreter.native_struct`, `bin/ut -s ut.
+backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image ut.
+backends.runner.rt.concurrency ut.backends.runner.rt.file ut.backends.
+runner.rt.random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf
+ut.backends.runner.rt.llvm_jit`, and `bin/ut -s
+ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
+ut.backends.runner.ct.structs ut.backends.evaluator.eval` (identical to
+the pre-change baseline, pre-existing `@ShouldFail` rows still fail as
+expected). The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.
+
+Progress 2026-07-10 (single byte-size authority): the prior two notes
+routed `impl.d`/`ffi_marshal.d`'s hand-rolled per-field/per-element byte
+walks through `NativeStruct`/`NativeArray`, but both files still called
+`dmd.typesem.size` directly at eleven remaining sites to get a bare
+type's byte size, each casting DMD's `SIZE_INVALID` sentinel to
+`size_t` in place -- silently, unlike `layout.typeByteSize`, which
+throws instead. This commit routes every one of those sites through
+`layout.typeByteSize`, completing this branch's single-layout-authority
+theme: `layout.typeByteSize` is now the only place in the interpreter
+package that calls `dmd.typesem.size` for a byte size, apart from
+`impl.d`'s `pointerElementSize` (deliberately left; see below). Converted,
+all in `ffi_marshal.d` unless noted: `InterpreterInboundTrampolineSession.
+invoke`'s callback-argument size, `pointerWritebacks`'s element size,
+`writeRefResult`'s ref-result size, `invokeClosure`'s callback-argument
+size, `marshalPointerElements`'s element size, `unmarshalNative`'s and
+`marshalNative`'s pointee size (both `public`, called from `impl.d`),
+and in `impl.d`: `symbolOffsetLocalValue`'s static-array element size,
+`runMemcpyCall`'s source-element size, and `loadNativePointerElement`/
+`storeNativePointerElement`'s element size. Each converted call's now-
+solitary `import dmd.typesem: size;` was removed and replaced with
+`import quickbite.backends.interpreter.layout: typeByteSize;`; the
+`cast(size_t)` these sites all wrapped `size(...)` in is gone too,
+since `typeByteSize` already returns `size_t`. A couple of these sites
+carried a `// hand-rolled ... size(fieldType) walk` style comment
+referencing the old direct call; those were left alone where they
+describe a *different*, already-converted walk (the `Tstruct`/`Tsarray`
+arms noted in the 2026-07-10 "aggregate handles" note above), since
+they document history, not this commit's lines.
+
+Per-site `SIZE_INVALID`-unreachable check: every converted call sits on
+a type that is actively being marshalled, indexed, or dereferenced at
+that point -- a callback/argument/ref-result/receiver type mid-FFI-call,
+a static array's own element type (whose enclosing static array is
+already known-sized, which DMD cannot compute without first sizing the
+element), a memcpy source pointer's pointee (memcpy requires a known
+element stride to advance by), or a native-pointer element being read
+or written through `loadNativePointerElement`/
+`storeNativePointerElement` (native memory access needs a known byte
+width). None of these can legitimately reach `Type.terror`/an unsized
+type in practice, so replacing the silent `SIZE_INVALID`-as-huge-
+`size_t` cast with `typeByteSize`'s throw is a hardening -- an
+unreachable-in-practice guard becoming loud instead of silent -- not a
+behaviour change.
+
+One site was deliberately left on raw DMD access:
+`impl.d`'s `pointerElementSize` (pointer-arithmetic scaling) reads
+`element.size` as a property (UFCS on the same `dmd.typesem.size`, but
+call-free syntax, not the `cast(size_t) size(type)` shape this task's
+grep targeted) and casts the result to `long`, not `size_t`. Casting
+`SIZE_INVALID` (`~cast(ulong) 0`, all bits set) to a signed `long`
+reinterprets it as `-1`, and the function already throws
+"Unsupported pointer element type." whenever `elementSize <= 0` -- so,
+unlike the eleven converted sites, this one already turns
+`SIZE_INVALID` into a loud failure by an existing, independent guard.
+Converting it would still be a legitimate future cleanup, but it is a
+different shape than the pattern this task scoped, so it was left
+alone and is reported here rather than silently folded in.
+
+No layout number, offset walk, or aggregate-handling behaviour changed;
+this is purely internal call routing. No test was added or modified.
+Focused runs, all green and unchanged from baseline: `bin/ut -s
+ut.backends.interpreter`, `bin/ut -s ut.backends.interpreter.native_scalar
+ut.backends.interpreter.native_array ut.backends.interpreter.native_struct
+ut.backends.interpreter.layout`, `bin/ut -s ut.backends.runner.rt.cstdlib
+ut.backends.runner.rt.dependency_image ut.backends.runner.rt.concurrency
+ut.backends.runner.rt.file ut.backends.runner.rt.random ut.backends.
+runner.rt.inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.
+llvm_jit`, and `bin/ut -s ut.backends.runner.ct.expressions ut.backends.
+runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
+evaluator.eval` (identical to the pre-change baseline, pre-existing
+`@ShouldFail` rows still fail as expected). The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -1987,26 +2530,74 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    composition matrix is now symmetric on both axes — struct→{struct,
    static array, slice} fields and array→{struct, static array, slice}
    elements — with no accessor left one-directional. None of this has a
-   user-visible display or FFI change yet, and no shim is retired yet.
-   What remains, the sole next step: the interpreter call site (`impl.d`/
-   `Walker`/`Value`) that actually gives these types somewhere to be used
-   instead of sitting unwired — including, for `slice` specifically, the
-   guest-level `~=`-on-a-slice reallocation semantics the "array
-   sub-slicing" progress note explicitly does not model, and, for
-   `setLength`, guest-level `~=`/append more generally (still a call-site
-   allocate-and-rebind operation, per the "array length assignment"
-   progress note) and keeping a previously written slice header in sync
-   with a later reallocating `setLength` (the call site's problem, not
-   this container's, exactly as for a stale compiled-D slice) — and only
-   after that, shim retirement one `interpreter.md` §9.10 entry at a time,
-   each proven by its ratchet fixtures staying green through the real path.
-   Class objects stay third in the migration order, per the "Migration
-   order" bullet above. Latency is measured only once the
+   user-visible display or FFI change yet.
+
+   Progress 2026-07-10: the native-layout types now have a first production
+   caller, and interpreter.md §9.10's `reinterpretLocalPointerLoad` +
+   `floatBits`/`doubleBits` entry is narrowed, not retired -- see the
+   Status "first interpreter call site" progress note above for the full
+   account. Scoped precisely: `impl.d`'s `reinterpretLocalPointerLoad` (a
+   `*cast(T*) &local` scalar reinterpret-load) now routes through a real
+   `NativeBlock` plus the new `native_scalar.d` codec instead of a
+   hardcoded `float`/`uint` and `double`/`ulong` name match, and
+   `floatBits`/`doubleBits` are deleted from `impl.d`. But the entry's
+   retirement condition ("native layout makes ALL reinterpret loads
+   structural") is unmet -- aggregate, pointer, `real`, and widening
+   reinterprets are still boxed/refused through the untouched passthrough
+   path -- so no §9.10 shim is retired; only its scope is narrowed. That is
+   the *scalar* leaf case only -- `reinterpretLocalPointerLoad` itself is
+   not deleted, a local's authoritative storage is still a boxed `Value`
+   (`locals[VarDeclaration]` is still `Value[VarDeclaration]`, not a
+   `NativeBlock`), and the array/struct composition matrix built up above
+   still has no call site at all: no guest expression yet reaches
+   `arrayElement`/`sliceElement`/
+   `structElement`/`arrayField`/`sliceField`. What remains, the next step:
+   wire a guest-level `&local`/array/struct call site for the container
+   types themselves (not just the scalar reinterpret-load leaf) — including,
+   for `slice` specifically, the guest-level `~=`-on-a-slice reallocation
+   semantics the "array sub-slicing" progress note explicitly does not
+   model, and, for `setLength`, guest-level `~=`/append more generally
+   (still a call-site allocate-and-rebind operation, per the "array length
+   assignment" progress note) and keeping a previously written slice header
+   in sync with a later reallocating `setLength` (the call site's problem,
+   not this container's, exactly as for a stale compiled-D slice) — and
+   only after that, further shim retirement one `interpreter.md` §9.10
+   entry at a time, each proven by its ratchet fixtures staying green
+   through the real path. Class objects stay third in the migration order,
+   per the "Migration order" bullet above. Latency is measured only once the
    array and struct correctness gates are green and a real suite actually
    reaches native storage; item 6 already showed the benchmark suite never
    crossed the old marshaller seam. Until then, native layout is justified by
    the correctness ceiling (`&local`, unions, reinterpret casts, slices into
    locals), not by a benchmark.
+
+   Progress 2026-07-10 (aggregate handles get their first production
+   caller): `NativeStruct`/`NativeArray` themselves -- not just the scalar
+   codec -- now have a real caller: `ffi_marshal.d`'s `unmarshalStruct`/
+   `unmarshalStaticArray` (read side) and `marshalArgument`'s `Tstruct`/
+   `Tsarray` arms (write side) route through `field(index)`/`element(index)`
+   instead of a hand-rolled `sym.fields[i].offset`/`index * elementSize`
+   walk -- see the Status "aggregate handles get their first production
+   caller" progress note above for the full account, including the
+   basetype-dispatch and offset/size-identity proofs. This is still the FFI
+   seam, not the tree-walker's core representation: locals stay boxed, and
+   no guest expression yet reaches `arrayElement`/`sliceElement`/
+   `structElement`/`arrayField`/`sliceField` (the composition accessors this
+   note left untouched) or `&local`/array/struct at all -- that remains the
+   next step described just above.
+
+   Progress 2026-07-10 (slice element layout joins the aggregate authority):
+   the FFI marshaller's last two hand-rolled per-element layout walks --
+   `marshalSliceArgument` (write side) and `unmarshalSlice`'s `default:` arm
+   (read side) -- now route through `NativeArray.allocate`/`NativeArray.
+   borrow` and `element(index)` too, closing the "must not grow a second set
+   of D layout rules" guardrail for every struct/array/slice sub-slice site
+   in `ffi_marshal.d`. See the Status "slice element layout joins the
+   aggregate authority" progress note above for the full account, including
+   the stride/offset-identity and lifetime proofs. Still the FFI seam, not
+   the tree-walker's core representation, and still no new guest-reachable
+   call site for the composition accessors -- that remains the next step
+   described just above.
 
 ## Out of scope
 
