@@ -649,7 +649,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("struct.templatedConstructorPreservesDynamicArrayField." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -2762,6 +2762,8 @@ private final class BytecodeNativeMarshaller:
                 return int.sizeof;
             case Tint64:
                 return long.sizeof;
+            case Tuns64:
+                return ulong.sizeof;
             case Tfloat64:
                 return double.sizeof;
             case Tpointer:

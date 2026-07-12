@@ -5146,22 +5146,26 @@ private struct Compiler {
     // `&local` as a SymOffExp (`symbolOffset`): the address of a scalar local's
     // frame slot plus the symbol's byte offset, yielding an `int*`-style pointer
     // operand over the pointed-at element type. Null if the symbol is not a
-    // scalar local.
+    // scalar or static-array local.
     private Operand* tryAddressOfSymbol(SymOffExp symOff) {
         auto declaration = symOff.var.isVarDeclaration;
         if (declaration is null)
             return null;
         auto existing = declaration in _locals;
-        if (existing is null)
+        auto staticArray = declaration in _staticArrayLocals;
+        if (existing is null && staticArray is null)
             return null;
 
-        const slot = cast(ushort) (*existing + symOff.offset);
+        const base = existing is null ? *staticArray : *existing;
+        const slot = cast(ushort) (base + symOff.offset);
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameAddress, pointer, slot);
         auto result = new Operand;
         *result = Operand(
             pointer, ScalarType.ulong_, false, true,
-            scalarType(declaration.type),
+            scalarType(existing is null
+                ? symOff.type.toBasetype.nextOf
+                : declaration.type),
         );
         return result;
     }
@@ -5199,10 +5203,16 @@ private struct Compiler {
             if (declaration is null)
                 return null;
             auto existing = declaration in _locals;
-            if (existing is null)
-                return null;
-            slot = *existing;
-            pointedType = declaration.type;
+            if (existing is null) {
+                auto staticArray = declaration in _staticArrayLocals;
+                if (staticArray is null)
+                    return null;
+                slot = *staticArray;
+                pointedType = address.type.toBasetype.nextOf;
+            } else {
+                slot = *existing;
+                pointedType = declaration.type;
+            }
         } else if (auto dot = target.isDotVarExp) {
             auto field = tryStructField(dot);
             if (field is null)
@@ -7494,6 +7504,7 @@ private struct Compiler {
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
         if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
+             returnTy != TY.Tuns64 &&
              returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
              returnTy != TY.Tpointer) ||
             call.arguments is null || call.arguments.length == 0)
@@ -7523,8 +7534,9 @@ private struct Compiler {
                 argument.type.toBasetype.nextOf.toBasetype.ty == TY.Tchar) {
                 auto string_ = stringLiteralOf(argument);
                 if (string_ is null)
-                    return null;
-                emitStringLiteralArgument(slot, string_);
+                    emitCallArgument(slot, false, argument);
+                else
+                    emitStringLiteralArgument(slot, string_);
                 continue;
             }
 
