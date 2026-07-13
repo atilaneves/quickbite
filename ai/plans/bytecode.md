@@ -5235,3 +5235,11 @@ Merge resolution, 2026-07-13: retained the independently landed July 10
 Bytecode promotions and their implementation notes alongside this branch's
 later promotions. The duplicate static-array-copy ledger entry is represented
 once by the landed entry; no behavior was dropped.
+
+`struct.staticArrayCopyRunsPostblitAndDtors` Bytecode promotion reverted,
+2026-07-13: although the focused row passed, randomized execution exposed
+unsafe lifetime ordering that can corrupt the process during static-array
+postblit/destructor handling. Bytecode is removed from this matrix row until
+that lifetime path is safe under randomized suite ordering. No production
+change is included; compiled-oracle coverage remains on Ctfe, Interpreter,
+SystemLinker, and LLVMJit.
