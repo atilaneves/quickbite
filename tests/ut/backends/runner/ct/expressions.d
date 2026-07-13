@@ -1547,7 +1547,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `localPointerTarget`/`writePointerTarget`'s local-pointer arm, which only
 // consulted the boxed `locals` mirror -- the same bypass post-increment's
 // `VarExp` arm had, but for the pointer-deref path.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.dereferencedPointerPostIncrementUsesPromotedScalarCell." ~
         backend.stringof)
     @Tags(backend.stringof)

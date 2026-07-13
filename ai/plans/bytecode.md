@@ -5385,3 +5385,15 @@ back as `0xAB`. The focused Bytecode row passed on its first candidate run, so
 no production change was needed. This advances subword native-layout coverage
 without adding broader pointer or aggregate semantics. Verification: focused
 Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
+
+`pointer.dereferencedPointerPostIncrementUsesPromotedScalarCell` promoted to
+Bytecode, 2026-07-13: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported post-increment in bytecode core: (*p)++`. The compiler now
+loads an `int*` pointee through the existing pointer-load opcode, preserves the
+old value, applies the existing integer increment opcode, and writes the value
+back through the existing pointer-store opcode. This is limited to the core's
+already-supported four- and eight-byte integer scalars; it does not add
+pointer arithmetic, non-integer post-increment, or a general lvalue layer.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random`.
