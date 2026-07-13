@@ -1724,10 +1724,10 @@ private struct Walker {
         try {
             child.runStatement(call.f.fbody);
         } catch (InterpretedException exception) {
-            writeBackFunctionState(call.f, argumentExpressions, child);
+            writeBackFunctionState(call.f, argumentExpressions, child, arguments);
             throw exception;
         }
-        writeBackFunctionState(call.f, argumentExpressions, child);
+        writeBackFunctionState(call.f, argumentExpressions, child, arguments);
 
         return returnedLvalueAddress(call.f, argumentExpressions, child);
     }
@@ -3353,6 +3353,7 @@ private struct Walker {
                 function_,
                 argumentExpressions,
                 child,
+                arguments,
                 captureLocals,
             );
             throw exception;
@@ -3361,6 +3362,7 @@ private struct Walker {
             function_,
             argumentExpressions,
             child,
+            arguments,
             captureLocals,
         );
         return child.result;
@@ -3429,6 +3431,7 @@ private struct Walker {
                 receiverExpression,
                 argumentExpressions,
                 child,
+                arguments,
             );
             throw exception;
         }
@@ -3437,6 +3440,7 @@ private struct Walker {
             receiverExpression,
             argumentExpressions,
             child,
+            arguments,
         );
 
         if (function_.isConstructorFunction)
@@ -3449,6 +3453,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
+        in Value[] arguments,
         in bool captureLocals = false,
     ) {
         mergeNativeThrowableRoots(child);
@@ -3469,7 +3474,7 @@ private struct Walker {
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
-        writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackRefArguments(function_, argumentExpressions, child, arguments);
         writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
     }
@@ -3479,6 +3484,7 @@ private struct Walker {
         imported!"dmd.expression".Expression receiverExpression,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
+        in Value[] arguments,
     ) {
         mergeNativeThrowableRoots(child);
         nextLocalPointerId = child.nextLocalPointerId;
@@ -3497,7 +3503,7 @@ private struct Walker {
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
-        writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackRefArguments(function_, argumentExpressions, child, arguments);
         writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
@@ -3898,6 +3904,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
+        in Value[] arguments,
     ) {
         if (function_.parameters is null)
             return;
@@ -3914,6 +3921,21 @@ private struct Walker {
                 continue;
 
             if (auto value = parameter in child.locals) {
+                // Compiled D never re-evaluates a `ref` argument's lvalue
+                // expression to write a value back: it binds the address once
+                // at the call and the callee either writes through it or
+                // doesn't. This simulation instead re-runs the argument
+                // expression to locate the write destination, which is only
+                // safe when the callee actually changed the parameter — an
+                // unconditional write-back re-executes a side-effecting
+                // location expression (e.g. `shouldEqual(*dec.value!(int*),
+                // ...)`, whose `ref` argument `*dec.value!(int*)` re-runs the
+                // decoding call itself) even though the callee only ever read
+                // it. Skip the whole write-back (and its re-evaluation) when
+                // the parameter's value is unchanged.
+                if (index < arguments.length && *value == arguments[index])
+                    continue;
+
                 if (isDynamicArrayPointerRefArgument(argument)) {
                     writeLocation(argument, *value);
                     continue;
@@ -4695,6 +4717,7 @@ private struct Walker {
                 dot.e1,
                 argumentExpressions,
                 child,
+                arguments,
             );
             throw exception;
         }
@@ -4703,6 +4726,7 @@ private struct Walker {
             dot.e1,
             argumentExpressions,
             child,
+            arguments,
         );
         return true;
     }
@@ -4771,10 +4795,10 @@ private struct Walker {
         try {
             child.runStatement(call.f.fbody);
         } catch (InterpretedException exception) {
-            writeBackFunctionState(call.f, argumentExpressions, child);
+            writeBackFunctionState(call.f, argumentExpressions, child, arguments);
             throw exception;
         }
-        writeBackFunctionState(call.f, argumentExpressions, child);
+        writeBackFunctionState(call.f, argumentExpressions, child, arguments);
         return true;
     }
 

@@ -1496,6 +1496,49 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+// cerealed's `shouldEqual(*dec.value!(int*), *i)` (pointers.d's
+// `pointer.to.int` test) passes a dereferenced decode-and-return-a-pointer
+// call as a `ref` argument to a comparison function that never assigns to
+// its parameter. `Walker.writeBackRefArguments` (impl.d) wrote back through
+// every `ref` argument unconditionally, even when the callee never touched
+// it; for a `PtrExp` argument, `writeLocation`'s `*ptr = ...` branch
+// re-evaluates `ptr.e1` to find the write destination, re-running
+// `decodeNext()` a second time on an already-exhausted decoder and throwing
+// a bogus `RangeError` instead of the intended comparison. Real D never
+// re-evaluates a `ref` argument's lvalue after the call: it binds the
+// address once. Root: skip the write-back (and its re-evaluation) whenever
+// the parameter's value is unchanged after the call. interpreter.md §9.7.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Decoder {
+                int[] values;
+
+                int* decodeNext() {
+                    auto value = new int;
+                    *value = values[0];
+                    values = values[1 .. $];
+                    return value;
+                }
+            }
+
+            void compare(ref int actual, ref int expected) {
+                assert(actual == expected);
+            }
+
+            unittest {
+                auto dec = Decoder([4]);
+                int expected = 4;
+                compare(*dec.decodeNext(), expected);
+                assert(dec.values.length == 0);
+            }
+        });
+    }
+}
+
 // cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
 // units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
 // element's fields through a hidden temporary dmd's foreach-to-for lowering

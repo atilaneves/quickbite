@@ -1747,6 +1747,86 @@ representation-ceiling (deferred to value.md per §8); `decode.d(262)`,
 `pointers.d(20)`, `pointers.d(82)`, and `static_array.d(7)` remain
 untriaged.
 
+**2026-07-14 (unconditional `ref`-argument write-back re-evaluation,
+`pointers.d(82)` closed).** Triaged the 4 untriaged cerealed classes
+(`bin/bench.sh -b interpreter -b system-linker --dub cerealed`, HEAD
+`466d5396`). `decode.d(262)` (`@disable this()` decode) and
+`static_array.d(7)` stayed untriaged (deferred, see below);
+`pointers.d(20)` is a `Value`-identity/content gap, unrelated to this
+entry. `pointers.d(82)` (`pointer.to.int`:
+`shouldEqual(*dec.value!(int*), *i)`) turned out **not** to be a
+representation gap in the decode chain itself: a standalone hand-rolled
+reproduction of cerealed's exact `grain`/`grainReinterpret`/nested
+`auto ref` forwarding (`int*` → reinterpret-cast `uint*` → byte-at-a-time
+`ubyte` reads), using plain `assert`, passed on `Interpreter` first try.
+Bisected by re-running cerealed's real `tests/pointers.d` file verbatim
+as a standalone (non-dub) fixture with `--import-path` pointed at the
+vendored `cerealed`/`concepts` sources: the identity-comparison test
+(`pointers.d(20)`) reproduced immediately, but `pointer.to.int` only
+failed inside the full 32-module `--dub cerealed` run, never in
+isolation with plain `assert` in place of unit-threaded's `shouldEqual`.
+Swapping the assert-based reproduction for a real `shouldEqual(*dec.
+value!(int*), *i)` call (unit-threaded's `shouldEqual(V, E)(auto ref V
+value, auto ref E expected, ...)`) reproduced it standalone too,
+isolating the differentiator to the `auto ref` call, not dub-mode or
+module ordering.
+
+Root: `*dec.value!(int*)` is a `PtrExp`, always an lvalue in D, so `auto
+ref` genuinely binds `value` by `ref` here — real D agrees the parameter
+is `ref`. `Walker.writeBackRefArguments` (impl.d) wrote back through
+*every* `ref` parameter unconditionally after the call returned,
+regardless of whether the callee's body ever assigned to it (`shouldEqual`
+only reads `value`/`expected` to compare them). For a `ref` argument
+spelled as a `PtrExp`, the write-back path (`writeLocation`'s `*ptr = ...`
+branch) re-evaluates `ptr.e1` to relocate the write destination — here,
+`ptr.e1` is `dec.value!(int*)` itself, a decoding call with a side effect
+(consuming bytes from `_bytes`). Re-running it a second time hit
+`_bytes[0]` on an already-fully-consumed decerealiser and threw a bogus
+`RangeError` (`index [0] is out of bounds for array of length 0`) instead
+of the intended comparison — compiled D never re-evaluates a `ref`
+argument's lvalue after the call (the address is bound once), so this was
+a pure interpreter artifact of the call-by-value-plus-write-back
+simulation, not a missing feature.
+
+Fix: `writeBackRefArguments` now receives the call's original argument
+`Value`s (already computed by every caller for `bindFunctionParameters`)
+alongside the post-call `child.locals` snapshot, and skips the whole
+write-back — including the location expression's re-evaluation — when
+the parameter's final value equals what it was seeded with. This is a
+general `ref`-argument correctness fix, not specific to `PtrExp`: it also
+prevents the same double-execution for a `ref` argument spelled as a
+ref-returning call (`writeLocation`'s `CallExp` branch actually re-runs
+the callee), which was an unnoticed sibling of the same defect. Every
+call site of `writeBackFunctionState`/`writeBackMemberFunctionState`
+already had the argument `Value[]` in scope and now forwards it.
+
+Exposing fixture
+`refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten`
+(`tests/ut/backends/runner/ct/structs.d`): a `Decoder` struct whose
+`decodeNext()` pops one `int` off a slice and returns a freshly-allocated
+pointer to it (mirroring cerealed's decode-then-return-pointer shape,
+without cerealed), passed dereferenced as a `ref` argument to a `compare`
+function that never assigns to its parameters. Confirmed red on
+`Interpreter` (`index [0] is out of bounds for array of length 0`, the
+same message cerealed produced) before this fix; green on `Ctfe`,
+`Bytecode`, `SystemLinker`, and `LLVMJit` throughout — full matrix,
+nothing omitted.
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 10 mismatches. After:
+`pointers.d(82)` gone, no newly-unmasked classes; cerealed drops to 9
+mismatches: `decode.d(262)`, `encode_decode.d(75)`/`(80)`,
+`pointers.d(20)`, `property.d(12)` ×2, `reset.d(9)`, `static_array.d(7)`,
+`structs.d(22)`. Of these, `encode_decode.d(75)`/`(80)`, `property.d(12)`
+×2, `reset.d(9)`, and `structs.d(22)` stay representation-ceiling
+(deferred to value.md per §8); `decode.d(262)`, `pointers.d(20)`, and
+`static_array.d(7)` remain untriaged (checked this session:
+`decode.d(262)`'s `@disable this()` struct hits `Expected struct.` via
+the `T val = void;` property-getter overload, a language-surface gap in
+aggregate default-construction, not attempted this rung;
+`static_array.d(7)`'s `Expected array.` and `pointers.d(20)`'s `Value`
+content-vs-identity mismatch are each their own untriaged root).
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
