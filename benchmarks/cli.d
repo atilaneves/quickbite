@@ -177,8 +177,8 @@ public void run(string[] args) {
     if (preparation.length > 0)
         write(renderPreparationSection(preparation));
         // A later backend crash must not eat the already-buffered preparation
-        // report (ai/plans/bench-dub-corpus.md: crash containment proper rides
-        // on bench.md's fork-per-package item).
+        // report. Full containment rides on ai/plans/bench.md's
+        // fork-per-package item.
         stdout.flush;
 
     // Flattened view for the per-unit sections (frontend rows, skip reporting);
