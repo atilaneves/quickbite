@@ -2003,8 +2003,10 @@ private struct Walker {
         in Value pointer,
         imported!"dmd.mtype".Type staticArrayType,
     ) {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+
         auto staticArray = staticArrayType.toBasetype.isTypeSArray;
-        const length = cast(size_t) staticArray.dim.toInteger;
+        const length = staticArrayLength(staticArray);
         const target = pointerTargetValue(pointer);
         if (target.isArray)
             return target;
@@ -4398,12 +4400,14 @@ private struct Walker {
     private Value runVectorExpression(
         imported!"dmd.expression".VectorExp vector,
     ) {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+
         auto staticArray = vector.to.basetype.toBasetype.isTypeSArray;
         if (staticArray is null)
             throw new Exception("Unsupported interpreter vector expression.");
 
         const value = runExpression(vector.e1);
-        const length = cast(size_t) staticArray.dim.toInteger;
+        const length = staticArrayLength(staticArray);
 
         Value[] elements;
         foreach (_; 0 .. length)
@@ -5610,6 +5614,7 @@ private struct Walker {
         in Value value,
     ) {
         import quickbite.frontend.dmd.types: isAssocArrayType;
+        import quickbite.backends.interpreter.layout: staticArrayLength;
 
         auto field = structLiteralField(literal, index);
         if (field is null)
@@ -5622,7 +5627,7 @@ private struct Walker {
         if (staticArray is null || value.isArray)
             return value;
 
-        const length = cast(size_t) staticArray.dim.toInteger;
+        const length = staticArrayLength(staticArray);
         Value[] elements;
         foreach (_; 0 .. length)
             elements ~= value;

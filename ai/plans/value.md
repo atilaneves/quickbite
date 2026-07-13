@@ -2063,6 +2063,37 @@ evaluator.eval` (identical to the pre-change baseline, pre-existing
 `@ShouldFail` rows still fail as expected). The full `bin/ut --random` was
 left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-13 (static-array length authority): `impl.d`'s three
+remaining hand-rolled static-array-length reads --
+`staticArrayPointerView`, `runVectorExpression`, and
+`structLiteralFieldValue`'s default-value expansion -- each computed a
+`TypeSArray`'s element count as `cast(size_t) staticArray.dim.
+toInteger`. This commit routes all three through the existing
+`layout.staticArrayLength(TypeSArray)` helper instead, making it the
+single interpreter authority for a static array's element count, the
+same way the prior two notes made `layout.typeByteSize` the single
+byte-size authority and `layout.fieldByteOffset` the single field-offset
+authority. `layout.staticArrayLength` reads `type.dim.toUInteger` behind
+a `@trusted` boundary; for any valid (non-negative) array dimension
+`toInteger` and `toUInteger` produce identical `size_t` bits, so this is
+behaviour-preserving, not a behaviour change. No `import` was orphaned
+by this change -- each site gained a new local `import
+quickbite.backends.interpreter.layout: staticArrayLength;` alongside its
+existing imports, none of which referenced the removed `.dim.
+toInteger` expression. No layout number, offset walk, or aggregate-
+handling behaviour changed; this is purely internal call routing. No
+test was added or modified. Focused run: `bin/ut -s
+ut.backends.interpreter ut.backends.runner.ct.expressions
+ut.backends.runner.ct.structs ut.backends.runner.ct.arrays
+ut.backends.evaluator.eval` -- 1139 run, 1 failed, 5/5 failing as
+expected; the 1 failure
+(`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+Bytecode`) is pre-existing and unrelated (Bytecode backend, "Expression
+did not throw"), confirmed identical on a stashed pre-change rebuild.
+The full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff. This is consolidation only: no new guest call site
+was added, and no §9.10 shim was retired.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
