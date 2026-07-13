@@ -6545,8 +6545,40 @@ private struct Compiler {
         ArrayLengthExp length,
         Expression newLength,
     ) {
+        import dmd.astenums: TY;
+        import dmd.typesem: defaultInitLiteral;
+
         const descriptor = dynamicArrayDescriptor(length.e1);
-        const lengthSlot = compileExpression(newLength);
+        const lengthValue = compileExpression(newLength);
+        const lengthSlot = allocate(ScalarType.ulong_);
+        _code ~= Instruction(
+            Op.copy,
+            lengthSlot,
+            lengthValue.offset,
+            cast(ushort) size(lengthValue.type),
+        );
+        auto element = length.e1.type.toBasetype.nextOf;
+        if (element.toBasetype.ty == TY.Tstruct) {
+            const elementSize = cast(uint) staticArraySize(element);
+            const initBlock = allocateBytes(elementSize, staticArrayAlign(element));
+            zeroFrameBlock(initBlock, elementSize);
+            auto literal = element.toBasetype.isTypeStruct.defaultInitLiteral(
+                length.loc,
+            ).isStructLiteralExp;
+            if (literal is null)
+                throw new Exception("Unsupported struct array default initializer in bytecode core.");
+            compileStructLiteralInto(initBlock, literal);
+            _code ~= Instruction(
+                Op.setArrayLengthFromTemplate,
+                descriptor.offset,
+                initBlock,
+                lengthSlot,
+                cast(ushort) elementSize,
+            );
+            writeBackDynamicArrayDescriptor(descriptor);
+            return Operand(lengthSlot, ScalarType.ulong_);
+        }
+
         _code ~= Instruction(
             Op.setArrayLength,
             descriptor.offset,
@@ -6554,10 +6586,10 @@ private struct Compiler {
                 descriptor.elementType,
                 dynamicArrayElementSize(length.e1.type, descriptor.elementType),
             ),
-            lengthSlot.offset,
+            lengthSlot,
         );
         writeBackDynamicArrayDescriptor(descriptor);
-        return Operand(lengthSlot.offset, ScalarType.ulong_);
+        return Operand(lengthSlot, ScalarType.ulong_);
     }
 
     private Operand compileAppendElement(CatElemAssignExp append) {

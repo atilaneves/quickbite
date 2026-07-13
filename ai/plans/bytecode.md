@@ -5326,3 +5326,16 @@ Ctfe, Bytecode, SystemLinker, and LLVMJit pass the focused matrix; Interpreter
 remains excluded for its documented missing postblit. Verification: focused
 Bytecode red then green; passing focused matrix; `ninja bin/ut`; and
 `bin/ut --random` passed (seed `2678926982`).
+
+`dynamicArray.lengthAssignmentDefaultInitializesStructElements` promoted to
+Bytecode, 2026-07-13: new direct SystemLinker-backed regression for resizing
+`Marked[]`, where `Marked.value = 42`. Bytecode was red with `0 != 42` because
+`setArrayLength` repeated one default-init byte, which cannot represent a
+non-uniform `T.init` block. Struct-array growth now materializes DMD's
+`defaultInitLiteral` into an inline frame block and copies that block into each
+new element; scalar-array growth keeps its existing uniform-fill opcode. This
+does not broaden aggregate-array operations, postblit/destructor lifetimes, or
+array construction. Ctfe, Bytecode, SystemLinker, and LLVMJit pass the focused
+matrix. Interpreter is excluded after its empirical focused red (`0 != 42`).
+Verification: focused SystemLinker green; focused Bytecode red (`0 != 42`) then
+green; the passing four-backend matrix; `ninja bin/ut`; and `bin/ut --random`.
