@@ -3,8 +3,11 @@ module ut.backends.runner.rt.elf;
 
 import orc.elf:
     localizeUnwindCellReferences,
-    normalizeDuplicateUndefinedGlobals;
+    normalizeDuplicateUndefinedGlobals,
+    normalizeObjectFile;
+import std.file: write;
 import ut;
+import unit_threaded.integration: Sandbox;
 
 
 @("elf.duplicateUndefinedGlobalRelocationsUseFirstSymbol")
@@ -26,6 +29,61 @@ unittest {
     normalizeDuplicateUndefinedGlobals(object).should == false;
 
     object.should == original;
+}
+
+@("elf.duplicateUndefinedWeakRelocationsUseFirstSymbol")
+unittest {
+    // Same shape as the GLOBAL-duplicate test, weak binding: ld coalesces
+    // undefined weaks by name too, so the normalizer must as well or the
+    // zero-GOT-stub defect recurs under a weak-emitting variant of the
+    // uncharacterized emitter.
+    auto object = emptyObject;
+    writeSymbol(object, 1, 1, symbolInfo(2, 0), 0); // UND WEAK "dup"
+    writeSymbol(object, 2, 1, symbolInfo(2, 0), 0); // UND WEAK "dup" again
+    writeSymbol(object, 3, 5, symbolInfo(1, 0), 0); // UND GLOBAL "other"
+    writeRelocation(object, 0, 2, 42);
+    writeRelocation(object, 1, 3, 17);
+
+    normalizeDuplicateUndefinedGlobals(object).should == true;
+    relocationSymbolIndex(object, 0).should == 1;
+    relocationSymbolIndex(object, 1).should == 3;
+}
+
+@("elf.mixedBindingDuplicateCoalescesToGlobal")
+unittest {
+    auto object = emptyObject;
+    writeSymbol(object, 1, 1, symbolInfo(1, 0), 0); // UND GLOBAL "dup"
+    writeSymbol(object, 2, 1, symbolInfo(2, 0), 0); // UND WEAK   "dup"
+    writeRelocation(object, 0, 2, 42);
+
+    normalizeDuplicateUndefinedGlobals(object).should == true;
+    relocationSymbolIndex(object, 0).should == 1; // canonical: the GLOBAL
+}
+
+@("elf.normalizeInFileRewritesAndReportsChange")
+unittest {
+    with (immutable Sandbox()) {
+        write(inSandboxPath("dup.o"), duplicateUndefinedGlobalObject);
+        normalizeObjectFile(inSandboxPath("dup.o")).should == true;
+        // Second pass: already canonical, must be a no-op.
+        normalizeObjectFile(inSandboxPath("dup.o")).should == false;
+    }
+}
+
+@("elf.unsupportedShapesAreRejectedLoudly")
+unittest {
+    static ubyte[] withByte(size_t offset, ubyte value) {
+        auto object = uniqueUndefinedGlobalObject;
+        object[offset] = value;
+        return object;
+    }
+
+    normalizeDuplicateUndefinedGlobals(new ubyte[](8))
+        .shouldThrowWithMessage("ELF object is too small");
+    normalizeDuplicateUndefinedGlobals(withByte(5, 2)) // Big-endian.
+        .shouldThrowWithMessage("ELF object is not little-endian");
+    normalizeDuplicateUndefinedGlobals(withByte(16, 2)) // ET_EXEC.
+        .shouldThrowWithMessage("ELF object is not relocatable");
 }
 
 /++
