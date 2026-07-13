@@ -1623,6 +1623,79 @@ stashed/popped). Before: 15 mismatches, including `protocol_unit.d`'s
 `SystemLinker` past this point. The `decode.d`/`static_array.d` classes
 from the re-measure above remain open and untriaged.
 
+**2026-07-14 (struct-identity enum-field root, closed).** Re-measured the
+13 remaining cerealed mismatches (`bin/bench.sh -b interpreter -b
+system-linker --dub cerealed`, HEAD `ccf34201`, with a throwaway
+`failure.location`-and-full-`message` probe in `testResultsMismatches`,
+reverted before commit) and triaged the two silent-wrong-answer structs.d
+sites (`__unittest_L146`, the `EnumStruct` roundtrip, and `__unittest_L298`,
+the `MqttFixedHeader` roundtrip): both showed the decoded enum field
+displayed as a bare number (`EnumStruct(1, 2)`, `MqttFixedHeader(3, ...)`)
+instead of its member name, alongside the same underlying numeric value
+`SystemLinker` produced. Bisecting via standalone probes (a hand-rolled
+`grain`/`FakeDecerealiser` matching `cerealed/src/cerealed/cereal.d`'s enum
+dispatch — `grain(T)(ref T val) if(is(T==enum))` casts to the base type and
+grains that, a chain of nested `ref`-forwarding calls and a pointer
+reinterpret) all *passed* under `Interpreter`, isolating the gap: a direct
+field or scalar `==` already agreed, but comparing the *whole struct* via
+`==` did not, even for a minimal `struct Holder { Enum e; }` with no cast,
+pointer, or decode machinery at all (`Holder.init == Holder(Enum.Foo)`).
+
+Root: dmd lowers a POD struct's `==` (no user `opEquals`) into an `is`
+expression rather than an `EqualExp` — confirmed with a throwaway trace of
+`assert_.e1.op` inside the `AssertExp` branch (impl.d), reverted before
+commit — so `Walker.runIdentityExpression` (impl.d) ran the comparison, not
+`runEqualExpression`/`equalValues`. `runIdentityExpression` used a raw
+`left == right` (`Value`'s own `opEquals`, a strict `SumType` compare) with
+no per-field recursion or numeric-scalar coercion. Separately, `Value.
+enumValue` (the `EnumValue` `SumType` member, tagged with the member's
+display name) is only constructed by `runExpression` for an `IntegerExp`
+whose `.type.ty == Tenum` — i.e. a literal enum-member reference — every
+other origin (default-init via `defaultValue`, whose `Type.toBasetype`
+dispatch resolves an enum to its underlying scalar `TY`, or any computed/
+decoded value) keeps a plain scalar `Value`. Both tag kinds carry the
+identical numeric value and a *scalar* `==`/`equalValues` already treats
+them as equal (`isNumericScalar` accepts `EnumValue`, compared via
+`.asReal`), but the raw `SumType` compare `runIdentityExpression` used
+requires identical tags, so a `EnumValue`-tagged field never equalled a
+same-valued plain-scalar field in a whole-struct comparison even though
+real D's memberwise struct equality does.
+
+Fix: `equalValues` (impl.d) gains a `Struct`-vs-`Struct` branch,
+`equalStructValues`, recursing field-by-field through `equalValues` itself
+(mirroring the existing `Array`-vs-`Array` branch, `equalArrayValues`), so
+each field gets the same numeric-scalar coercion a top-level `==` already
+applies. `runIdentityExpression` routes its struct-vs-struct case through
+this same `equalValues` instead of the raw compare; every other `is`
+comparison (pointers, class references, floats) keeps its existing
+raw-value identity semantics.
+
+Exposing fixture `struct.equalityComparesEnumFieldByValueAcrossOrigin`
+(`tests/ut/backends/runner/ct/structs.d`): `enum Enum { Foo, Bar, Baz }`,
+`struct Holder { Enum e; }`, comparing a default-initialised `Holder` to a
+literal-constructed one holding the same member, asserting they're equal.
+Confirmed red on `Interpreter` (`Holder(0) != Holder(Enum.Foo)`, the same
+bare-number display bug seen in cerealed) before this fix, green on `Ctfe`,
+`Bytecode`, `SystemLinker`, and `LLVMJit` throughout — full matrix, nothing
+omitted.
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 13 mismatches, including both
+`structs.d(146)` (`EnumStruct`) and `structs.d(298)` (`MqttFixedHeader`).
+After: both are gone; cerealed drops to 11 mismatches with no
+newly-unmasked classes. Remaining 11: `decode.d(262)` (`Expected struct.`,
+untriaged), `encode_decode.d(75)`/`(80)` and `reset.d(9)` (ScopeBuffer
+native-memory aliasing, representation-ceiling per §8, deferred to
+value.md), `pointers.d(20)` (truncated `Value:` message, untriaged),
+`pointers.d(62)` (`address of dotVariable`, untriaged),
+`pointers.d(82)` (`shouldThrow!RangeError` miss, untriaged),
+`property.d(12)` ×2 (fuzz-seeded float property test, representation-
+ceiling per §8's double/float-reinterpret exclusion), `static_array.d(7)`
+(`Expected array.`, untriaged), and `structs.d(22)` (`DummyStruct`, a
+`double`/AA field showing reinterpret-cast garbage — representation-
+ceiling — plus an unrelated `string`-vs-array-of-int display detail on the
+same test, not separable from the ceiling class without its own fixture).
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

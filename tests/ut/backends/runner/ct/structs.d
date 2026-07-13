@@ -1541,3 +1541,41 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// cerealed's decode of an enum-typed struct field (structs.d's `EnumStruct`
+// and `MqttFixedHeader` tests) writes the decoded byte through the field
+// without going through an enum-typed literal `IntegerExp`, so `Walker.
+// runExpression`'s `Value.enumValue` tagging (impl.d, only reached for an
+// `IntegerExp` whose type is `Tenum`) never applies to it: the field ends up
+// holding a plain scalar `Value` instead of the `EnumValue` variant a literal
+// `Enum.Member` reference produces. Both variants carry the identical numeric
+// value. dmd lowers a POD struct's `==` (no user `opEquals`) into an `is`
+// expression rather than leaving it an `EqualExp` — confirmed with a
+// throwaway trace of `assert_.e1.op` in the `AssertExp` branch, reverted
+// before commit — so `Walker.runIdentityExpression` ran the comparison, not
+// `runEqualExpression`/`equalValues`: it used a raw `left == right` (`Value`'s
+// own `opEquals`, a strict `SumType` compare) with no per-field recursion or
+// numeric-scalar coercion, so an `EnumValue`-tagged field never equalled a
+// same-valued plain-scalar field even though real D's memberwise struct
+// equality does. This is the simplest reproduction: a struct's
+// default-initialised enum field (a plain scalar `Value`, per
+// `defaultValue`'s `toBasetype`-driven dispatch) against the same enum
+// member from a literal-constructed struct. No cast, pointer, or cereal
+// machinery needed. interpreter.md §9.7.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("struct.equalityComparesEnumFieldByValueAcrossOrigin." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum Enum { Foo, Bar, Baz }
+            struct Holder { Enum e; }
+
+            unittest {
+                Holder defaultInit;
+                auto literal = Holder(Enum.Foo);
+                assert(defaultInit == literal);
+            }
+        });
+    }
+}

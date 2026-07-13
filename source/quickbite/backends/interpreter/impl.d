@@ -2099,7 +2099,22 @@ private struct Walker {
 
         const left = runExpression(identity.e1);
         const right = runExpression(identity.e2);
-        const same = left == right;
+        // dmd lowers a POD struct's `==` (no user-defined `opEquals`) into an
+        // `is` expression (`IdentityExp`), since memberwise equality and
+        // bitwise identity coincide for such structs. Route that case through
+        // `equalValues` (the same field-recursive, numeric-scalar-coercing
+        // comparison a direct `==` uses) instead of a raw `Value` compare: a
+        // struct field written by anything other than an enum-typed literal
+        // `IntegerExp` (default-init, a decoded value, ...) keeps a plain
+        // scalar `Value` rather than the `EnumValue` variant `runExpression`
+        // tags a literal `Enum.Member` reference with, so a raw compare of
+        // two otherwise-identical structs falsely disagrees whenever one
+        // side's enum field took a different path to the same value. Other
+        // `is` comparisons (pointers, class references, floats) keep their
+        // existing raw-value identity semantics.
+        const same = left.isStruct && right.isStruct
+            ? equalValues(left, right)
+            : left == right;
         if (identity.op == EXP.notIdentity)
             return Value(!same);
 
@@ -4045,6 +4060,9 @@ private struct Walker {
         if (left.isArray && right.isArray)
             return equalArrayValues(left, right);
 
+        if (left.isStruct && right.isStruct)
+            return equalStructValues(left, right);
+
         return left == right;
     }
 
@@ -4054,6 +4072,27 @@ private struct Walker {
 
         foreach (index; 0 .. left.length)
             if (!equalValues(left[index], right[index]))
+                return false;
+
+        return true;
+    }
+
+    // A struct field written by anything other than an enum-typed literal
+    // `IntegerExp` (default-init, arithmetic, a cast/pointer write-back, ...)
+    // keeps its plain scalar `Value` kind instead of `runExpression`'s
+    // `Value.enumValue` tagging, so a raw `Value == Value` compare (the
+    // `left == right` fallback above) never considers it equal to a
+    // same-valued `EnumValue`-tagged field, even though real D's memberwise
+    // struct equality does. Recurse field-by-field through `equalValues`
+    // (mirroring `equalArrayValues`) so each field gets the same
+    // numeric-scalar coercion a top-level `==` already applies.
+    private bool equalStructValues(in Value left, in Value right) {
+        const count = left.structFieldCount;
+        if (count != right.structFieldCount)
+            return false;
+
+        foreach (index; 0 .. count)
+            if (!equalValues(left.structFieldAt(index), right.structFieldAt(index)))
                 return false;
 
         return true;
