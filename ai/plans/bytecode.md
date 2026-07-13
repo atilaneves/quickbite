@@ -5130,3 +5130,14 @@ confirms that source and copy elements both run their destructors at scope
 exit. This is a stale coverage gap after the existing static-array copy,
 postblit, and destructor lowering. Verification: focused Bytecode row,
 `ninja bin/ut`, and `bin/ut --random` passed (seed `2192800721`).
+
+`classReferencePassedByValueMutatesObject` promoted to `Bytecode`,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The focused Bytecode row was red with `Unsupported
+assignment in bytecode core: box.value = 42`. The typed-frame core already
+resolved class field addresses for reads (including the null-reference guard),
+so the narrow completion writes a scalar rhs through that same address and
+returns the assigned operand. It does not add class allocation, dynamic-array
+class fields, general object layout, or formatter support. Verification:
+focused red then green; `ninja bin/ut` and `bin/ut --random` passed (seed
+`1711526885`).

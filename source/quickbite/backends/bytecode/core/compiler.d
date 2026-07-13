@@ -6234,6 +6234,27 @@ private struct Compiler {
                 return Operand(value.offset, scalarType(field.type));
             }
 
+        // `box.field = rhs` through a class reference: write the scalar rhs at
+        // `class pointer + field.offset`.
+        if (auto dot = assign.e1.isDotVarExp)
+            if (auto field = tryClassPointerField(dot)) {
+                const value = compileExpression(assign.e2);
+                const fieldScalar = scalarType(field.type);
+                if (value.type != fieldScalar)
+                    throw new Exception(text(
+                        "Unsupported assignment in bytecode core: ",
+                        expressionChars(assign),
+                    ));
+                const fieldPointer = classFieldAddress(*field);
+                _code ~= Instruction(
+                    pointerStoreOp(size(fieldScalar)),
+                    value.offset,
+                    fieldPointer,
+                    compileSizeConstant(0),
+                );
+                return Operand(value.offset, fieldScalar);
+            }
+
         if (isDynamicArrayArgument(assign.e1))
             if (auto descriptor = dynamicArrayDescriptorOrNull(assign.e1)) {
                 compileDynamicArrayInto(

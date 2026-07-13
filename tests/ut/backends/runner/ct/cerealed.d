@@ -1411,9 +1411,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // (§9.10 deletion inventory) — this fixture pins the observable behaviour,
 // not the shim's mechanism, and must stay green once the native-layout
 // object model replaces it.
-// Bytecode omitted: class-field assignment is not yet implemented
-// there ("Unsupported assignment in bytecode core: box.value = 42").
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("classReferencePassedByValueMutatesObject." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
