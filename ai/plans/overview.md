@@ -59,19 +59,15 @@ Live plans:
 
 - `interpreter.md` — make the Interpreter execute a real dub package
   (cerealed first): phase 0 diagnostic fix, then six gap rungs.
-- `ffi.md` — the native-leaf bridge. Ladder rungs 10–23 are landed with
-  tracked residuals; the open work is ordered (§34.3 work order): the
-  §35.10 pthread refusal (51 measured corpus mismatches),
-  generic-marshaller audit (item 0, §34.3.1), data symbols / image init
-  (§35.2), and only then rungs 24–25 (seam
-  v2, native exception fidelity) — bytecode-gate work that adds nothing
-  to Interpreter dub coverage. The terminal goal is gated on
-  `interpreter.md`.
+- `ffi.md` — the native-leaf bridge contract. Bridge v1 and its former work
+  order are complete; further shared bridge work is selected only when a
+  concrete Interpreter, Bytecode, or dub-package consumer exposes an ABI,
+  symbol, exception, or trampoline defect.
 - `value.md` — Track B: prelude display formatter and its wiring, shared
   `Value` removal, boxed-vs-native representation experiment.
-- `bytecode.md` — new-core rewrite; test modules 1–13 promoted; the
-  default flip is blocked on REPL oracle policy and both cores being
-  unbenchmarked.
+- `bytecode.md` — typed-frame bytecode VM. The new core became the `Bytecode`
+  default on 2026-07-09; the plan now owns post-flip coverage, REPL formatter,
+  native-runtime, and benchmark follow-up work.
 - `ir.md` — IR backend promotion; next module `arrays.d`; known
   semantic divergences listed there.
 - `dmd-backend.md` — native-backend loading mechanics (slices 1–3
@@ -93,10 +89,6 @@ Live plans:
   single oracle; `ct/` vs `rt/` split; promotion rules.
 - `backend-test-modules-order.md` — shared module ordering for backend
   promotion work.
-
-Parked / historical:
-
-- `dmd-compiled-fixture-sentinel.md` — parked design, unstarted.
 
 Deleted plans whose conclusions were folded into their owning plans:
 `dub-build-via-reggae.md` (superseded by the `dub describe` flag path;

@@ -906,8 +906,9 @@ Only after the runner matrix is healthy. The live contract is
 `Evaluator.eval(FuncDeclaration)` (source/quickbite/backends/evaluator.d:18)
 — the single required primitive; `eval(string)`/`eval(Cell)` are final
 dispatchers on it. (An earlier draft of this plan said
-`eval`/`evalRepl`/`runTestSummary`; that predates the interfaces.md
-migration.) Missing pieces: result transport from machine code back to
+`eval`/`evalRepl`/`runTestSummary`; that predates the `Evaluator`/`Runner`
+split now recorded in `source/quickbite/backends/evaluator.d` and
+`runner.d`.) Missing pieces: result transport from machine code back to
 the host (does not exist; per the 2026-06-12 decision in
 `ai/plans/value.md` it is a rendered display string produced in-fixture
 by the formatter prelude — see `ai/plans/repl.md` Target Design 5 — not

@@ -1467,8 +1467,8 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 }
 
 // A slice assignment through a D pointer must write the pointed-at array
-// storage, not sever the aliasing (ai/plans/bench-dub-corpus.md, cerealed
-// mode 2: the silently lost write).
+// storage, not sever the aliasing. This is the silently lost write distilled
+// from cerealed.
 enum pointerSliceAssignSource = q{
     unittest {
         char[8] tmp;
@@ -1520,8 +1520,8 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// An indexed write through a local pointer into a `= void` static array
-// (ai/plans/bench-dub-corpus.md, cerealed mode 3 sibling finding).
+// An indexed write through a local pointer into a `= void` static array is a
+// sibling of the pointer-slice defect distilled from cerealed.
 enum pointerIndexAssignVoidInitSource = q{
     unittest {
         char[8] tmp = void;
