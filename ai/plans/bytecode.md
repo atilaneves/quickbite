@@ -5273,3 +5273,87 @@ bin/ut`; and `bin/ut --random` passed (seed `260515522`).
 Benchmark integration, 2026-07-13: added `Bytecode` to the benchmark runner
 registry and the default backend selection, so the benchmark binary now times
 the bytecode backend for every default fixture and `--dub` package run.
+
+Reviewer fix, 2026-07-13: added the direct SystemLinker-backed
+`emplaceRefDefaultInitializesWcharArrayElement` regression. It resizes a
+`wchar[]`, overwrites its element with `'x'`, then calls the zero-argument
+`emplaceRef` and expects `wchar.init` (`0xFFFF`). Bytecode was red with
+`0 != 65535`: its zero-argument indexed-element path materialised every type
+except `char` as zero. The narrow change materialises `wchar.init` there and
+also gives `wchar` the existing all-ones default fill used for dynamic-array
+allocation and growth. This does not add general non-uniform scalar init
+handling. Focused Ctfe, Bytecode, SystemLinker, and LLVMJit rows passed;
+`ninja bin/ut` passed; `bin/ut --random` reported its six expected failures
+(seed `1782332219`), and the mandated `bin/ut --seed 1782332219` replay
+passed: 3064 tests, 0 unexpected failures.
+
+`emplaceRefWritesArrayElement` promoted to `Bytecode`, 2026-07-13:
+pre-approved promotion of the existing SystemLinker-backed Cerealed fixture.
+The focused Bytecode row was red with `Unsupported comparison assert in
+bytecode core: _d_assert_fail("==", message, "ok")`. The typed-frame core now
+admits mixed mutable-character-array/string-literal assertion operands through
+the existing native slice-comparison path, while retaining compact string
+descriptors and their diagnostics when both operands are immutable strings.
+This does not add `emplaceRef` handling, lazy thunks, multi-argument
+constructors, or general string mutation. Verification: focused red then
+green; `ninja bin/ut`; and `bin/ut --random` passed (seed `605411570`).
+
+`emplaceRefRefusesZeroArgDefaultInit` promoted to `Bytecode`, 2026-07-13:
+pre-approved SystemLinker-backed Cerealed fixture. Bytecode was red with
+`Unsupported ref argument in bytecode core: message[0]`. Its existing
+`emplaceRef` interception now handles only the one-argument form whose target
+is an indexed dynamic-array element: it materializes the scalar default value
+(`char.init` remains `0xFF`) and uses the existing statically sized indexed
+store. It deliberately excludes struct/array elements, postblits, general ref
+arguments, and multi-argument constructors. Matrix check: Ctfe, Bytecode,
+SystemLinker, and LLVMJit pass; Interpreter remains excluded after an empirical
+focused red with its documented `Unsupported eval call.` shim limitation.
+Verification: focused Bytecode red then green; passing focused four-backend
+matrix; `ninja bin/ut`; and `bin/ut --random` passed (seed `1911983078`).
+
+`emplaceRefRefusesMultiArgConstructor` promoted to `Bytecode`, 2026-07-13:
+pre-approved SystemLinker-backed Cerealed fixture. The focused Bytecode row
+was red as a SIGSEGV (exit code 139). Its `emplaceRef` interception now handles
+only a small struct in an indexed dynamic-array element: it default-initializes
+an inline temporary, forwards the supplied arguments to the struct's selected
+constructor, then copies the resulting small block to the indexed element.
+This deliberately excludes overloaded-constructor resolution, structs larger
+than eight bytes, postblits, destructors, array elements, general `ref`
+arguments, and other lifetime semantics. Ctfe, Bytecode, SystemLinker, and
+LLVMJit pass the focused matrix. Interpreter remains excluded by its documented
+`Unsupported eval call.` `emplaceRef` shim; no Interpreter instance exists for
+this fixture to run. Verification: focused Bytecode red then green; passing
+focused matrix; `ninja bin/ut`; and `bin/ut --random` passed.
+
+`emplaceRefSkipsPostblitForStructElement` promoted to `Bytecode`, 2026-07-13:
+pre-approved SystemLinker-backed Cerealed fixture. The focused Bytecode row
+was red as a SIGSEGV (exit code 139): resizing `Counter[]` encoded the
+`void` scalar sentinel's zero width, leaving no backing storage for the
+indexed store. Array-length resize now carries the DMD-derived element width
+when it differs from the scalar representation. The narrow `emplaceRef`
+interception copies an eight-byte struct source into a frame block, runs its
+postblit once, then stores that completed block at the indexed dynamic-array
+element. This does not add larger aggregate support, postblit/destructor
+lifetime management, general `ref` arguments, or aggregate array operations.
+Ctfe, Bytecode, SystemLinker, and LLVMJit pass the focused matrix; Interpreter
+remains excluded for its documented missing postblit. Verification: focused
+Bytecode red then green; passing focused matrix; `ninja bin/ut`; and
+`bin/ut --random` passed (seed `2678926982`).
+
+`dynamicArray.lengthAssignmentDefaultInitializesStructElements` promoted to
+Bytecode, 2026-07-13: new direct SystemLinker-backed regression for resizing
+`Marked[]`, where `Marked.value = 42`. Bytecode was red with `0 != 42` because
+`setArrayLength` repeated one default-init byte, which cannot represent a
+non-uniform `T.init` block. Struct-array growth now materializes DMD's
+`defaultInitLiteral` into an inline frame block and copies that block into each
+new element; scalar-array growth keeps its existing uniform-fill opcode. This
+does not broaden aggregate-array operations, postblit/destructor lifetimes, or
+array construction. Ctfe, Bytecode, SystemLinker, and LLVMJit pass the focused
+matrix. Interpreter is excluded after its empirical focused red (`0 != 42`).
+Verification: focused SystemLinker green; focused Bytecode red (`0 != 42`) then
+green; the passing four-backend matrix; `ninja bin/ut`; and `bin/ut --random`.
+
+Reviewer follow-up, 2026-07-13: removed the stale
+`emplaceRefWritesArrayElement` comment that said Bytecode was omitted for its
+`char[]`-literal assertion. Bytecode is in that fixture's matrix and now runs
+the assertion after the mixed comparison support landed.

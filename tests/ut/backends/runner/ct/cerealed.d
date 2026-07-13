@@ -1508,13 +1508,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // `bce523cc^` (the parent of fix commit `bce523cc`, "interpreter: handle
 // emplaceRef writes"), `Interpreter` fails with `cannot read uninitialized
 // variable `.trustedMoveImpl.result` in ctfe` and `SystemLinker` is green.
-// Bytecode omitted for an unrelated reason: its `_d_assert_fail`
-// cannot render a `char[]`-vs-string-literal `==` comparison
-// ("Unsupported comparison assert in bytecode core: _d_assert_fail(...)"),
-// confirmed independent of `emplaceRef` by a probe with no `emplaceRef` call
-// at all that fails identically, and by an `emplaceRef`-using probe that
-// asserts via scalar comparisons instead, which passes on Bytecode.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+// Bytecode now runs this assertion after its mixed mutable-character-array/
+// string-literal comparison support landed.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefWritesArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1545,15 +1541,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `assert(counters[0].postblitCount == 1)` fails with `0 != 1` — the
 // postblit body never runs. Retire the omission when value.md's
 // native-layout track lands and the shim is deleted (§9.10).
-// Bytecode omitted for an unrelated reason: passing a struct by
-// value through a `ref` array-element argument (here, `emplaceRef`'s
-// generated wrapper constructor) is only partially supported there
-// ("Unsupported variable in bytecode core: source"), confirmed by a
-// second, `emplaceRef`-free probe (a plain `ref` function assigning a
-// by-value struct parameter to an array element) that fails on
-// Bytecode with the sibling diagnostic "Unsupported ref argument
-// in bytecode core: counters[0]".
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+// Bytecode must preserve this one postblit while its `emplaceRef` wrapper
+// writes the indexed destination.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1593,9 +1583,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
 // refusal.
 // Interpreter omitted per §8: the omission is the documentation of this
 // refusal. Verbatim red: `Unsupported eval call.`
-// Bytecode omitted for the same unrelated ref-array-element gap
-// noted above: `Unsupported ref argument in bytecode core: message[0]`.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefRefusesZeroArgDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1615,6 +1603,29 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     }
 }
 
+// `wchar.init` is `0xFFFF`, unlike the all-zero default initialization of
+// most scalar elements. This keeps the zero-argument `emplaceRef` path honest
+// about materialising the element type's real `.init` value.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
+    @("emplaceRefDefaultInitializesWcharArrayElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            unittest {
+                wchar[] values;
+                values.length = 1;
+                values[0] = 'x';
+
+                emplaceRef(values[0]);
+
+                assert(values[0] == wchar.init);
+            }
+        });
+    }
+}
+
 // The owed §9.10 gap fixture: `emplaceRef`'s multi-arg (constructor) form
 // must forward its arguments to the destination's constructor. Same shim
 // refusal as above, other direction: 3 call arguments (chunk, 1, 2) also
@@ -1622,12 +1633,8 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
 // documented refusal.
 // Interpreter omitted per §8: the omission is the documentation of this
 // refusal. Verbatim red: `Unsupported eval call.`
-// Bytecode omitted: unlike the sibling gap fixtures above, this
-// shape does not refuse cleanly — it crashes (SIGSEGV, exit code 139, no
-// exception text at all). This is a distinct, pre-existing, unrelated
-// Bytecode crash, not an `emplaceRef` defect; recorded as a
-// cross-track observation for ai/plans/bytecode.md (not fixed here).
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+// Bytecode covers its narrow indexed-array struct-constructor path here.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefRefusesMultiArgConstructor." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

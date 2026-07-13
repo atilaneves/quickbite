@@ -4719,11 +4719,17 @@ private struct Compiler {
     }
 
     // Pack the element type's default-init fill byte (high 8 bits) and element
-    // size (low 8 bits) for `allocArrayDynamic`. `char.init` is 0xFF; every
-    // other element type the core lowers default-inits to all-zero bytes.
-    private ushort packedFill(in ScalarType elementType) @safe pure {
-        const fill = elementType == ScalarType.char_ ? 0xff : 0x00;
-        return cast(ushort) ((fill << 8) | size(elementType));
+    // size (low 8 bits) for `allocArrayDynamic`. `char.init` and `wchar.init`
+    // are all-one bytes; every other element type the core lowers
+    // default-inits to all-zero bytes.
+    private ushort packedFill(
+        in ScalarType elementType,
+        in uint elementSize = 0,
+    ) @safe pure {
+        const fill = elementType == ScalarType.char_ ||
+            elementType == ScalarType.wchar_ ? 0xff : 0x00;
+        return cast(ushort) ((fill << 8) |
+            (elementSize == 0 ? size(elementType) : elementSize));
     }
 
     // The frame offset of a 16-byte slice descriptor denoting the value of an
@@ -6541,16 +6547,51 @@ private struct Compiler {
         ArrayLengthExp length,
         Expression newLength,
     ) {
+        import dmd.astenums: TY;
+        import dmd.typesem: defaultInitLiteral;
+
         const descriptor = dynamicArrayDescriptor(length.e1);
-        const lengthSlot = compileExpression(newLength);
+        const lengthValue = compileExpression(newLength);
+        const lengthSlot = allocate(ScalarType.ulong_);
+        _code ~= Instruction(
+            Op.copy,
+            lengthSlot,
+            lengthValue.offset,
+            cast(ushort) size(lengthValue.type),
+        );
+        auto element = length.e1.type.toBasetype.nextOf;
+        if (element.toBasetype.ty == TY.Tstruct) {
+            const elementSize = cast(uint) staticArraySize(element);
+            const initBlock = allocateBytes(elementSize, staticArrayAlign(element));
+            zeroFrameBlock(initBlock, elementSize);
+            auto literal = element.toBasetype.isTypeStruct.defaultInitLiteral(
+                length.loc,
+            ).isStructLiteralExp;
+            if (literal is null)
+                throw new Exception("Unsupported struct array default initializer in bytecode core.");
+            compileStructLiteralInto(initBlock, literal);
+            _code ~= Instruction(
+                Op.setArrayLengthFromTemplate,
+                descriptor.offset,
+                initBlock,
+                lengthSlot,
+                cast(ushort) elementSize,
+            );
+            writeBackDynamicArrayDescriptor(descriptor);
+            return Operand(lengthSlot, ScalarType.ulong_);
+        }
+
         _code ~= Instruction(
             Op.setArrayLength,
             descriptor.offset,
-            packedFill(descriptor.elementType),
-            lengthSlot.offset,
+            packedFill(
+                descriptor.elementType,
+                dynamicArrayElementSize(length.e1.type, descriptor.elementType),
+            ),
+            lengthSlot,
         );
         writeBackDynamicArrayDescriptor(descriptor);
-        return Operand(lengthSlot.offset, ScalarType.ulong_);
+        return Operand(lengthSlot, ScalarType.ulong_);
     }
 
     private Operand compileAppendElement(CatElemAssignExp append) {
@@ -8093,12 +8134,123 @@ private struct Compiler {
     }
 
     private Operand* compileEmplaceRef(CallExp call) {
-        if (call.arguments is null || call.arguments.length < 2)
+        if (call.arguments is null || call.arguments.length == 0)
             return null;
 
         auto index = (*call.arguments)[0].isIndexExp;
         if (index is null)
             return null;
+
+        if (call.arguments.length == 1) {
+            auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+            if (descriptor is null || descriptor.elementType == ScalarType.void_)
+                return null;
+
+            const elementSize = dynamicArrayElementSize(
+                index.e1.type, descriptor.elementType,
+            );
+            if (elementSize > ulong.sizeof)
+                return null;
+
+            const value = allocateBytes(elementSize, elementSize);
+            _code ~= Instruction(
+                Op.loadConstant,
+                value,
+                constantIndex(
+                    descriptor.elementType == ScalarType.char_
+                        ? char.init
+                        : descriptor.elementType == ScalarType.wchar_
+                            ? wchar.init
+                            : 0,
+                ),
+                cast(ushort) elementSize,
+            );
+            const indexSlot = compileExpression(index.e2);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value,
+                descriptor.offset,
+                indexSlot.offset,
+            );
+
+            auto result = new Operand;
+            *result = Operand(value, descriptor.elementType);
+            return result;
+        }
+
+        if (index.type !is null &&
+            index.type.toBasetype.isTypeStruct !is null)
+        {
+            auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+            if (descriptor is null)
+                return null;
+
+            const elementSize = dynamicArrayElementSize(
+                index.e1.type, descriptor.elementType,
+            );
+            if (elementSize > ulong.sizeof)
+                return null;
+
+            if (call.arguments.length == 2) {
+                bool sourceResolved;
+                const source = structBaseOffsetOrMaterialise(
+                    (*call.arguments)[1], sourceResolved,
+                );
+                if (!sourceResolved)
+                    return null;
+
+                const value = allocateStructBlock(index.type);
+                _code ~= Instruction(
+                    Op.copy,
+                    value,
+                    source,
+                    cast(ushort) elementSize,
+                );
+                if (auto postblit = structDeclarationOf(index.type).postblit)
+                    runStructMethod(value, postblit);
+
+                const indexSlot = compileExpression(index.e2);
+                _code ~= Instruction(
+                    indexStoreOp(elementSize),
+                    value,
+                    descriptor.offset,
+                    indexSlot.offset,
+                );
+
+                auto result = new Operand;
+                *result = Operand(value, ScalarType.void_);
+                return result;
+            }
+
+            auto constructor = structDeclarationOf(index.type).ctor
+                .isFuncDeclaration;
+            if (constructor is null)
+                return null;
+
+            const value = allocateStructBlock(index.type);
+            zeroFrameBlock(value, elementSize);
+            auto arguments = new Expressions(call.arguments.length - 1);
+            foreach (argumentIndex; 0 .. arguments.length)
+                (*arguments)[argumentIndex] =
+                    (*call.arguments)[argumentIndex + 1];
+            runConstructor(
+                value,
+                constructor,
+                arguments,
+            );
+
+            const indexSlot = compileExpression(index.e2);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value,
+                descriptor.offset,
+                indexSlot.offset,
+            );
+
+            auto result = new Operand;
+            *result = Operand(value, ScalarType.void_);
+            return result;
+        }
 
         if (auto stored =
                 tryDynamicArrayElementAssign(index, (*call.arguments)[1]))
@@ -9428,7 +9580,18 @@ private struct Compiler {
         Expression lhs,
         Expression rhs,
     ) {
-        if (!isDynamicArrayArgument(lhs) || !isDynamicArrayArgument(rhs))
+        import dmd.astenums: TY;
+
+        if (lhs.type.toBasetype.ty != TY.Tarray ||
+            rhs.type.toBasetype.ty != TY.Tarray)
+            return false;
+
+        // Two immutable character arrays use their compact string descriptors
+        // and retain string diagnostics below. A mutable character array and a
+        // string literal instead compare as ordinary slices: materialising the
+        // literal into a heap-backed descriptor gives both operands the same
+        // native-layout representation.
+        if (isStringType(lhs.type) && isStringType(rhs.type))
             return false;
 
         const elementType = dynamicArrayElementType(lhs.type);

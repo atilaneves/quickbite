@@ -204,6 +204,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // the descriptor with {newPtr, newLength}. Operand b packs the fill byte
     // (high 8 bits) and element size (low 8 bits), like allocArrayDynamic.
     setArrayLength,
+    // Resize the dynamic array whose descriptor is at frame offset a using the
+    // `d`-byte default-init block at frame offset b for each grown element.
+    // The new length is read from frame offset c. Backs `S[].length = n` when
+    // `S.init` is not a uniform byte fill.
+    setArrayLengthFromTemplate,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
     // Expand the compact string descriptor {dataOffset, length} at frame offset
@@ -558,6 +563,7 @@ package(quickbite.backends.bytecode) struct Instruction {
     ushort a;
     ushort b;
     ushort c;
+    ushort d;
 }
 
 // A pass-by-reference parameter: its slot in the callee frame holds the
