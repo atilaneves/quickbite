@@ -1319,6 +1319,34 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // Bytecode and IR ("Unsupported (IR) expression `& d`") do not support
 // taking the address of a local.
 
+// Reinterpret-WRITE (not read) through a same-size pointer cast: writing raw
+// bits into a `float` local via a `uint*` must be visible to a subsequent
+// direct read of the local. SystemLinker is the oracle; Bytecode/LLVMJit/
+// Ctfe are omitted per the omit-don't-pin convention (address-of-a-local and
+// float byte-reinterpretation are unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.uintBitsWrittenThroughPointerReadBackAsFloat." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint oneBits() {
+                return 0x3F800000;
+            }
+
+            float twoPointZero() {
+                return 2.0f;
+            }
+
+            unittest {
+                float f = twoPointZero;
+                uint* p = cast(uint*) &f;
+                *p = oneBits;
+                assert(f == 1.0f);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

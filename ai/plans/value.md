@@ -2327,6 +2327,99 @@ ut.backends.evaluator.eval` -- 441 run, 0 failed. The full `bin/ut
 Still the FFI seam, not the tree-walker's core representation: no §9.10
 shim was retired, and no guest call site was added.
 
+Progress 2026-07-13 (first guest-local native-storage slice: reinterpret
+WRITE through a pointer): item 7's guest-level call site starts. `impl.d`'s
+`Walker` gains `private NativeBlock[VarDeclaration] scalarCells;`, next to
+`locals`, an authoritative native-byte cell for an address-taken
+`native_scalar.isNativeScalarType` local. `localPointerValue` (the common
+path both `&plainLocal` (`SymOffExp`, via `symbolOffsetLocalValue`) and
+`&refParameter` (`AddrExp(VarExp)`) fall through to) now calls a new
+`promoteScalarCell`, which allocates the cell eagerly the first time a
+scalar local's address is taken, seeding it from the local's current boxed
+value in `locals` (or `defaultValue` if never written) via
+`native_scalar.writeScalar`. Once a cell exists, two write paths and one
+read path route through it instead of the boxed `locals` map: (1)
+`writeLocation`'s `PtrExp` arm (`*p = x`) -- the actual bug this slice
+fixes -- derives the pointer's pointee type the same way
+`reinterpretLocalPointerLoad` already did, `writeScalar`s the assigned
+value's bits in as that type, then refreshes `locals[variable]` by
+`readScalar`ing the local's own type back out; (2) the `VarExp` direct-read
+arm returns `readScalar(variable.type, cell.bytes)` when a cell exists,
+ahead of the `locals` lookup; (3) `applyNativeWritebacks` (FFI `&local`
+out-parameters, e.g. `strtol`'s `endptr` or `pthread_mutexattr_gettype`'s
+`int* kind`) got the same cell-then-mirror-refresh treatment -- discovered
+not from the spec but because the full focused-suite pass caught
+`ut.backends.runner.rt.cstdlib.pthread.mutexattr.unionOutPointer.
+Interpreter` regressing from green to red (`-1 != 1`): the FFI writeback
+wrote the correct value into `locals` but left the promoted cell stale,
+and the new VarExp-read hook then preferred the stale cell over the fresh
+mirror. `writePointerTarget` (the `atomicStore`/`atomicExchange`/
+`atomicFetchAdd` and `(*p)++`/`*p += x` pointer-target write path) was
+tried as a fourth hook on the same reasoning, but removing it again and
+re-running every focused suite below still left all of them green, so it
+was dropped -- no existing fixture exercises a compound/atomic write
+through a promoted cell yet, and the brief calls for the dumbest passing
+code, not defensive coverage a test doesn't demand. `locals[variable]` is
+never left to drift once a cell exists: each of the three hooks above
+writes the cell first and re-derives the `locals` entry from it, so it
+stays a genuine, synchronously-refreshed mirror, not a second source of
+truth. Every `Walker child` construction that duplicates `localPointers`/
+`localPointerIds` (there are seven such call sites in `impl.d`, not the
+four originally scoped -- `runFunctionCall`/`runFunction`/
+`runMemberFunction`/`runDestructor`/`writeRefReturningCallLocation`/
+`tryAssignNativeRefReturn`/`runNewExpression`'s constructor branch) now
+also does `child.scalarCells = scalarCells.dup;`, so a duped `NativeBlock`
+shares its underlying bytes by reference and a nested call sees the same
+cell its caller promoted. The eighth `Walker child` site
+(`runNewExpression`'s aggregate-initialiser branch, ~line 6202) does not
+dup `locals`/`localPointers` either, so it is left without `scalarCells`
+too, consistent with the existing pattern.
+
+New fixture (pre-approved): `tests/ut/backends/runner/ct/expressions.d`
+`pointer.uintBitsWrittenThroughPointerReadBackAsFloat`, scoped to
+`Interpreter`/`SystemLinker` only (Bytecode/LLVMJit/Ctfe omitted per the
+omit-don't-pin convention, unconfirmed there) -- writes `0x3F800000`
+through a `uint*` reinterpret of a `float` local and asserts the local
+reads back as `1.0f`. Confirmed red on `Interpreter`
+(`1065353216u != 1`, the pre-existing bug: the boxed value was stored
+verbatim with no reinterpret) and green on `SystemLinker` before writing
+any production code; green on both after.
+
+What this commit does NOT do, to be precise about the state of item 7:
+locals are still boxed everywhere else -- `scalarCells` covers only
+address-taken `native_scalar.isNativeScalarType` locals, nothing else
+(aggregates, pointers, non-address-taken scalars all still live solely in
+`locals`). No §9.10 shim is retired: `reinterpretLocalPointerLoad` and the
+now-deleted-in-name-only `floatBits`/`doubleBits` shim history are
+unchanged by this commit; this slice only narrows that entry's write-side
+gap (a byte-level WRITE through a differently-typed pointer now agrees
+with a direct read, closing the asymmetry the read-only shim left open).
+`localPointerTarget` (the `*p` read helper used by
+`pointerTargetValue`/some call sites) still reads from `locals`, not the
+cell directly -- correct only because every write hook above keeps the
+`locals` mirror in sync, not because the read was migrated.
+
+Verification surfaced two pre-existing, unrelated failures, confirmed via
+`git stash` against this same worktree's baseline (both fail identically
+with the stash applied, i.e. before any of this commit's changes):
+`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+Bytecode` ("Expression did not throw", already flagged by a prior progress
+note above) and `ut.backends.runner.ct.structs.struct.
+staticArrayCopyRunsPostblitAndDtors.Bytecode`, which segfaults
+(`bin/ut -s ut.backends.runner.ct.structs` exits 139) -- a Bytecode-track
+issue, not touched by or related to this Interpreter-only change. Both are
+excluded from the focused runs below by naming every other test
+explicitly; neither was fixed or weakened.
+
+Focused runs, all green except the two pre-existing failures above:
+`bin/ut -s ut.backends.runner.ct.expressions` (312 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
+`ut.backends.runner.ct.structs`/`ut.backends.runner.ct.arrays`/
+`ut.backends.runner.rt.cstdlib` run explicitly by name minus the two
+pre-existing failures above (631 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
