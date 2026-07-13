@@ -1567,7 +1567,7 @@ enum pointerEmptyNullSliceAssignSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.emptySliceAssignmentThroughNullPointerIsNoOp." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

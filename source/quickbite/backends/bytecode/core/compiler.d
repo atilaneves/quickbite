@@ -4344,6 +4344,18 @@ private struct Compiler {
                 return;
             }
 
+        // A string uses the compact {data offset, length} descriptor while a
+        // `const(char)[]` view needs a native pointer. Preserve the view over
+        // the program data rather than copying its bytes.
+        if (auto cast_ = source.isCastExp)
+            if (isStringType(cast_.e1.type)) {
+                const string_ = compileExpression(cast_.e1);
+                _code ~= Instruction(
+                    Op.stringSliceToArray, destination, string_.offset,
+                );
+                return;
+            }
+
         // `dest = new T[](length)` / `new T[][](rows, cols)`: heap-allocate a
         // default-filled block of `length` (a runtime size_t) elements; the
         // multidimensional form also fills each element with a fresh inner array.

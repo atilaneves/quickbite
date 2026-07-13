@@ -5255,3 +5255,17 @@ inline static-array slot, then leaves a `VoidInitializer` unmaterialised. It
 does not change static-array copies, postblits, destructors, or lifetime
 handling. Verification: focused red then green; `ninja bin/ut`; and
 `bin/ut --random` (seed `4201158653`). Commit: pending.
+
+`pointer.emptySliceAssignmentThroughNullPointerIsNoOp` promoted to `Bytecode`,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The focused Bytecode row was first red with `Unsupported
+dynamic array initializer in bytecode core: cast(const(char)[])empty`: DMD
+passes the fixture's default `string` as a `const(char)[]` view. Bytecode now
+expands its compact program-data string descriptor into the existing native
+dynamic-array descriptor without copying nonempty bytes. The next operation is
+the intended zero-length pointer-slice assignment: `copySlice` now returns
+after confirming equal zero lengths and before constructing slices from either
+pointer. This preserves nonempty copies and their existing overlap and length
+diagnostics. It does not add writable string views, general string mutation,
+or static-array lifetime work. Verification: focused red then green; `ninja
+bin/ut`; and `bin/ut --random` passed (seed `260515522`).
