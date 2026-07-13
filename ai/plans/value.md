@@ -2546,6 +2546,68 @@ ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
 (228 run, 0 failed). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-13 (ref-parameter guest call site: already coherent,
+characterization test only): the last named frontier for item 7's
+guest-level call site was a `ref` scalar parameter -- a guest takes
+`&f` of a `ref` parameter, writes reinterpreted bytes through that
+pointer, and the CALLER's own variable (bound to `f`) must observe the
+write after the call returns. New fixture (pre-approved): `tests/ut/
+backends/runner/ct/expressions.d`
+`pointer.reinterpretWriteThroughRefParameterPointerReachesCaller`,
+scoped to `Interpreter`/`SystemLinker`, mirroring the surrounding
+`pointer.*ThroughPointer*` fixtures' form.
+
+Ran green on Interpreter (and SystemLinker) with no production change
+first try. Rather than force a change, six further probe variants were
+tried transiently (not committed) to hunt for a genuinely uncovered red
+sub-case per this slice's instructions: (A) the caller also holds its
+own pointer into the argument taken *before* the call; (B) the callee
+reads the `ref` parameter directly (not through the pointer) after the
+pointer write, before returning; (C) a `double`/`ref double`/`ulong*`
+variant; (D) two pointers taken from the same `ref` parameter inside
+the callee; (E) two levels of `ref` forwarding (outer forwards its own
+`ref` parameter into inner, which does the reinterpret write); (F) a
+direct (non-pointer) reassignment of the `ref` parameter inside the
+callee, mirroring the earlier `directWriteToAddressTakenScalarUpdatesCell`
+fixture but through a `ref` parameter and across the call-return
+writeback. All six ran green on Interpreter (and SystemLinker) too, so
+none were kept.
+
+Why this is coherent by construction, not luck: `writeLocation`'s
+`VarExp` arm (impl.d, the direct-write case) unconditionally refreshes
+`scalarCells[variable]` from the value just written to the `locals`
+mirror whenever that cell already exists -- this was the exact fix
+landed by the previous progress note, and it is agnostic to *why* the
+write is happening. `writeBackRefArguments` (impl.d) always routes a
+`ref` parameter's final value back to the caller's argument expression
+through this same `writeLocation`, regardless of forwarding depth or
+whether the caller's argument already has its own promoted cell. So
+any pre-existing or freshly-promoted cell on either side of a `ref`
+call boundary is refreshed by the same generic path that same-frame
+and cross-frame writes already use; there is no separate "ref
+parameter" code path to fall out of sync. This is why the mechanism
+generalized to probes B/C/D/E/F without any change.
+
+What remains, to be precise about item 7's state: this is a
+characterization result, not new coverage of previously-broken
+behaviour -- no production code changed. Item 7's remaining named gaps
+are unchanged from the previous note: non-scalar aggregates and raw-
+pointer locals still rely on `writeBackLocalPointerTargets`'s copy-back,
+non-address-taken scalars never get a cell, and class objects are
+untouched. The known, pre-existing `sliceAssignmentWritesArrayStorage.
+Bytecode` failure persists in `ut.backends.runner.ct.arrays` and is
+untouched.
+
+Focused runs, all green except the one known pre-existing failure:
+`bin/ut -s ut.backends.runner.ct.expressions` (318 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
+`sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
+ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
+(228 run, 0 failed). The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
