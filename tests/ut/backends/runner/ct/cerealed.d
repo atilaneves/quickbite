@@ -1593,9 +1593,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
 // refusal.
 // Interpreter omitted per §8: the omission is the documentation of this
 // refusal. Verbatim red: `Unsupported eval call.`
-// Bytecode omitted for the same unrelated ref-array-element gap
-// noted above: `Unsupported ref argument in bytecode core: message[0]`.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefRefusesZeroArgDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

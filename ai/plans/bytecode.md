@@ -5284,3 +5284,16 @@ descriptors and their diagnostics when both operands are immutable strings.
 This does not add `emplaceRef` handling, lazy thunks, multi-argument
 constructors, or general string mutation. Verification: focused red then
 green; `ninja bin/ut`; and `bin/ut --random` passed (seed `605411570`).
+
+`emplaceRefRefusesZeroArgDefaultInit` promoted to `Bytecode`, 2026-07-13:
+pre-approved SystemLinker-backed Cerealed fixture. Bytecode was red with
+`Unsupported ref argument in bytecode core: message[0]`. Its existing
+`emplaceRef` interception now handles only the one-argument form whose target
+is an indexed dynamic-array element: it materializes the scalar default value
+(`char.init` remains `0xFF`) and uses the existing statically sized indexed
+store. It deliberately excludes struct/array elements, postblits, general ref
+arguments, and multi-argument constructors. Matrix check: Ctfe, Bytecode,
+SystemLinker, and LLVMJit pass; Interpreter remains excluded after an empirical
+focused red with its documented `Unsupported eval call.` shim limitation.
+Verification: focused Bytecode red then green; passing focused four-backend
+matrix; `ninja bin/ut`; and `bin/ut --random` passed (seed `1911983078`).

@@ -8093,12 +8093,45 @@ private struct Compiler {
     }
 
     private Operand* compileEmplaceRef(CallExp call) {
-        if (call.arguments is null || call.arguments.length < 2)
+        if (call.arguments is null || call.arguments.length == 0)
             return null;
 
         auto index = (*call.arguments)[0].isIndexExp;
         if (index is null)
             return null;
+
+        if (call.arguments.length == 1) {
+            auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+            if (descriptor is null || descriptor.elementType == ScalarType.void_)
+                return null;
+
+            const elementSize = dynamicArrayElementSize(
+                index.e1.type, descriptor.elementType,
+            );
+            if (elementSize > ulong.sizeof)
+                return null;
+
+            const value = allocateBytes(elementSize, elementSize);
+            _code ~= Instruction(
+                Op.loadConstant,
+                value,
+                constantIndex(
+                    descriptor.elementType == ScalarType.char_ ? char.init : 0,
+                ),
+                cast(ushort) elementSize,
+            );
+            const indexSlot = compileExpression(index.e2);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value,
+                descriptor.offset,
+                indexSlot.offset,
+            );
+
+            auto result = new Operand;
+            *result = Operand(value, descriptor.elementType);
+            return result;
+        }
 
         if (auto stored =
                 tryDynamicArrayElementAssign(index, (*call.arguments)[1]))
