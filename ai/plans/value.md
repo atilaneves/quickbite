@@ -2143,6 +2143,32 @@ full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff. This is consolidation only: no new guest call site
 was added, and no §9.10 shim was retired.
 
+Progress 2026-07-13 (class-field-list authority): the module-private
+`classFields(ClassDeclaration)` helper -- walking `baseClass` to collect a
+class's fields in base-to-derived order -- moved from `impl.d` into
+`layout.d` as public `layout.classFields`, symmetric with the existing
+`layout.structFields`. The body is unchanged: same hierarchy walk, same
+`foreach_reverse` over collected classes, same field order. Unlike
+`structFields`, which forces struct layout via `typeByteSize` before
+reading `sym.fields`, `classFields` does NOT force layout -- a class's
+`fields` are populated by semantic analysis (`dsymbolsem.d`) before the
+interpreter ever runs, so there is no `sizeok`-gated state to force, and
+the doc comment on the new `layout.classFields` says so explicitly. All 4
+`impl.d` call sites (`nativeExceptionValue`, `nativeExceptionObjectWith
+ClassFields`, `classFieldIndex`, and the module-level `classDefaultValue`)
+now route through it via a local `import
+quickbite.backends.interpreter.layout: classFields;`, added alongside each
+site's existing local imports (or as the site's first local import, where
+none existed). No import was orphaned by the deletion. No test was added
+or modified. Focused run: `bin/ut -s ut.backends.interpreter
+ut.backends.interpreter.layout ut.backends.runner.ct.expressions
+ut.backends.runner.ct.structs ut.backends.evaluator.eval` -- 838 run, 0
+failed, 5/5 failing as expected (the same pre-existing expected failures
+as the prior progress note's focused run). The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff. This is
+consolidation only: no new guest call site was added, and no §9.10 shim
+was retired.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

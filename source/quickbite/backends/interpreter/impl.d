@@ -546,6 +546,7 @@ private struct Walker {
         in const(void)* nativeObjectPointer,
     ) const {
         import quickbite.frontend.dmd.values: defaultValue;
+        import quickbite.backends.interpreter.layout: classFields;
         import dmd.dclass: ClassDeclaration;
 
         auto class_ = ClassDeclaration.exception;
@@ -590,6 +591,8 @@ private struct Walker {
         imported!"dmd.dclass".ClassDeclaration class_,
         in Value object,
     ) {
+        import quickbite.backends.interpreter.layout: classFields;
+
         if (!object.hasClassFieldNamed(nativeExceptionObjectPointerField))
             return object;
 
@@ -4926,6 +4929,8 @@ private struct Walker {
         imported!"dmd.expression".DotVarExp dot,
         in Value receiver,
     ) {
+        import quickbite.backends.interpreter.layout: classFields;
+
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             throw new Exception("Unsupported interpreter field access.");
@@ -6841,6 +6846,7 @@ private imported!"quickbite.lang".Value classDefaultValue(
 ) {
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
+    import quickbite.backends.interpreter.layout: classFields;
 
     string[] fieldNames;
     Value[] fields;
@@ -6871,22 +6877,6 @@ private imported!"dmd.mtype".Type[] nativeArgumentTypes(
         types ~= expression.type;
 
     return types;
-}
-
-
-private imported!"dmd.declaration".VarDeclaration[] classFields(
-    imported!"dmd.dclass".ClassDeclaration class_,
-) {
-    imported!"dmd.dclass".ClassDeclaration[] classes;
-    for (auto current = class_; current !is null; current = current.baseClass)
-        classes ~= current;
-
-    imported!"dmd.declaration".VarDeclaration[] fields;
-    foreach_reverse (current; classes)
-        foreach (field; current.fields)
-            fields ~= field;
-
-    return fields;
 }
 
 
