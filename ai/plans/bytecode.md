@@ -5151,3 +5151,14 @@ order, returning the final element value; each element is already an ordinary
 supported assignment. This does not add tuple representation, generic tuple
 operations, or formatter support. Verification: focused red then green;
 `ninja bin/ut` and `bin/ut --random` passed (seed `3349317244`).
+
+`struct.tupleofAssignmentCopiesFields` promoted to `Bytecode`, 2026-07-13:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The dependency-free fixture lowers `target.tupleof = source.tupleof`
+to the same `TupleExp` sequence of per-field assignments covered by the
+previous tuple-expression slice. The focused Bytecode row passed unchanged, so
+no production work was needed. This records stale coverage of the existing
+tuple-expression and scalar field-assignment paths; it does not add tuple
+representation, generic tuple operations, or formatter support. Verification:
+focused Bytecode row, `ninja bin/ut`, and `bin/ut --random` passed (seed
+`1328625760`).
