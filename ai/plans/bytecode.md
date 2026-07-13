@@ -5376,3 +5376,12 @@ the typed-frame local remains authoritative after a direct scalar assignment.
 No production change was needed. Ctfe and LLVMJit remain excluded under the
 existing omit-don't-pin convention. Verification: focused Bytecode row;
 `ninja bin/ut`; and `bin/ut --random` passed (seed `790590047`).
+
+`pointer.subWordReinterpretWriteThroughPointerWritesLowByte` promoted to
+Bytecode, 2026-07-13: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row writes `0xAB` through a
+`ubyte*` reinterpreting a `uint` local, then verifies the native scalar reads
+back as `0xAB`. The focused Bytecode row passed on its first candidate run, so
+no production change was needed. This advances subword native-layout coverage
+without adding broader pointer or aggregate semantics. Verification: focused
+Bytecode row; `ninja bin/ut`; and `bin/ut --random`.

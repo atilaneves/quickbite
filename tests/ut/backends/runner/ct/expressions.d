@@ -1572,7 +1572,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // narrower native-scalar pointee (a `ubyte*` reinterpret of a `uint`)
 // instead of writing into the low bytes the way the read side
 // (`reinterpretLocalPointerLoad`) already narrows by slicing.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.subWordReinterpretWriteThroughPointerWritesLowByte." ~
         backend.stringof)
     @Tags(backend.stringof)
