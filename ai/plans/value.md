@@ -2094,6 +2094,36 @@ The full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff. This is consolidation only: no new guest call site
 was added, and no §9.10 shim was retired.
 
+Progress 2026-07-13 (struct-field-list authority): `impl.d`'s two
+remaining direct `TypeStruct.sym.fields` accesses --
+`structFieldIndex`'s field-index search and
+`runNewStructPointerExpression`'s aggregate-initialiser bound check --
+now route through the existing `layout.structFields(TypeStruct)` helper
+instead of reading `sym.fields` directly. As the helper's own doc
+comment establishes (and the prior static-array-length note echoed for
+`staticArrayLength`), `structFields` returns `type.sym.fields[]`
+verbatim -- same array, same order, same `VarDeclaration` objects --
+after forcing layout via `typeByteSize`, which is a no-op at both call
+sites since the struct type is already fully resolved there (a
+receiver's struct type mid-evaluation; a `new` target's struct type).
+This is therefore an identity consolidation, not a behaviour change.
+Each site gained a new local `import
+quickbite.backends.interpreter.layout: structFields;` alongside its
+existing imports; no import was orphaned. `structLiteralField`'s
+`literal.sd.fields[index]` (~line 7161) was deliberately left alone --
+it reads a `StructDeclaration`'s fields, not a `TypeStruct`'s, so
+`layout.structFields` does not apply there. No test was added or
+modified. Focused run: `bin/ut -s ut.backends.interpreter
+ut.backends.runner.ct.expressions ut.backends.runner.ct.structs
+ut.backends.runner.ct.arrays ut.backends.evaluator.eval` -- 1139 run, 1
+failed, 5/5 failing as expected; the 1 failure
+(`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+Bytecode`, "Expression did not throw") is the same pre-existing,
+unrelated Bytecode-track pin noted above. The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff. This is
+consolidation only: no new guest call site was added, and no §9.10 shim
+was retired.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

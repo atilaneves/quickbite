@@ -4900,6 +4900,8 @@ private struct Walker {
     }
 
     private size_t structFieldIndex(imported!"dmd.expression".DotVarExp dot) {
+        import quickbite.backends.interpreter.layout: structFields;
+
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             throw new Exception("Unsupported interpreter field access.");
@@ -4908,8 +4910,8 @@ private struct Walker {
         if (structType is null || structType.sym is null)
             throw new Exception("Unsupported interpreter field access.");
 
-        foreach (index; 0 .. structType.sym.fields.length)
-            if (structType.sym.fields[index] is field)
+        foreach (index, candidate; structFields(structType))
+            if (candidate is field)
                 return index;
 
         throw new Exception("Unsupported interpreter field access.");
@@ -6128,9 +6130,11 @@ private struct Walker {
             structVal = child.thisValue;
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
+            import quickbite.backends.interpreter.layout: structFields;
+
             auto structType = targetType.isTypeStruct;
             foreach (index, argument; *new_.arguments) {
-                if (index >= structType.sym.fields.length)
+                if (index >= structFields(structType).length)
                     throw new Exception(text(
                         "Unsupported eval expression: ", new_.op,
                     ));
