@@ -5352,3 +5352,8 @@ array construction. Ctfe, Bytecode, SystemLinker, and LLVMJit pass the focused
 matrix. Interpreter is excluded after its empirical focused red (`0 != 42`).
 Verification: focused SystemLinker green; focused Bytecode red (`0 != 42`) then
 green; the passing four-backend matrix; `ninja bin/ut`; and `bin/ut --random`.
+
+Reviewer follow-up, 2026-07-13: removed the stale
+`emplaceRefWritesArrayElement` comment that said Bytecode was omitted for its
+`char[]`-literal assertion. Bytecode is in that fixture's matrix and now runs
+the assertion after the mixed comparison support landed.

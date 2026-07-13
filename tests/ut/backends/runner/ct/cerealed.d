@@ -1508,12 +1508,8 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // `bce523cc^` (the parent of fix commit `bce523cc`, "interpreter: handle
 // emplaceRef writes"), `Interpreter` fails with `cannot read uninitialized
 // variable `.trustedMoveImpl.result` in ctfe` and `SystemLinker` is green.
-// Bytecode omitted for an unrelated reason: its `_d_assert_fail`
-// cannot render a `char[]`-vs-string-literal `==` comparison
-// ("Unsupported comparison assert in bytecode core: _d_assert_fail(...)"),
-// confirmed independent of `emplaceRef` by a probe with no `emplaceRef` call
-// at all that fails identically, and by an `emplaceRef`-using probe that
-// asserts via scalar comparisons instead, which passes on Bytecode.
+// Bytecode now runs this assertion after its mixed mutable-character-array/
+// string-literal comparison support landed.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefWritesArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
