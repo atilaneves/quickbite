@@ -2247,7 +2247,9 @@ private struct Walker {
                     : (*call.f.parameters)[index];
                 arguments ~= parameter !is null && parameterIsLazy(parameter)
                     ? Value.undisplayable
-                    : runExpression(argument);
+                    : parameter !is null && parameter.isReference
+                        ? runRefArgumentExpression(argument)
+                        : runExpression(argument);
                 argumentExpressions ~= argument;
             }
         }
@@ -2529,6 +2531,24 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    // A `ref` argument aliases the caller's storage; compiled D binds the
+    // address without reading through it. Evaluating it like an ordinary
+    // rvalue throws when the caller's local is still `= void` (cerealed's
+    // `ubyte b = void; cereal.grain(b);`, where `grain`'s `ref` parameter is
+    // only ever written, never read, before the call). Seed a void
+    // placeholder instead of reading; `writeBackRefArguments` overwrites it
+    // with whatever the callee actually wrote once the call returns.
+    private Value runRefArgumentExpression(
+        imported!"dmd.expression".Expression argument,
+    ) {
+        auto var = argument.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable !is null && variable in uninitializedLocals)
+            return Value.void_;
+
+        return runExpression(argument);
     }
 
     private Value runEmplaceRefCall(imported!"dmd.expression".CallExp call) {

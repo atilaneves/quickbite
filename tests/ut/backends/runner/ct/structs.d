@@ -1465,3 +1465,33 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// cerealed's cereal.d (`ubyte b = void; cereal.grain(b);` inside the
+// isOutputRange `grain(U, C, T)` template, then `val.put(b)`) writes a
+// void-initialised local through two nested `ref`-forwarding calls before
+// reading it back. interpreter.md §9.7 (void-init `ref`-argument reads).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("refArgument.voidLocalIsReadableAfterNestedRefWrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void writeByte(ref ubyte val) {
+                val = 42;
+            }
+
+            void grain(ref ubyte val) {
+                writeByte(val);
+            }
+
+            ubyte readGrain() {
+                ubyte b = void;
+                grain(b);
+                return b;
+            }
+
+            unittest {
+                assert(readGrain() == 42);
+            }
+        });
+    }
+}

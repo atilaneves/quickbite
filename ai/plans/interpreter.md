@@ -1523,6 +1523,49 @@ ref-argument write-back gap). `pointers.d(82)` is unaffected — same
 `shouldThrow!RangeError` miss as before, still needing its own,
 unrelated triage.
 
+**2026-07-13 (void-init `ref`-argument read, `.grain.b` root closed).**
+Root-caused the 3× `cannot read uninitialized variable \`.grain.b\` in
+ctfe` class. Not a struct-field-read bug as first guessed from the
+message shape (`.<function>.<var>`): cerealed's `cereal.d` `grain(U, C,
+T)` (the `isOutputRange!(T, ubyte)` overload) declares `ubyte b =
+void;` then calls `cereal.grain(b);`, a **plain local**, written only
+through two nested `ref`-parameter-forwarding calls (`grain(ref ubyte
+val) { writeByte(val); }`) before the caller reads `b` back. Root:
+`Walker.runCallExpression`'s argument-evaluation loop (impl.d, the
+`Value[] arguments` build) called `runExpression(argument)` for every
+argument unconditionally, including `ref` parameters — but compiled D
+never reads through a `ref` binding at the call site, it only takes the
+address. Reading a still-void local eagerly here hit the existing
+uninitialized-read guard and threw, even though the callee was about to
+write it, not read it. Fix: a new `runRefArgumentExpression` (impl.d,
+directly after `runCallExpression`) used for `ref` parameters — returns
+`Value.void_` without reading when the argument is a `VarExp` whose
+variable is still in `uninitializedLocals`, otherwise defers to the
+normal `runExpression`; `writeBackRefArguments` (already existing)
+overwrites the placeholder with whatever the callee wrote once the call
+returns, restoring the caller-visible value and clearing
+`uninitializedLocals` through the existing `writeLocation` path.
+
+Exposing fixture `refArgument.voidLocalIsReadableAfterNestedRefWrite`
+(`tests/ut/backends/runner/ct/structs.d`): `void writeByte(ref ubyte
+val) { val = 42; }`, `void grain(ref ubyte val) { writeByte(val); }`,
+`ubyte readGrain() { ubyte b = void; grain(b); return b; }`, asserting
+`readGrain() == 42`. Confirmed red on `Interpreter` (`cannot read
+uninitialized variable \`.readGrain.b\` in ctfe`) before this fix, green
+on `Ctfe`, `Bytecode`, `SystemLinker`, and `LLVMJit` throughout — full
+matrix, nothing omitted.
+
+cerealed impact: `bin/bench.sh -b system-linker -b interpreter --dub
+cerealed` re-measured before/after. Before: 16 disagreements, including
+all 3 `.grain.b` sites (`range.d` lines 31/42/92, the `output.range.*`
+and `embedded.output.range` tests — `grain.d` in the task description
+was the enclosing function's name, not a file). After: all 3 are gone;
+the tests advance past `grain`/`writeByte` into two new, deeper frontier
+classes uncovered by removing this blocker — `Expected struct.`
+(`classes.d`) and `Expected array.` (`decode.d`) — both new triage
+items, not regressions. Net: 16 → 15 disagreements (3 closed, 2 newly
+exposed by advancing further).
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
