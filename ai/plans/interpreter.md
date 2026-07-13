@@ -1363,6 +1363,86 @@ triage. Net: 2 of the 6 cerealed failures in this class close; 4 remain
 (3 ref-struct-field-mutation, 1 unclassified `shouldThrow!RangeError`
 miss), tracked here for follow-up.
 
+**2026-07-13 (ref-struct-array-field-mutation root, partial close).**
+Root-caused the ref-parameter struct-field array mutation gap from the
+follow-up above. Reproduced `void grow(ref Holder val) { val.arr.
+length++; }` under a temporary `stderr` trace of `Walker.
+runDeclarationExpression`/`runLoweredAssignExpression`/
+`writeBackRefArguments` (reverted before commit): dmd lowers postfix
+`h.arr.length++` (unlike plain `h.arr.length = h.arr.length + 1`, which
+stays a `LoweredAssignExp` whose `e1` is the `h.arr` `ArrayLengthExp`
+directly) through a synthetic `ref` local bound to the field, e.g.
+`(ref int[] __arraylength3 = h.arr;) , _d_arraysetlengthT(
+__arraylength3, __arraylength3.length + 1LU)`. The interpreter's
+`recordStructFieldAlias` correctly records `__arraylength3` as an alias
+of `h`'s `arr` field (confirmed live via the trace). The break was in
+`Walker.runLoweredAssignExpression` (impl.d): once `assign.e1.
+isArrayLengthExp.e1` resolves to a plain `VarExp` (`__arraylength3`,
+not a `DotVarExp` like `h.arr`), the function took a "fast path" that
+wrote the grown array straight into `locals[variable]` and only cleared
+`uninitializedLocals`/`sliceAliases` — bypassing `writeLocation`
+entirely, so `writeThroughStructFieldAlias` (and
+`writeThroughArrayElementAlias`) never ran and the growth never
+reached `h`. The `DotVarExp` fallback branch (`var is null`) already
+went through `writeArrayLengthLocation` → `writeLocation`, which is why
+plain `h.arr.length = h.arr.length + 1` worked before this fix while
+`h.arr.length++` did not.
+
+Fix: replace the direct `locals[variable] = Value.arrayValue(elements)`
+write with `writeLocation(var, Value.arrayValue(elements))`, so the
+`VarExp` alias-target case runs through the same single write-location
+authority as every other assignment, including
+`writeThroughStructFieldAlias`.
+
+Exposing fixture
+`struct.postfixLengthIncrementGrowsRefParamArrayField`
+(`tests/ut/backends/runner/ct/structs.d`): a `Holder { int[] arr; }`,
+`ref Holder` parameter, `h.arr.length++` then `h.arr[h.arr.length - 1]
+= 7` (deliberately `$`-free — see below), asserting the caller's `h`
+sees both the grown length and the written element after the call
+returns. Confirmed red on `Interpreter` (`index
+[18446744073709551615] is out of bounds for array of length 0`,
+i.e. the growth silently never happened) on the pre-fix parent,
+green on `Ctfe`/`SystemLinker`/`LLVMJit` throughout; `Bytecode`
+omitted (still red, under active development, existing omit-don't-pin
+rule).
+
+This fixture is deliberately kept `$`-free. Probing `h.arr[$ - 1] = 7`
+after `h.arr.length++` (or even after the already-working `h.arr.
+length = h.arr.length + 1`) still underflows on `Interpreter`: that is
+a **third**, still-separate root — `Walker.runIndexAssignExpression`'s
+`DotVarExp` branch (the `arr[i] = v` assignment-target path for an
+array-typed struct field) evaluates `index.e2` (`$ - 1`) before running
+`index.e1`/seeding `index.lengthVar`, the same class of bug already
+fixed for the *read* path (`runIndexExpression`, this rung's earlier
+2026-07-13 entry) but never applied to this assignment-target branch.
+Not fixed here, to keep this commit to the one root its test pins.
+
+Net effect on the `protocol_unit.d` trio (`__unittest_L114/151/169`):
+this fix closes the size_t-underflow **crash** (`index
+[18446744073709551615] is out of bounds`) that was masking their real
+comparison. Re-measuring `bin/bench.sh -b interpreter -b system-linker
+--dub cerealed` with only this fix applied shows all three now fail as
+plain value mismatches instead (`Expected: 3` / `Expected: 1` /
+`Expected: Struct(...)`), still red against `SystemLinker`. cerealed's
+actual `grainWithLengthInBytesAttr` body is `__traits(getMember, val,
+member).length++; cereal.grain(__traits(getMember, val, member)[$ -
+1]);` — the decoded element is written through a `ref int` **call
+argument** that is an `IndexExp` (`arr[$ - 1]`), not a direct
+assignment. A fourth probe,
+`struct.probeGrowArrayFieldThenPassLastElementByRef` (not committed,
+scratch-only), confirms this is its own gap: `Walker.
+isWritableLocation` does not include `IndexExp`, so `Walker.
+writeBackRefArguments` silently skips writing back a `ref` parameter
+whose caller-side argument expression is an index into an array — the
+decoded value never lands in the caller's array element. So the
+`protocol_unit.d` trio needs a fourth root (ref-argument array-element
+write-back) fixed before it turns green; this fix and its test close
+the crash but not the trio itself. `pointers.d(82)` is unaffected by
+any of this — same `index [0] is out of bounds for array of length 0`
+`shouldThrow!RangeError` miss as before, still needing its own,
+unrelated triage.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

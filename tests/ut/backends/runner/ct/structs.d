@@ -1398,3 +1398,38 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
         });
     }
 }
+
+// cerealed's `grainWithLengthInBytesAttr` (ffi.md/interpreter.md §9.7,
+// 2026-07-13 follow-up) grows an array-typed FIELD of a `ref` struct
+// parameter with `__traits(getMember, val, member).length++;`. dmd lowers
+// postfix `.length++` on a field access through a synthetic `ref` local
+// (`ref int[] __tmp = h.arr; ... _d_arraysetlengthT(__tmp, ...)`), unlike
+// plain `.length = .length + 1`, which resizes the field directly. Keep
+// this fixture's index deliberately `$`-free (`arr[arr.length - 1]`): a
+// distinct `$`/`lengthVar`-ordering bug in the assignment-target path
+// (`Walker.runIndexAssignExpression`'s `DotVarExp` branch) affects
+// `h.arr[$ - 1] = ...` and is tracked separately in interpreter.md §9.7,
+// not fixed here, to keep this fixture pinned to the one root it exposes.
+// `Bytecode` omitted: still red there (under active development), per
+// interpreter.md §8's omit-don't-pin rule for matrix width.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.postfixLengthIncrementGrowsRefParamArrayField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { int[] arr; }
+
+            void growByOne(ref Holder h) {
+                h.arr.length++;
+                h.arr[h.arr.length - 1] = 7;
+            }
+
+            unittest {
+                Holder h;
+                growByOne(h);
+                assert(h.arr.length == 1);
+                assert(h.arr[0] == 7);
+            }
+        });
+    }
+}

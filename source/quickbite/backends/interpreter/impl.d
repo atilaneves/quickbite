@@ -5341,9 +5341,18 @@ private struct Walker {
                 ? (*current)[index]
                 : defaultValue(arrayElementType(variable.type));
 
-        locals[variable] = Value.arrayValue(elements);
-        uninitializedLocals.remove(variable);
-        sliceAliases.remove(variable);
+        // Go through `writeLocation`, not a direct `locals[variable] = ...`:
+        // dmd's postfix `.length++`/`.length--` lowering binds a synthetic
+        // `ref` local (e.g. `ref int[] __arraylength3 = h.arr;`) to the real
+        // array-length target and resizes through that alias, so `variable`
+        // here can itself be a struct-field/array-element alias source
+        // recorded by `recordStructFieldAlias`/`recordArrayElementAlias`.
+        // Writing `locals[variable]` directly (the previous code) updated
+        // only the synthetic alias local and silently dropped the grown
+        // array on the caller's aliased struct field; `writeLocation`'s
+        // `VarExp` branch runs the same write-through-alias propagation as
+        // every other assignment target.
+        writeLocation(var, Value.arrayValue(elements));
         return lengthValue;
     }
 
