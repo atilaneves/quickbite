@@ -2205,6 +2205,32 @@ interpreter-wide single-layout-authority consolidation: byte sizes, field
 offsets, and struct and class field lists, plus static-array lengths, now
 all flow through `layout.d`.
 
+Progress 2026-07-13 (static-array length authority reaches the FFI
+marshaller): the previous note's "static-array lengths" consolidation
+covered `impl.d` only (commit c0748396); this extends it to
+`ffi_marshal.d` -- this plan's Track B (the interpreter's
+materialize/reify) -- which had two remaining hand-rolled
+`cast(size_t) staticArray.dim.toInteger` reads, in the `Tsarray` marshal
+arm and in `unmarshalStaticArray`. Both now call
+`layout.staticArrayLength(staticArray)` instead, with a local
+`import quickbite.backends.interpreter.layout: staticArrayLength, ...;`
+added at each site alongside the existing `typeByteSize` import.
+`layout.staticArrayLength` is therefore now the single static-array
+element-count authority across the whole interpreter package (`impl.d`
+and `ffi_marshal.d`). Behavior-preserving: for a valid (non-negative)
+static-array dimension, `dim.toInteger` and `dim.toUInteger` yield
+identical `size_t` bits, so this is a pure rename of the read, not a
+behavior change. The `index * elementSize` / `new ubyte[](length *
+elementSize)` element walks at both sites are deliberately left alone --
+out of scope for this commit. No test was added or modified. Focused
+run: `bin/ut -s ut.backends.interpreter ut.backends.runner.rt.cstdlib
+ut.backends.runner.rt.dependency_image ut.backends.runner.ct.expressions
+ut.backends.evaluator.eval` -- 746 run, 0 failed, 5/5 failing as expected
+(the same pre-existing expected failures as prior progress notes). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff. No §9.10 shim was retired, and no new guest call site
+was added.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

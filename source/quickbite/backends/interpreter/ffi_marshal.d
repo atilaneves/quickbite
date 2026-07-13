@@ -738,12 +738,12 @@ private void marshalArgument(
             // Same consolidation as the Tstruct arm above, for a static
             // array's inline elements.
             import dmd.mtype: TypeSArray;
-            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
             import quickbite.backends.interpreter.native_array: NativeArray;
 
             auto staticArray = cast(TypeSArray) type;
             auto elementType = staticArray.next.toBasetype;
-            const length = cast(size_t) staticArray.dim.toInteger;
+            const length = staticArrayLength(staticArray);
 
             // Same fail-fast restoration as the Tstruct arm above:
             // `NativeArray.borrow` fabricates its extent from
@@ -1129,7 +1129,7 @@ private imported!"quickbite.lang".Value unmarshalStaticArray(
 ) {
     import quickbite.lang: Value;
     import dmd.mtype: TypeSArray;
-    import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
     import quickbite.backends.interpreter.native_array: NativeArray;
 
     // Routed through the item 7 container handle rather than a hand-rolled
@@ -1139,7 +1139,7 @@ private imported!"quickbite.lang".Value unmarshalStaticArray(
     // the recursive unmarshal.
     auto staticArray = cast(TypeSArray) type;
     auto elementType = staticArray.next.toBasetype;
-    const length = cast(size_t) staticArray.dim.toInteger;
+    const length = staticArrayLength(staticArray);
 
     // `NativeArray.borrow` fabricates its extent from `elementType`/`length`
     // rather than sub-slicing `buffer`, so a too-short `buffer` would
