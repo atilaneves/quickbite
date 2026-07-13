@@ -5121,15 +5121,65 @@ field-granular void-initialization semantics on this path. Verification:
 focused Bytecode row, `ninja bin/ut`, and `bin/ut --random` passed (seed
 `720749549`).
 
-`struct.staticArrayCopyRunsPostblitAndDtors` promoted to `Bytecode`,
-2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+`staticArrayCopyRunsPostblitAndDtors` promoted to `Bytecode`, 2026-07-10:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The focused Bytecode row passed on its first candidate run, so no
+production change was needed. The fixture copies a two-element static array of
+structs, checks that each element's postblit runs once, and confirms that both
+source and copy elements run their destructors at scope exit. This is a stale
+coverage gap after the existing static-array copy, postblit, and destructor
+lowering. Verification: focused Bytecode row, `ninja bin/ut`, and
+`bin/ut --random` passed (seed `3793348702`).
+
+`dynamicArrayTruthinessControlsEnforceFallback` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
 compile-time fixture. The focused Bytecode row passed on its first candidate
-run, so no production change was needed. The fixture copies a two-element
-static array of structs, checks that each element's postblit runs once, and
-confirms that source and copy elements both run their destructors at scope
-exit. This is a stale coverage gap after the existing static-array copy,
-postblit, and destructor lowering. Verification: focused Bytecode row,
-`ninja bin/ut`, and `bin/ut --random` passed (seed `2192800721`).
+run, so no production change was needed. The fixture verifies null and
+zero-length dynamic arrays are false in `if`, `!`, and conditional-expression
+contexts, while a non-empty array is true. This is a stale coverage gap after
+the existing dynamic-array length and truthiness lowering. Verification:
+focused Bytecode row, `ninja bin/ut`, and `bin/ut --random` passed (seed
+`3227994507`).
+
+`grainBitsBoolWritesScalar` promoted to `Bytecode`, 2026-07-10: pre-approved
+promotion of the existing direct-SystemLinker-backed compile-time fixture. The
+first Bytecode run was red with `Unsupported ref argument in bytecode core:
+reader`: `reader` is a struct local passed as the template's `ref C` argument,
+but ref-argument lowering recognized only scalar and dynamic-array locals.
+The minimal fix reuses the existing struct-base lookup, allowing a struct
+lvalue's inline frame offset to be passed to the normal ref copy-in/write-back
+path. No fixture body changed. The fixture verifies a ref struct receiver
+writes a `uint` temporary that is converted back through a ref `bool` argument.
+Verification: focused red then green and `ninja bin/ut` passed. The required
+`bin/ut --random` run (seed `4122028987`) instead found the pre-existing
+`pointer.sliceAssignmentWritesArrayStorage.Bytecode` diagnostic row failing
+because it did not throw. The same focused failure reproduced with this rung's
+struct-ref lookup temporarily removed, so it is unrelated and remains outside
+this no-pointer-slice commit.
+
+`struct.tupleofAssignmentCopiesFields` promoted to `Bytecode`, 2026-07-10:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The first Bytecode run was red with `Unsupported expression in
+bytecode core: AliasSeq!(target.head = source.head, target.tail = source.tail)`:
+DMD lowers this `.tupleof` assignment to a `TupleExp` containing the two
+already-supported scalar field assignments. The minimal compiler support runs
+the optional tuple side-effect expression, then each tuple element in order,
+returning the final element's operand. No fixture body changed. This covers
+the generic sequence form while relying on the existing field write path for
+the actual copies. Verification: focused red then green, `ninja bin/ut`, and
+`bin/ut --random` passed (seed `1010252269`). The known unrelated pointer-slice
+diagnostic row is left unchanged.
+
+`pointer.indexAssignmentWritesArrayStorage` promoted to `Bytecode`,
+2026-07-10: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The first Bytecode candidate run was red (`'\0' != 'x'`).
+The constructor correctly retained its `char*` field and emitted the pointer
+store, but materialising its static-array slice argument made an independent
+VM heap copy. The minimal call-argument lowering now passes a descriptor with
+the frame address and element count; general static-array materialisation stays
+copying so result bytes can outlive the VM stack. No fixture body changed.
+Verification: focused red then green, `ninja bin/ut`, and `bin/ut --random`
+passed (seed `4022505703`).
 
 `classReferencePassedByValueMutatesObject` promoted to `Bytecode`,
 2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
@@ -5151,17 +5201,6 @@ order, returning the final element value; each element is already an ordinary
 supported assignment. This does not add tuple representation, generic tuple
 operations, or formatter support. Verification: focused red then green;
 `ninja bin/ut` and `bin/ut --random` passed (seed `3349317244`).
-
-`struct.tupleofAssignmentCopiesFields` promoted to `Bytecode`, 2026-07-13:
-pre-approved promotion of the existing direct-SystemLinker-backed compile-time
-fixture. The dependency-free fixture lowers `target.tupleof = source.tupleof`
-to the same `TupleExp` sequence of per-field assignments covered by the
-previous tuple-expression slice. The focused Bytecode row passed unchanged, so
-no production work was needed. This records stale coverage of the existing
-tuple-expression and scalar field-assignment paths; it does not add tuple
-representation, generic tuple operations, or formatter support. Verification:
-focused Bytecode row, `ninja bin/ut`, and `bin/ut --random` passed (seed
-`1328625760`).
 
 `pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible` promoted
 to `Bytecode`, 2026-07-13: pre-approved promotion of the existing direct
@@ -5191,3 +5230,8 @@ including taking the address of the inline static array and writing its slice
 through the derived pointer. The stale Bytecode-only expected-diagnostic block
 was removed; no production change was needed. Verification: focused Bytecode
 row, `ninja bin/ut`, and `bin/ut --random`.
+
+Merge resolution, 2026-07-13: retained the independently landed July 10
+Bytecode promotions and their implementation notes alongside this branch's
+later promotions. The duplicate static-array-copy ledger entry is represented
+once by the landed entry; no behavior was dropped.

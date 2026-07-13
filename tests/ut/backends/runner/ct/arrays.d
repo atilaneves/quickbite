@@ -1437,7 +1437,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.indexAssignmentWritesArrayStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
