@@ -2970,6 +2970,10 @@ private struct Compiler {
         // inline block as a scalar slot.
         _staticArrayLocals[variable] = offset;
 
+        if (variable._init !is null &&
+            variable._init.isVoidInitializer !is null)
+            return;
+
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
         if (initializer is null)

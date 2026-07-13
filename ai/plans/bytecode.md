@@ -5243,3 +5243,15 @@ postblit/destructor handling. Bytecode is removed from this matrix row until
 that lifetime path is safe under randomized suite ordering. No production
 change is included; compiled-oracle coverage remains on Ctfe, Interpreter,
 SystemLinker, and LLVMJit.
+
+`pointer.indexAssignmentWritesVoidInitialisedArray` promoted to `Bytecode`,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The fixture writes `p[0]` through a pointer derived from
+a `char[8] = void` local, then reads the written element. The initial Bytecode
+run was red with `Unsupported initializer in bytecode core: tmp`: DMD exposes
+this initializer as `VoidInitializer`, before the static-array
+`ExpInitializer` path. The narrow compiler change allocates and tracks the
+inline static-array slot, then leaves a `VoidInitializer` unmaterialised. It
+does not change static-array copies, postblits, destructors, or lifetime
+handling. Verification: focused red then green; `ninja bin/ut`; and
+`bin/ut --random` (seed `4201158653`). Commit: pending.
