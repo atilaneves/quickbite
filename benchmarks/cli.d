@@ -17,6 +17,7 @@ enum size_t defaultWarmup = 1;
 enum size_t defaultRuns = 9;
 public immutable string[] defaultBackendNames = [
     "ctfe",
+    "bytecode",
     "interpreter",
     "system-linker",
     "llvmjit",

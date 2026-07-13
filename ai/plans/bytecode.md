@@ -5269,3 +5269,7 @@ pointer. This preserves nonempty copies and their existing overlap and length
 diagnostics. It does not add writable string views, general string mutation,
 or static-array lifetime work. Verification: focused red then green; `ninja
 bin/ut`; and `bin/ut --random` passed (seed `260515522`).
+
+Benchmark integration, 2026-07-13: added `Bytecode` to the benchmark runner
+registry and the default backend selection, so the benchmark binary now times
+the bytecode backend for every default fixture and `--dub` package run.
