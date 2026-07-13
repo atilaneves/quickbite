@@ -4,7 +4,7 @@
 // generated code meets a matching DMD druntime/extern(D) ABI, and writes the
 // result frame to the results file. See bench-exec/run_wire.d and
 // ai/spikes/ldc-eh/FINDINGS.md for why this cannot happen in the LDC host.
-import run_wire: RunRequest, UnitTestSymbol, WireResult,
+import run_wire: RunKind, RunRequest, UnitTestSymbol, WireResult,
     decodeRequest, encodeResults, encodeError;
 
 int main(string[] args) {
@@ -30,7 +30,6 @@ int main(string[] args) {
 }
 
 private WireResult[] runRequest(in RunRequest request) {
-    import core.runtime: Runtime;
     import core.sys.posix.dlfcn: dlopen, RTLD_GLOBAL, RTLD_NOW;
     import std.string: toStringz;
 
@@ -40,6 +39,17 @@ private WireResult[] runRequest(in RunRequest request) {
     foreach (image; request.depImages)
         if (dlopen(image.toStringz, RTLD_NOW | RTLD_GLOBAL) is null)
             throw new Exception("failed to load dependency image: " ~ image);
+
+    final switch (request.kind) with (RunKind) {
+    case sharedLibrary:
+        return runSharedLibrary(request);
+    case orcObjects:
+        return runOrcObjects(request);
+    }
+}
+
+private WireResult[] runSharedLibrary(in RunRequest request) {
+    import core.runtime: Runtime;
 
     // Runtime.loadLibrary registers the library with druntime (module ctors,
     // GC ranges) so the unittests run against a fully set-up runtime, exactly
@@ -60,6 +70,20 @@ private WireResult[] runRequest(in RunRequest request) {
     WireResult[] results;
     foreach (test; request.tests)
         results ~= runUnitTest(library, test);
+    return results;
+}
+
+private WireResult[] runOrcObjects(in RunRequest request) {
+    import orc.loader: createJit, runSymbol;
+
+    // The executor is one-shot. Keep JIT mappings alive until process exit,
+    // rather than disposing them while druntime may retain fixture metadata.
+    auto jit = createJit(request.objectFiles, request.archives);
+    WireResult[] results;
+    foreach (test; request.tests) {
+        const run = runSymbol(jit, test.mangled);
+        results ~= WireResult(run.passed, test.name, test.location, run.message);
+    }
     return results;
 }
 

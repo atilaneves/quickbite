@@ -39,7 +39,8 @@ public class LLVMJit:
                 staticLibraries(linkFiles),
             ),
         );
-        loadDependencyImages(_inputs.dependencyImages);
+        version (LDC) {}
+        else loadDependencyImages(_inputs.dependencyImages);
     }
 
     public this(
@@ -63,7 +64,8 @@ public class LLVMJit:
                 dubPackage,
             ),
         );
-        loadDependencyImages(_inputs.dependencyImages);
+        version (LDC) {}
+        else loadDependencyImages(_inputs.dependencyImages);
     }
 
     public override TestResult[] runTests(Module module_) {
@@ -71,10 +73,15 @@ public class LLVMJit:
     }
 
     public override TestResult[] runTests(Module[] modules) {
-        return runTestsInChild(modules, _inputs);
+        version (LDC)
+            return runTestsViaExecutor(modules, _inputs);
+        else
+            return runTestsInChild(modules, _inputs);
     }
 
     public override EvalResult eval(FuncDeclaration function_) {
+        version (LDC)
+            throw new Exception("LLVMJit.eval is unavailable under the LDC build");
         return evalInChild(function_, _inputs);
     }
 }
@@ -354,6 +361,63 @@ private void loadDependencyImage(in string dependencyImage) {
     }
 }
 
+// The LDC host emits DMD objects but cannot execute them in-process. Hand the
+// objects, cold dependency images, archive paths, and discovered symbols to
+// the DMD-built executor, which performs the ORC link and test calls.
+version (LDC)
+private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
+    imported!"dmd.dmodule".Module[] modules,
+    in LLVMJitInputs inputs,
+) {
+    import quickbite.backends.runner: TestResult;
+    import quickbite.backends.native.run_executor: runExecutor;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
+    import run_wire:
+        RunKind, RunRequest, UnitTestSymbol, decodeResults, encodeRequest;
+    import dmd.mangle: mangleExact;
+    import core.sys.posix.unistd: getpid;
+    import std.conv: text;
+    import std.file: mkdirRecurse, read, rmdirRecurse, tempDir, write;
+    import std.path: buildPath;
+    import std.string: fromStringz;
+
+    const index = _jitCounter++;
+    const dir = buildPath(tempDir, text("quickbite_jit_", getpid, "_", index));
+    mkdirRecurse(dir);
+    // Unlike the in-process path, the executor reads these files after this
+    // function has emitted them, so retain the directory through its reply.
+    scope(exit) rmdirRecurse(dir);
+    // RunRequest owns mutable arrays while its encoder walks them.
+    auto objectFiles = emitObjects(modules, dir, inputs);
+
+    UnitTestSymbol[] symbols;
+    foreach (module_; modules)
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            symbols ~= UnitTestSymbol(
+                mangleExact(unitTest).fromStringz.idup,
+                unitTest.ident.toChars.fromStringz.idup,
+                unitTest.loc.toChars.fromStringz.idup,
+            );
+        });
+
+    const requestFile = buildPath(dir, "request.bin");
+    const resultsFile = buildPath(dir, "results.bin");
+    write(requestFile, encodeRequest(RunRequest(
+        RunKind.orcObjects,
+        "",
+        inputs.dependencyImages.dup,
+        objectFiles,
+        inputs.staticLibraries.dup,
+        symbols,
+    )));
+    runExecutor(requestFile, resultsFile);
+
+    TestResult[] cases;
+    foreach (result; decodeResults(cast(ubyte[]) read(resultsFile)))
+        cases ~= TestResult(result.passed, result.name, result.location, result.message);
+    return cases;
+}
+
 // Emit the objects (shared codegen path, child emits, no link) and hand them
 // to the frontend-free ORC loader (orc.loader), which stands up an LLJIT with
 // them all added to the main JITDylib, plus a process-symbol generator so
@@ -362,10 +426,6 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
     imported!"dmd.dmodule".Module[] modules,
     in LLVMJitInputs inputs,
 ) {
-    import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForBackend;
-    import quickbite.backends.native.system_linker: DubPackage;
-    import quickbite.frontend.compiler: FrontendFlags;
-    import quickbite.frontend.compiler: withCompilerLock;
     import orc.loader: createJit;
     import core.sys.posix.unistd: getpid;
     import std.conv: text;
@@ -381,9 +441,23 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
     // the files can go as soon as it has.
     scope(exit) rmdirRecurse(dir);
 
-    string[] objPaths;
+    const objPaths = emitObjects(modules, dir, inputs);
+
+    return createJit(objPaths, inputs.staticLibraries);
+}
+
+private string[] emitObjects(
+    imported!"dmd.dmodule".Module[] modules,
+    in string dir,
+    in LLVMJitInputs inputs,
+) {
+    import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForBackend;
+    import quickbite.backends.native.system_linker: DubPackage;
+    import quickbite.frontend.compiler: FrontendFlags, withCompilerLock;
+
+    string[] objectFiles;
     withCompilerLock(() {
-        objPaths = emitObjectFilesForBackend(
+        objectFiles = emitObjectFilesForBackend(
             modules,
             dir,
             CodegenInputs(
@@ -393,8 +467,7 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
             ),
         );
     });
-
-    return createJit(objPaths, inputs.staticLibraries);
+    return objectFiles;
 }
 
 private imported!"quickbite.backends.runner".TestResult runUnitTest(

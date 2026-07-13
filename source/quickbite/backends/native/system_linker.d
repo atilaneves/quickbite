@@ -212,7 +212,8 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
 ) {
     import quickbite.backends.runner: TestResult;
     import quickbite.frontend.util: foreachUnitTestDeclaration;
-    import run_wire: RunRequest, UnitTestSymbol, encodeRequest, decodeResults;
+    import run_wire:
+        RunKind, RunRequest, UnitTestSymbol, encodeRequest, decodeResults;
     import dmd.mangle: mangleExact;
     import std.file: read, rmdirRecurse, write;
     import std.path: buildPath;
@@ -234,60 +235,21 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
     const requestFile = buildPath(built.dir, "request.bin");
     const resultsFile = buildPath(built.dir, "results.bin");
     write(requestFile, encodeRequest(RunRequest(
+        RunKind.sharedLibrary,
         built.libPath,
         sharedLibrariesOf(inputs.linkFiles),
+        [],
+        [],
         symbols,
     )));
 
+    import quickbite.backends.native.run_executor: runExecutor;
     runExecutor(requestFile, resultsFile);
 
     TestResult[] cases;
     foreach (result; decodeResults(cast(ubyte[]) read(resultsFile)))
         cases ~= TestResult(result.passed, result.name, result.location, result.message);
     return cases;
-}
-
-version (LDC)
-private void runExecutor(in string requestFile, in string resultsFile) {
-    import std.conv: text;
-    import std.process: spawnProcess, wait;
-    import std.stdio: File, stdin;
-
-    // The executor runs the dub package's unittest bodies, which print their own
-    // diagnostics (a fixture's `writeln`s, dscanner's "Unittest for X passed.")
-    // once per warmup/timed iteration across every fixture and backend - hundreds
-    // of lines that bury the result tables. We benchmark the package, we don't
-    // report its test output, so discard both of the executor's streams. Results
-    // travel back over the results file, never the streams; a fixture that
-    // crashes the process still trips the non-zero exit check below.
-    auto devNull = File("/dev/null", "w");
-    auto pid = spawnProcess(
-        [executorPath, requestFile, resultsFile],
-        stdin,
-        devNull,
-        devNull,
-    );
-    const status = wait(pid);
-    if (status != 0)
-        throw new Exception(text(
-            "run executor exited with status ", status,
-            " (a fixture may have crashed the process)",
-        ));
-}
-
-version (LDC)
-private string executorPath() {
-    import std.file: exists, thisExePath;
-    import std.path: buildPath, dirName;
-
-    // bin/bench.sh builds the DMD executor next to bin/bench.
-    const path = buildPath(thisExePath.dirName, "bench-exec");
-    if (!path.exists)
-        throw new Exception(
-            "run executor not found at " ~ path
-            ~ " (build it with `dub build :bench-exec`)",
-        );
-    return path;
 }
 
 version (LDC)

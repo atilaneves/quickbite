@@ -19,9 +19,17 @@ public struct UnitTestSymbol {
     public string location;  // source location
 }
 
+public enum RunKind: ubyte {
+    sharedLibrary,
+    orcObjects,
+}
+
 public struct RunRequest {
+    public RunKind kind;
     public string libPath;      // the linked DMD-codegen .so to load and run
     public string[] depImages;  // dependency images to dlopen RTLD_GLOBAL first
+    public string[] objectFiles;
+    public string[] archives;
     public UnitTestSymbol[] tests;
 }
 
@@ -36,10 +44,17 @@ public struct WireResult {
 
 public ubyte[] encodeRequest(in RunRequest request) @safe pure nothrow {
     ubyte[] bytes;
+    bytes ~= ubyte(request.kind);
     bytes.putString(request.libPath);
     bytes.putSizeT(request.depImages.length);
     foreach (image; request.depImages)
         bytes.putString(image);
+    bytes.putSizeT(request.objectFiles.length);
+    foreach (objectFile; request.objectFiles)
+        bytes.putString(objectFile);
+    bytes.putSizeT(request.archives.length);
+    foreach (archive; request.archives)
+        bytes.putString(archive);
     bytes.putSizeT(request.tests.length);
     foreach (test; request.tests) {
         bytes.putString(test.mangled);
@@ -52,10 +67,17 @@ public ubyte[] encodeRequest(in RunRequest request) @safe pure nothrow {
 public RunRequest decodeRequest(in ubyte[] bytes) @safe pure {
     size_t pos;
     RunRequest request;
+    request.kind = cast(RunKind) bytes.getByte(pos);
     request.libPath = bytes.getString(pos);
     const imageCount = bytes.getSizeT(pos);
     foreach (_; 0 .. imageCount)
         request.depImages ~= bytes.getString(pos);
+    const objectFileCount = bytes.getSizeT(pos);
+    foreach (_; 0 .. objectFileCount)
+        request.objectFiles ~= bytes.getString(pos);
+    const archiveCount = bytes.getSizeT(pos);
+    foreach (_; 0 .. archiveCount)
+        request.archives ~= bytes.getString(pos);
     const testCount = bytes.getSizeT(pos);
     foreach (_; 0 .. testCount)
         request.tests ~= UnitTestSymbol(

@@ -16,19 +16,20 @@ subPackage {
 // unittests in-process (extern(D) ABI divergence, ai/spikes/ldc-eh/FINDINGS.md),
 // so under the LDC build SystemLinker hands the linked `.so` + symbol names to
 // this tiny standalone executable, which dlopens and runs them across a process
-// boundary. It deliberately imports nothing from the quickbite/dmd packages, so
-// as a subPackage with its own sourcePaths it builds without the dmd frontend.
+// boundary. Its ORC mode imports only the frontend-free `orc` package, so as a
+// subPackage with its own sourcePaths it builds without the dmd frontend.
 // Build it with DMD so its druntime matches the DMD-codegen'd `.so`.
 subPackage {
     name "bench-exec"
     targetType "executable"
     targetName "bench-exec"
     targetPath "bin"
-    sourcePaths "bench-exec"
-    importPaths "bench-exec"
+    sourcePaths "bench-exec" "orc"
+    importPaths "bench-exec" "."
     // Shared druntime so core.runtime.Runtime.loadLibrary can load the
     // generated `.so`, matching how SystemLinker links it.
     dflags "-defaultlib=libphobos2.so"
+    libs "LLVM" platform="linux"
 }
 
 configuration "unittest" {
@@ -117,8 +118,8 @@ configuration "benchmark" {
 // native tests on an LDC host (ai/spikes/ldc-eh/FINDINGS.md). The only
 // DMD-only flag swapped out is `-defaultlib=libphobos2.so`; LDC links the
 // shared default libraries with `-link-defaultlib-shared`. Native post-parse
-// backends (system-linker, llvm-jit) are unavailable under this build until
-// the DMD run executor lands; the cli refuses them with a clear message.
+// backends run generated code in the DMD-built executor, keeping the LDC host
+// on the frontend side of the process boundary.
 configuration "benchmark-ldc" {
     targetType "executable"
     targetName "bench"

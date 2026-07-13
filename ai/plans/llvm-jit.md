@@ -1400,3 +1400,16 @@ and archive-import-path classifiers now share `native/link_files.d`; an empty
 package root classifies no archive paths for both native backends. The approved
 pipe regression was red before error propagation and both approved focused
 tests are green afterwards.
+
+## SystemLinker-peer parity Slice 3 — `bench-exec` ORC mode + LDC bench
+
+**Progress (2026-07-13).** Added the ORC object request mode to the shared
+executor wire protocol. Under LDC, LLVMJit now emits objects in the host and
+sends them, static archives, dependency images, and discovered unittest symbols
+to the DMD-built executor; that executor loads images before creating its ORC
+JIT and returns the normal result frame. Dependency images are no longer
+`dlopen`'d in the LDC host. The executor spawn helper is shared by both native
+backends; `llvmjit` is restored to LDC benchmark defaults and explicit
+selection. `bench-exec` now builds the frontend-free `orc` package and links
+LLVM. DMD `ninja bin/ut` passed. The optimized LDC benchmark build is in
+progress; complete the three Slice-3 benchmark commands before the PR.
