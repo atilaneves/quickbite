@@ -9,7 +9,7 @@ import std.algorithm.searching: canFind;
 // std.concurrency), which executes `thisInfo.ident = Tid(new MessageBox)`.
 // MessageBox is a private phobos class in a non-root module, so dmd never
 // ran semantic3 on its constructor; its fbody is a raw parse tree with
-// null expression types (ai/plans/bench-dub-corpus.md, fearless).
+// null expression types. This was distilled from fearless.
 enum thisTidSource = q{
     unittest {
         import std.concurrency: thisTid;

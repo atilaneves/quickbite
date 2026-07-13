@@ -1437,7 +1437,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.indexAssignmentWritesArrayStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1467,8 +1467,8 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 }
 
 // A slice assignment through a D pointer must write the pointed-at array
-// storage, not sever the aliasing (ai/plans/bench-dub-corpus.md, cerealed
-// mode 2: the silently lost write).
+// storage, not sever the aliasing. This is the silently lost write distilled
+// from cerealed.
 enum pointerSliceAssignSource = q{
     unittest {
         char[8] tmp;
@@ -1480,7 +1480,7 @@ enum pointerSliceAssignSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.sliceAssignmentWritesArrayStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1520,19 +1520,8 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// Bytecode cannot take the address of a static array yet; pin its
-// structured diagnostic rather than dropping it from the matrix.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("pointer.sliceAssignmentWritesArrayStorage." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(pointerSliceAssignSource)
-            .shouldThrowWithMessage("Unsupported expression in bytecode core: & tmp");
-    }
-}
-
-// An indexed write through a local pointer into a `= void` static array
-// (ai/plans/bench-dub-corpus.md, cerealed mode 3 sibling finding).
+// An indexed write through a local pointer into a `= void` static array is a
+// sibling of the pointer-slice defect distilled from cerealed.
 enum pointerIndexAssignVoidInitSource = q{
     unittest {
         char[8] tmp = void;
@@ -1544,22 +1533,11 @@ enum pointerIndexAssignVoidInitSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.indexAssignmentWritesVoidInitialisedArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(pointerIndexAssignVoidInitSource);
-    }
-}
-
-// Bytecode cannot run `= void` initializers yet; pin its structured
-// diagnostic rather than dropping it from the matrix.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("pointer.indexAssignmentWritesVoidInitialisedArray." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(pointerIndexAssignVoidInitSource)
-            .shouldThrowWithMessage("Unsupported initializer in bytecode core: tmp");
     }
 }
 
@@ -1589,7 +1567,7 @@ enum pointerEmptyNullSliceAssignSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.emptySliceAssignmentThroughNullPointerIsNoOp." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

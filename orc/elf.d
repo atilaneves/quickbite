@@ -11,21 +11,42 @@ public bool normalizeDuplicateUndefinedGlobals(ubyte[] objectBytes) {
     const stringTable = elf.sectionBytes(symtab.link);
     const symbols = elf.symbols(symtab);
 
-    uint[uint] duplicateToCanonical;
-    uint[string] canonicalByName;
+    uint[string] firstGlobalByName;
+    uint[string] firstWeakByName;
     foreach (index, symbol; symbols) {
         if (symbol.sectionIndex != SectionIndex.undefined)
             continue;
-        if (symbol.binding != SymbolBinding.global)
+        if (symbol.binding != SymbolBinding.global
+                && symbol.binding != SymbolBinding.weak)
             continue;
 
         const name = symbolName(stringTable, symbol.name);
         if (name.length == 0)
             continue;
-        if (auto canonical = name in canonicalByName)
-            duplicateToCanonical[cast(uint) index] = *canonical;
-        else
-            canonicalByName[name] = cast(uint) index;
+        if (symbol.binding == SymbolBinding.global) {
+            if (name !in firstGlobalByName)
+                firstGlobalByName[name] = cast(uint) index;
+        } else if (name !in firstWeakByName)
+            firstWeakByName[name] = cast(uint) index;
+    }
+
+    uint[uint] duplicateToCanonical;
+    foreach (index, symbol; symbols) {
+        if (symbol.sectionIndex != SectionIndex.undefined)
+            continue;
+        if (symbol.binding != SymbolBinding.global
+                && symbol.binding != SymbolBinding.weak)
+            continue;
+
+        const name = symbolName(stringTable, symbol.name);
+        if (name.length == 0)
+            continue;
+        const canonical = name in firstGlobalByName;
+        const canonicalIndex = canonical is null
+            ? *(name in firstWeakByName)
+            : *canonical;
+        if (index != canonicalIndex)
+            duplicateToCanonical[cast(uint) index] = canonicalIndex;
     }
 
     if (duplicateToCanonical.length == 0)
@@ -236,12 +257,15 @@ private struct Elf64 {
                 continue;
             if (found != uint.max)
                 throw new Exception(
-                    "ELF object has multiple SHT_SYMTAB sections",
+                    "ELF object has multiple " ~ sectionTypeName(type)
+                        ~ " sections",
                 );
             found = cast(uint) index;
         }
         if (found == uint.max)
-            throw new Exception("ELF object has no SHT_SYMTAB section");
+            throw new Exception(
+                "ELF object has no " ~ sectionTypeName(type) ~ " section",
+            );
         return found;
     }
 
@@ -361,6 +385,15 @@ private struct Elf64 {
     private void requireRange(in size_t offset, in size_t size) const @safe {
         if (offset > _bytes.length || size > _bytes.length - offset)
             throw new Exception("ELF section range is outside the object");
+    }
+}
+
+private string sectionTypeName(in SectionType type) @safe @nogc nothrow pure {
+    final switch (type) with (SectionType) {
+    case symtab:
+        return "SHT_SYMTAB";
+    case rela:
+        return "SHT_RELA";
     }
 }
 

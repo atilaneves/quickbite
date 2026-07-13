@@ -51,7 +51,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("struct.tupleofForeachRefReadsAndWritesFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -649,7 +649,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.templatedConstructorPreservesDynamicArrayField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -981,7 +981,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1286,7 +1286,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("struct.voidInitialisedFieldSliceAssignment." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1358,7 +1358,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // DMD lowers a `Tuple` construction's field assignment into a `TupleExp` in
 // expression position (per-field assignments). The interpreter evaluates the
 // prefix `e0` then each element in order.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.tupleConstructionFromLocals." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

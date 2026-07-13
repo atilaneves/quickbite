@@ -383,8 +383,8 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 }
 
 
-// cerealed's ScopeBuffer.put grows via realloc and slice-assigns through the
-// char* field (ai/plans/bench-dub-corpus.md, cerealed mode 1).
+// Distilled from cerealed's ScopeBuffer.put, which grows via realloc and
+// slice-assigns through the char* field.
 enum reallocSliceAssignSource = q{
     unittest {
         import core.stdc.stdlib: realloc, free;
@@ -624,7 +624,7 @@ enum strlenLocalBufferSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("strlen.localBuffer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

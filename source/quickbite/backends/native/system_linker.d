@@ -175,7 +175,7 @@ private BuiltLibrary buildSharedLibrary(
     in SystemLinkerInputs inputs,
 ) {
     import quickbite.backends.native.codegen:
-        CodegenInputs, emitObjectFilesForDubPackage, emitObjectFilesForLink;
+        CodegenInputs, emitObjectFilesForBackend;
     import quickbite.frontend.compiler: withCompilerLock;
     import quickbite.frontend.compiler: FrontendFlags;
     import core.atomic: atomicFetchAdd;
@@ -199,10 +199,9 @@ private BuiltLibrary buildSharedLibrary(
         auto codegenInputs = CodegenInputs(
             inputs.archiveImportPaths,
             FrontendFlags(inputs.frontendFlags.compilerArguments.dup),
+            inputs.dubPackage == DubPackage.yes,
         );
-        objPaths = inputs.dubPackage
-            ? emitObjectFilesForDubPackage(modules, dir, codegenInputs)
-            : emitObjectFilesForLink(modules, dir, codegenInputs);
+        objPaths = emitObjectFilesForBackend(modules, dir, codegenInputs);
     });
     linkSharedLibrary(objPaths, libPath, inputs.linkFiles);
 

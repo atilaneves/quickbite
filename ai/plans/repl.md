@@ -110,19 +110,14 @@ add display rendering to `backends/bytecode/**`.
   REPL feeds a codegen backend must be a semantically-analyzed module
   containing a callable function. The synthetic-function wrapping survives
   this redesign; what changes is what the module contains.
-- **`ai/plans/interfaces.md` governs the interface shape.** `Backend`
-  exposes a single execution primitive,
-  `EvalResult eval(FuncDeclaration)`, reporting failure as data
-  (`EvalResult` is a `SumType!(Value, EvalResult.Diagnostic)` today,
-  queried via `result.failed`/`result.diagnostic`; per
-  `ai/plans/value.md`, 2026-06-12, the success arm becomes the rendered
-  display string and `Value` leaves the contract); `eval(Cell)` is the
-  REPL dispatch adapter over it. The `Evaluator`/`Runner` split (display
-  results confined to interactive boundaries; `Runner` for native code is
-  dlsym + call) is **deferred**
-  until the VMs adopt a private execution-slot type — see
-  `ai/plans/interfaces.md`. The REPL session capability
-  (`createReplSession`) grows out of the `eval` primitive. The "dmd
+- **The live interfaces govern the shape.**
+  `source/quickbite/backends/evaluator.d` exposes the single execution
+  primitive `EvalResult eval(FuncDeclaration)`, with a rendered display
+  string on success and failure carried as data; `eval(Cell)` is the REPL
+  dispatch adapter. `source/quickbite/backends/runner.d` owns whole-module
+  unittest execution. `Backend` composes the two capabilities, while a
+  runner-only backend can implement `Runner` directly. The REPL session
+  capability (`createReplSession`) grows out of the eval primitive. The "dmd
   objects stay behind frontend boundaries" rule applies to VM-family
   backends; the dmd-codegen backend is inherently a dmd client.
 - **`ai/plans/dmd-backend.md` is a non-authoritative sketch.** Use it for
@@ -166,8 +161,8 @@ per-cell `#line` attribution, and per-cell delta modules.
 The frontend keeps what it is good at: classification (unchanged),
 transcript management, semantic analysis under the compiler lock, and
 synthesizing compilable modules. Backends gain a session object that owns
-cross-cell execution state. Shape (post-interfaces.md, deferred; exact
-names driven by tests). `submit` reports failure as data
+cross-cell execution state. The interface split is complete; exact session
+extensions remain driven by tests. `submit` reports failure as data
 (`EvalResult` — `result.failed` is the discriminator), consistent with
 the `Backend.eval` primitive; it does not throw on evaluation failure:
 
@@ -427,10 +422,9 @@ Dependencies are noted; order within independent slices is flexible.
    CTFE's global-mutation rejection is pinned. Verified with
    `ninja bin/ut`, `bin/ut`, and `bin/ut --random` (seed `3004154049`);
    T3 module constructors and native lifting remain pending.
-6. ~~**interfaces.md migration**~~ (done — single `eval` primitive,
-   failure-as-data; slices 1–3 in `PLAN.md`) — prerequisite for 7,
-   tracked in `ai/plans/interfaces.md`. The `Evaluator`/`Runner` split
-   is deferred and is not a prerequisite for backend-owned sessions.
+6. ~~**Evaluator/Runner migration**~~ (done — single `eval` primitive,
+   failure-as-data, and the capability split now live in
+   `source/quickbite/backends/evaluator.d` and `runner.d`).
 7. ~~**Backend-owned sessions**~~ (done in `repl-backend-sessions` —
    `Backend` now provides an overrideable replay-backed
    `createReplSession` default, pure backends run REPL cells through
@@ -484,9 +478,11 @@ per test.
 - `source/quickbite/frontend/cell.d` — EvalSession, classification,
   transcript synthesis; most of slices 1–5 land here.
 - `source/quickbite/repl.d` — Repl struct, diagnostics scrubbing.
-- `source/quickbite/backends/package.d` — interface to split per
-  `ai/plans/interfaces.md`.
-- `ai/plans/interfaces.md` — Evaluator/Runner split (prerequisite).
+- `source/quickbite/backends/evaluator.d` — evaluation result and REPL-session
+  contracts.
+- `source/quickbite/backends/runner.d` — whole-module unittest execution.
+- `source/quickbite/backends/package.d` — composition of evaluator and runner
+  capabilities for full backends.
 - `ai/plans/dmd-backend.md` — loading mechanics sketch
   (non-authoritative; its REPL slices are superseded by this plan).
 - `tests/ut/backends/api/repl.d` — behaviour matrix every change must

@@ -78,9 +78,10 @@ corpus, its observable behaviour is indistinguishable from the oracle's:
 `SystemLinker` (compiled, linked, executed native D) is the single
 behaviour oracle for every backend except `Ctfe`
 (`ai/plans/single-oracle.md`). Its behaviour — including exact message
-text — is definitive; a backend that disagrees with it is wrong. (Making
-compiled dmd the systematic arbiter is
-`ai/plans/dmd-compiled-fixture-sentinel.md`.)
+text — is definitive; a backend that disagrees with it is wrong. Current
+fixtures pin compiled-D expectations directly. Introduce a shared computed
+sentinel only when a concrete migrated fixture demonstrates that hand-pinned
+expectations are insufficient.
 
 `Ctfe` (`source/quickbite/backends/ctfe/dmd_ctfe.d`) is **not** an oracle.
 It is a convenient real-D fixture source — a fixture written against it

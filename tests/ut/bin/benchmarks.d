@@ -35,6 +35,22 @@ unittest {
     auto runners = makeRunners(BackendEnv());
 
     assert(("interpreter" in runners) !is null);
+    assert(("bytecode" in runners) !is null);
+}
+
+@("makeRunners.llvmjitReceivesDubPackage")
+unittest {
+    import quickbite.backends.native: DubPackage, LLVMJit;
+    import quickbite.frontend.compiler: FrontendFlags;
+
+    static assert(__traits(compiles,
+        new LLVMJit(
+            cast(const string[]) [],
+            cast(const string[]) [],
+            "",
+            FrontendFlags.init,
+            DubPackage.yes,
+        )));
 }
 
 @("defaultBenchmarkBackendsIncludeInterpreter")
@@ -43,6 +59,7 @@ unittest {
 
     defaultBackendNames.should == [
         "ctfe",
+        "bytecode",
         "interpreter",
         "system-linker",
         "llvmjit",
