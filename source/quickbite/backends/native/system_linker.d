@@ -46,6 +46,7 @@ public class SystemLinker:
         in DubPackage dubPackage = DubPackage.no,
     ) @safe {
         import quickbite.frontend.compiler: FrontendFlags;
+        import quickbite.backends.native.link_files: archiveImportPathsUnder;
 
         this(
             SystemLinkerInputs(
@@ -139,27 +140,6 @@ public struct SystemLinkerInputs {
     // no member pruning -- that apparatus is for the single-snippet path. See
     // emitObjectFilesForDubPackage.
     public DubPackage dubPackage;
-}
-
-// import paths under the package belong to the project under test and are
-// compiled fresh per run; the rest belong to dependencies, whose objects
-// come from the dub-built archives in linkFiles.
-private string[] archiveImportPathsUnder(in string[] importPaths, in string packageRoot) @safe {
-    import std.algorithm.iteration: filter, map;
-    import std.algorithm.searching: startsWith;
-    import std.array: array;
-    import std.path: absolutePath, buildNormalizedPath, dirSeparator;
-
-    const root = packageRoot.absolutePath.buildNormalizedPath;
-    bool underPackage(in string path) {
-        const normalised = path.absolutePath.buildNormalizedPath;
-        return normalised == root
-            || normalised.startsWith(root ~ dirSeparator);
-    }
-    return importPaths
-        .filter!(path => !underPackage(path))
-        .map!(path => path.idup)
-        .array;
 }
 
 // A codegen'd-and-linked shared library on disk. The caller owns dir, deleting
@@ -312,6 +292,7 @@ private string executorPath() {
 
 version (LDC)
 private string[] sharedLibrariesOf(in string[] linkFiles) @safe {
+    import quickbite.backends.native.link_files: isSharedLibraryPath;
     import std.algorithm.iteration: filter, map;
     import std.array: array;
 
@@ -362,16 +343,11 @@ private void linkSharedLibrary(
 }
 
 private bool allSharedLibraries(in string[] linkFiles) @safe pure {
+    import quickbite.backends.native.link_files: isSharedLibraryPath;
     foreach (linkFile; linkFiles)
         if (!linkFile.isSharedLibraryPath)
             return false;
     return true;
-}
-
-private bool isSharedLibraryPath(in string linkFile) @safe pure {
-    import std.string: endsWith;
-
-    return linkFile.endsWith(".so");
 }
 
 private void* loadSharedLibrary(in string libPath) {

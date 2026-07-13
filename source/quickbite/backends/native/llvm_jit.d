@@ -52,6 +52,7 @@ public class LLVMJit:
             imported!"quickbite.backends.native.system_linker".DubPackage.no,
     ) {
         import quickbite.frontend.compiler: FrontendFlags;
+        import quickbite.backends.native.link_files: archiveImportPathsUnder;
 
         this(
             LLVMJitInputs(
@@ -134,7 +135,7 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsInChild(
         if (got < 0) {
             if (errno == EINTR)
                 continue;
-            break;
+            throw new Exception("read from result pipe failed");
         }
         if (got == 0)
             break;
@@ -196,11 +197,12 @@ private void runChildAndReport(
 
         writeResults(fd, cases);
     } catch (Throwable throwable) {
-        // toString can itself throw and would unwind into the parent's frames;
-        // msg is a plain field, so report it and swallow any further failure.
+        string message;
         try
-            writeError(fd, throwable.msg);
-        catch (Throwable) {}
+            message = throwable.toString;
+        catch (Throwable)
+            message = throwable.msg;
+        writeError(fd, message);
     }
 }
 
@@ -243,7 +245,7 @@ private imported!"quickbite.backends.evaluator".EvalResult evalInChild(
         if (got < 0) {
             if (errno == EINTR)
                 continue;
-            break;
+            throw new Exception("read from result pipe failed");
         }
         if (got == 0)
             break;
@@ -284,9 +286,12 @@ private void runEvalChildAndReport(
         auto jit = jitForObjects([function_.getModule], inputs);
         writeEvalResult(fd, evalCompiledFunction(jit, function_));
     } catch (Throwable throwable) {
+        string message;
         try
-            writeError(fd, throwable.msg);
-        catch (Throwable) {}
+            message = throwable.toString;
+        catch (Throwable)
+            message = throwable.msg;
+        writeError(fd, message);
     }
 }
 
@@ -308,6 +313,7 @@ public struct LLVMJitInputs {
 }
 
 private string[] sharedLibraries(in string[] linkFiles) @safe pure {
+    import quickbite.backends.native.link_files: isSharedLibraryPath;
     import std.algorithm.iteration: filter, map;
     import std.array: array;
 
@@ -318,42 +324,13 @@ private string[] sharedLibraries(in string[] linkFiles) @safe pure {
 }
 
 private string[] staticLibraries(in string[] linkFiles) @safe pure {
+    import quickbite.backends.native.link_files: isSharedLibraryPath;
     import std.algorithm.iteration: filter, map;
     import std.array: array;
 
     return linkFiles
         .filter!(linkFile => !linkFile.isSharedLibraryPath)
         .map!(linkFile => linkFile.idup)
-        .array;
-}
-
-private bool isSharedLibraryPath(in string linkFile) @safe pure {
-    import std.string: endsWith;
-
-    return linkFile.endsWith(".so");
-}
-
-// import paths under the package belong to the project under test and are
-// compiled fresh per run; the rest belong to dependencies, whose code lives in
-// the cold dependency image loaded into the process.
-private string[] archiveImportPathsUnder(in string[] importPaths, in string packageRoot) @safe {
-    import std.algorithm.iteration: filter, map;
-    import std.algorithm.searching: startsWith;
-    import std.array: array;
-    import std.path: absolutePath, buildNormalizedPath, dirSeparator;
-
-    if (packageRoot.length == 0)
-        return [];
-
-    const root = packageRoot.absolutePath.buildNormalizedPath;
-    bool underPackage(in string path) {
-        const normalised = path.absolutePath.buildNormalizedPath;
-        return normalised == root
-            || normalised.startsWith(root ~ dirSeparator);
-    }
-    return importPaths
-        .filter!(path => !underPackage(path))
-        .map!(path => path.idup)
         .array;
 }
 
@@ -514,7 +491,7 @@ private void writeAll(int fd, scope const(void)[] data) {
         if (wrote < 0) {
             if (errno == EINTR)
                 continue;
-            return;
+            throw new Exception("write to result pipe failed");
         }
         written += wrote;
     }
@@ -595,6 +572,31 @@ private ubyte readByte(const(ubyte)[] data, ref size_t pos) {
     if (pos + 1 > data.length)
         throw new Exception("truncated result stream");
     return data[pos++];
+}
+
+@("jitPipe.writeFailureIsReportedNotSwallowed")
+unittest {
+    import quickbite.backends.runner: TestResult;
+    import core.sys.posix.signal: SIG_IGN, SIGPIPE, signal;
+    import core.sys.posix.unistd: close, pipe;
+    import ut;
+
+    int[2] fds;
+    pipe(fds).should == 0;
+    close(fds[0]);
+    signal(SIGPIPE, SIG_IGN);
+
+    writeResults(fds[1], [TestResult(true, "t", "loc", "")])
+        .shouldThrowWithMessage("write to result pipe failed");
+}
+
+@("archiveImportPathsUnder.emptyPackageRootClassifiesNothing")
+unittest {
+    import quickbite.backends.native.link_files: archiveImportPathsUnder;
+    import ut;
+
+    string[] expected;
+    archiveImportPathsUnder(["/somewhere/else/src"], "").should == expected;
 }
 
 private __gshared uint _jitCounter;

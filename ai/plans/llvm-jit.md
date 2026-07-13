@@ -1392,3 +1392,11 @@ hygiene: recorded the intentional no-dispose child lifetime, removed the
 unused string-pool release declaration, corrected the void target-init
 comment, documented the serial fork/lock contract, and made the JIT counter
 plain `__gshared` like the target-init flag. Standard gate green.
+
+**Progress (2026-07-13).** Completed items 1–2: result-pipe writes and reads
+now throw on non-EINTR errors, and child infrastructure frames use
+`Throwable.toString` with a guarded `msg` fallback. The static/shared-library
+and archive-import-path classifiers now share `native/link_files.d`; an empty
+package root classifies no archive paths for both native backends. The approved
+pipe regression was red before error propagation and both approved focused
+tests are green afterwards.
