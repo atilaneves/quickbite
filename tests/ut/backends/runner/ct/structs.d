@@ -51,7 +51,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("struct.tupleofForeachRefReadsAndWritesFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -649,7 +649,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.templatedConstructorPreservesDynamicArrayField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1286,7 +1286,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("struct.voidInitialisedFieldSliceAssignment." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -1502,7 +1502,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.defaultInitPreservesExplicitFieldInitializers." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

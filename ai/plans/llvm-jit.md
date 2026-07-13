@@ -1310,6 +1310,14 @@ static foreach (backend; AliasSeq!(Interpreter, LLVMJit)) {
 
 **Verify:** standard gate.
 
+**Progress (2026-07-13).** Promoted the first named set of uncommented
+SystemLinker-oracle rows: the three struct fixtures, pointer index assignment,
+explicit struct-field initialization, local-buffer `strlen`, file I/O, and the
+four adjacent parameter/control-flow diagnostics. All 11 new `LLVMJit` rows
+passed in a focused serial run. `rt/dependency_image.d` remains the next Slice
+E increment; it needs a mechanical conversion from its current
+Interpreter-specific fixture shape to an `Interpreter`/`LLVMJit` matrix.
+
 ## Slice F — diagnostics and hygiene
 
 **Work.**
