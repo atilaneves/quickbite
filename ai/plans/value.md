@@ -2363,7 +2363,11 @@ code, not defensive coverage a test doesn't demand. `locals[variable]` is
 never left to drift once a cell exists: each of the three hooks above
 writes the cell first and re-derives the `locals` entry from it, so it
 stays a genuine, synchronously-refreshed mirror, not a second source of
-truth. Every `Walker child` construction that duplicates `localPointers`/
+truth. (Retracted 2026-07-13: this was falsified by the cross-frame slice
+below, which lets the parent's `locals` mirror drift after a child's
+pointer write goes through the shared cell alone -- see that note's "What
+remains" for the corrected claim.) Every `Walker child` construction that
+duplicates `localPointers`/
 `localPointerIds` (there are seven such call sites in `impl.d`, not the
 four originally scoped -- `runFunctionCall`/`runFunction`/
 `runMemberFunction`/`runDestructor`/`writeRefReturningCallLocation`/
@@ -2393,7 +2397,9 @@ address-taken `native_scalar.isNativeScalarType` locals, nothing else
 now-deleted-in-name-only `floatBits`/`doubleBits` shim history are
 unchanged by this commit; this slice only narrows that entry's write-side
 gap (a byte-level WRITE through a differently-typed pointer now agrees
-with a direct read, closing the asymmetry the read-only shim left open).
+with a direct read for a SAME-WIDTH pointee, closing the asymmetry the
+read-only shim left open; a narrower pointee still threw, see the review-
+fix note below, and a wider pointee remains unhandled).
 `localPointerTarget` (the `*p` read helper used by
 `pointerTargetValue`/some call sites) still reads from `locals`, not the
 cell directly -- correct only because every write hook above keeps the
@@ -2645,6 +2651,15 @@ the earlier writeback removal -- the mirror is now provably dead for
 every read path a scalar cell can reach, not just the one the earlier
 note checked.
 
+(Retracted 2026-07-13: FALSE. Two more read paths that consult
+`scalarCells` were still live and mirror-only at the time of this note --
+`runPostIncrementExpression`'s `VarExp` arm (`i++`) and
+`localPointerTarget`/`writePointerTarget` (`(*p)++`, atomics). "Provably
+dead for every read path a scalar cell can reach" only held for the two
+arms this note and the direct-read arm actually checked; it did not hold
+for every arm. See the review-fix note below for what is now actually
+verified.)
+
 Focused runs, all green except the one known pre-existing failure:
 `ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
 `.Interpreter`/`.Ctfe`/`.SystemLinker`/`.LLVMJit` (4 run, 0 failed);
@@ -2654,6 +2669,144 @@ failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
 `bin/ut -s ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
 `sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
 ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
+(228 run, 0 failed). The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-13 (review fixes: cell invalidation on re-bind, two more
+stale mirror-only read/write arms, sub-word reinterpret-write no longer
+throws): a code review of the guest-level call site's four prior slices
+above found four real gaps; all four are fixed by this commit, each with
+its own red-then-green fixture in `tests/ut/backends/runner/ct/
+expressions.d`, scoped `Interpreter`/`SystemLinker` like the surrounding
+`pointer.*` fixtures.
+
+Finding 1 (cell not invalidated on re-bind): `runDeclarationExpression`
+and parameter binding wrote `locals[variable]` for a FRESH declaration/
+parameter instance without ever removing a stale inherited `scalarCells`
+entry for the same `VarDeclaration`. Recursion reuses the same AST
+`VarDeclaration` at every call depth, and `child.scalarCells =
+scalarCells.dup` hands a callee frame the caller's already-promoted cell;
+a loop body re-executes the same `DeclarationExp` every iteration and hits
+the same bug without recursion. Fixture `pointer.
+recursiveDeclarationDropsStaleScalarCell` (a depth-1 `int x = depth; int*
+p = &x;` recursion) and `pointer.loopRedeclaredLocalDropsStaleScalarCell`
+(the same shape in a two-iteration `foreach`) were both red on
+Interpreter, green on SystemLinker. Fix: `scalarCells.remove(variable)` at
+the top of `runDeclarationExpression` (covers every one of its several
+exit branches uniformly, since the whole function represents one binding
+event) and in `bindFunctionParameters`/`bindLazyFunctionParameter`, right
+before each writes `locals[parameter]`.
+
+Finding 2 (`i++` read the boxed mirror): `runPostIncrementExpression`'s
+`VarExp` arm did `variable in locals` directly, bypassing a promoted cell
+-- stale once a cross-frame pointer write refreshes only the cell.
+Fixture `pointer.postIncrementReadsPromotedScalarCell` (`i++` after a
+callee writes through `&i`) was red on Interpreter, green on SystemLinker.
+Fix: read via the new `readCelledLocal` helper (below) instead of the raw
+`locals` lookup.
+
+Finding 3 (`(*p)++`/atomics bypassed the cell): `localPointerTarget` and
+`writePointerTarget`'s local-pointer arm only ever read/wrote `locals`,
+never `scalarCells` -- the same class of bug as finding 2, for the
+pointer-deref path instead of the direct-`VarExp` path. This pair also
+backs the atomic hooks (`store`/`exchange`/`fetchAdd`/`fetchSub` via
+`readPointerTarget`) and `localPointerByteSlice`, so fixing the pair fixed
+those call sites too, with no separate fixture needed for them (per the
+brief: fix the shared root, add a red test only where one was specified).
+Fixture `pointer.
+dereferencedPointerPostIncrementUsesPromotedScalarCell` (`(*p)++` on a
+promoted `int` local) was red on Interpreter, green on SystemLinker. Fix:
+`localPointerTarget` now returns `readCelledLocal(*variable)`;
+`writePointerTarget`'s local-pointer arm now calls `writeCelledLocal`.
+
+Finding 5 (sub-word reinterpret-write threw instead of narrowing):
+`writeLocation`'s `PtrExp` cell arm called `writeScalar(pointeeType,
+cell.bytes, value)`, which requires `cell.bytes.length ==
+typeByteSize(pointeeType)` exactly and throws otherwise -- so `*cast(ubyte*)
+&myUint = b` (a narrower pointee) threw, where the read side
+(`reinterpretLocalPointerLoad`) already handled narrowing by slicing.
+Fixture `pointer.subWordReinterpretWriteThroughPointerWritesLowByte`
+(`ubyte* p = cast(ubyte*) &u; *p = oneByte;` on a `uint u`) was red on
+Interpreter (threw), green on SystemLinker. Fix: when the pointee is a
+NARROWER `native_scalar.isNativeScalarType` type, write into `cell.
+bytes[0 .. typeByteSize(pointeeType)]` and re-derive `locals[variable]`
+from the whole cell as before; when the pointee is not a native scalar
+type at all, OR is a WIDER native scalar than the cell (a pre-existing
+gap symmetric to `reinterpretLocalPointerLoad`'s own documented wider-read
+gap, not this call site's to fix), fall through to the plain `locals[
+*variable] = value;` write instead of throwing.
+
+Shared helpers: introduced `readCelledLocal(VarDeclaration)` (cell, then
+`locals`, then the type's default -- in that priority) and
+`writeCelledLocal(VarDeclaration, Value)` (write the cell if one exists
+and re-derive `locals` from it, else write `locals` directly), right after
+`promoteScalarCell`. Every arm that reads/writes a celled local at the
+variable's OWN storage type now routes through one of the two: the
+`runPointerExpression` deref-read, `localPointerTarget`,
+`runPostIncrementExpression`'s `VarExp` arm, `writePointerTarget`'s
+local-pointer arm, `writeLocation`'s `VarExp` arm, and
+`applyNativeWritebacks` (this last one was already correct before this
+commit; routing it through the shared helper was a pure simplification,
+no behaviour change). Two arms were deliberately NOT routed through
+either helper: the `VarExp` direct-read arm in `runExpression` keeps its
+own inline cell/`locals` check because it has a further data-segment/
+`extern __gshared` fallback `readCelledLocal` does not (and should not)
+replicate; `writeLocation`'s `PtrExp` arm keeps its own bespoke logic
+because it writes at the POINTEE's type, not the variable's own type --
+`writeCelledLocal`'s single-type contract does not fit a reinterpret
+write.
+
+What is verified cell-aware after this commit (precise, not a general
+claim): every read of a celled `VarDeclaration` reachable through
+`runExpression`'s `VarExp` arm, `runPointerExpression`'s `PtrExp` deref,
+`localPointerTarget` (and therefore `pointerTargetValue`,
+`readPointerTarget`, the atomic `load`/`exchange`/`fetchAdd`/`fetchSub`
+hooks, and `localPointerByteSlice`), and `runPostIncrementExpression`'s
+`VarExp` arm. Every write of a celled `VarDeclaration` reachable through
+`writeLocation`'s `VarExp` and `PtrExp` arms (the latter for same-width or
+narrower native-scalar pointees only), `writePointerTarget`'s
+local-pointer arm (and therefore the same atomic/`(*p)++`/`+=` call
+sites), and `applyNativeWritebacks`. Every fresh binding of a
+`VarDeclaration` (`runDeclarationExpression`, `bindFunctionParameters`,
+`bindLazyFunctionParameter`) now drops any stale inherited cell first.
+
+What is STILL not verified/migrated, stated precisely so this is not
+over-claimed the way the two retracted notes above were:
+
+- `writeLocation`'s `PtrExp` arm's own fallback: when a promoted cell
+  exists for `variable` but the pointee is not a native scalar type, or is
+  a WIDER native scalar than the cell, the write lands only in `locals`,
+  not the cell. A later DIRECT read of `variable` (which prefers the cell)
+  would then see the pointer write's pre-existing stale cell bytes, not
+  the value just written through `locals` -- the write-side mirror image
+  of `reinterpretLocalPointerLoad`'s already-documented wider-read gap.
+  No fixture reaches this (it requires a non-native-scalar or widening
+  reinterpret cast of an already-cell-promoted scalar); not fixed here,
+  flagged for whoever next touches this arm.
+- The `arrayPointerVariable`-based pointer path (`writeThroughArrayPointer`,
+  `readPointerElement`, `applyPointerElementsWritebacks`) was not audited
+  for `scalarCells` coherence in this pass. It is architecturally distinct
+  from the `localPointerId`/`scalarCells` mechanism these four findings
+  live in (it tracks array-shaped locals via `allocationId`, not promoted
+  native-byte cells), and none of the four findings' fixtures exercise it,
+  but it was not positively verified either way.
+- Non-scalar aggregates and raw-pointer locals still never get a
+  `scalarCells` entry at all (unchanged from every prior note); they keep
+  using the existing `locals`/alias-map machinery exclusively. Class
+  objects remain completely untouched.
+
+Focused runs, all green except the one known pre-existing failure: the
+five new fixtures above (5/5, all confirmed red on Interpreter and green
+on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (328 run, 0 failed); `bin/ut -s
+ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (70 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
+`sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image
+ut.backends.runner.rt.concurrency` (151 run, 0 failed);
+`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`.Interpreter`/`.SystemLinker` (2 run, 0 failed); `bin/ut -s ut.bin.repl`
 (228 run, 0 failed). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
