@@ -1514,7 +1514,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // confirmed independent of `emplaceRef` by a probe with no `emplaceRef` call
 // at all that fails identically, and by an `emplaceRef`-using probe that
 // asserts via scalar comparisons instead, which passes on Bytecode.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefWritesArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

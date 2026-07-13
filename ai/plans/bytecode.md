@@ -5273,3 +5273,14 @@ bin/ut`; and `bin/ut --random` passed (seed `260515522`).
 Benchmark integration, 2026-07-13: added `Bytecode` to the benchmark runner
 registry and the default backend selection, so the benchmark binary now times
 the bytecode backend for every default fixture and `--dub` package run.
+
+`emplaceRefWritesArrayElement` promoted to `Bytecode`, 2026-07-13:
+pre-approved promotion of the existing SystemLinker-backed Cerealed fixture.
+The focused Bytecode row was red with `Unsupported comparison assert in
+bytecode core: _d_assert_fail("==", message, "ok")`. The typed-frame core now
+admits mixed mutable-character-array/string-literal assertion operands through
+the existing native slice-comparison path, while retaining compact string
+descriptors and their diagnostics when both operands are immutable strings.
+This does not add `emplaceRef` handling, lazy thunks, multi-argument
+constructors, or general string mutation. Verification: focused red then
+green; `ninja bin/ut`; and `bin/ut --random` passed (seed `605411570`).

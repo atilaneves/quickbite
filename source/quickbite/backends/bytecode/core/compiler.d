@@ -9428,7 +9428,18 @@ private struct Compiler {
         Expression lhs,
         Expression rhs,
     ) {
-        if (!isDynamicArrayArgument(lhs) || !isDynamicArrayArgument(rhs))
+        import dmd.astenums: TY;
+
+        if (lhs.type.toBasetype.ty != TY.Tarray ||
+            rhs.type.toBasetype.ty != TY.Tarray)
+            return false;
+
+        // Two immutable character arrays use their compact string descriptors
+        // and retain string diagnostics below. A mutable character array and a
+        // string literal instead compare as ordinary slices: materialising the
+        // literal into a heap-backed descriptor gives both operands the same
+        // native-layout representation.
+        if (isStringType(lhs.type) && isStringType(rhs.type))
             return false;
 
         const elementType = dynamicArrayElementType(lhs.type);
