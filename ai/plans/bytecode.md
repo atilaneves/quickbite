@@ -5297,3 +5297,17 @@ SystemLinker, and LLVMJit pass; Interpreter remains excluded after an empirical
 focused red with its documented `Unsupported eval call.` shim limitation.
 Verification: focused Bytecode red then green; passing focused four-backend
 matrix; `ninja bin/ut`; and `bin/ut --random` passed (seed `1911983078`).
+
+`emplaceRefRefusesMultiArgConstructor` promoted to `Bytecode`, 2026-07-13:
+pre-approved SystemLinker-backed Cerealed fixture. The focused Bytecode row
+was red as a SIGSEGV (exit code 139). Its `emplaceRef` interception now handles
+only a small struct in an indexed dynamic-array element: it default-initializes
+an inline temporary, forwards the supplied arguments to the struct's selected
+constructor, then copies the resulting small block to the indexed element.
+This deliberately excludes overloaded-constructor resolution, structs larger
+than eight bytes, postblits, destructors, array elements, general `ref`
+arguments, and other lifetime semantics. Ctfe, Bytecode, SystemLinker, and
+LLVMJit pass the focused matrix. Interpreter remains excluded by its documented
+`Unsupported eval call.` `emplaceRef` shim; no Interpreter instance exists for
+this fixture to run. Verification: focused Bytecode red then green; passing
+focused matrix; `ninja bin/ut`; and `bin/ut --random` passed.

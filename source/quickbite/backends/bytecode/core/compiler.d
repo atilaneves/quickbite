@@ -8133,6 +8133,49 @@ private struct Compiler {
             return result;
         }
 
+        if (index.type !is null &&
+            index.type.toBasetype.isTypeStruct !is null)
+        {
+            auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+            if (descriptor is null)
+                return null;
+
+            const elementSize = dynamicArrayElementSize(
+                index.e1.type, descriptor.elementType,
+            );
+            if (elementSize > ulong.sizeof)
+                return null;
+
+            auto constructor = structDeclarationOf(index.type).ctor
+                .isFuncDeclaration;
+            if (constructor is null)
+                return null;
+
+            const value = allocateStructBlock(index.type);
+            zeroFrameBlock(value, elementSize);
+            auto arguments = new Expressions(call.arguments.length - 1);
+            foreach (argumentIndex; 0 .. arguments.length)
+                (*arguments)[argumentIndex] =
+                    (*call.arguments)[argumentIndex + 1];
+            runConstructor(
+                value,
+                constructor,
+                arguments,
+            );
+
+            const indexSlot = compileExpression(index.e2);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value,
+                descriptor.offset,
+                indexSlot.offset,
+            );
+
+            auto result = new Operand;
+            *result = Operand(value, ScalarType.void_);
+            return result;
+        }
+
         if (auto stored =
                 tryDynamicArrayElementAssign(index, (*call.arguments)[1]))
             return stored;

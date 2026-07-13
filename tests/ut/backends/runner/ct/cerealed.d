@@ -1620,12 +1620,8 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
 // documented refusal.
 // Interpreter omitted per §8: the omission is the documentation of this
 // refusal. Verbatim red: `Unsupported eval call.`
-// Bytecode omitted: unlike the sibling gap fixtures above, this
-// shape does not refuse cleanly — it crashes (SIGSEGV, exit code 139, no
-// exception text at all). This is a distinct, pre-existing, unrelated
-// Bytecode crash, not an `emplaceRef` defect; recorded as a
-// cross-track observation for ai/plans/bytecode.md (not fixed here).
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+// Bytecode covers its narrow indexed-array struct-constructor path here.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefRefusesMultiArgConstructor." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
