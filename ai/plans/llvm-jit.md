@@ -944,7 +944,7 @@ unittest {
   unmeasured; measure with a bench probe before considering a once-per-child
   process-export cache.
 
-## Slice B — ELF normalizer: coalesce all undefined duplicates, test the guard
+## Slice B — ELF normalizer: coalesce all undefined duplicates, test the guard ✅ DONE
 
 **Context.** The normalizer (see "Duplicate undefined ELF normalizer" above)
 is a defense against an uncharacterized emitter, but it coalesces only
@@ -1035,6 +1035,15 @@ unittest {
 
 **Verify:** standard gate, plus `bin/bench.sh --dub cerealed -b llvmjit`
 (the package-scale surface that exposed the original defect).
+
+**Progress (2026-07-13).** Completed the two-pass canonicalization: every
+duplicate undefined `GLOBAL` or `WEAK` name now rewrites to the first `GLOBAL`
+entry when one exists, otherwise the first `WEAK`. Focused synthetic-object
+tests cover a duplicate weak relocation, global-over-weak canonicalization,
+file-wrapper idempotence, and malformed-header diagnostics. `ninja bin/ut`
+and the four focused tests passed. Slice B's implementation is complete. The
+package-scale `bin/bench.sh --dub cerealed -b llvmjit` verification remains
+pending: its optimized build stalled before the benchmark could run.
 
 ## Slice C — `eval` isolation: fork-and-report
 
