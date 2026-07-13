@@ -1894,6 +1894,17 @@ private struct Walker {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
 
+        // A dataseg variable (module-level, `__gshared`, or `static`) has its
+        // own storage/initialization/extern machinery (the `isDataseg`
+        // arms above and in `writeLocation`'s `VarExp` arm): its real value
+        // may not exist yet at address-of time (a lazily-materialized
+        // initializer) and native writes to an extern data symbol never
+        // refresh a cell. Seeding a cell here would shadow both, and read
+        // from stale/defaulted bytes instead. Only true stack locals get
+        // cells.
+        if (variable.isDataseg)
+            return;
+
         if (variable in scalarCells)
             return;
 
@@ -4696,6 +4707,16 @@ private struct Walker {
                         uninitializedLocals.remove(*variable);
                         return;
                     }
+
+                    // A non-native-scalar pointee (e.g. a struct) or one
+                    // wider than the cell cannot be modelled as a byte-level
+                    // reinterpret write into the cell. Falling through to a
+                    // mirror-only `locals` write here would leave the cell
+                    // stale, so a later direct read (which consults the cell
+                    // first) would silently return the wrong bytes. Throw
+                    // instead of silently miswriting; SystemLinker's real
+                    // memory can support this, the interpreter cannot yet.
+                    throw new Exception("Unsupported interpreter assignment target.");
                 }
 
                 locals[*variable] = value;

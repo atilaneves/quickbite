@@ -1577,6 +1577,88 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Finding 1 (value.md item 7 review): `&g` on a dataseg variable (module-
+// level/`__gshared`/`static`) routed through `promoteScalarCell`, which
+// seeded the cell from `defaultValue` (0) because a dataseg variable's real
+// initializer is materialized lazily on first read, and the `VarExp` read
+// arm consulted the cell before that fallback -- so taking `gValue`'s
+// address made every later read of `gValue` see 0 instead of 42. Only true
+// stack locals get cells; dataseg variables keep their own
+// storage/initializer/extern machinery.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.addressOfDatasegGlobalDoesNotShadowInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int gValue = 42;
+
+            unittest {
+                auto p = &gValue;
+                assert(gValue == 42);
+            }
+        });
+    }
+}
+
+// Finding 2 (value.md item 7 review): once `&i` has promoted a native-scalar
+// cell, `writeLocation`'s `PtrExp` arm required the pointee to be a
+// native-scalar type no wider than the cell; a struct-typed (or wider)
+// pointee used to fall through to a mirror-only `locals` write, leaving the
+// cell stale, so a later direct read of `i` (which consults the cell first)
+// silently returned the OLD value instead of the struct just written.
+// SystemLinker is the oracle for the write itself (real memory supports it);
+// the Interpreter cannot yet model a struct-typed write into a scalar cell
+// (future work), so Interpreter is omitted from this matrix per the
+// omit-don't-pin convention and separately asserted below to fail loudly
+// instead of silently miswriting.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S { int a; }
+
+            int seven() {
+                return 7;
+            }
+
+            unittest {
+                int i = seven;
+                S* p = cast(S*) &i;
+                *p = S(42);
+                assert(i == 42);
+            }
+        });
+    }
+}
+
+// The Interpreter counterpart of the fixture above: it cannot model a
+// struct-typed write into a promoted scalar cell, so it must fail loudly
+// rather than silently leave the cell stale and read back `i`'s old value.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("pointer.structWriteThroughNonFittingScalarCellPointerThrowsLoudly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S { int a; }
+
+            int seven() {
+                return 7;
+            }
+
+            unittest {
+                int i = seven;
+                S* p = cast(S*) &i;
+                *p = S(42);
+                assert(i == 42);
+            }
+        }).shouldThrowWithMessage("Unsupported interpreter assignment target.");
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

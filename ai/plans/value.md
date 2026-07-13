@@ -2810,6 +2810,70 @@ ut.backends.runner.rt.concurrency` (151 run, 0 failed);
 (228 run, 0 failed). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-13 (review fixes, round 2: dataseg promotion hole,
+`PtrExp` gap-(a) fallback throws instead of silently miswriting): a
+follow-up re-review of the above found two more real gaps, fixed here.
+
+Finding A (`promoteScalarCell` wrongly celled dataseg globals/statics):
+`&g` on a module-level/`__gshared`/`static` variable routed through
+`localPointerValue` into `promoteScalarCell`, which seeded a cell from
+`defaultValue` (0) -- but a dataseg variable's real initializer is only
+materialized lazily on first read, and the `VarExp` read arm already
+consults a promoted cell before that lazy-initializer fallback. So
+`&gValue` on `__gshared int gValue = 42;` made every later read of
+`gValue` see 0 instead of 42, and also silently shadowed the
+extern-data-symbol read/write arms (a native write never refreshes a
+cell; a read would prefer the stale cell over the live native value).
+Fixture `pointer.addressOfDatasegGlobalDoesNotShadowInitializer` was red
+on Interpreter (`0 != 42`), green on SystemLinker. Fix: `promoteScalarCell`
+now returns immediately when `variable.isDataseg`, before doing anything
+else -- only true stack locals get cells; dataseg variables keep their
+own storage/initializer/extern machinery untouched.
+
+Finding B (the `PtrExp` gap-(a) fallback silently miswrote instead of
+throwing): the previous round's note above ("What is STILL not
+verified/migrated") flagged, but deliberately did not fix, that
+`writeLocation`'s `PtrExp` cell arm falls through to a mirror-only
+`locals` write when a promoted cell exists but the pointee is not a
+native scalar (e.g. a struct) or is WIDER than the cell -- leaving the
+cell stale, so a later direct read of the local (which prefers the cell)
+silently returns the wrong, stale bytes. At base (before any of this
+guest-scalar-cell work), the same program failed LOUDLY instead
+("Expected integer-compatible scalar."), so turning that loud throw into
+a silently wrong answer was a regression, not a neutral gap. Fixture
+`pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory`
+(`S* p = cast(S*) &i; *p = S(42);` on an `int i`) pins the supported
+SystemLinker oracle behavior (`i == 42`, real memory); Interpreter is
+omitted from that fixture's backend matrix per the omit-don't-pin
+convention, since it cannot yet model a struct-typed write into a native
+scalar cell (future work). The companion fixture
+`pointer.structWriteThroughNonFittingScalarCellPointerThrowsLoudly`
+asserts the Interpreter-only diagnostic behavior instead: pre-fix it was
+red with the silently-wrong `7 != 42` (the stale cell's old value winning
+over the struct write); post-fix it throws "Unsupported interpreter
+assignment target." Fix: in that same fallthrough branch, once the
+narrower-native-scalar case has been ruled out, throw that message
+instead of falling through to `locals[*variable] = value;`. The
+non-celled fallthrough path (when no cell exists at all) is unchanged.
+
+Full struct-into-scalar-cell support (actually writing a struct's bytes
+into a promoted cell so the Interpreter matches SystemLinker rather than
+throwing) remains future work; this round only replaces a silent wrong
+answer with a loud, honest failure.
+
+Focused runs for this round, all green except the two known
+pre-existing failures (Bytecode's `sliceAssignmentWritesArrayStorage`
+and `staticArrayCopyRunsPostblitAndDtors`, neither touched): the two new
+fixtures above (confirmed red on Interpreter / green on SystemLinker
+before the fix, green -- or throwing, for the diagnostic fixture -- after);
+`bin/ut -s ut.backends.runner.ct.expressions`; `bin/ut -s
+ut.backends.interpreter`; `bin/ut -s ut.backends.evaluator.eval`;
+`bin/ut -s ut.backends.runner.ct.arrays`; `bin/ut -s
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`;
+`bin/ut -s ut.bin.repl`; `bin/ut -s ut.backends.runner.ct.imports
+ut.backends.runner.ct.pollution`. The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
