@@ -1379,6 +1379,38 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Once `&f` promotes an authoritative native-scalar cell (value.md item 7),
+// a later DIRECT reassignment (`f = threePointZero`, not a pointer write)
+// must keep that cell current too: both the direct read of `f` and a read
+// through the pointer must see the new value's bits, not the stale ones from
+// before the reassignment. SystemLinker is the oracle; other backends
+// omitted per the omit-don't-pin convention (address-of-a-local is
+// unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.directWriteToAddressTakenScalarUpdatesCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            float twoPointZero() {
+                return 2.0f;
+            }
+
+            float threePointZero() {
+                return 3.0f;
+            }
+
+            unittest {
+                float f = twoPointZero;
+                uint* p = cast(uint*) &f;
+                f = threePointZero;
+                assert(f == 3.0f);
+                assert(*p == 0x40400000);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

@@ -2489,6 +2489,63 @@ arrays` (302 run, 1 failed -- the known `sliceAssignmentWritesArrayStorage.
 Bytecode`); `bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-13 (direct-write path made authoritative for the cell
+too): item 7's guest-level call site had a genuine read/write asymmetry
+left over from the same-frame and cross-frame slices above. The DIRECT-
+READ arm (`runExpression`'s `VarExp` handling) already treats a promoted
+`scalarCells` entry as authoritative, returning `readScalar(variable.type,
+cell.bytes)` ahead of ever consulting the boxed `locals` mirror. But the
+DIRECT-WRITE arm -- `writeLocation`'s `VarExp` case, for a plain `f =
+newValue` reassignment (not a write through a pointer) -- only updated
+`locals[variable]`, leaving the cell holding whatever bytes an earlier
+`&f` had promoted. So after `&f` promotes a cell, `f = threePointZero`
+updated `locals` but the stale cell value resurfaced on the next direct
+read of `f`, diverging from SystemLinker.
+
+New fixture (pre-approved): `tests/ut/backends/runner/ct/expressions.d`
+`pointer.directWriteToAddressTakenScalarUpdatesCell`, scoped to
+`Interpreter`/`SystemLinker`. It takes `&f` (promoting a cell), then
+reassigns `f` directly to a second runtime value, and asserts both a
+direct read of `f` and a read through the still-live pointer see the new
+value's bits. Confirmed red on Interpreter first (`2 != 3` -- the direct
+read of `f` after the reassignment still returned `twoPointZero`'s bits
+instead of `threePointZero`'s), green on SystemLinker throughout.
+
+The fix, in `writeLocation`'s `VarExp` arm: after computing
+`storageValue(variable.type, value)` and storing it in `locals[variable]`
+as before, if `variable in scalarCells`, also `writeScalar(variable.type,
+cell.bytes, locals[variable])` to refresh the cell from the same value
+just written to the mirror. This mirrors the existing `PtrExp` arm's
+pattern of treating the cell as the durable copy and the `locals` entry as
+a synchronized mirror kept for the paths (aliasing, uninitialized
+tracking) that still read `locals` directly. No change to the read arm,
+the `PtrExp` arm, or `promoteScalarCell`/`scalarCells` population.
+
+What remains, to be precise about item 7's state: this closes the last
+known read/write asymmetry for address-taken native scalars specifically
+-- non-scalar aggregates and raw-pointer locals are unaffected (they never
+get a `scalarCells` entry and keep using the existing
+`writeBackLocalPointerTargets` copy-back path), and non-address-taken
+scalars still never get a cell at all (no behavioural difference for
+them, since nothing else can alias their bytes). The boxed `locals` mirror
+is still populated and still authoritative for every code path that isn't
+the two `VarExp` arms and the `PtrExp` write arm. Class objects are
+completely untouched. No §9.10 shim moved. The known, pre-existing
+`sliceAssignmentWritesArrayStorage.Bytecode` failure persists in
+`ut.backends.runner.ct.arrays` and is untouched;
+`staticArrayCopyRunsPostblitAndDtors.Bytecode` (segfaults) was left alone
+per standing instruction.
+
+Focused runs, all green except the one known pre-existing failure:
+`bin/ut -s ut.backends.runner.ct.expressions` (316 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
+`sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
+ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
+(228 run, 0 failed). The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

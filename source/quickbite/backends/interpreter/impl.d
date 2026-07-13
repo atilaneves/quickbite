@@ -4542,6 +4542,19 @@ private struct Walker {
             }
 
             locals[variable] = storageValue(variable.type, value);
+
+            // Byte-level authority (value.md item 7): once `&variable` has
+            // promoted a cell, direct reads consult it (the `VarExp` arm of
+            // `runExpression`) rather than the `locals` mirror below, so a
+            // direct write must refresh the cell too, or a stale cell value
+            // resurfaces on the next direct read even though `locals` (and
+            // any pointer aliasing the cell) already moved on.
+            if (auto cell = variable in scalarCells) {
+                import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+                writeScalar(variable.type, cell.bytes, locals[variable]);
+            }
+
             writeThroughArrayElementAlias(variable, locals[variable]);
             writeThroughStructFieldAlias(variable, locals[variable]);
             uninitializedLocals.remove(variable);
