@@ -1386,3 +1386,9 @@ unittest {
    - `codegen.d`'s header comment still says "the *future* LLVMJit".
 
 **Verify:** standard gate.
+
+**Progress (2026-07-13).** Completed item 3's comment and declaration
+hygiene: recorded the intentional no-dispose child lifetime, removed the
+unused string-pool release declaration, corrected the void target-init
+comment, documented the serial fork/lock contract, and made the JIT counter
+plain `__gshared` like the target-init flag. Standard gate green.

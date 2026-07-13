@@ -100,8 +100,8 @@ alias LLVMOrcSymbolPredicate =
 extern(C) @nogc nothrow {
     // Register the host's target, code generator and asm printer with LLVM's
     // target registry. LLJIT needs all three before it can build for the host
-    // triple; each returns nonzero on failure. (These are static-inline shims
-    // in the C headers but real exported symbols in libLLVM.so as the
+    // triple. (These are static-inline shims in the C headers but real
+    // exported symbols in libLLVM.so as the
     // `LLVMInitialize<Arch>*` family; the per-arch entry points below are what
     // the inline shims call.)
     void LLVMInitializeX86TargetInfo();
@@ -175,7 +175,8 @@ extern(C) @nogc nothrow {
         const(char)* name,
     );
 
-    // Tear down an LLJIT instance (and everything it owns).
+    // Intentionally unused: the JIT child _exits instead of disposing; adding
+    // a dispose call recreates the Step-4 munmap-then-collect crash.
     LLVMErrorRef LLVMOrcDisposeLLJIT(LLVMOrcLLJITRef jit);
 
     // The human-readable message of an error; consumes the error (frees it).
@@ -191,10 +192,6 @@ extern(C) @nogc nothrow {
         LLVMOrcLLJITRef jit,
         const(char)* unmangledName,
     );
-
-    // Drop a reference taken on a string-pool entry (e.g. an interned name we
-    // decided not to hand to a materialization unit after all).
-    void LLVMOrcReleaseSymbolStringPoolEntry(LLVMOrcSymbolStringPoolEntryRef s);
 
     // Build a materialization unit that defines the given names at the given
     // fixed addresses. It consumes one reference on each pair's name entry; the

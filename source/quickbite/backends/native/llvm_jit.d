@@ -110,6 +110,9 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsInChild(
     if (pipe(fds) != 0)
         throw new Exception("pipe() failed");
 
+    // runChildAndReport eventually takes withCompilerLock in this child.
+    // AGENTS.md requires serial suite execution, so the child cannot inherit
+    // that mutex locked by another test and deadlock here.
     const pid = fork();
     if (pid < 0)
         throw new Exception("fork() failed");
@@ -387,7 +390,6 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
     import quickbite.frontend.compiler: FrontendFlags;
     import quickbite.frontend.compiler: withCompilerLock;
     import orc.loader: createJit;
-    import core.atomic: atomicFetchAdd;
     import core.sys.posix.unistd: getpid;
     import std.conv: text;
     import std.file: mkdirRecurse, rmdirRecurse, tempDir;
@@ -395,7 +397,7 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
 
     // Unique per call; a crashed run leaks its directory, and a later run with
     // the same path would otherwise be ambiguous.
-    const index = atomicFetchAdd(_jitCounter, 1u);
+    const index = _jitCounter++;
     const dir = buildPath(tempDir, text("quickbite_jit_", getpid, "_", index));
     mkdirRecurse(dir);
     // The loader reads the objects into memory buffers before it returns, so
