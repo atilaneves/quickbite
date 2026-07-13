@@ -2192,7 +2192,9 @@ bin/bench.sh -b system-linker -b interpreter --dub cerealed
 
 It prepared 32/32 modules and the previous
 `Not enough bytes left to decerealise ubyte[] of 8 elements` mismatch is gone.
-The current first visible mismatch is now the signed-byte/value frontier:
+The current first visible mismatch is the signed-byte/value frontier, so
+`bin/bench.sh -b interpreter -b system-linker --dub cerealed` fails its
+result-agreement check before timing:
 
 ```text
 Expected: [1, 3, 254, 5, 252]
@@ -2237,15 +2239,16 @@ matrix. Verification: `ninja bin/ut` built cleanly; the four focused backend
 instances passed (0 failed); and `bin/ut --random` passed with seed
 `919839423`.
 
-## 10. Done
+## 10. Completion criteria
 
 ```text
 - Phase 0 (§5) landed: the interpreter's real error surfaces; no CTFE-as-truth.
-- The §7 inventory for cerealed is empty: every cerealed unittest runs on
-  Interpreter and agrees with SystemLinker.
-- `bin/bench.sh -b interpreter --dub cerealed` produces a post-parse row for the
-  interpreter (no skip), and bin/ut --random is green.
-- Each rung left an approved oracle-backed ct/ fixture; no ct/ or rt/
+- Make the §7 inventory for cerealed empty: every cerealed unittest runs on
+  Interpreter and agrees with SystemLinker. The signed-byte/value frontier
+  above is still open and belongs to value.md's native-layout track.
+- Make `bin/bench.sh -b interpreter --dub cerealed` produce a post-parse row for
+  the interpreter (no skip), with bin/ut --random green.
+- Leave an approved oracle-backed ct/ fixture for each rung, with no ct/ or rt/
   regression.
 ```
 

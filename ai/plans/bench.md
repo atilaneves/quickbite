@@ -735,10 +735,11 @@ backend is constructed, before checks or timing.
 
 Covered by `dubInfoUsesDependencyImageInsteadOfRawArchives`. Smoke:
 `./bin/bench.sh -w 0 -r 1 -b system-linker --dub cerealed` reports a
-`156/156` timed row through the image-backed path. The interpreter smoke still
-skips cerealed with `Unsupported interpreter assignment target`, and a mixed
-`interpreter`/`system-linker` run correctly rejects the disagreement before
-timing.
+`156/156` timed row through the image-backed path. At the time, the interpreter
+smoke skipped cerealed with `Unsupported interpreter assignment target`. That
+assignment gap is historical; the current mixed `interpreter`/`system-linker`
+run rejects a signed-byte array reinterpretation disagreement before timing.
+See `interpreter.md` §9.10 and the signed-byte frontier near the end of §9.
 
 The `--dub` cold path should build one `lib<pkg>_dub_deps.so` from dub's
 dependency archives (`dub-deps.md` §"The build model") as a preparation

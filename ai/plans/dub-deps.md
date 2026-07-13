@@ -288,10 +288,11 @@ constructed, before any checks or timing, so ORC's process-symbol generator can
 resolve dependency symbols without per-test dependency work.
 
 Smoke: `./bin/bench.sh -w 0 -r 1 -b system-linker --dub cerealed` reports a
-`156/156` timed row through the image-backed path. The interpreter still skips
-cerealed with `Unsupported interpreter assignment target`, so a mixed
-`interpreter`/`system-linker` run correctly fails the result-agreement check
-before timing.
+`156/156` timed row through the image-backed path. At the time, the interpreter
+skipped cerealed with `Unsupported interpreter assignment target`. That gap is
+historical; the current mixed `interpreter`/`system-linker` run fails the
+result-agreement check on signed-byte array reinterpretation before timing.
+See `interpreter.md` §9.10 and the signed-byte frontier near the end of §9.
 
 `./bin/bench.sh -b ctfe --dub cerealed` no longer reports
 `__unittest_L302_C1 ... has no available source code`; it reaches the honest
