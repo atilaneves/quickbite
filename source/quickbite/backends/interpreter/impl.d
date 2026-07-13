@@ -4988,11 +4988,21 @@ private struct Walker {
             return runNestedIndexAssignExpression(outer, index, rhs);
 
         if (auto dot = index.e1.isDotVarExp) {
-            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-            const value = runExpression(rhs);
+            // `$` inside index.e2 is a DollarExp bound to index.lengthVar, so
+            // it must see the field array's current length: resolve the
+            // field and seed lengthVar from it before evaluating index.e2,
+            // the same order runIndexExpression (read path) already uses for
+            // the same `$` binding. Evaluating e2 first left lengthVar
+            // holding a stale (or default zero) length, so `h.arr[$ - 1] =
+            // v` right after growing `h.arr` underflowed to size_t.max.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpression(dot.e1);
-            const updatedArray = receiver.structFieldAt(fieldIndex).withArrayElement(arrayIndex, value);
+            const source = receiver.structFieldAt(fieldIndex);
+            if (index.lengthVar !is null)
+                locals[index.lengthVar] = Value(source.length);
+            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+            const value = runExpression(rhs);
+            const updatedArray = source.withArrayElement(arrayIndex, value);
             writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
             return value;
         }

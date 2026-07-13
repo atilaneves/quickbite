@@ -1433,3 +1433,35 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// The third root named in the fixture above (interpreter.md §9.7):
+// `Walker.runIndexAssignExpression`'s `DotVarExp` branch (impl.d) used to
+// evaluate `index.e2` before running `index.e1`/seeding `index.lengthVar`,
+// so `$` inside an index-ASSIGN target through a struct FIELD (`h.arr[$ -
+// 1] = ...`) read a stale/default-zero length and underflowed. This is
+// the write-path counterpart of the read-path fix in
+// `dynamicArray.dollarReflectsLengthAfterInPlaceGrowth` (arrays.d).
+// `Bytecode` omitted: `$` is not implemented there (`Unsupported variable
+// in bytecode core: $`), per interpreter.md §8's omit-don't-pin rule.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { int[] arr; }
+
+            void fillLast(ref Holder h) {
+                h.arr.length = 3;
+                h.arr[$ - 1] = 9;
+            }
+
+            unittest {
+                Holder h;
+                fillLast(h);
+                assert(h.arr.length == 3);
+                assert(h.arr[2] == 9);
+            }
+        });
+    }
+}

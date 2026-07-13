@@ -1443,6 +1443,43 @@ any of this — same `index [0] is out of bounds for array of length 0`
 `shouldThrow!RangeError` miss as before, still needing its own,
 unrelated triage.
 
+**2026-07-13 (index-assign `$`-ordering root, closed).** Fixed the third
+root named just above: `Walker.runIndexAssignExpression`'s `DotVarExp`
+branch (impl.d, the `h.arr[i] = v` assignment-target path for an
+array-typed struct field) evaluated `index.e2` (which can reference `$`
+bound to `index.lengthVar`) and computed the receiver/field *before*
+seeding `lengthVar` from the field's actual length — the write-path twin
+of the read-path bug this rung's earlier 2026-07-13 entry fixed in
+`runIndexExpression`. `h.arr[$ - 1] = v` right after growing `h.arr`
+underflowed `$` to `size_t.max`. Fix: resolve the field, seed
+`lengthVar` from the field array's length, then evaluate `index.e2`,
+mirroring the read path's order.
+
+Exposing fixture
+`struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth`
+(`tests/ut/backends/runner/ct/structs.d`): `Holder { int[] arr; }`, a
+`ref Holder` parameter grows the field with plain `h.arr.length = 3`
+(not postfix `++`, to keep this pinned to the index-assign root and not
+the already-fixed postfix-length-increment one) then writes
+`h.arr[$ - 1] = 9`. Confirmed red on `Interpreter` (`index
+[18446744073709551615] is out of bounds for array of length 3`),
+green on `Ctfe`/`SystemLinker`/`LLVMJit` throughout; `Bytecode` omitted
+(`$` unimplemented there, per §8's omit-don't-pin rule).
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` still shows the `protocol_unit.d` trio
+(`__unittest_L114/151/169`) as plain value mismatches (`Expected: 3` /
+`Expected: 1` / `Expected: Struct(...)`), unchanged from before this
+fix. That trio's actual cerealed code
+(`cereal.grain(__traits(getMember, val, member)[$ - 1])`) reads the
+grown element through a `ref` **call argument** that is an `IndexExp`,
+not a direct index-assignment, so it never reaches the `DotVarExp`
+branch fixed here — it needs the fourth root already named above
+(ref-argument array-element write-back, `Walker.isWritableLocation`/
+`writeBackRefArguments` not handling an `IndexExp` argument). That root
+remains open; this fix closes a distinct, real bug but does not turn
+the trio green.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
