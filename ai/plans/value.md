@@ -2231,6 +2231,40 @@ full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff. No §9.10 shim was retired, and no new guest call site
 was added.
 
+Progress 2026-07-13 (pointer-element walks join the aggregate authority):
+`ffi_marshal.d`'s last two hand-rolled `index * elementSize` per-element
+walks -- deliberately left alone by the previous note -- now route through
+`NativeArray`, mirroring the 2026-07-10 "slice element layout joins the
+aggregate authority" consolidation of `marshalSliceArgument` and
+`unmarshalSlice`. `marshalPointerElements` (write side) now allocates
+`NativeArray.allocate(elementType, length)` and writes each element into
+`na.element(index)` instead of hand-slicing a `new ubyte[](length *
+elementSize)`, returning `na.block.bytes`; an element still `= void` is
+`continue`d past exactly as before, and `NativeBlock.allocate`'s `GC.calloc`
+zeroes it exactly as `new ubyte[]` did. `pointerWritebacks` (reify side) now
+wraps the already-marshalled buffer with `NativeArray.borrow(writeback.
+elementType, cast(void*) writeback.bytes.ptr, length)` and reads each
+element via `na.element(index)` instead of hand-slicing `writeback.bytes`.
+Behavior-identical: `NativeArray`'s stride is `layout.typeByteSize
+(elementType)`, the same number the old `elementSize` used, and
+`na.element(index)` returns the same `index*stride .. (index+1)*stride`
+byte range the hand-rolled walk produced; `allocate` zeroes like `new
+ubyte[]`, and `borrow` wraps existing bytes without copying, like the old
+direct slice into `writeback.bytes`. One incidental improvement:
+`NativeArray.allocate` picks its block's GC scan policy from
+`typeHasPointers(elementType)`, so a pointer-carrying element type now gets
+a conservatively-scanned block where the old `new ubyte[]` (typed `ubyte[]`)
+was always NO_SCAN. This closes the last hand-rolled per-element layout
+walk in the interpreter package -- the item 7 "must not grow a second set
+of D layout rules" guardrail now holds with no exceptions. No test was
+added or modified. Focused run: `bin/ut -s ut.backends.interpreter
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image
+ut.backends.runner.rt.file ut.backends.runner.rt.random
+ut.backends.evaluator.eval` -- 441 run, 0 failed. The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+Still the FFI seam, not the tree-walker's core representation: no §9.10
+shim was retired, and no guest call site was added.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

@@ -404,16 +404,26 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
 
     public PointerElementsWriteback[] pointerWritebacks() {
         import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_array: NativeArray;
 
+        // Routed through the item 7 container handle rather than a
+        // hand-rolled `index * elementSize` walk (ai/plans/value.md item
+        // 7's guardrail), mirroring `unmarshalSlice`'s default arm.
+        // `writeback.bytes` is this module's own previously-marshalled
+        // buffer (see `marshalPointerElements`), so `NativeArray.borrow`'s
+        // wrap-without-copy is exactly the old direct sub-slice.
         PointerElementsWriteback[] result;
         foreach (writeback; _pointerWritebacks) {
             const elementSize = typeByteSize(writeback.elementType);
+            const length = writeback.bytes.length / elementSize;
+            auto na = NativeArray.borrow(
+                writeback.elementType,
+                cast(void*) writeback.bytes.ptr,
+                length,
+            );
             Value[] elements;
-            foreach (index; 0 .. writeback.bytes.length / elementSize)
-                elements ~= unmarshalValue(
-                    writeback.elementType,
-                    writeback.bytes[index * elementSize .. (index + 1) * elementSize],
-                );
+            foreach (index; 0 .. length)
+                elements ~= unmarshalValue(writeback.elementType, na.element(index));
             result ~= PointerElementsWriteback(writeback.pointer, elements);
         }
         return result;
@@ -828,12 +838,17 @@ private ubyte[] marshalPointerElements(
     in imported!"quickbite.lang".Value pointer,
 ) {
     import quickbite.lang: Value;
-    import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.native_array: NativeArray;
 
-    const elementSize = typeByteSize(elementType);
+    // Routed through the item 7 container handle rather than a hand-rolled
+    // `new ubyte[](length * elementSize)` + `index * elementSize` walk
+    // (ai/plans/value.md item 7's guardrail), mirroring
+    // `marshalSliceArgument` below. `NativeArray.allocate` zeroes via
+    // `GC.calloc` exactly as `new ubyte[]` did, so an element still `=
+    // void` that this loop `continue`s past stays zero.
     const offset = cast(size_t) pointer.pointerElementOffset;
     const length = pointer.pointerLength - offset;
-    auto bytes = new ubyte[](length * elementSize);
+    auto na = NativeArray.allocate(elementType, length);
 
     const(char)*[] keepAlive;
     ubyte[][] keepAliveBuffers;
@@ -842,7 +857,7 @@ private ubyte[] marshalPointerElements(
         if (element == Value.void_)
             continue;
         marshalArgument(
-            bytes[index * elementSize .. (index + 1) * elementSize],
+            na.element(index),
             elementType,
             element,
             true,
@@ -851,7 +866,7 @@ private ubyte[] marshalPointerElements(
         );
     }
 
-    return bytes;
+    return na.block.bytes;
 }
 
 // Writing the buffer's address into the pointer-sized argument cell is the
