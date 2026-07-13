@@ -1401,7 +1401,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // before the reassignment. SystemLinker is the oracle; other backends
 // omitted per the omit-don't-pin convention (address-of-a-local is
 // unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.directWriteToAddressTakenScalarUpdatesCell." ~
         backend.stringof)
     @Tags(backend.stringof)

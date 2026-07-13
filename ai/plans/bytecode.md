@@ -5366,3 +5366,13 @@ focused Bytecode row passed on its first candidate run, so no production change
 was needed. LLVMJit and Ctfe remain excluded under the existing
 omit-don't-pin convention. Verification: focused Bytecode row; `ninja bin/ut`;
 and `bin/ut --random` passed (seed `3645436118`).
+
+`pointer.directWriteToAddressTakenScalarUpdatesCell` promoted to Bytecode,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The row takes a `uint*` view of a local `float`, directly
+reassigns the `float`, then verifies both the scalar read and the raw pointer
+bits. The focused Bytecode row passed on its first candidate run, confirming
+the typed-frame local remains authoritative after a direct scalar assignment.
+No production change was needed. Ctfe and LLVMJit remain excluded under the
+existing omit-don't-pin convention. Verification: focused Bytecode row;
+`ninja bin/ut`; and `bin/ut --random` passed (seed `790590047`).
