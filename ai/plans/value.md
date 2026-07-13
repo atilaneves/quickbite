@@ -2608,6 +2608,55 @@ ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
 (228 run, 0 failed). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-13 (correction: the cross-frame writeback removal was
+unsafe, deref-reads now read the cell too): the "cross-frame scalar
+`&local`" progress note above claimed the removal of
+`writeBackLocalPointerTargets`'s copy-back for scalar-celled variables was
+safe because "no read path ever looks at the boxed mirror" once a cell
+exists. That claim was incomplete: it only checked the DIRECT-read arm
+(`VarExp` in `runExpression`). The POINTER-DEREF read arm,
+`runPointerExpression` (`impl.d`), still read `(*variable) in locals` --
+the boxed mirror -- not the cell. With the copy-back removed, that mirror
+could go stale across multiple child-walker calls that each write the
+same celled local through a pointer: a later deref-read in a fresh child
+duplicated the stale mirror instead of the shared cell. The deep-copy
+safety experiment in that same note only severed sharing for
+`runFunction`'s `scalarCells`, which the direct-read arm's cell lookup
+still made pass; it never exercised the deref-read arm's separate bug, so
+it validated half the claim and missed the other half.
+
+This surfaced as a real regression in the pre-existing, already-approved
+matrix test `ut.backends.runner.ct.structs.struct.
+staticArrayCopyRunsPostblitAndDtors.Interpreter`: an address-taken `int
+postblits` counter, incremented via `++*postblits` inside a struct's
+postblit, expected `2` after a two-element static-array copy but read
+back `1` -- one of the two postblit calls' increments was lost because
+the second child walker's deref-read re-derived its value from the
+now-stale `locals` mirror instead of the shared cell the first child's
+write had already updated.
+
+The fix, in `runPointerExpression` just before its existing `(*variable)
+in locals` lookup: when `(*variable) in scalarCells`, read the pointed-to
+value with `readScalar((*variable).type, cell.bytes)` instead of
+consulting the mirror, mirroring the direct-read arm's existing
+`scalarCells`-first check. This makes the cell the single read authority
+for BOTH direct reads and deref-reads, which is what actually validates
+the earlier writeback removal -- the mirror is now provably dead for
+every read path a scalar cell can reach, not just the one the earlier
+note checked.
+
+Focused runs, all green except the one known pre-existing failure:
+`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`.Interpreter`/`.Ctfe`/`.SystemLinker`/`.LLVMJit` (4 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.expressions` (318 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
+`sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
+ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
+(228 run, 0 failed). The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

@@ -2007,6 +2007,23 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter pointer target.");
 
+        // Byte-level authority (value.md item 7): once `&variable` has
+        // promoted a cell, its bytes -- not the boxed `locals` mirror below
+        // -- are the true value, shared by reference across every walker
+        // that dup'd `scalarCells`. A deref-read that instead consulted the
+        // mirror could observe a stale value once cross-frame writeback for
+        // celled locals stopped copying the mirror back (see
+        // `writeBackLocalPointerTargets`).
+        if (auto cell = (*variable) in scalarCells) {
+            import quickbite.backends.interpreter.native_scalar: readScalar;
+
+            return reinterpretLocalPointerLoad(
+                readScalar((*variable).type, cell.bytes),
+                (*variable).type,
+                pointer.e1.type,
+            );
+        }
+
         if (auto current = (*variable) in locals)
             return reinterpretLocalPointerLoad(
                 *current,
