@@ -5254,7 +5254,7 @@ this initializer as `VoidInitializer`, before the static-array
 inline static-array slot, then leaves a `VoidInitializer` unmaterialised. It
 does not change static-array copies, postblits, destructors, or lifetime
 handling. Verification: focused red then green; `ninja bin/ut`; and
-`bin/ut --random` (seed `4201158653`). Commit: pending.
+`bin/ut --random` (seed `4201158653`). Commit: dad0c0ec.
 
 `pointer.emptySliceAssignmentThroughNullPointerIsNoOp` promoted to `Bytecode`,
 2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
