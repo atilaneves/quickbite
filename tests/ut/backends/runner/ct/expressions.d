@@ -1347,6 +1347,38 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Same reinterpret-write, but through a pointer passed across a call: the
+// callee writes raw bits into the caller's `float` local via a `uint*`
+// parameter. The caller must observe the write after the call returns.
+// SystemLinker is the oracle; other backends omitted for the same reasons as
+// the fixture above.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint oneBits() {
+                return 0x3F800000;
+            }
+
+            float twoPointZero() {
+                return 2.0f;
+            }
+
+            void writeBits(uint* p, uint bits) {
+                *p = bits;
+            }
+
+            unittest {
+                float f = twoPointZero;
+                writeBits(cast(uint*) &f, oneBits);
+                assert(f == 1.0f);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

@@ -3554,6 +3554,17 @@ private struct Walker {
             if ((variable in arrayAllocations) !is null)
                 continue;
 
+            // A native-scalar target already carries a promoted `scalarCells`
+            // entry (value.md item 7): `localPointerValue` promotes eagerly
+            // and every frame shares the same `NativeBlock` bytes by
+            // reference (`child.scalarCells = scalarCells.dup`), so the
+            // child's writes are already visible here. Copying the boxed
+            // `child.locals` mirror back would be dead code -- the `VarExp`
+            // read arm ignores `locals` in favour of the cell once one
+            // exists, so nothing ever reads the value this would restore.
+            if (variable in scalarCells)
+                continue;
+
             if (auto value = variable in child.locals)
                 locals[variable] = *value;
         }

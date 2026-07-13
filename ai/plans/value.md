@@ -2420,6 +2420,75 @@ failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
 pre-existing failures above (631 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-13 (cross-frame scalar `&local`: shared cell already
+coherent, redundant writeback retired): item 7's guest-level call site
+continues -- the CROSS-FRAME case, where a called function writes through
+a pointer to a caller's scalar local. New fixture (pre-approved):
+`tests/ut/backends/runner/ct/expressions.d`
+`pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat`, scoped
+to `Interpreter`/`SystemLinker`, mirroring the prior slice's same-frame
+fixture but through a helper `void writeBits(uint* p, uint bits) { *p =
+bits; }` called across a real function-call boundary. It was GREEN on
+Interpreter from the first run, with no production change: the previous
+slice's `scalarCells` are `NativeBlock` structs whose `_bytes` is a
+`ubyte[]` slice, so `child.scalarCells = scalarCells.dup` (an AA `.dup`,
+copying `NativeBlock` values but not their `_bytes` payload) already gives
+the child a handle onto the exact same underlying bytes as the parent;
+the callee's `writeLocation` `PtrExp` write lands in that shared memory
+directly, no copy-back needed for the caller to see it.
+
+That made the genuinely-red work the removal, not the fixture:
+`writeBackFunctionState`/`writeBackMemberFunctionState`'s
+`writeBackLocalPointerTargets(child)` copied `child.locals[variable]` back
+into the parent's `locals[variable]` for every variable in
+`child.localPointers`, including ones with a promoted `scalarCells` entry.
+That copy is dead for those variables: the `VarExp` direct-read arm
+(`impl.d`, in `runExpression`'s `VarExp` handling) checks `variable in
+scalarCells` *before* ever consulting `locals`, so once a cell exists no
+read path ever looks at the boxed mirror `writeBackLocalPointerTargets`
+was restoring. Added `if (variable in scalarCells) continue;` to
+`writeBackLocalPointerTargets`, skipping the copy-back exactly for
+scalar-celled variables; non-scalar pointer targets (aggregates, raw
+pointers -- anything `promoteScalarCell` leaves untouched because
+`native_scalar.isNativeScalarType` is false for them) still go through the
+unchanged copy-back below it.
+
+Safety evidence for the removal (not just "tests still pass"): with the
+writeback already deleted, a temporary experiment replaced
+`runFunction`'s `child.scalarCells = scalarCells.dup;` with a byte-for-byte
+*deep* copy (fresh `NativeBlock.allocate` per entry, contents copied,
+underlying arrays no longer aliased) to sever exactly the sharing this
+argument rests on, leaving everything else (including the deleted
+writeback) as committed. Under that experiment the new cross-frame fixture
+went red on Interpreter (`2 != 1` -- the caller's `f` read back as the
+unmodified `2.0f`'s bit-pattern-turned-int, i.e. the pointer write never
+reached the caller). Reverting the experiment (restoring the shallow
+`.dup`) brought it back to green with no other change. That isolates the
+claim precisely: it is the shared `NativeBlock` bytes, not the writeback
+this commit deletes, carrying the value across the call.
+
+What remains, to be precise about item 7's state: locals are still boxed
+everywhere else -- non-scalar aggregates and raw-pointer locals still rely
+on `writeBackLocalPointerTargets`'s copy-back (untouched for them), and
+non-address-taken scalars never get a cell at all. Class objects are
+completely untouched by this slice. No §9.10 shim moved -- this is a
+call-site coherence fix inside the existing `scalarCells`/`locals` split
+from the previous slice, not a representation change; `localPointerTarget`
+and the FFI `applyNativeWritebacks` path are unchanged. The known,
+pre-existing `sliceAssignmentWritesArrayStorage.Bytecode` failure (see the
+prior progress note) persists in `ut.backends.runner.ct.arrays` and is
+untouched.
+
+Focused runs, all green except that one known pre-existing failure:
+`bin/ut -s ut.backends.runner.ct.expressions` (314 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
+`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
+dependency_image` (148 run, 0 failed); `bin/ut -s ut.backends.runner.ct.
+arrays` (302 run, 1 failed -- the known `sliceAssignmentWritesArrayStorage.
+Bytecode`); `bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
