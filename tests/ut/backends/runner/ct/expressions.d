@@ -1271,6 +1271,23 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+// D's right-shift compound assignment on an unsigned pointee is a logical
+// shift, including when the pointee is reached through a raw pointer.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("pointer.uintCompoundRightShiftIsLogical." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                uint value = 0x8000_0000;
+                uint* p = &value;
+                *p >>= 1;
+                assert(value == 0x4000_0000);
+            }
+        });
+    }
+}
+
 // IR (AssertError in compiler.d, valueType) does not support taking the
 // address of a local or this compound-assignment shape.
 

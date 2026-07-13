@@ -5174,3 +5174,12 @@ opcode with normal width checks, and storing the result through the same
 pointer. It does not add pointer arithmetic, non-integer compound operations,
 or new pointer representations. Verification: focused red then green;
 `ninja bin/ut` and `bin/ut --random` passed (seed `951890973`).
+
+Reviewer fix, 2026-07-13: `pointer.uintCompoundRightShiftIsLogical` adds a
+direct SystemLinker-backed regression for `uint value = 0x8000_0000;` reached
+through a `uint*` and shifted with `*p >>= 1`. Bytecode was red, producing
+`0xC000_0000` from the signed shift opcode. Pointer compound right-shift
+lowering now chooses the existing unsigned opcode from the loaded pointee's
+type, matching ordinary shift lowering before its normal `int` promotion.
+Focused Bytecode and SystemLinker rows passed; `ninja bin/ut` and
+`bin/ut --random` passed (seed `1474536093`).

@@ -6763,8 +6763,11 @@ private struct Compiler {
         const destination = size(current.type) == size(operationType)
             ? current.offset
             : allocate(operationType);
+        const actualOp4 = op4 == Op.shrInt4 && !isSigned(current.type)
+            ? Op.ushrInt4
+            : op4;
         _code ~= Instruction(
-            isEightByteInteger(operationType) ? op8 : op4,
+            isEightByteInteger(operationType) ? op8 : actualOp4,
             destination,
             lhs.offset,
             rhsOperand.offset,
