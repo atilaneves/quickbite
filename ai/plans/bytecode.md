@@ -5274,6 +5274,19 @@ Benchmark integration, 2026-07-13: added `Bytecode` to the benchmark runner
 registry and the default backend selection, so the benchmark binary now times
 the bytecode backend for every default fixture and `--dub` package run.
 
+Reviewer fix, 2026-07-13: added the direct SystemLinker-backed
+`emplaceRefDefaultInitializesWcharArrayElement` regression. It resizes a
+`wchar[]`, overwrites its element with `'x'`, then calls the zero-argument
+`emplaceRef` and expects `wchar.init` (`0xFFFF`). Bytecode was red with
+`0 != 65535`: its zero-argument indexed-element path materialised every type
+except `char` as zero. The narrow change materialises `wchar.init` there and
+also gives `wchar` the existing all-ones default fill used for dynamic-array
+allocation and growth. This does not add general non-uniform scalar init
+handling. Focused Ctfe, Bytecode, SystemLinker, and LLVMJit rows passed;
+`ninja bin/ut` passed; `bin/ut --random` reported its six expected failures
+(seed `1782332219`), and the mandated `bin/ut --seed 1782332219` replay
+passed: 3064 tests, 0 unexpected failures.
+
 `emplaceRefWritesArrayElement` promoted to `Bytecode`, 2026-07-13:
 pre-approved promotion of the existing SystemLinker-backed Cerealed fixture.
 The focused Bytecode row was red with `Unsupported comparison assert in

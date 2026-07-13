@@ -4719,13 +4719,15 @@ private struct Compiler {
     }
 
     // Pack the element type's default-init fill byte (high 8 bits) and element
-    // size (low 8 bits) for `allocArrayDynamic`. `char.init` is 0xFF; every
-    // other element type the core lowers default-inits to all-zero bytes.
+    // size (low 8 bits) for `allocArrayDynamic`. `char.init` and `wchar.init`
+    // are all-one bytes; every other element type the core lowers
+    // default-inits to all-zero bytes.
     private ushort packedFill(
         in ScalarType elementType,
         in uint elementSize = 0,
     ) @safe pure {
-        const fill = elementType == ScalarType.char_ ? 0xff : 0x00;
+        const fill = elementType == ScalarType.char_ ||
+            elementType == ScalarType.wchar_ ? 0xff : 0x00;
         return cast(ushort) ((fill << 8) |
             (elementSize == 0 ? size(elementType) : elementSize));
     }
@@ -8155,7 +8157,11 @@ private struct Compiler {
                 Op.loadConstant,
                 value,
                 constantIndex(
-                    descriptor.elementType == ScalarType.char_ ? char.init : 0,
+                    descriptor.elementType == ScalarType.char_
+                        ? char.init
+                        : descriptor.elementType == ScalarType.wchar_
+                            ? wchar.init
+                            : 0,
                 ),
                 cast(ushort) elementSize,
             );

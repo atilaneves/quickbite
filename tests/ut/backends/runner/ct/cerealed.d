@@ -1607,6 +1607,29 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
     }
 }
 
+// `wchar.init` is `0xFFFF`, unlike the all-zero default initialization of
+// most scalar elements. This keeps the zero-argument `emplaceRef` path honest
+// about materialising the element type's real `.init` value.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
+    @("emplaceRefDefaultInitializesWcharArrayElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.lifetime : emplaceRef;
+
+            unittest {
+                wchar[] values;
+                values.length = 1;
+                values[0] = 'x';
+
+                emplaceRef(values[0]);
+
+                assert(values[0] == wchar.init);
+            }
+        });
+    }
+}
+
 // The owed §9.10 gap fixture: `emplaceRef`'s multi-arg (constructor) form
 // must forward its arguments to the destination's constructor. Same shim
 // refusal as above, other direction: 3 call arguments (chunk, 1, 2) also
