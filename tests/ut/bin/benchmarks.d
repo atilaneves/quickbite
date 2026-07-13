@@ -35,6 +35,7 @@ unittest {
     auto runners = makeRunners(BackendEnv());
 
     assert(("interpreter" in runners) !is null);
+    assert(("bytecode" in runners) !is null);
 }
 
 @("makeRunners.llvmjitReceivesDubPackage")
@@ -58,6 +59,7 @@ unittest {
 
     defaultBackendNames.should == [
         "ctfe",
+        "bytecode",
         "interpreter",
         "system-linker",
         "llvmjit",

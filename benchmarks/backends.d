@@ -1,6 +1,7 @@
 module benchmarks.backends;
 
 import quickbite.backends.runner: Runner;
+import quickbite.backends.bytecode: Bytecode;
 import quickbite.backends.ctfe: Ctfe;
 import quickbite.backends.interpreter: Interpreter;
 import quickbite.backends.native: LLVMJit, SystemLinker;
@@ -19,10 +20,12 @@ public struct BackendEnv {
     imported!"quickbite.backends.native".DubPackage dubPackage;
 }
 
-// One registry entry per backend; adding bytecode/ir later is a single line in
-// the AA below.
 private Runner makeCtfe(in BackendEnv env) {
     return new Ctfe;
+}
+
+private Runner makeBytecode(in BackendEnv env) {
+    return new Bytecode;
 }
 
 private Runner makeInterpreter(in BackendEnv env) {
@@ -57,6 +60,7 @@ private Runner makeLLVMJit(in BackendEnv env) {
 public Runner[string] makeRunners(in BackendEnv env) {
     Runner function(in BackendEnv)[string] registry = [
         "ctfe":          &makeCtfe,
+        "bytecode":      &makeBytecode,
         "interpreter":   &makeInterpreter,
         "system-linker": &makeSystemLinker,
         "llvmjit":       &makeLLVMJit,
