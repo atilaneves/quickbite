@@ -656,8 +656,10 @@ unittest {
 
     int[2] fds;
     pipe(fds).should == 0;
+    scope(exit) close(fds[1]);
     close(fds[0]);
-    signal(SIGPIPE, SIG_IGN);
+    const oldSigpipe = signal(SIGPIPE, SIG_IGN);
+    scope(exit) signal(SIGPIPE, oldSigpipe);
 
     writeResults(fds[1], [TestResult(true, "t", "loc", "")])
         .shouldThrowWithMessage("write to result pipe failed");

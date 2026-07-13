@@ -1410,6 +1410,10 @@ package root classifies no archive paths for both native backends. The approved
 pipe regression was red before error propagation and both approved focused
 tests are green afterwards.
 
+**Progress (2026-07-13).** The pipe-write regression now restores its prior
+`SIGPIPE` handler and closes its write descriptor during cleanup, preventing
+test-local process-state and descriptor leaks.
+
 ## SystemLinker-peer parity Slice 3 — `bench-exec` ORC mode + LDC bench
 
 **Progress (2026-07-13).** Added the ORC object request mode to the shared
