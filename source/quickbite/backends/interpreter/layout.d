@@ -135,7 +135,20 @@ private size_t staticArrayLengthImpl(imported!"dmd.mtype".TypeSArray type) @trus
 // no `sizeok`-gated state to force here the way a struct's is.
 public imported!"dmd.declaration".VarDeclaration[] classFields(
     imported!"dmd.dclass".ClassDeclaration class_,
-) {
+) @safe pure nothrow {
+    return classFieldsImpl(class_);
+}
+
+// `ClassDeclaration.baseClass` and appending to an `Array!VarDeclaration`
+// via `~=` are not @safe (both walk raw DMD pointers); this is the
+// @trusted boundary -- it only walks and copies DMD's own already-
+// populated `fields` arrays, the same "read DMD's own state, no
+// arithmetic of our own" trust the other `@trusted` impls above apply.
+// Both calls happen to also be `pure`/`nothrow`, so those attributes
+// carry through unlike the other impls above, which cannot claim them.
+private imported!"dmd.declaration".VarDeclaration[] classFieldsImpl(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @trusted pure nothrow {
     imported!"dmd.dclass".ClassDeclaration[] classes;
     for (auto current = class_; current !is null; current = current.baseClass)
         classes ~= current;

@@ -2201,9 +2201,19 @@ Bytecode` ("Expression did not throw"), a stale bytecode-track pin on
 master, not caused by this change. The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff. No §9.10 shim was
 retired, and no new guest call site was added. This completes the
-interpreter-wide single-layout-authority consolidation: byte sizes, field
-offsets, and struct and class field lists, plus static-array lengths, now
-all flow through `layout.d`.
+interpreter-wide single-layout-authority consolidation for every field-list
+read that feeds layout *arithmetic* (offsets, sizes, indexing): byte sizes,
+field offsets, and struct and class field lists that feed such arithmetic,
+plus static-array lengths, now all flow through `layout.d`. As with
+`structLiteralField` above, three sites are deliberately exempt because
+forcing layout would change their behaviour rather than merely consolidate
+it: `ffi_marshal.d`'s `isOpaqueUnionOutCell` (~line 1046),
+`canMarshalToNative` (~line 1093), and `canReifyFromNative` (~line 1129)
+each iterate `sym.fields` directly rather than through
+`layout.structFields`, because they are shape *predicates* that must be
+able to answer `false` for a type DMD cannot lay out, whereas
+`structFields` forces layout via `typeByteSize`, which throws for exactly
+such a type.
 
 Progress 2026-07-13 (static-array length authority reaches the FFI
 marshaller): the previous note's "static-array lengths" consolidation
@@ -2255,9 +2265,18 @@ direct slice into `writeback.bytes`. One incidental improvement:
 `typeHasPointers(elementType)`, so a pointer-carrying element type now gets
 a conservatively-scanned block where the old `new ubyte[]` (typed `ubyte[]`)
 was always NO_SCAN. This closes the last hand-rolled per-element layout
-walk in the interpreter package -- the item 7 "must not grow a second set
-of D layout rules" guardrail now holds with no exceptions. No test was
-added or modified. Focused run: `bin/ut -s ut.backends.interpreter
+walk in the FFI marshaller -- the item 7 "must not grow a second set of D
+layout rules" guardrail now holds with no exceptions there. `impl.d`'s
+`nativeElementAddress` (~line 5767) still computes `cast(void*)
+(cast(ubyte*) base + index * elementSize)` by hand for native-pointer
+element indexing, at both its call sites in `loadNativePointerElement`
+and `storeNativePointerElement` (~line 5735/5755). That is pure pointer
+arithmetic on a caller-supplied `elementSize`, which both call sites
+already obtain from `layout.typeByteSize`, not a second layout *rule* of
+its own, so it does not violate the guardrail -- but it remains
+hand-rolled, and routing it through `NativeArray` too is a future
+cleanup, not something this commit did. No test was added or modified.
+Focused run: `bin/ut -s ut.backends.interpreter
 ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image
 ut.backends.runner.rt.file ut.backends.runner.rt.random
 ut.backends.evaluator.eval` -- 441 run, 0 failed. The full `bin/ut
