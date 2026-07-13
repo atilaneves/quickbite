@@ -87,12 +87,25 @@ private struct Walker {
     import dmd.expression: DivExp, Expression, ModExp;
     import dmd.func: FuncDeclaration;
     import dmd.statement: Statement;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
 
     private Throwable[const(void)*] nativeThrowableRoots;
 
     private Value[VarDeclaration] locals;
+
+    // Authoritative native bytes for an address-taken scalar local (value.md
+    // item 7's guest-local slice): populated eagerly the moment `&local` is
+    // taken (see `localPointerValue`), for `native_scalar.
+    // isNativeScalarType` locals only. Non-address-taken locals, and every
+    // aggregate/pointer local, still live only in `locals` above -- this
+    // table is a narrow byte-level authority, not a replacement for it.
+    // `locals[variable]` stays a synchronously-refreshed mirror of a cell's
+    // bytes for as long as a cell exists, so alias/child-Walker paths that
+    // only know about `locals` keep seeing the true value.
+    private NativeBlock[VarDeclaration] scalarCells;
+
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
     private size_t nextLocalPointerId;
@@ -1322,6 +1335,16 @@ private struct Walker {
                 throw new Exception(uninitializedVariableMessage(variable, currentFunction));
             }
 
+            // Byte-level authority (value.md item 7): once `&variable` has
+            // promoted a cell, its bytes -- not the boxed mirror below --
+            // are the true value, so a reinterpret write through a pointer
+            // (`writeLocation`'s `PtrExp` arm) is visible here.
+            if (auto cell = variable in scalarCells) {
+                import quickbite.backends.interpreter.native_scalar: readScalar;
+
+                return readScalar(variable.type, cell.bytes);
+            }
+
             if (auto current = variable in locals)
                 return *current;
 
@@ -1697,6 +1720,7 @@ private struct Walker {
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
+        child.scalarCells = scalarCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -1844,6 +1868,8 @@ private struct Walker {
     }
 
     private Value localPointerValue(VarDeclaration variable) {
+        promoteScalarCell(variable);
+
         if (auto id = variable in localPointerIds)
             return Value.localPointerValue(*id);
 
@@ -1851,6 +1877,90 @@ private struct Walker {
         localPointerIds[variable] = id;
         localPointers[id] = variable;
         return Value.localPointerValue(id);
+    }
+
+    // Eagerly gives an address-taken native-scalar local an authoritative
+    // native-byte cell (value.md item 7's guest-local slice) the first time
+    // its address is taken, seeded from whatever value the local currently
+    // holds (its boxed value in `locals`, or the type's default if never
+    // written). Once a cell exists, `writeLocation`'s `PtrExp` arm and the
+    // `VarExp` read arm route through it instead of `locals`, so a
+    // byte-level write through a same-size pointer cast is visible to a
+    // direct read of the local -- the reinterpret-write bug this slice
+    // fixes. Non-scalar locals (aggregates, pointers) are untouched; they
+    // keep using the existing boxed/aliasing paths.
+    private void promoteScalarCell(VarDeclaration variable) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, writeScalar;
+
+        // A dataseg variable (module-level, `__gshared`, or `static`) has its
+        // own storage/initialization/extern machinery (the `isDataseg`
+        // arms above and in `writeLocation`'s `VarExp` arm): its real value
+        // may not exist yet at address-of time (a lazily-materialized
+        // initializer) and native writes to an extern data symbol never
+        // refresh a cell. Seeding a cell here would shadow both, and read
+        // from stale/defaulted bytes instead. Only true stack locals get
+        // cells.
+        if (variable.isDataseg)
+            return;
+
+        if (variable in scalarCells)
+            return;
+
+        if (!isNativeScalarType(variable.type))
+            return;
+
+        // `auto`, not `const`: reassigned below when the local already has a
+        // boxed value to seed the cell from.
+        auto current = defaultValue(variable);
+        if (auto existing = variable in locals)
+            current = *existing;
+
+        auto cell = NativeBlock.allocate(typeByteSize(variable.type), NativeBlock.Scan.no);
+        writeScalar(variable.type, cell.bytes, current);
+        scalarCells[variable] = cell;
+    }
+
+    // Reads `variable`'s current value: a promoted `scalarCells` entry (the
+    // byte-level authority once `&variable` has promoted one) takes
+    // priority over the boxed `locals` mirror, which in turn takes priority
+    // over the type's default. Every celled-var read arm that has no extra
+    // fallback of its own (a data-segment initializer, a differently-typed
+    // pointee) routes through this single helper so no future read path can
+    // pick the wrong map (value.md item 7 review, findings 2 and 3).
+    private Value readCelledLocal(VarDeclaration variable) {
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        if (auto cell = variable in scalarCells)
+            return readScalar(variable.type, cell.bytes);
+
+        if (auto current = variable in locals)
+            return *current;
+
+        return defaultValue(variable);
+    }
+
+    // Writes `value` -- already `variable`'s own storage type -- to
+    // `variable`, refreshing its promoted `scalarCells` entry (if one
+    // exists) and re-deriving the boxed `locals` mirror from the very bytes
+    // just written, so the two never drift no matter which a later read
+    // consults (value.md item 7 review, finding 3). Callers that write
+    // through a differently-typed pointee (a reinterpret write) do not use
+    // this helper; see `writeLocation`'s `PtrExp` arm.
+    private void writeCelledLocal(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.native_scalar:
+            readScalar, writeScalar;
+
+        if (auto cell = variable in scalarCells) {
+            writeScalar(variable.type, cell.bytes, value);
+            locals[variable] = readScalar(variable.type, cell.bytes);
+            uninitializedLocals.remove(variable);
+            return;
+        }
+
+        locals[variable] = value;
+        uninitializedLocals.remove(variable);
     }
 
     private Value functionPointerValue(FuncDeclaration function_) {
@@ -1949,15 +2059,16 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter pointer target.");
 
-        if (auto current = (*variable) in locals)
-            return reinterpretLocalPointerLoad(
-                *current,
-                (*variable).type,
-                pointer.e1.type,
-            );
-
+        // Byte-level authority (value.md item 7): once `&variable` has
+        // promoted a cell, its bytes -- not the boxed `locals` mirror below
+        // -- are the true value, shared by reference across every walker
+        // that dup'd `scalarCells`. A deref-read that instead consulted the
+        // mirror could observe a stale value once cross-frame writeback for
+        // celled locals stopped copying the mirror back (see
+        // `writeBackLocalPointerTargets`). `readCelledLocal` is exactly the
+        // cell-then-mirror-then-default priority this needs.
         return reinterpretLocalPointerLoad(
-            defaultValue(*variable),
+            readCelledLocal(*variable),
             (*variable).type,
             pointer.e1.type,
         );
@@ -3287,6 +3398,7 @@ private struct Walker {
             : datasegLocals;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
+        child.scalarCells = scalarCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -3338,6 +3450,7 @@ private struct Walker {
         child.locals = locals.dup;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
+        child.scalarCells = scalarCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -3494,6 +3607,17 @@ private struct Walker {
             if ((variable in arrayAllocations) !is null)
                 continue;
 
+            // A native-scalar target already carries a promoted `scalarCells`
+            // entry (value.md item 7): `localPointerValue` promotes eagerly
+            // and every frame shares the same `NativeBlock` bytes by
+            // reference (`child.scalarCells = scalarCells.dup`), so the
+            // child's writes are already visible here. Copying the boxed
+            // `child.locals` mirror back would be dead code -- the `VarExp`
+            // read arm ignores `locals` in favour of the cell once one
+            // exists, so nothing ever reads the value this would restore.
+            if (variable in scalarCells)
+                continue;
+
             if (auto value = variable in child.locals)
                 locals[variable] = *value;
         }
@@ -3563,6 +3687,7 @@ private struct Walker {
         child.locals = locals.dup;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
+        child.scalarCells = scalarCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -3674,6 +3799,12 @@ private struct Walker {
                 continue;
             }
 
+            // A fresh call binds a new stack slot for `parameter`; drop any
+            // inherited/stale `scalarCells` entry the same way a fresh
+            // `DeclarationExp` does (value.md item 7 review, finding 1) --
+            // recursion reuses the same `VarDeclaration` for a parameter at
+            // every call depth.
+            scalarCells.remove(parameter);
             locals[parameter] = arguments[index];
             recordParameterSliceAlias(
                 parameter,
@@ -3700,6 +3831,10 @@ private struct Walker {
         Expression argumentExpression,
         Value[VarDeclaration] callerLocals,
     ) {
+        // Same fresh-binding rule as `bindFunctionParameters` (value.md item
+        // 7 review, finding 1): a lazy parameter is still a new stack slot
+        // for its own `VarDeclaration`, so drop any inherited/stale cell.
+        scalarCells.remove(parameter);
         locals[parameter] = Value.undisplayable;
 
         if (auto variable = lazyExpressionVariable(argumentExpression)) {
@@ -4469,10 +4604,17 @@ private struct Walker {
                 }
             }
 
-            locals[variable] = storageValue(variable.type, value);
+            // Byte-level authority (value.md item 7): once `&variable` has
+            // promoted a cell, direct reads consult it (the `VarExp` arm of
+            // `runExpression`) rather than the `locals` mirror below, so a
+            // direct write must refresh the cell too, or a stale cell value
+            // resurfaces on the next direct read even though `locals` (and
+            // any pointer aliasing the cell) already moved on.
+            // `writeCelledLocal` is exactly this cell-then-mirror pattern.
+            writeCelledLocal(variable, storageValue(variable.type, value));
+
             writeThroughArrayElementAlias(variable, locals[variable]);
             writeThroughStructFieldAlias(variable, locals[variable]);
-            uninitializedLocals.remove(variable);
             if ((variable in arrayElementAliases) is null) {
                 sliceAliases.remove(variable);
                 structArrayFieldAliases.remove(variable);
@@ -4531,6 +4673,51 @@ private struct Walker {
                 auto variable = pointer.localPointerId in localPointers;
                 if (variable is null)
                     throw new Exception("Unsupported interpreter assignment target.");
+
+                // Byte-level reinterpret write (value.md item 7): a
+                // promoted cell exists, so write `value`'s bits in as the
+                // pointer's pointee type, then refresh the `locals` mirror
+                // by reading the local's own type back out. Without this,
+                // `*p = x` through a differently-typed pointer stored the
+                // boxed value verbatim -- a real bug vs SystemLinker.
+                //
+                // Finding 5 (value.md item 7 review): a NARROWER
+                // native-scalar pointee (e.g. a `ubyte*` reinterpret of a
+                // `uint`) writes only into the cell's low
+                // `typeByteSize(pointeeType)` bytes -- mirroring
+                // `reinterpretLocalPointerLoad`'s read-side narrowing by
+                // slicing -- instead of `writeScalar` throwing on a
+                // length mismatch. A non-native-scalar pointee (or a wider
+                // one, a pre-existing gap not this call site's to fix)
+                // falls through to the boxed write below instead of
+                // throwing.
+                if (auto cell = *variable in scalarCells) {
+                    import quickbite.backends.interpreter.layout: typeByteSize;
+                    import quickbite.backends.interpreter.native_scalar:
+                        isNativeScalarType, readScalar, writeScalar;
+
+                    auto pointeeType = ptr.e1.type.toBasetype.nextOf.toBasetype;
+                    const pointeeSize = typeByteSize(pointeeType);
+                    if (
+                        isNativeScalarType(pointeeType) &&
+                        pointeeSize <= cell.bytes.length
+                    ) {
+                        writeScalar(pointeeType, cell.bytes[0 .. pointeeSize], value);
+                        locals[*variable] = readScalar((*variable).type, cell.bytes);
+                        uninitializedLocals.remove(*variable);
+                        return;
+                    }
+
+                    // A non-native-scalar pointee (e.g. a struct) or one
+                    // wider than the cell cannot be modelled as a byte-level
+                    // reinterpret write into the cell. Falling through to a
+                    // mirror-only `locals` write here would leave the cell
+                    // stale, so a later direct read (which consults the cell
+                    // first) would silently return the wrong bytes. Throw
+                    // instead of silently miswriting; SystemLinker's real
+                    // memory can support this, the interpreter cannot yet.
+                    throw new Exception("Unsupported interpreter assignment target.");
+                }
 
                 locals[*variable] = value;
                 uninitializedLocals.remove(*variable);
@@ -4602,6 +4789,7 @@ private struct Walker {
         child.locals = locals.dup;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
+        child.scalarCells = scalarCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -4684,6 +4872,7 @@ private struct Walker {
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
+        child.scalarCells = scalarCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -5787,8 +5976,15 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported native out-parameter target.");
 
-            locals[variable] = writeback;
-            uninitializedLocals.remove(variable);
+            // A promoted cell (value.md item 7) is the byte authority: the
+            // argument-evaluation pass that ran `&local` for this native
+            // call already promoted `variable` (see `promoteScalarCell`),
+            // so the writeback must land in the cell too, or a direct
+            // `VarExp` read afterwards would see the cell's stale bytes
+            // instead of what the callee wrote (e.g. pthread_mutexattr_
+            // gettype's `int* kind` out-parameter). `writeCelledLocal` is
+            // exactly this cell-then-mirror pattern.
+            writeCelledLocal(variable, writeback);
         }
     }
 
@@ -5958,10 +6154,13 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter pointer target.");
 
-        if (auto current = (*variable) in locals)
-            return *current;
-
-        return defaultValue(*variable);
+        // Byte-level authority (value.md item 7, finding 3): a promoted
+        // cell -- not the boxed `locals` mirror -- is the true value once
+        // `&variable` promoted one, the same priority `readCelledLocal`
+        // gives `runPointerExpression`'s deref-read arm. Without this,
+        // `(*p)++`/atomics through a celled local (this helper's callers,
+        // via `pointerTargetValue`/`readPointerTarget`) read stale bytes.
+        return readCelledLocal(*variable);
     }
 
     private Value pointerTargetValue(in Value pointer) {
@@ -5991,8 +6190,11 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported interpreter pointer target.");
 
-            locals[*variable] = storageValue((*variable).type, value);
-            uninitializedLocals.remove(*variable);
+            // Cell-then-mirror (value.md item 7, finding 3): this write is
+            // always at `variable`'s own storage type (an atomic op or a
+            // `(*p)++`/`+=` write-back), never a differently-typed
+            // reinterpret write, so `writeCelledLocal` applies directly.
+            writeCelledLocal(*variable, storageValue((*variable).type, value));
             return;
         }
 
@@ -6235,6 +6437,7 @@ private struct Walker {
         child.locals = locals.dup;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
+        child.scalarCells = scalarCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -6352,6 +6555,18 @@ private struct Walker {
         auto variable = declaration.declaration.isVarDeclaration;
         if (variable is null)
             return Value(false);
+
+        // A fresh declaration is a new stack slot: drop any inherited/stale
+        // `scalarCells` entry for it before writing `locals` below, or a
+        // later `&variable` would resurrect a prior instance's promoted
+        // cell instead of getting a correct fresh one (value.md item 7
+        // review, finding 1). Recursion reuses the same `VarDeclaration`
+        // AST node at every call depth, and `child.scalarCells =
+        // scalarCells.dup` hands a fresh call frame the outer frame's
+        // already-promoted cell; a loop body re-executes the same
+        // `DeclarationExp` every iteration and hits the same issue without
+        // recursion at all.
+        scalarCells.remove(variable);
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {
             uninitializedLocals[variable] = true;
@@ -6722,8 +6937,11 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported eval post expression target.");
 
-            auto current = variable in locals;
-            const oldValue = current is null ? defaultValue(variable) : *current;
+            // `readCelledLocal` (value.md item 7, finding 2): a plain
+            // `variable in locals` lookup here bypassed a promoted
+            // `scalarCells` entry, reading stale bytes once a cross-frame
+            // pointer write refreshed only the cell.
+            const oldValue = readCelledLocal(variable);
             if (oldValue.isPointer) {
                 writeLocation(post.e1, oldValue.pointerOffsetBy(delta.asLong));
                 return oldValue;

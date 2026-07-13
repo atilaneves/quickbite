@@ -1334,6 +1334,346 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // Bytecode and IR ("Unsupported (IR) expression `& d`") do not support
 // taking the address of a local.
 
+// Reinterpret-WRITE (not read) through a same-size pointer cast: writing raw
+// bits into a `float` local via a `uint*` must be visible to a subsequent
+// direct read of the local. SystemLinker is the oracle; Bytecode/LLVMJit/
+// Ctfe are omitted per the omit-don't-pin convention (address-of-a-local and
+// float byte-reinterpretation are unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.uintBitsWrittenThroughPointerReadBackAsFloat." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint oneBits() {
+                return 0x3F800000;
+            }
+
+            float twoPointZero() {
+                return 2.0f;
+            }
+
+            unittest {
+                float f = twoPointZero;
+                uint* p = cast(uint*) &f;
+                *p = oneBits;
+                assert(f == 1.0f);
+            }
+        });
+    }
+}
+
+// Same reinterpret-write, but through a pointer passed across a call: the
+// callee writes raw bits into the caller's `float` local via a `uint*`
+// parameter. The caller must observe the write after the call returns.
+// SystemLinker is the oracle; other backends omitted for the same reasons as
+// the fixture above.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint oneBits() {
+                return 0x3F800000;
+            }
+
+            float twoPointZero() {
+                return 2.0f;
+            }
+
+            void writeBits(uint* p, uint bits) {
+                *p = bits;
+            }
+
+            unittest {
+                float f = twoPointZero;
+                writeBits(cast(uint*) &f, oneBits);
+                assert(f == 1.0f);
+            }
+        });
+    }
+}
+
+// Once `&f` promotes an authoritative native-scalar cell (value.md item 7),
+// a later DIRECT reassignment (`f = threePointZero`, not a pointer write)
+// must keep that cell current too: both the direct read of `f` and a read
+// through the pointer must see the new value's bits, not the stale ones from
+// before the reassignment. SystemLinker is the oracle; other backends
+// omitted per the omit-don't-pin convention (address-of-a-local is
+// unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.directWriteToAddressTakenScalarUpdatesCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            float twoPointZero() {
+                return 2.0f;
+            }
+
+            float threePointZero() {
+                return 3.0f;
+            }
+
+            unittest {
+                float f = twoPointZero;
+                uint* p = cast(uint*) &f;
+                f = threePointZero;
+                assert(f == 3.0f);
+                assert(*p == 0x40400000);
+            }
+        });
+    }
+}
+
+// Reinterpret-WRITE through a pointer taken from a `ref` scalar parameter:
+// the callee writes raw bits into the parameter's slot via a same-size
+// pointer cast, and the CALLER's variable (bound to that `ref` parameter)
+// must observe the write after the call returns. This is the guest-level
+// call-site frontier of value.md item 7: a freshly promoted native cell for
+// the `ref` parameter must stay connected to the caller's own cell/box.
+// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
+// convention (address-of-a-local/parameter and float byte-reinterpretation
+// are unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.reinterpretWriteThroughRefParameterPointerReachesCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint oneBits() {
+                return 0x3F800000;
+            }
+
+            float twoPointZero() {
+                return 2.0f;
+            }
+
+            void writeThroughRef(ref float f, uint bits) {
+                uint* p = cast(uint*) &f;
+                *p = bits;
+            }
+
+            unittest {
+                float x = twoPointZero;
+                writeThroughRef(x, oneBits);
+                assert(x == 1.0f);
+            }
+        });
+    }
+}
+
+// Finding 1 (value.md item 7 review): a fresh `DeclarationExp` binding is a
+// new stack slot, but the interpreter never dropped a stale `scalarCells`
+// entry inherited for the same `VarDeclaration`. Recursion reuses the same
+// AST `VarDeclaration` for `x` at every call depth, and `child.scalarCells =
+// scalarCells.dup` hands the inner frame the outer frame's already-promoted
+// cell, so `int x = depth;` at depth 0 resurrected depth 1's cell instead of
+// getting a fresh one. SystemLinker is the oracle; other backends omitted
+// per the omit-don't-pin convention (address-of-a-local is
+// unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.recursiveDeclarationDropsStaleScalarCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int rec(int depth) {
+                int x = depth;
+                int* p = &x;
+                if (depth == 0)
+                    return *p;
+                const inner = rec(depth - 1);
+                return x * 10 + inner;
+            }
+
+            unittest {
+                assert(rec(1) == 10);
+            }
+        });
+    }
+}
+
+// Same Finding 1 bug, loop-shaped: a `foreach` body re-executes the same
+// `DeclarationExp` for `x` every iteration, so the first iteration's
+// promoted cell must not leak into the second iteration's fresh `x`.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.loopRedeclaredLocalDropsStaleScalarCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int tenTimes(int i) {
+                return i * 10;
+            }
+
+            unittest {
+                foreach (i; 0 .. 2) {
+                    int x = tenTimes(i);
+                    int* p = &x;
+                    assert(*p == tenTimes(i));
+                }
+            }
+        });
+    }
+}
+
+// Finding 2 (value.md item 7 review): post-increment's `VarExp` arm read
+// `variable in locals` directly, bypassing a promoted `scalarCells` entry --
+// stale once a cross-frame pointer write (`setToFive`) refreshes only the
+// cell.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.postIncrementReadsPromotedScalarCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint twoValue() {
+                return 2;
+            }
+
+            void setToFive(uint* p) {
+                *p = 5;
+            }
+
+            unittest {
+                uint i = twoValue;
+                setToFive(&i);
+                i++;
+                assert(i == 6);
+            }
+        });
+    }
+}
+
+// Finding 3 (value.md item 7 review): `(*p)++` reads and writes through
+// `localPointerTarget`/`writePointerTarget`'s local-pointer arm, which only
+// consulted the boxed `locals` mirror -- the same bypass post-increment's
+// `VarExp` arm had, but for the pointer-deref path.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.dereferencedPointerPostIncrementUsesPromotedScalarCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int twoValueInt() {
+                return 2;
+            }
+
+            unittest {
+                int i = twoValueInt;
+                int* p = &i;
+                (*p)++;
+                assert(i == 3);
+            }
+        });
+    }
+}
+
+// Finding 5 (value.md item 7 review): `writeLocation`'s `PtrExp` cell arm
+// required the pointee to be exactly the cell's own width, throwing for a
+// narrower native-scalar pointee (a `ubyte*` reinterpret of a `uint`)
+// instead of writing into the low bytes the way the read side
+// (`reinterpretLocalPointerLoad`) already narrows by slicing.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.subWordReinterpretWriteThroughPointerWritesLowByte." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte oneByte() {
+                return 0xAB;
+            }
+
+            unittest {
+                uint u = 0;
+                ubyte* p = cast(ubyte*) &u;
+                *p = oneByte;
+                assert(u == 0xAB);
+            }
+        });
+    }
+}
+
+// Finding 1 (value.md item 7 review): `&g` on a dataseg variable (module-
+// level/`__gshared`/`static`) routed through `promoteScalarCell`, which
+// seeded the cell from `defaultValue` (0) because a dataseg variable's real
+// initializer is materialized lazily on first read, and the `VarExp` read
+// arm consulted the cell before that fallback -- so taking `gValue`'s
+// address made every later read of `gValue` see 0 instead of 42. Only true
+// stack locals get cells; dataseg variables keep their own
+// storage/initializer/extern machinery.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.addressOfDatasegGlobalDoesNotShadowInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int gValue = 42;
+
+            unittest {
+                auto p = &gValue;
+                assert(gValue == 42);
+            }
+        });
+    }
+}
+
+// Finding 2 (value.md item 7 review): once `&i` has promoted a native-scalar
+// cell, `writeLocation`'s `PtrExp` arm required the pointee to be a
+// native-scalar type no wider than the cell; a struct-typed (or wider)
+// pointee used to fall through to a mirror-only `locals` write, leaving the
+// cell stale, so a later direct read of `i` (which consults the cell first)
+// silently returned the OLD value instead of the struct just written.
+// SystemLinker is the oracle for the write itself (real memory supports it);
+// the Interpreter cannot yet model a struct-typed write into a scalar cell
+// (future work), so Interpreter is omitted from this matrix per the
+// omit-don't-pin convention and separately asserted below to fail loudly
+// instead of silently miswriting.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S { int a; }
+
+            int seven() {
+                return 7;
+            }
+
+            unittest {
+                int i = seven;
+                S* p = cast(S*) &i;
+                *p = S(42);
+                assert(i == 42);
+            }
+        });
+    }
+}
+
+// The Interpreter counterpart of the fixture above: it cannot model a
+// struct-typed write into a promoted scalar cell, so it must fail loudly
+// rather than silently leave the cell stale and read back `i`'s old value.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("pointer.structWriteThroughNonFittingScalarCellPointerThrowsLoudly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S { int a; }
+
+            int seven() {
+                return 7;
+            }
+
+            unittest {
+                int i = seven;
+                S* p = cast(S*) &i;
+                *p = S(42);
+                assert(i == 42);
+            }
+        }).shouldThrowWithMessage("Unsupported interpreter assignment target.");
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
