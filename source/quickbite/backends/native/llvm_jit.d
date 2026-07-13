@@ -71,8 +71,7 @@ public class LLVMJit:
     }
 
     public override EvalResult eval(FuncDeclaration function_) {
-        auto jit = jitForObjects([function_.getModule], _inputs);
-        return evalCompiledFunction(jit, function_);
+        return evalInChild(function_, _inputs);
     }
 }
 
@@ -193,6 +192,92 @@ private void runChildAndReport(
     } catch (Throwable throwable) {
         // toString can itself throw and would unwind into the parent's frames;
         // msg is a plain field, so report it and swallow any further failure.
+        try
+            writeError(fd, throwable.msg);
+        catch (Throwable) {}
+    }
+}
+
+// Eval has the same JIT-resident metadata lifetime as runTests, but the
+// evaluator's public contract is one EvalResult rather than a TestResult
+// array. Keep the LLJIT and all values reached from it inside this child.
+private imported!"quickbite.backends.evaluator".EvalResult evalInChild(
+    imported!"dmd.func".FuncDeclaration function_,
+    in LLVMJitInputs inputs,
+) {
+    import core.stdc.errno: EINTR, errno;
+    import core.stdc.stdio: fflush;
+    import core.sys.posix.unistd: _exit, close, fork, pipe, read;
+    import core.sys.posix.sys.wait:
+        WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG, waitpid;
+    import std.conv: text;
+
+    fflush(null);
+
+    int[2] fds;
+    if (pipe(fds) != 0)
+        throw new Exception("pipe() failed");
+
+    const pid = fork();
+    if (pid < 0)
+        throw new Exception("fork() failed");
+
+    if (pid == 0) {
+        close(fds[0]);
+        runEvalChildAndReport(fds[1], function_, inputs);
+        close(fds[1]);
+        _exit(0);
+    }
+
+    close(fds[1]);
+    ubyte[] data;
+    ubyte[4096] buffer;
+    for (;;) {
+        const got = read(fds[0], buffer.ptr, buffer.length);
+        if (got < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (got == 0)
+            break;
+        data ~= buffer[0 .. got];
+    }
+    close(fds[0]);
+
+    int status;
+    for (;;) {
+        const reaped = waitpid(pid, &status, 0);
+        if (reaped == pid)
+            break;
+        if (reaped < 0 && errno == EINTR)
+            continue;
+        throw new Exception("waitpid failed for the JIT child");
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        const detail = WIFSIGNALED(status)
+            ? text("signal ", WTERMSIG(status))
+            : WIFEXITED(status)
+                ? text("exit code ", WEXITSTATUS(status))
+                : text("status ", status);
+        throw new Exception(text("JIT child died (", detail, ")"));
+    }
+
+    return decodeEvalFrame(data);
+}
+
+private void runEvalChildAndReport(
+    int fd,
+    imported!"dmd.func".FuncDeclaration function_,
+    in LLVMJitInputs inputs,
+) {
+    import quickbite.backends.evaluator: EvalResult;
+
+    try {
+        auto jit = jitForObjects([function_.getModule], inputs);
+        writeEvalResult(fd, evalCompiledFunction(jit, function_));
+    } catch (Throwable throwable) {
         try
             writeError(fd, throwable.msg);
         catch (Throwable) {}
@@ -365,9 +450,10 @@ private imported!"quickbite.backends.evaluator".EvalResult evalCompiledFunction(
 
 // The child -> parent result frame. The first byte is the kind: 1 means a
 // results frame (a size_t count followed by that many [passed, name, location,
-// message] records), 0 means an error frame (the rest of the stream is the
-// message). Strings are length-prefixed with a size_t; both sides are the same
-// process image, so native endianness needs no normalisation.
+// message] records), 2 means an EvalResult, and 0 means an error frame (the
+// rest of the stream is the message). Strings are length-prefixed with a
+// size_t; both sides are the same process image, so native endianness needs no
+// normalisation.
 private void writeResults(int fd, in imported!"quickbite.backends.runner".TestResult[] cases) {
     writeByte(fd, 1);
     writeSizeT(fd, cases.length);
@@ -377,6 +463,16 @@ private void writeResults(int fd, in imported!"quickbite.backends.runner".TestRe
         writeString(fd, testCase.location);
         writeString(fd, testCase.message);
     }
+}
+
+private void writeEvalResult(
+    int fd,
+    in imported!"quickbite.backends.evaluator".EvalResult result,
+) {
+    writeByte(fd, 2);
+    writeByte(fd, result.failed ? 1 : 0);
+    writeString(fd, result.display);
+    writeString(fd, result.diagnostic);
 }
 
 private void writeError(int fd, in char[] message) {
@@ -443,6 +539,30 @@ private imported!"quickbite.backends.runner".TestResult[] decodeFrame(
         cases ~= TestResult(passed, name, location, message);
     }
     return cases;
+}
+
+private imported!"quickbite.backends.evaluator".EvalResult decodeEvalFrame(
+    const(ubyte)[] data,
+) {
+    import quickbite.backends.evaluator: EvalResult;
+
+    if (data.length == 0)
+        throw new Exception("JIT child reported no results");
+
+    const kind = data[0];
+    auto rest = data[1 .. $];
+    if (kind == 0)
+        throw new Exception((cast(const(char)[]) rest).idup);
+    if (kind != 2)
+        throw new Exception("JIT child reported an unexpected frame");
+
+    size_t pos = 0;
+    const failed = readByte(rest, pos) != 0;
+    const display = readString(rest, pos);
+    const diagnostic = readString(rest, pos);
+    return failed
+        ? EvalResult(EvalResult.Diagnostic(diagnostic))
+        : EvalResult(display);
 }
 
 private string readString(const(ubyte)[] data, ref size_t pos) {

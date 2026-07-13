@@ -1148,6 +1148,17 @@ static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
 a few evals including one that throws, confirming message parity with
 `--backend system-linker`.
 
+**Progress (2026-07-13).** `LLVMJit.eval` now executes the full
+create/load/call cycle in a forked child and reports its `EvalResult` through
+the existing pipe protocol's new eval frame kind. The child exits without
+disposing its LLJIT, so the parent receives only copied strings and cannot
+retain JIT mappings. The approved mapping test was red before this change
+(eight evals grew anonymous executable mappings) and green afterwards. The
+GC-resident-global evidence probe passed for both `SystemLinker` and
+`LLVMJit`; as expected, that is weak evidence only and does not graduate the
+parked GC-range hazard. Focused tests and the standard gate passed with random
+seed `1032394620`.
+
 ## Slice D — `--dub` object-production parity (`DubPackage` mirroring)
 
 **Context.** In `--dub` bench mode the environment carries `DubPackage.yes`

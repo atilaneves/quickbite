@@ -2,6 +2,11 @@ module ut.backends.evaluator.eval;
 
 
 import ut.backends;
+import std.algorithm.iteration: filter;
+import std.algorithm.searching: canFind;
+import std.file: readText;
+import std.range: walkLength;
+import std.string: lineSplitter;
 import std.typecons: tuple;
 
 
@@ -19,6 +24,26 @@ static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
         newBackend!backend.eval("0").should == "0";
         newBackend!backend.eval("7").should == "7";
     }
+}
+
+@("eval.doesNotLeakJitMappings.LLVMJit")
+@Tags("LLVMJit")
+unittest {
+    auto backend = newBackend!LLVMJit;
+    backend.eval("1 + 2").should == "3";
+    const before = anonymousExecutableMappings;
+    foreach (_; 0 .. 8)
+        backend.eval("1 + 2").should == "3";
+    const after = anonymousExecutableMappings;
+    (after - before < 8).should == true;
+}
+
+private size_t anonymousExecutableMappings() {
+    return "/proc/self/maps"
+        .readText
+        .lineSplitter
+        .filter!(line => line.canFind("r-xp") && !line.canFind("/"))
+        .walkLength;
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
