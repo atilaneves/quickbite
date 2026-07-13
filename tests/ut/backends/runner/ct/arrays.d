@@ -1533,22 +1533,11 @@ enum pointerIndexAssignVoidInitSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.indexAssignmentWritesVoidInitialisedArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(pointerIndexAssignVoidInitSource);
-    }
-}
-
-// Bytecode cannot run `= void` initializers yet; pin its structured
-// diagnostic rather than dropping it from the matrix.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("pointer.indexAssignmentWritesVoidInitialisedArray." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(pointerIndexAssignVoidInitSource)
-            .shouldThrowWithMessage("Unsupported initializer in bytecode core: tmp");
     }
 }
 
@@ -1578,7 +1567,7 @@ enum pointerEmptyNullSliceAssignSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.emptySliceAssignmentThroughNullPointerIsNoOp." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

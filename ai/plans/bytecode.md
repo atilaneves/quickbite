@@ -5243,3 +5243,29 @@ postblit/destructor handling. Bytecode is removed from this matrix row until
 that lifetime path is safe under randomized suite ordering. No production
 change is included; compiled-oracle coverage remains on Ctfe, Interpreter,
 SystemLinker, and LLVMJit.
+
+`pointer.indexAssignmentWritesVoidInitialisedArray` promoted to `Bytecode`,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The fixture writes `p[0]` through a pointer derived from
+a `char[8] = void` local, then reads the written element. The initial Bytecode
+run was red with `Unsupported initializer in bytecode core: tmp`: DMD exposes
+this initializer as `VoidInitializer`, before the static-array
+`ExpInitializer` path. The narrow compiler change allocates and tracks the
+inline static-array slot, then leaves a `VoidInitializer` unmaterialised. It
+does not change static-array copies, postblits, destructors, or lifetime
+handling. Verification: focused red then green; `ninja bin/ut`; and
+`bin/ut --random` (seed `4201158653`). Commit: dad0c0ec.
+
+`pointer.emptySliceAssignmentThroughNullPointerIsNoOp` promoted to `Bytecode`,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The focused Bytecode row was first red with `Unsupported
+dynamic array initializer in bytecode core: cast(const(char)[])empty`: DMD
+passes the fixture's default `string` as a `const(char)[]` view. Bytecode now
+expands its compact program-data string descriptor into the existing native
+dynamic-array descriptor without copying nonempty bytes. The next operation is
+the intended zero-length pointer-slice assignment: `copySlice` now returns
+after confirming equal zero lengths and before constructing slices from either
+pointer. This preserves nonempty copies and their existing overlap and length
+diagnostics. It does not add writable string views, general string mutation,
+or static-array lifetime work. Verification: focused red then green; `ninja
+bin/ut`; and `bin/ut --random` passed (seed `260515522`).

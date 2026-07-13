@@ -2970,6 +2970,10 @@ private struct Compiler {
         // inline block as a scalar slot.
         _staticArrayLocals[variable] = offset;
 
+        if (variable._init !is null &&
+            variable._init.isVoidInitializer !is null)
+            return;
+
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
         if (initializer is null)
@@ -4336,6 +4340,18 @@ private struct Compiler {
             if (isDynamicArrayArgument(cast_.e1)) {
                 compileDynamicArrayInto(
                     destination, elementType, cast_.e1, elementIsArray,
+                );
+                return;
+            }
+
+        // A string uses the compact {data offset, length} descriptor while a
+        // `const(char)[]` view needs a native pointer. Preserve the view over
+        // the program data rather than copying its bytes.
+        if (auto cast_ = source.isCastExp)
+            if (isStringType(cast_.e1.type)) {
+                const string_ = compileExpression(cast_.e1);
+                _code ~= Instruction(
+                    Op.stringSliceToArray, destination, string_.offset,
                 );
                 return;
             }

@@ -201,6 +201,22 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case stringSliceToArray:
+                const dataOffset = scalarValue!uint(
+                    stack, base + instruction.b,
+                );
+                const stringLength = scalarValue!uint(
+                    stack, base + instruction.b + uint.sizeof,
+                );
+                writeSliceDescriptorPointer(
+                    stack,
+                    base + instruction.a,
+                    cast(size_t) (program.data.ptr + dataOffset),
+                    stringLength,
+                );
+                ++ip;
+                break;
+
             case sliceLength:
                 stack[
                     base + instruction.a .. base + instruction.a + size_t.sizeof
@@ -2251,6 +2267,11 @@ private void copySlice(
             "Array lengths don't match for copy: ",
             sourceLength, " != ", destinationLength,
         ));
+
+    // D permits an empty slice assignment through a null pointer: no element
+    // address is formed, so neither null descriptor is dereferenced.
+    if (destinationLength == 0)
+        return;
 
     const byteCount = destinationLength * elementSize;
     if (sourcePointer < destinationPointer + byteCount &&

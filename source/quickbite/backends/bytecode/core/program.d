@@ -206,6 +206,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     setArrayLength,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
+    // Expand the compact string descriptor {dataOffset, length} at frame offset
+    // b into a native dynamic-array descriptor {data.ptr + dataOffset, length}
+    // at frame offset a. The backing data remains the immutable program segment.
+    stringSliceToArray,
     // Read the length word of the slice descriptor at frame offset b into the
     // size_t slot at frame offset a.
     sliceLength,
