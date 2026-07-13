@@ -1041,8 +1041,9 @@ duplicate undefined `GLOBAL` or `WEAK` name now rewrites to the first `GLOBAL`
 entry when one exists, otherwise the first `WEAK`. Focused synthetic-object
 tests cover a duplicate weak relocation, global-over-weak canonicalization,
 file-wrapper idempotence, and malformed-header diagnostics. `ninja bin/ut`
-and the four focused tests passed; the package-scale cerealed benchmark remains
-for the standard gate.
+and the four focused tests passed. Slice B's implementation is complete. The
+package-scale `bin/bench.sh --dub cerealed -b llvmjit` verification remains
+pending: its optimized build stalled before the benchmark could run.
 
 ## Slice C — `eval` isolation: fork-and-report
 
