@@ -1630,6 +1630,14 @@ private struct Walker {
 
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
+
+            // Any other field type: a fresh, uniquely-identified pointer
+            // snapshotting the field's current value, mirroring
+            // runNewScalarPointerExpression's single-value allocation. The
+            // fresh id guarantees `&a.field !is &b.field` for distinct
+            // receivers, matching real addresses; it does not alias writes
+            // back to the field (no write-through case needs that here).
+            return Value.arrayPointerValue([runExpression(dot)], ++allocationCount, 0);
         }
 
         // `&call()` of a ref-returning function: run the call and yield the

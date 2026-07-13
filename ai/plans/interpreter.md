@@ -1696,6 +1696,57 @@ ceiling per §8's double/float-reinterpret exclusion), `static_array.d(7)`
 ceiling — plus an unrelated `string`-vs-array-of-int display detail on the
 same test, not separable from the ceiling class without its own fixture).
 
+**2026-07-14 (address-of-struct-field root, closed).** Triaged the 11
+remaining cerealed mismatches (`bin/bench.sh -b interpreter -b
+system-linker --dub cerealed`, HEAD `89863f28`, with a throwaway
+`failure.location`-and-full-`message` probe in `testResultsMismatches`,
+reverted before commit). `pointers.d(62)` (cerealed's
+`struct.with.class.reference` test) is language-surface, not
+representation-ceiling: `Walker.addressOfExpression`'s `DotVarExp` branch
+(impl.d) only handled a struct's **static-array** field (`&field` /
+`field.ptr`, routed through `arrayPointer`); any other field type fell
+through to the generic `Unsupported eval expression: address of
+dotVariable` throw. cerealed's test takes `&decOuter.inner` and
+`&outer.inner`, the address of a class-reference-typed struct field, to
+assert the decoded object is distinct from the original
+(`shouldNotEqual(&decOuter.inner, &outer.inner)`).
+
+Fix: the `DotVarExp` branch gains an else case producing a fresh,
+uniquely-identified single-value pointer — `Value.arrayPointerValue(
+[runExpression(dot)], ++allocationCount, 0)` — mirroring the existing
+`runNewScalarPointerExpression`'s `new int` pattern (impl.d) rather than
+inventing a new representation. The fresh `allocationCount` id guarantees
+`&a.field !is &b.field` for distinct receivers, matching real addresses;
+it is read-only (a value snapshot, not aliased to the field), which is
+sufficient here since neither this fixture nor cerealed's test writes
+through the pointer — write-through support for an arbitrary field
+address is a separate, deeper gap, not attempted.
+
+Exposing fixture
+`pointer.addressOfStructFieldIsDistinctAcrossInstances`
+(`tests/ut/backends/runner/ct/expressions.d`): a `Holder { int value; }`,
+two separately-constructed locals with equal field values, asserting
+`&a.value !is &b.value` and both dereference to the seeded value.
+Confirmed red on `Interpreter` (`Unsupported eval expression: address of
+dotVariable`) before this fix, green on `SystemLinker`/`LLVMJit`
+throughout. `Ctfe` omitted: DMD CTFE genuinely refuses this construct at
+compile time (`cannot cast '&Holder(7).value' to 'ulong' at compile
+time`), a real CTFE restriction, not a gap to close. `Bytecode` omitted:
+`AddrExp` of a `DotVarExp` is not implemented there yet (still under
+active development).
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 11 mismatches, including
+`pointers.d(62)`. After: gone, no newly-unmasked classes; cerealed drops
+to 10 mismatches: `decode.d(262)`, `encode_decode.d(75)`/`(80)`,
+`pointers.d(20)`, `pointers.d(82)`, `property.d(12)` ×2, `reset.d(9)`,
+`static_array.d(7)`, `structs.d(22)` — unchanged from the list above
+except `pointers.d(62)`'s removal. Of these, `encode_decode.d(75)`/`(80)`,
+`property.d(12)` ×2, `reset.d(9)`, and `structs.d(22)` stay
+representation-ceiling (deferred to value.md per §8); `decode.d(262)`,
+`pointers.d(20)`, `pointers.d(82)`, and `static_array.d(7)` remain
+untriaged.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

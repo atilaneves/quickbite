@@ -1402,6 +1402,42 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// `&struct.field` is AddrExp(DotVarExp); until now only a static-array field
+// was handled (arrayPointer), so any other field type fell through to the
+// generic unsupported-expression throw.  cerealed's pointer roundtrip test
+// (`struct.with.class.reference`) hits this taking the address of a decoded
+// struct's class-reference field to assert it is a distinct object from the
+// original.  Ctfe omitted: DMD CTFE genuinely refuses to convert a struct
+// field's address for pointer-identity comparison at compile time
+// (`cannot cast '&Holder(7).value' to 'ulong' at compile time`), not a gap
+// to close here.  Bytecode omitted: AddrExp of a DotVarExp is not
+// implemented there yet (still under active development).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.addressOfStructFieldIsDistinctAcrossInstances." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            unittest {
+                int seed = 7;
+                auto a = Holder(seed);
+                auto b = Holder(seed);
+
+                int* pa = &a.value;
+                int* pb = &b.value;
+
+                assert(pa !is pb);
+                assert(*pa == seed);
+                assert(*pb == seed);
+            }
+        });
+    }
+}
+
 // A ref-returning call as the *assignment target* (`f(i) = v`) must run the
 // callee and write through the returned lvalue, aliasing the caller's
 // argument.  automem's vector tests hit this shape 10× as
