@@ -1745,13 +1745,22 @@ private struct Compiler {
                 "Unsupported compound assignment in bytecode core: ",
             );
 
-        if (auto rightShiftAssign = expression.isShrAssignExp)
+        if (auto rightShiftAssign = expression.isShrAssignExp) {
+            if (auto deref = rightShiftAssign.e1.isPtrExp)
+                if (auto store = tryPointerDereferenceIntegerCompoundAssign(
+                        deref,
+                        rightShiftAssign.e2,
+                        Op.shrInt4,
+                        Op.shrInt4,
+                    ))
+                    return *store;
             return compileLocalIntegerCompoundAssign(
                 rightShiftAssign,
                 Op.shrInt4,
                 Op.shrInt4,
                 "Unsupported compound assignment in bytecode core: ",
             );
+        }
 
         if (auto leftShiftAssign = expression.isShlAssignExp)
             return compileLocalIntegerCompoundAssign(
@@ -6707,6 +6716,66 @@ private struct Compiler {
         _code ~= Instruction(
             addOp, current.offset, current.offset, rhsValue.offset,
         );
+        _code ~= Instruction(
+            pointerStoreOp(size(pointer.pointerElement)),
+            current.offset,
+            pointer.offset,
+            zero,
+        );
+        auto result = new Operand;
+        *result = Operand(current.offset, current.type);
+        return result;
+    }
+
+    // `*p op= rhs` through an integer pointer: load the current element, run
+    // the existing integer opcode, and store the result back through `p`.
+    private Operand* tryPointerDereferenceIntegerCompoundAssign(
+        PtrExp deref,
+        Expression rhs,
+        in Op op4,
+        in Op op8,
+    ) {
+        import std.conv: text;
+
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            return null;
+
+        const zero = compileSizeConstant(0);
+        const current = loadThroughPointer(pointer, zero);
+        const rhsValue = compileExpression(rhs);
+        if (!isCompoundIntegerScalar(current.type) ||
+            !isCompoundIntegerScalar(rhsValue.type) ||
+            isEightByteInteger(current.type) !=
+                isEightByteInteger(rhsValue.type) ||
+            (isEightByteInteger(current.type) &&
+                (rhsValue.type != current.type || op8 == op4)))
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(deref),
+            ));
+
+        const operationType = isEightByteInteger(current.type)
+            ? current.type
+            : ScalarType.int_;
+        const lhs = integerOperationOperand(current, operationType);
+        const rhsOperand = integerOperationOperand(rhsValue, operationType);
+        const destination = size(current.type) == size(operationType)
+            ? current.offset
+            : allocate(operationType);
+        _code ~= Instruction(
+            isEightByteInteger(operationType) ? op8 : op4,
+            destination,
+            lhs.offset,
+            rhsOperand.offset,
+        );
+        if (destination != current.offset)
+            _code ~= Instruction(
+                Op.copy,
+                current.offset,
+                destination,
+                cast(ushort) size(current.type),
+            );
         _code ~= Instruction(
             pointerStoreOp(size(pointer.pointerElement)),
             current.offset,

@@ -5162,3 +5162,15 @@ tuple-expression and scalar field-assignment paths; it does not add tuple
 representation, generic tuple operations, or formatter support. Verification:
 focused Bytecode row, `ninja bin/ut`, and `bin/ut --random` passed (seed
 `1328625760`).
+
+`pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible` promoted
+to `Bytecode`, 2026-07-13: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported compound assignment in bytecode core: *p >>= 1`. The
+typed-frame core already reinterpreted same-size pointer loads and could store
+through those pointers; the narrow completion lowers right-shift compound
+assignment by loading the pointed-to integer, applying the existing integer
+opcode with normal width checks, and storing the result through the same
+pointer. It does not add pointer arithmetic, non-integer compound operations,
+or new pointer representations. Verification: focused red then green;
+`ninja bin/ut` and `bin/ut --random` passed (seed `951890973`).

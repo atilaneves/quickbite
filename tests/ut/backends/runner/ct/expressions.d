@@ -1255,7 +1255,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // char/wchar/dchar family: a 1-byte `char`/`ubyte*` version does not repro,
 // because DMD inserts an extra implicit `int` promotion for sub-`int`-sized
 // operands in compound-assignment lowering that re-masks the bug.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1271,10 +1271,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// Bytecode ("Unsupported expression `& c`") and IR (AssertError in
-// compiler.d, valueType) do not support taking the address of a local;
-// Bytecode ("Unsupported compound assignment in bytecode core") does
-// not support this compound-assignment shape.
+// IR (AssertError in compiler.d, valueType) does not support taking the
+// address of a local or this compound-assignment shape.
 
 // Same reinterpret-load shape as above, but reading (not writing) the raw
 // bits of a `float` local through a same-size `uint*` cast. Ctfe has no
