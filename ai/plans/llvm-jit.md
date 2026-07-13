@@ -1314,9 +1314,14 @@ static foreach (backend; AliasSeq!(Interpreter, LLVMJit)) {
 SystemLinker-oracle rows: the three struct fixtures, pointer index assignment,
 explicit struct-field initialization, local-buffer `strlen`, file I/O, and the
 four adjacent parameter/control-flow diagnostics. All 11 new `LLVMJit` rows
-passed in a focused serial run. `rt/dependency_image.d` remains the next Slice
-E increment; it needs a mechanical conversion from its current
-Interpreter-specific fixture shape to an `Interpreter`/`LLVMJit` matrix.
+passed in a focused serial run. Converted `rt/dependency_image.d` mechanically
+to the `Interpreter`/`LLVMJit` matrix. Its two TLS rows exposed the parked
+interposition hazard: defining dlsym's per-thread TLS instance as an ORC
+absolute symbol breaks the TLSGD protocol. LLVMJit now rewrites resolved TLSGD
+sequences in the child object to return that instance directly, removing the
+TLSGD and `__tls_get_addr` relocations before JITLink loads the object. The
+historical seed `4286332873` and the standard randomized gate (seed
+`55736904`) are green.
 
 ## Slice F — diagnostics and hygiene
 
