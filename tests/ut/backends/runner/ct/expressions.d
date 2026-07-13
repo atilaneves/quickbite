@@ -1336,10 +1336,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 
 // Reinterpret-WRITE (not read) through a same-size pointer cast: writing raw
 // bits into a `float` local via a `uint*` must be visible to a subsequent
-// direct read of the local. SystemLinker is the oracle; Bytecode/LLVMJit/
-// Ctfe are omitted per the omit-don't-pin convention (address-of-a-local and
-// float byte-reinterpretation are unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+// direct read of the local. SystemLinker is the oracle; LLVMJit and Ctfe are
+// omitted per the omit-don't-pin convention (address-of-a-local and float
+// byte-reinterpretation are unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.uintBitsWrittenThroughPointerReadBackAsFloat." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

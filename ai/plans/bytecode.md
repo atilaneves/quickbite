@@ -5357,3 +5357,12 @@ Reviewer follow-up, 2026-07-13: removed the stale
 `emplaceRefWritesArrayElement` comment that said Bytecode was omitted for its
 `char[]`-literal assertion. Bytecode is in that fixture's matrix and now runs
 the assertion after the mixed comparison support landed.
+
+`pointer.uintBitsWrittenThroughPointerReadBackAsFloat` promoted to Bytecode,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The row writes the bit pattern for `1.0f` through a
+`uint*` reinterpreting a local `float`, then reads that local directly. The
+focused Bytecode row passed on its first candidate run, so no production change
+was needed. LLVMJit and Ctfe remain excluded under the existing
+omit-don't-pin convention. Verification: focused Bytecode row; `ninja bin/ut`;
+and `bin/ut --random` passed (seed `3645436118`).
