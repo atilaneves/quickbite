@@ -135,6 +135,11 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsInChild(
     // parent: read the report before reaping the child so a report larger than
     // the pipe buffer cannot deadlock against waitpid.
     close(fds[1]);
+    bool childReaped;
+    scope(failure) {
+        if (!childReaped)
+            closeAndReapChild(fds[0], pid);
+    }
     ubyte[] data;
     ubyte[4096] buffer;
     for (;;) {
@@ -149,12 +154,15 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsInChild(
         data ~= buffer[0 .. got];
     }
     close(fds[0]);
+    fds[0] = -1;
 
     int status;
     for (;;) {
         const reaped = waitpid(pid, &status, 0);
-        if (reaped == pid)
+        if (reaped == pid) {
+            childReaped = true;
             break;
+        }
         if (reaped < 0 && errno == EINTR)
             continue;
         throw new Exception("waitpid failed for the JIT child");
@@ -245,6 +253,11 @@ private imported!"quickbite.backends.evaluator".EvalResult evalInChild(
     }
 
     close(fds[1]);
+    bool childReaped;
+    scope(failure) {
+        if (!childReaped)
+            closeAndReapChild(fds[0], pid);
+    }
     ubyte[] data;
     ubyte[4096] buffer;
     for (;;) {
@@ -259,12 +272,15 @@ private imported!"quickbite.backends.evaluator".EvalResult evalInChild(
         data ~= buffer[0 .. got];
     }
     close(fds[0]);
+    fds[0] = -1;
 
     int status;
     for (;;) {
         const reaped = waitpid(pid, &status, 0);
-        if (reaped == pid)
+        if (reaped == pid) {
+            childReaped = true;
             break;
+        }
         if (reaped < 0 && errno == EINTR)
             continue;
         throw new Exception("waitpid failed for the JIT child");
@@ -300,6 +316,25 @@ private void runEvalChildAndReport(
             message = throwable.msg;
         writeError(fd, message);
     }
+}
+
+// If the parent cannot finish reading a child report, leaving the read end
+// open can strand the child in write(2), and throwing before waitpid leaves a
+// zombie. This cleanup runs only before the normal reap succeeds.
+private void closeAndReapChild(ref int readFd, int pid) @nogc nothrow {
+    import core.stdc.errno: EINTR, errno;
+    import core.sys.posix.signal: SIGKILL, kill;
+    import core.sys.posix.sys.wait: waitpid;
+    import core.sys.posix.unistd: close;
+
+    if (readFd >= 0) {
+        close(readFd);
+        readFd = -1;
+    }
+    kill(pid, SIGKILL);
+
+    int status;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
 }
 
 public struct LLVMJitInputs {

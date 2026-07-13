@@ -1414,6 +1414,11 @@ tests are green afterwards.
 `SIGPIPE` handler and closes its write descriptor during cleanup, preventing
 test-local process-state and descriptor leaks.
 
+**Progress (2026-07-13).** Parent-side result-pipe failures now close the
+read end, kill the still-running JIT child, and reap it before propagating the
+read error. This prevents a blocked writer or zombie on either the test or
+eval child path.
+
 ## SystemLinker-peer parity Slice 3 — `bench-exec` ORC mode + LDC bench
 
 **Progress (2026-07-13).** Added the ORC object request mode to the shared
