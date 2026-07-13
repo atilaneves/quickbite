@@ -1669,3 +1669,34 @@ static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// cerealed's decode loop grows an array one element at a time and reads the
+// element it just appended via `$` (`val.length++; cereal.grain(val[$ - 1])`,
+// cereal.d's grainRawArray/grainWithLengthInBytesAttr): `$` must reflect the
+// array's length as of *this* index expression, computed after the growth
+// that precedes it, not a stale value from before the growth ran.
+// ai/plans/interpreter.md §9.7 (size_t underflow rung). The write inside
+// `grown` deliberately indexes via `arr.length - 1`, not `$`, so this fixture
+// isolates the read-side `$` defect the fix targets. Bytecode omitted:
+// "Unsupported variable in bytecode core: $" - `$` is not implemented there.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.dollarReflectsLengthAfterInPlaceGrowth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] grown(int count) {
+                int[] arr;
+                foreach (i; 0 .. count) {
+                    arr.length++;
+                    arr[arr.length - 1] = i + 1;
+                }
+                return arr;
+            }
+
+            unittest {
+                assert(grown(3)[$ - 1] == 3);
+            }
+        });
+    }
+}

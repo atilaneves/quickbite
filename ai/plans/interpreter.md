@@ -1315,6 +1315,54 @@ These drafts need review and real red-first proof before they are committed.
 Do not present them as completed fixtures until the focused red and green
 commands have been run and recorded.
 
+**2026-07-13 (size_t underflow rung, partial close).** Re-triaged the 6
+`index [18446744073709551615 / 0] out of bounds` cerealed mismatches
+(`bin/bench.sh -b interpreter -b system-linker --dub cerealed`, with a
+throwaway `failure.location` probe in `testResultsMismatches` to locate
+each by file/line, reverted before commit): `pointers.d(82)`,
+`protocol_unit.d(114)`/`(151)`/`(169)`, `static_array.d(27)`,
+`structs.d(184)`. The last two share one root, now fixed:
+`Walker.runIndexExpression` (impl.d, `arr[e2]` handling) evaluated
+`index.e2` — which can reference `$` bound to `index.lengthVar` — *before*
+running `index.e1` and seeding `lengthVar` from its length, so
+`arr[$ - 1]` right after growing `arr` read a stale or default-zero `$`
+and underflowed to `size_t.max`. `runSliceExpression` already runs `e1`
+and seeds `lengthVar` before its bounds check, so `runIndexExpression`
+now matches that order. Exposing fixture
+`dynamicArray.dollarReflectsLengthAfterInPlaceGrowth`
+(`tests/ut/backends/runner/ct/arrays.d`), modelled on cerealed's
+`val.length++; cereal.grain(val[$ - 1])` decode loop (grainRawArray /
+grainWithLengthInBytesAttr in cereal.d): red on `Interpreter` (`array
+index 18446744073709551615 is out of bounds` before the fix), green on
+`Ctfe`, `SystemLinker`, `LLVMJit` throughout; `Bytecode` omitted
+(`Unsupported variable in bytecode core: $`, not implemented there).
+Re-measure: `static_array.d(27)` and `structs.d(184)` are gone from the
+cerealed mismatch list; both go through `grainRawArray`'s direct
+`val[$-1]`.
+
+The `protocol_unit.d` trio and `pointers.d(82)` remain red — **not** the
+same root. A probe fixture (`void grow(ref Holder val) { val.arr.length
+++; }`) reproduces a silent wrong answer with no `$` involved at all:
+mutating an array-typed field through a `ref` struct parameter
+(`__traits(getMember, val, member).length++`, exactly
+`grainWithLengthInBytesAttr`'s shape, `val: ref T`) does not persist
+back to the caller — `h.arr.length` reads `0` after `growLast(h)`
+returns. That silent loss is why the three `protocol_unit.d`
+`@LengthInBytes` tests still underflow `$` afterwards: the array never
+actually grows from the caller's perspective, so `$` (now correctly
+computed) is legitimately `0` even after the interpreted `length++`.
+This is a distinct rung-7 root (ref-parameter struct-field array
+mutation, not the `$`/`lengthVar` ordering bug) and needs its own
+standalone exposing fixture and fix; not attempted here per the "prefer
+one clean root" guidance. `pointers.d(82)`'s `index [0] is out of
+bounds for array of length 0` is a deliberate `dec.value!ubyte
+.shouldThrow!RangeError` (compiled D throws on purpose); Interpreter
+fails the same way `decode.d:109` did before the 2026-07-08 native-
+`RangeError`-is-an-`Error` fix — still unexplained here, needs its own
+triage. Net: 2 of the 6 cerealed failures in this class close; 4 remain
+(3 ref-struct-field-mutation, 1 unclassified `shouldThrow!RangeError`
+miss), tracked here for follow-up.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

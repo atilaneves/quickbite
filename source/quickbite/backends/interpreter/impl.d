@@ -5903,11 +5903,19 @@ private struct Walker {
                 .assocArrayElement(runExpression(index.e2));
         }
 
-        // matches CTFE, which formats the index as unsigned
-        arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
+        // `$` inside index.e2 is a DollarExp bound to index.lengthVar, so it
+        // must see the array's current length: run index.e1 and seed
+        // lengthVar from its result before evaluating index.e2, the same
+        // order runSliceExpression already uses for the same `$` binding.
+        // Evaluating e2 first left lengthVar holding a stale (or default
+        // zero) length, so `arr[$ - 1]` on a just-grown array underflowed to
+        // size_t.max instead of the intended last-element index.
         const source = runExpression(index.e1);
         if (index.lengthVar !is null)
             locals[index.lengthVar] = Value(source.length);
+
+        // matches CTFE, which formats the index as unsigned
+        arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
 
         // covers both array-backed pointers and druntime hook results such
         // as `_d_aaGetRvalueX` slot pointers, which DMD dereferences with a
