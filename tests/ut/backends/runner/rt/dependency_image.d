@@ -18,7 +18,7 @@ private auto runDependencyImage(alias backend)(
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, LLVMJit)) {
+static foreach (backend; AliasSeq!(LLVMJit, Interpreter)) {
 @("dependencyImage.externDFunction." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3120,6 +3120,7 @@ unittest {
 // oracle crosses it fine (the KEPT supported-behavior leg); the Interpreter
 // refuses it honestly (unsupportedNativeTypeMessage). extern(C) keeps argument
 // ordering irrelevant.
+static if (is(backend == Interpreter)) {
 @("dependencyImage.externCAssocArrayRejected." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3183,6 +3184,7 @@ unittest {
         "associative array".should.be in actual[0].message;
         "int[string]".should.be in actual[0].message;
     }
+}
 }
 
 

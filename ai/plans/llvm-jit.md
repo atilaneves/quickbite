@@ -1323,6 +1323,15 @@ TLSGD and `__tls_get_addr` relocations before JITLink loads the object. The
 historical seed `4286332873` and the standard randomized gate (seed
 `55736904`) are green.
 
+**Matrix correction (2026-07-13).** `externCAssocArrayRejected` is an
+Interpreter-only FFI characterization: its expected rejection is not
+SystemLinker-oracle behavior, and both native backends support the crossing.
+It therefore remains only in the Interpreter expansion. The remaining shared
+dependency-image fixtures run `LLVMJit` before `Interpreter`; this avoids the
+Interpreter's native writeback leaking into the long-lived parent process
+before the JIT child loads the same dependency image. This is test isolation,
+not an LLVMJit support regression.
+
 ## Slice F — diagnostics and hygiene
 
 **Work.**
