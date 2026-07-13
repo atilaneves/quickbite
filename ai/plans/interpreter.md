@@ -1480,6 +1480,49 @@ branch fixed here — it needs the fourth root already named above
 remains open; this fix closes a distinct, real bug but does not turn
 the trio green.
 
+**2026-07-13 (ref-argument array-element write-back root, closed).**
+Fixed the fourth root named just above: `Walker.isWritableLocation`
+(impl.d) did not recognize an `IndexExp` (an array element, e.g.
+`arr[i]` or `arr[$ - 1]`) as a writable location, so
+`writeBackRefArguments` silently skipped writing a `ref` parameter's
+final value back into the caller's array element whenever the call
+argument was an index expression — exactly cerealed's
+`grainWithLengthInBytesAttr` shape, `cereal.grain(__traits(getMember,
+val, member)[$ - 1])`, where `grain` takes `ref T`. Fix: add
+`expression.isIndexExp !is null` to `isWritableLocation`'s accepted
+kinds. `writeBackRefArguments` already called the general
+`writeLocation`, which already dispatches an `IndexExp` target to the
+existing `writeIndexLocation` (both the plain-`VarExp`-array and
+`DotVarExp`-array-field branches); only the `isWritableLocation` gate
+was blocking the call, so no other write-path code changed. The same
+gate is shared by `writeBackThis`, `writeBackByValueClassArguments`,
+and `writeBackByValueStructArguments`, so an indexed receiver/argument
+for those write-back paths is now handled too, for free, by the same
+single-authority mechanism.
+
+Exposing fixture `dynamicArray.refParamWriteBackThroughIndexArgument`
+(`tests/ut/backends/runner/ct/arrays.d`): `void setTo(ref int x, int
+v) { x = v; }` called as `setTo(arr[1], 7)`, asserting the caller's
+`arr[1] == 7` afterwards. Confirmed red on `Interpreter` (`0 != 7`,
+i.e. the write silently never happened) before this fix, green on
+`Ctfe`/`SystemLinker`/`LLVMJit` throughout; `Bytecode` omitted
+(`Unsupported ref argument in bytecode core: arr[1]`, not implemented
+there, per §8's omit-don't-pin rule).
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after this fix (same worktree, fix
+stashed/popped to compare). Before: the `protocol_unit.d` trio
+(`__unittest_L114/151/169`) shows as value mismatches (`Expected: 3` /
+`Expected: 1` / `Expected: Struct(...)`). After: all three lines are
+gone from the interpreter/system-linker disagreement list entirely —
+the trio is now **green**, closing the `protocol_unit` root chain
+opened by this rung's earlier 2026-07-13 entries (`$`/`lengthVar`
+ordering on both the read and index-assign paths, plus this
+ref-argument write-back gap). `pointers.d(82)` is unaffected — same
+`index [0] is out of bounds for array of length 0`
+`shouldThrow!RangeError` miss as before, still needing its own,
+unrelated triage.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

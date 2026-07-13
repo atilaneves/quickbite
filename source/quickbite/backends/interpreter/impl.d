@@ -3619,7 +3619,8 @@ private struct Walker {
         return
             expression.isVarExp !is null ||
             expression.isDotVarExp !is null ||
-            expression.isThisExp !is null;
+            expression.isThisExp !is null ||
+            expression.isIndexExp !is null;
     }
 
     private bool isDynamicArrayPointerRefArgument(
