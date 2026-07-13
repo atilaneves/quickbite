@@ -1495,3 +1495,49 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
         });
     }
 }
+
+// cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
+// units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
+// element's fields through a hidden temporary dmd's foreach-to-for lowering
+// introduces: `T[] __r = val.units[]; for (...; ) { ref Unit e = __r[__k]; }`.
+// `Walker.recordSliceAlias` (impl.d) only recognised the sliced aggregate
+// (`slice.e1`) when it was a plain local `VarExp`, so a `DotVarExp` aggregate
+// (a struct field, here `val.units`) left `__r` untracked as a slice alias:
+// writes to `e`'s fields updated the interpreter's local snapshot of `__r`
+// but never propagated back to `val.units`, so the caller's array element
+// silently kept its default value. interpreter.md §9.7. `Bytecode` omitted:
+// it segfaults on this fixture (under active development, omit-don't-pin).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.foreachRefOverFieldArrayPersistsElementWrites." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Item { ushort a; ubyte b; }
+            struct Container { Item[] items; }
+
+            void fill(ref Item item, ubyte hi, ubyte lo, ubyte b) {
+                item.a = cast(ushort) ((hi << 8) | lo);
+                item.b = b;
+            }
+
+            void fillAll(ref Container container, ubyte[] bytes) {
+                container.items.length = 2;
+                size_t i;
+                foreach (ref item; container.items) {
+                    fill(item, bytes[i], bytes[i + 1], bytes[i + 2]);
+                    i += 3;
+                }
+            }
+
+            unittest {
+                Container container;
+                fillAll(container, [0, 6, 2, 0, 7, 3]);
+                assert(container.items[0].a == 6);
+                assert(container.items[0].b == 2);
+                assert(container.items[1].a == 7);
+                assert(container.items[1].b == 3);
+            }
+        });
+    }
+}

@@ -1566,6 +1566,63 @@ classes uncovered by removing this blocker — `Expected struct.`
 items, not regressions. Net: 16 → 15 disagreements (3 closed, 2 newly
 exposed by advancing further).
 
+**2026-07-13 (foreach-ref-over-struct-field-array root, closed).**
+Re-measured `bin/bench.sh -b interpreter -b system-linker --dub cerealed`
+(HEAD `e3f7486f`): 15 mismatches, unchanged in shape from the table above
+except the `.grain.b` class is gone (closed by the entry just above) and
+two new frontier classes are visible one level deeper: `Expected struct.`
+(`decode.d:262`, an enum-in-struct `shouldThrow` case) and `Expected
+array.` (`static_array.d:7`) — both untriaged, tracked below, not fixed
+here.
+
+Picked the highest-leverage remaining class: `protocol_unit.d`'s
+`__unittest_L24`/`__unittest_L58` (`pkt.units[1].us.shouldEqual(6)` /
+`pkt.units[2].us.shouldEqual(5)`), both `Expected: N / Got: 0` — a
+silent-wrong-answer, the most urgent §7 category, and the array length
+itself (`pkt.units.length`) was already correct, narrowing the fault to
+element writes. cerealed's `@ArrayLength` field decode
+(`grainWithArrayLengthAttr` in cereal.d) is `member.length = length;
+foreach (ref e; member) cereal.grain(e);` where `member` is `val.units`,
+a dynamic-array **field** of a `ref Packet val` parameter, and `grain(e)`
+writes `e`'s scalar fields through further nested `ref` forwarding.
+
+Root: dmd's own foreach-to-for lowering (`statementsem.d`) rewrites
+`foreach (ref e; val.units)` into `T[] __r = val.units[]; for (size_t
+__k = 0; __k < __r.length; ++__k) { ref Unit e = __r[__k]; ... }` — a
+hidden slice-typed temporary `__r` aliases the field array, and `e`
+aliases an element of `__r`. `Walker.recordSliceAlias` (impl.d) recorded
+`__r` as a slice alias only when the sliced expression (`slice.e1`) was
+a plain local `VarExp`; a `DotVarExp` aggregate (`val.units`, a struct
+field) fell through to `sliceAliases.remove(variable)`, leaving `__r`
+untracked. `Walker.writeThroughArrayElementAlias` already cascades an
+element write into `writeThroughSliceAlias` when the array variable
+(`__r`) has a recorded slice alias — but with none recorded, writes to
+`e`'s fields updated only the interpreter's local snapshot of `__r`,
+never `val.units`, so the caller's array element silently kept its
+default (`0`) value. Fix: `recordSliceAlias` gains a `DotVarExp` branch
+(mirroring `recordStructFieldAlias`'s existing one) that resolves the
+field's owner and index and records them on `SliceAlias` (two new
+fields, `hasFieldIndex`/`fieldIndex`); `writeThroughSliceAlias` rebuilds
+`val.units` via `structFieldAt`/`withStructField` when set, instead of
+treating `__r`'s source as a whole array local.
+
+Exposing fixture `struct.foreachRefOverFieldArrayPersistsElementWrites`
+(`tests/ut/backends/runner/ct/structs.d`): a `Container { Item[] items;
+}`, a `ref Container` parameter grows `items` then `foreach (ref item;
+container.items)` calls a helper writing `item`'s fields through one more
+`ref`-forwarding layer, asserting the caller sees both elements' fields
+afterward. Confirmed red on `Interpreter` (`0 != 6`) before this fix,
+green on `Ctfe`, `SystemLinker`, `LLVMJit` throughout; `Bytecode` omitted
+(segfaults on this fixture, under active development, §8's omit-don't-pin
+rule).
+
+cerealed impact: re-measured before/after with the same worktree (fix
+stashed/popped). Before: 15 mismatches, including `protocol_unit.d`'s
+`__unittest_L24`/`__unittest_L58`. After: both are gone; cerealed drops to
+13 mismatches with no newly-unmasked classes — the tests fully agree with
+`SystemLinker` past this point. The `decode.d`/`static_array.d` classes
+from the re-measure above remain open and untriaged.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

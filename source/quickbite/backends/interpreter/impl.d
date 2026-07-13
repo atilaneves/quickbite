@@ -6339,6 +6339,28 @@ private struct Walker {
             return;
         }
 
+        // `foreach (ref e; val.field)` lowers to `T[] tmp = val.field[];`
+        // (dmd's own foreach-to-for rewrite): the sliced aggregate is a
+        // struct field (a `DotVarExp`), not a plain local. Track the
+        // field's owner and index so the write-through below can rebuild
+        // `val.field[...]`, not a nonexistent whole-array local.
+        if (auto dot = slice.e1.isDotVarExp) {
+            auto var = dot.e1.isVarExp;
+            auto source = var is null ? null : var.var.isVarDeclaration;
+            if (source is null) {
+                sliceAliases.remove(variable);
+                return;
+            }
+
+            sliceAliases[variable] = SliceAlias(
+                source,
+                lower,
+                true,
+                structFieldIndex(dot),
+            );
+            return;
+        }
+
         auto var = slice.e1.isVarExp;
         if (var is null) {
             sliceAliases.remove(variable);
@@ -6372,6 +6394,15 @@ private struct Walker {
         auto source = alias_.source in locals;
         if (source is null)
             throw new Exception("Unsupported interpreter slice assignment target.");
+
+        if (alias_.hasFieldIndex) {
+            const updatedField = source.structFieldAt(alias_.fieldIndex)
+                .withArrayElement(alias_.lower + index, value);
+            locals[alias_.source] =
+                source.withStructField(alias_.fieldIndex, updatedField);
+            uninitializedLocals.remove(alias_.source);
+            return;
+        }
 
         locals[alias_.source] = source.withArrayElement(alias_.lower + index, value);
         uninitializedLocals.remove(alias_.source);
@@ -7255,6 +7286,11 @@ private bool isEmplaceRef(imported!"dmd.func".FuncDeclaration function_) {
 private struct SliceAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t lower;
+    // Set when the sliced aggregate is itself a struct field of `source`
+    // (e.g. `T[] tmp = val.field[];`, dmd's `foreach (ref e; val.field)`
+    // lowering) rather than `source` directly.
+    public bool hasFieldIndex;
+    public size_t fieldIndex;
 }
 
 
