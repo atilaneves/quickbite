@@ -5141,3 +5141,13 @@ returns the assigned operand. It does not add class allocation, dynamic-array
 class fields, general object layout, or formatter support. Verification:
 focused red then green; `ninja bin/ut` and `bin/ut --random` passed (seed
 `1711526885`).
+
+`struct.tupleConstructionFromLocals` promoted to `Bytecode`, 2026-07-13:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The focused Bytecode row was red because DMD lowers `Tuple`'s field
+initialization to a `TupleExp`, which the typed-frame compiler did not handle.
+The narrow lowering evaluates its optional prefix and each element in source
+order, returning the final element value; each element is already an ordinary
+supported assignment. This does not add tuple representation, generic tuple
+operations, or formatter support. Verification: focused red then green;
+`ninja bin/ut` and `bin/ut --random` passed (seed `3349317244`).

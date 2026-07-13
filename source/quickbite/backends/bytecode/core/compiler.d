@@ -47,7 +47,7 @@ private struct Compiler {
         DivExp, DotIdExp, DotVarExp, Expression,
         IdentityExp, IndexExp, LogicalExp, MulExp, FuncExp, DelegateExp,
         NegExp, NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp,
-        StringExp, StructLiteralExp, SymOffExp, ThrowExp, TypeidExp;
+        StringExp, StructLiteralExp, SymOffExp, ThrowExp, TupleExp, TypeidExp;
     import dmd.arraytypes: Expressions;
     import dmd.dclass: ClassDeclaration;
     import dmd.func: FuncDeclaration;
@@ -1657,6 +1657,9 @@ private struct Compiler {
             return compileExpression(comma.e2);
         }
 
+        if (auto tuple = expression.isTupleExp)
+            return compileTupleExpression(tuple);
+
         // A `null` pointer literal (the `(bounds, null)` false branch of `m[k]`):
         // an 8-byte zero pointer slot. The throw in the comma's first operand
         // aborts before this is read.
@@ -1976,6 +1979,20 @@ private struct Compiler {
             "Unsupported expression in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // DMD lowers tuple construction and `tupleof` assignment to a side-effect
+    // prefix followed by ordinary per-element expressions. Evaluate them in
+    // source order and preserve the final element's expression value.
+    private Operand compileTupleExpression(TupleExp tuple) {
+        if (tuple.e0 !is null)
+            compileExpression(tuple.e0);
+
+        auto result = Operand.init; // mutated while folding tuple elements
+        if (tuple.exps !is null)
+            foreach (element; *tuple.exps)
+                result = compileExpression(element);
+        return result;
     }
 
     // A struct literal as an rvalue (a struct-valued expression, e.g. a by-value

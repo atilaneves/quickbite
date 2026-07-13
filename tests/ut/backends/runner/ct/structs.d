@@ -1358,7 +1358,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // DMD lowers a `Tuple` construction's field assignment into a `TupleExp` in
 // expression position (per-field assignments). The interpreter evaluates the
 // prefix `e0` then each element in order.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.tupleConstructionFromLocals." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
