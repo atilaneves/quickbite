@@ -2169,6 +2169,42 @@ left to the orchestrator per the usual long-suite handoff. This is
 consolidation only: no new guest call site was added, and no §9.10 shim
 was retired.
 
+Progress 2026-07-13 (single byte-size authority completed): `impl.d`'s
+`pointerElementSize` -- the one site the 2026-07-10 "single byte-size
+authority" note deliberately left on raw `dmd.typesem.size`, because its
+shape (pointer-arithmetic scaling, not a struct/field query) differed from
+the eleven converted sites -- now routes through `layout.typeByteSize`
+instead. `layout.typeByteSize` is therefore now the sole byte-size
+authority in the interpreter package: there is no remaining direct
+`dmd.typesem.size` call for a bare type's size anywhere in it. Behavior is
+preserved: for a valid pointer element type, `typeByteSize` is a thin
+`@safe` wrapper over DMD's own `Type.size`, so the returned `long` is
+identical to before; when `pointerType` is not a pointer (`element is
+null`), `elementSize` is still forced to `0`, so the existing `throw` is
+unchanged. The only behavioral difference is the unreachable
+`SIZE_INVALID` case: the old code cast `SIZE_INVALID` to `long` (`-1`) and
+threw "Unsupported pointer element type."; `typeByteSize` instead throws
+its own message when layout can't be forced. `pointerElementSize`'s only
+callers (`pointerElementOffset` and pointer subtraction, both a few lines
+above/below it in `impl.d`) operate on already-valid pointer types, so
+`SIZE_INVALID` cannot occur in practice, and no test pins the old message
+(`grep -rn "Unsupported pointer element type" tests/` found nothing). This
+is the same "silent `SIZE_INVALID` cast -> loud layout throw" hardening
+the 2026-07-10 note applied to the other eleven sites, not a behavior
+change. No test was added or modified. Focused run: `bin/ut -s
+ut.backends.interpreter ut.backends.runner.ct.expressions
+ut.backends.runner.ct.structs ut.backends.runner.ct.arrays
+ut.backends.evaluator.eval` -- 1139 run, 1 failed, 5/5 failing as expected;
+the one failure is the known pre-existing, unrelated
+`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+Bytecode` ("Expression did not throw"), a stale bytecode-track pin on
+master, not caused by this change. The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff. No §9.10 shim was
+retired, and no new guest call site was added. This completes the
+interpreter-wide single-layout-authority consolidation: byte sizes, field
+offsets, and struct and class field lists, plus static-array lengths, now
+all flow through `layout.d`.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

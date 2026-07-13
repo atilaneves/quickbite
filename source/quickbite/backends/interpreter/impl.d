@@ -1582,12 +1582,12 @@ private struct Walker {
     }
 
     private long pointerElementSize(imported!"dmd.mtype".Type pointerType) {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         auto element = pointerType is null
             ? null
             : pointerType.toBasetype.nextOf;
-        const elementSize = element is null ? 0 : cast(long) element.size;
+        const elementSize = element is null ? 0 : cast(long) typeByteSize(element);
         if (elementSize <= 0)
             throw new Exception("Unsupported pointer element type.");
 
