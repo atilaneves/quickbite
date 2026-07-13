@@ -546,6 +546,7 @@ private struct Walker {
         in const(void)* nativeObjectPointer,
     ) const {
         import quickbite.frontend.dmd.values: defaultValue;
+        import quickbite.backends.interpreter.layout: classFields;
         import dmd.dclass: ClassDeclaration;
 
         auto class_ = ClassDeclaration.exception;
@@ -590,6 +591,8 @@ private struct Walker {
         imported!"dmd.dclass".ClassDeclaration class_,
         in Value object,
     ) {
+        import quickbite.backends.interpreter.layout: classFields;
+
         if (!object.hasClassFieldNamed(nativeExceptionObjectPointerField))
             return object;
 
@@ -629,10 +632,11 @@ private struct Walker {
         const(void)* objectPointer,
     ) {
         import quickbite.backends.interpreter.ffi_marshal: unmarshalNative;
+        import quickbite.backends.interpreter.layout: fieldByteOffset;
 
         return unmarshalNative(
             field.type.toBasetype,
-            cast(void*) (cast(ubyte*) objectPointer + field.offset),
+            cast(void*) (cast(ubyte*) objectPointer + fieldByteOffset(field)),
         );
     }
 
@@ -1578,12 +1582,12 @@ private struct Walker {
     }
 
     private long pointerElementSize(imported!"dmd.mtype".Type pointerType) {
-        import dmd.typesem: size;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         auto element = pointerType is null
             ? null
             : pointerType.toBasetype.nextOf;
-        const elementSize = element is null ? 0 : cast(long) element.size;
+        const elementSize = element is null ? 0 : cast(long) typeByteSize(element);
         if (elementSize <= 0)
             throw new Exception("Unsupported pointer element type.");
 
@@ -2003,8 +2007,10 @@ private struct Walker {
         in Value pointer,
         imported!"dmd.mtype".Type staticArrayType,
     ) {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+
         auto staticArray = staticArrayType.toBasetype.isTypeSArray;
-        const length = cast(size_t) staticArray.dim.toInteger;
+        const length = staticArrayLength(staticArray);
         const target = pointerTargetValue(pointer);
         if (target.isArray)
             return target;
@@ -4398,12 +4404,14 @@ private struct Walker {
     private Value runVectorExpression(
         imported!"dmd.expression".VectorExp vector,
     ) {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+
         auto staticArray = vector.to.basetype.toBasetype.isTypeSArray;
         if (staticArray is null)
             throw new Exception("Unsupported interpreter vector expression.");
 
         const value = runExpression(vector.e1);
-        const length = cast(size_t) staticArray.dim.toInteger;
+        const length = staticArrayLength(staticArray);
 
         Value[] elements;
         foreach (_; 0 .. length)
@@ -4896,6 +4904,8 @@ private struct Walker {
     }
 
     private size_t structFieldIndex(imported!"dmd.expression".DotVarExp dot) {
+        import quickbite.backends.interpreter.layout: structFields;
+
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             throw new Exception("Unsupported interpreter field access.");
@@ -4904,8 +4914,8 @@ private struct Walker {
         if (structType is null || structType.sym is null)
             throw new Exception("Unsupported interpreter field access.");
 
-        foreach (index; 0 .. structType.sym.fields.length)
-            if (structType.sym.fields[index] is field)
+        foreach (index, candidate; structFields(structType))
+            if (candidate is field)
                 return index;
 
         throw new Exception("Unsupported interpreter field access.");
@@ -4919,6 +4929,8 @@ private struct Walker {
         imported!"dmd.expression".DotVarExp dot,
         in Value receiver,
     ) {
+        import quickbite.backends.interpreter.layout: classFields;
+
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             throw new Exception("Unsupported interpreter field access.");
@@ -5610,6 +5622,7 @@ private struct Walker {
         in Value value,
     ) {
         import quickbite.frontend.dmd.types: isAssocArrayType;
+        import quickbite.backends.interpreter.layout: staticArrayLength;
 
         auto field = structLiteralField(literal, index);
         if (field is null)
@@ -5622,7 +5635,7 @@ private struct Walker {
         if (staticArray is null || value.isArray)
             return value;
 
-        const length = cast(size_t) staticArray.dim.toInteger;
+        const length = staticArrayLength(staticArray);
         Value[] elements;
         foreach (_; 0 .. length)
             elements ~= value;
@@ -6123,9 +6136,11 @@ private struct Walker {
             structVal = child.thisValue;
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
+            import quickbite.backends.interpreter.layout: structFields;
+
             auto structType = targetType.isTypeStruct;
             foreach (index, argument; *new_.arguments) {
-                if (index >= structType.sym.fields.length)
+                if (index >= structFields(structType).length)
                     throw new Exception(text(
                         "Unsupported eval expression: ", new_.op,
                     ));
@@ -6831,6 +6846,7 @@ private imported!"quickbite.lang".Value classDefaultValue(
 ) {
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
+    import quickbite.backends.interpreter.layout: classFields;
 
     string[] fieldNames;
     Value[] fields;
@@ -6861,22 +6877,6 @@ private imported!"dmd.mtype".Type[] nativeArgumentTypes(
         types ~= expression.type;
 
     return types;
-}
-
-
-private imported!"dmd.declaration".VarDeclaration[] classFields(
-    imported!"dmd.dclass".ClassDeclaration class_,
-) {
-    imported!"dmd.dclass".ClassDeclaration[] classes;
-    for (auto current = class_; current !is null; current = current.baseClass)
-        classes ~= current;
-
-    imported!"dmd.declaration".VarDeclaration[] fields;
-    foreach_reverse (current; classes)
-        foreach (field; current.fields)
-            fields ~= field;
-
-    return fields;
 }
 
 

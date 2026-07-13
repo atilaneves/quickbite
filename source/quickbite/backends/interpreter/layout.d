@@ -123,3 +123,40 @@ public size_t staticArrayLength(imported!"dmd.mtype".TypeSArray type) @safe {
 private size_t staticArrayLengthImpl(imported!"dmd.mtype".TypeSArray type) @trusted {
     return cast(size_t) type.dim.toUInteger;
 }
+
+
+// `class_`'s fields, in base-to-derived declaration order: walks
+// `baseClass` from `class_` up to the root, then emits each level's own
+// `fields` starting from the root and working back down, so a derived
+// class's fields follow its base class's fields, matching the layout the
+// interpreter's class `Value`s use. Unlike `structFields` above, this does
+// NOT force layout first -- a class's `fields` are populated by semantic
+// analysis (`dsymbolsem.d`) before the interpreter ever runs, so there is
+// no `sizeok`-gated state to force here the way a struct's is.
+public imported!"dmd.declaration".VarDeclaration[] classFields(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @safe pure nothrow {
+    return classFieldsImpl(class_);
+}
+
+// `ClassDeclaration.baseClass` and appending to an `Array!VarDeclaration`
+// via `~=` are not @safe (both walk raw DMD pointers); this is the
+// @trusted boundary -- it only walks and copies DMD's own already-
+// populated `fields` arrays, the same "read DMD's own state, no
+// arithmetic of our own" trust the other `@trusted` impls above apply.
+// Both calls happen to also be `pure`/`nothrow`, so those attributes
+// carry through unlike the other impls above, which cannot claim them.
+private imported!"dmd.declaration".VarDeclaration[] classFieldsImpl(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @trusted pure nothrow {
+    imported!"dmd.dclass".ClassDeclaration[] classes;
+    for (auto current = class_; current !is null; current = current.baseClass)
+        classes ~= current;
+
+    imported!"dmd.declaration".VarDeclaration[] fields;
+    foreach_reverse (current; classes)
+        foreach (field; current.fields)
+            fields ~= field;
+
+    return fields;
+}

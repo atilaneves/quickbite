@@ -2106,6 +2106,227 @@ evaluator.eval` (identical to the pre-change baseline, pre-existing
 `@ShouldFail` rows still fail as expected). The full `bin/ut --random` was
 left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-13 (static-array length authority): `impl.d`'s three
+remaining hand-rolled static-array-length reads --
+`staticArrayPointerView`, `runVectorExpression`, and
+`structLiteralFieldValue`'s default-value expansion -- each computed a
+`TypeSArray`'s element count as `cast(size_t) staticArray.dim.
+toInteger`. This commit routes all three through the existing
+`layout.staticArrayLength(TypeSArray)` helper instead, making it the
+single interpreter authority for a static array's element count, the
+same way the prior two notes made `layout.typeByteSize` the single
+byte-size authority and `layout.fieldByteOffset` the single field-offset
+authority. `layout.staticArrayLength` reads `type.dim.toUInteger` behind
+a `@trusted` boundary; for any valid (non-negative) array dimension
+`toInteger` and `toUInteger` produce identical `size_t` bits, so this is
+behaviour-preserving, not a behaviour change. No `import` was orphaned
+by this change -- each site gained a new local `import
+quickbite.backends.interpreter.layout: staticArrayLength;` alongside its
+existing imports, none of which referenced the removed `.dim.
+toInteger` expression. No layout number, offset walk, or aggregate-
+handling behaviour changed; this is purely internal call routing. No
+test was added or modified. Focused run: `bin/ut -s
+ut.backends.interpreter ut.backends.runner.ct.expressions
+ut.backends.runner.ct.structs ut.backends.runner.ct.arrays
+ut.backends.evaluator.eval` -- 1139 run, 1 failed, 5/5 failing as
+expected; the 1 failure
+(`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+Bytecode`) is pre-existing and unrelated (Bytecode backend, "Expression
+did not throw"), confirmed identical on a stashed pre-change rebuild.
+The full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff. This is consolidation only: no new guest call site
+was added, and no §9.10 shim was retired.
+
+Progress 2026-07-13 (struct-field-list authority): `impl.d`'s two
+remaining direct `TypeStruct.sym.fields` accesses --
+`structFieldIndex`'s field-index search and
+`runNewStructPointerExpression`'s aggregate-initialiser bound check --
+now route through the existing `layout.structFields(TypeStruct)` helper
+instead of reading `sym.fields` directly. As the helper's own doc
+comment establishes (and the prior static-array-length note echoed for
+`staticArrayLength`), `structFields` returns `type.sym.fields[]`
+verbatim -- same array, same order, same `VarDeclaration` objects --
+after forcing layout via `typeByteSize`, which is a no-op at both call
+sites since the struct type is already fully resolved there (a
+receiver's struct type mid-evaluation; a `new` target's struct type).
+This is therefore an identity consolidation, not a behaviour change.
+Each site gained a new local `import
+quickbite.backends.interpreter.layout: structFields;` alongside its
+existing imports; no import was orphaned. `structLiteralField`'s
+`literal.sd.fields[index]` (~line 7161) was deliberately left alone --
+it reads a `StructDeclaration`'s fields, not a `TypeStruct`'s, so
+`layout.structFields` does not apply there. No test was added or
+modified. Focused run: `bin/ut -s ut.backends.interpreter
+ut.backends.runner.ct.expressions ut.backends.runner.ct.structs
+ut.backends.runner.ct.arrays ut.backends.evaluator.eval` -- 1139 run, 1
+failed, 5/5 failing as expected; the 1 failure
+(`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+Bytecode`, "Expression did not throw") is the same pre-existing,
+unrelated Bytecode-track pin noted above. The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff. This is
+consolidation only: no new guest call site was added, and no §9.10 shim
+was retired.
+
+Progress 2026-07-13 (class-field offset authority): `nativeClassFieldValue`
+now routes its class-field byte offset through
+`layout.fieldByteOffset(VarDeclaration)` instead of reading
+`field.offset` directly. As `fieldByteOffset`'s own doc comment
+establishes, it returns `VarDeclaration.offset` verbatim, so this is an
+identity consolidation, not a behaviour change. This brings the
+class-field read path onto the same layout authority the struct field
+path already uses (see the struct-field-list authority note above). A
+new local `import quickbite.backends.interpreter.layout:
+fieldByteOffset;` was added inside `nativeClassFieldValue`, alongside
+its existing local import; no import was orphaned. No test was added or
+modified. Focused run: `bin/ut -s ut.backends.interpreter
+ut.backends.runner.ct.expressions ut.backends.runner.ct.structs
+ut.backends.evaluator.eval` (`ut.backends.runner.ct.classes` does not
+exist as a suite) -- 838 run, 0 failed, 5/5 failing as expected. The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff. This is consolidation only: no new guest call site
+was added, and no §9.10 shim was retired.
+
+Progress 2026-07-13 (class-field-list authority): the module-private
+`classFields(ClassDeclaration)` helper -- walking `baseClass` to collect a
+class's fields in base-to-derived order -- moved from `impl.d` into
+`layout.d` as public `layout.classFields`, symmetric with the existing
+`layout.structFields`. The body is unchanged: same hierarchy walk, same
+`foreach_reverse` over collected classes, same field order. Unlike
+`structFields`, which forces struct layout via `typeByteSize` before
+reading `sym.fields`, `classFields` does NOT force layout -- a class's
+`fields` are populated by semantic analysis (`dsymbolsem.d`) before the
+interpreter ever runs, so there is no `sizeok`-gated state to force, and
+the doc comment on the new `layout.classFields` says so explicitly. All 4
+`impl.d` call sites (`nativeExceptionValue`, `nativeExceptionObjectWith
+ClassFields`, `classFieldIndex`, and the module-level `classDefaultValue`)
+now route through it via a local `import
+quickbite.backends.interpreter.layout: classFields;`, added alongside each
+site's existing local imports (or as the site's first local import, where
+none existed). No import was orphaned by the deletion. No test was added
+or modified. Focused run: `bin/ut -s ut.backends.interpreter
+ut.backends.interpreter.layout ut.backends.runner.ct.expressions
+ut.backends.runner.ct.structs ut.backends.evaluator.eval` -- 838 run, 0
+failed, 5/5 failing as expected (the same pre-existing expected failures
+as the prior progress note's focused run). The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff. This is
+consolidation only: no new guest call site was added, and no §9.10 shim
+was retired.
+
+Progress 2026-07-13 (single byte-size authority completed): `impl.d`'s
+`pointerElementSize` -- the one site the 2026-07-10 "single byte-size
+authority" note deliberately left on raw `dmd.typesem.size`, because its
+shape (pointer-arithmetic scaling, not a struct/field query) differed from
+the eleven converted sites -- now routes through `layout.typeByteSize`
+instead. `layout.typeByteSize` is therefore now the sole byte-size
+authority in the interpreter package: there is no remaining direct
+`dmd.typesem.size` call for a bare type's size anywhere in it. Behavior is
+preserved: for a valid pointer element type, `typeByteSize` is a thin
+`@safe` wrapper over DMD's own `Type.size`, so the returned `long` is
+identical to before; when `pointerType` is not a pointer (`element is
+null`), `elementSize` is still forced to `0`, so the existing `throw` is
+unchanged. The only behavioral difference is the unreachable
+`SIZE_INVALID` case: the old code cast `SIZE_INVALID` to `long` (`-1`) and
+threw "Unsupported pointer element type."; `typeByteSize` instead throws
+its own message when layout can't be forced. `pointerElementSize`'s only
+callers (`pointerElementOffset` and pointer subtraction, both a few lines
+above/below it in `impl.d`) operate on already-valid pointer types, so
+`SIZE_INVALID` cannot occur in practice, and no test pins the old message
+(`grep -rn "Unsupported pointer element type" tests/` found nothing). This
+is the same "silent `SIZE_INVALID` cast -> loud layout throw" hardening
+the 2026-07-10 note applied to the other eleven sites, not a behavior
+change. No test was added or modified. Focused run: `bin/ut -s
+ut.backends.interpreter ut.backends.runner.ct.expressions
+ut.backends.runner.ct.structs ut.backends.runner.ct.arrays
+ut.backends.evaluator.eval` -- 1139 run, 1 failed, 5/5 failing as expected;
+the one failure is the known pre-existing, unrelated
+`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+Bytecode` ("Expression did not throw"), a stale bytecode-track pin on
+master, not caused by this change. The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff. No §9.10 shim was
+retired, and no new guest call site was added. This completes the
+interpreter-wide single-layout-authority consolidation for every field-list
+read that feeds layout *arithmetic* (offsets, sizes, indexing): byte sizes,
+field offsets, and struct and class field lists that feed such arithmetic,
+plus static-array lengths, now all flow through `layout.d`. As with
+`structLiteralField` above, three sites are deliberately exempt because
+forcing layout would change their behaviour rather than merely consolidate
+it: `ffi_marshal.d`'s `isOpaqueUnionOutCell` (~line 1046),
+`canMarshalToNative` (~line 1093), and `canReifyFromNative` (~line 1129)
+each iterate `sym.fields` directly rather than through
+`layout.structFields`, because they are shape *predicates* that must be
+able to answer `false` for a type DMD cannot lay out, whereas
+`structFields` forces layout via `typeByteSize`, which throws for exactly
+such a type.
+
+Progress 2026-07-13 (static-array length authority reaches the FFI
+marshaller): the previous note's "static-array lengths" consolidation
+covered `impl.d` only (commit c0748396); this extends it to
+`ffi_marshal.d` -- this plan's Track B (the interpreter's
+materialize/reify) -- which had two remaining hand-rolled
+`cast(size_t) staticArray.dim.toInteger` reads, in the `Tsarray` marshal
+arm and in `unmarshalStaticArray`. Both now call
+`layout.staticArrayLength(staticArray)` instead, with a local
+`import quickbite.backends.interpreter.layout: staticArrayLength, ...;`
+added at each site alongside the existing `typeByteSize` import.
+`layout.staticArrayLength` is therefore now the single static-array
+element-count authority across the whole interpreter package (`impl.d`
+and `ffi_marshal.d`). Behavior-preserving: for a valid (non-negative)
+static-array dimension, `dim.toInteger` and `dim.toUInteger` yield
+identical `size_t` bits, so this is a pure rename of the read, not a
+behavior change. The `index * elementSize` / `new ubyte[](length *
+elementSize)` element walks at both sites are deliberately left alone --
+out of scope for this commit. No test was added or modified. Focused
+run: `bin/ut -s ut.backends.interpreter ut.backends.runner.rt.cstdlib
+ut.backends.runner.rt.dependency_image ut.backends.runner.ct.expressions
+ut.backends.evaluator.eval` -- 746 run, 0 failed, 5/5 failing as expected
+(the same pre-existing expected failures as prior progress notes). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff. No §9.10 shim was retired, and no new guest call site
+was added.
+
+Progress 2026-07-13 (pointer-element walks join the aggregate authority):
+`ffi_marshal.d`'s last two hand-rolled `index * elementSize` per-element
+walks -- deliberately left alone by the previous note -- now route through
+`NativeArray`, mirroring the 2026-07-10 "slice element layout joins the
+aggregate authority" consolidation of `marshalSliceArgument` and
+`unmarshalSlice`. `marshalPointerElements` (write side) now allocates
+`NativeArray.allocate(elementType, length)` and writes each element into
+`na.element(index)` instead of hand-slicing a `new ubyte[](length *
+elementSize)`, returning `na.block.bytes`; an element still `= void` is
+`continue`d past exactly as before, and `NativeBlock.allocate`'s `GC.calloc`
+zeroes it exactly as `new ubyte[]` did. `pointerWritebacks` (reify side) now
+wraps the already-marshalled buffer with `NativeArray.borrow(writeback.
+elementType, cast(void*) writeback.bytes.ptr, length)` and reads each
+element via `na.element(index)` instead of hand-slicing `writeback.bytes`.
+Behavior-identical: `NativeArray`'s stride is `layout.typeByteSize
+(elementType)`, the same number the old `elementSize` used, and
+`na.element(index)` returns the same `index*stride .. (index+1)*stride`
+byte range the hand-rolled walk produced; `allocate` zeroes like `new
+ubyte[]`, and `borrow` wraps existing bytes without copying, like the old
+direct slice into `writeback.bytes`. One incidental improvement:
+`NativeArray.allocate` picks its block's GC scan policy from
+`typeHasPointers(elementType)`, so a pointer-carrying element type now gets
+a conservatively-scanned block where the old `new ubyte[]` (typed `ubyte[]`)
+was always NO_SCAN. This closes the last hand-rolled per-element layout
+walk in the FFI marshaller -- the item 7 "must not grow a second set of D
+layout rules" guardrail now holds with no exceptions there. `impl.d`'s
+`nativeElementAddress` (~line 5767) still computes `cast(void*)
+(cast(ubyte*) base + index * elementSize)` by hand for native-pointer
+element indexing, at both its call sites in `loadNativePointerElement`
+and `storeNativePointerElement` (~line 5735/5755). That is pure pointer
+arithmetic on a caller-supplied `elementSize`, which both call sites
+already obtain from `layout.typeByteSize`, not a second layout *rule* of
+its own, so it does not violate the guardrail -- but it remains
+hand-rolled, and routing it through `NativeArray` too is a future
+cleanup, not something this commit did. No test was added or modified.
+Focused run: `bin/ut -s ut.backends.interpreter
+ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image
+ut.backends.runner.rt.file ut.backends.runner.rt.random
+ut.backends.evaluator.eval` -- 441 run, 0 failed. The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+Still the FFI seam, not the tree-walker's core representation: no §9.10
+shim was retired, and no guest call site was added.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
