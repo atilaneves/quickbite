@@ -248,6 +248,7 @@ static foreach (backend; AliasSeq!(
     Bytecode,
     IR,
     SystemLinker,
+    LLVMJit,
 )) {
     @("functionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -270,6 +271,7 @@ static foreach (backend; AliasSeq!(
     Bytecode,
     IR,
     SystemLinker,
+    LLVMJit,
 )) {
     @("tenFunctionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -304,6 +306,7 @@ static foreach (backend; AliasSeq!(
     Bytecode,
     IR,
     SystemLinker,
+    LLVMJit,
 )) {
     @("functionParameterOops." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -326,6 +329,7 @@ static foreach (backend; AliasSeq!(
     Bytecode,
     IR,
     SystemLinker,
+    LLVMJit,
 )) {
     @("ifElseOops." ~ backend.stringof)
     @Tags(backend.stringof)

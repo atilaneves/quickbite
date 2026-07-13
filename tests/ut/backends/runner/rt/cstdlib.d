@@ -624,7 +624,7 @@ enum strlenLocalBufferSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("strlen.localBuffer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

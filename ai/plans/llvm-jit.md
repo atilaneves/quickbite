@@ -1148,6 +1148,17 @@ static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
 a few evals including one that throws, confirming message parity with
 `--backend system-linker`.
 
+**Progress (2026-07-13).** `LLVMJit.eval` now executes the full
+create/load/call cycle in a forked child and reports its `EvalResult` through
+the existing pipe protocol's new eval frame kind. The child exits without
+disposing its LLJIT, so the parent receives only copied strings and cannot
+retain JIT mappings. The approved mapping test was red before this change
+(eight evals grew anonymous executable mappings) and green afterwards. The
+GC-resident-global evidence probe passed for both `SystemLinker` and
+`LLVMJit`; as expected, that is weak evidence only and does not graduate the
+parked GC-range hazard. Focused tests and the standard gate passed with random
+seed `1032394620`.
+
 ## Slice D — `--dub` object-production parity (`DubPackage` mirroring)
 
 **Context.** In `--dub` bench mode the environment carries `DubPackage.yes`
@@ -1242,6 +1253,15 @@ unittest {
 **Verify:** standard gate, plus `bin/bench.sh --dub cerealed -b llvmjit` and
 `bin/bench.sh --dub cerealed -b system-linker`.
 
+**Progress (2026-07-13).** `LLVMJitInputs` now carries `DubPackage`, its
+benchmark constructor mirrors `SystemLinker`, and `makeLLVMJit` forwards the
+benchmark environment's flag. Both native loaders call the same
+`emitObjectFilesForBackend` dispatch, so the `--dub` choice cannot drift
+between their object-production paths. The approved construction pin was red
+before the constructor change and green afterwards. The standard unit-test
+gate is green; the requested optimized `cerealed` benchmark build was still
+not complete when this increment was committed.
+
 ## Slice E — matrix promotions
 
 **Context.** Step 4's "every SystemLinker-oracle block" claim has uncommented
@@ -1289,6 +1309,14 @@ static foreach (backend; AliasSeq!(Interpreter, LLVMJit)) {
    pointing here (`ct/math.d`'s pow block shows the convention).
 
 **Verify:** standard gate.
+
+**Progress (2026-07-13).** Promoted the first named set of uncommented
+SystemLinker-oracle rows: the three struct fixtures, pointer index assignment,
+explicit struct-field initialization, local-buffer `strlen`, file I/O, and the
+four adjacent parameter/control-flow diagnostics. All 11 new `LLVMJit` rows
+passed in a focused serial run. `rt/dependency_image.d` remains the next Slice
+E increment; it needs a mechanical conversion from its current
+Interpreter-specific fixture shape to an `Interpreter`/`LLVMJit` matrix.
 
 ## Slice F — diagnostics and hygiene
 

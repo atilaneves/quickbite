@@ -32,11 +32,46 @@ enum failingFixture = q{
     }
 };
 
+enum gcResidentGlobalFixture = q{
+    int run() {
+        import core.memory: GC;
+
+        __gshared int[] cache;
+        static void clobber(int depth) {
+            int[64] junk = void;
+            junk[] = 0x7fff_fff0;
+            if (depth)
+                clobber(depth - 1);
+        }
+
+        cache = new int[](1024);
+        cache[0] = 42;
+        cache[$ - 1] = 43;
+        clobber(16);
+        GC.collect;
+        auto probe = new int[](1024);
+        probe[] = -1;
+        return cache[0] + cache[$ - 1];
+    }
+
+    unittest {
+        assert(run == 85);
+    }
+};
+
 
 @("LLVMJit.passingFixtureRuns")
 @Tags("LLVMJit")
 unittest {
     runBackendSourceFixtureTests!LLVMJit(passingFixture);
+}
+
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+    @("gcSeesJitResidentGlobals." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(gcResidentGlobalFixture);
+    }
 }
 
 @("LLVMJit.failingFixtureMessageMatchesSystemLinker")
