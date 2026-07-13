@@ -234,9 +234,10 @@ path instead of the in-memory `parseSnippet` path. This removed the old
 cerealed DMD module-table conflicts caused by parsing a module-declared
 source file under a synthetic `snippet_N.d` identity.
 
-This is the right foundation but does **not** by itself land a new
-corpus entry: it moved concepts and unit-threaded *past* the discovery
-failure into distinct downstream blockers (see "Next" item 1).
+This was the right foundation, but did not by itself land a new corpus entry:
+it moved concepts and unit-threaded *past* the discovery failure into distinct
+downstream blockers. The concepts blocker is now closed by the package-root
+codegen path below; unit-threaded remains the next corpus candidate.
 
 ## Done: parse dub packages as root module sets
 
@@ -371,15 +372,15 @@ per-fixture item is within a single package and is not resolved by it.)
 3. Grow the corpus past cerealed. Fixture discovery is now layout-robust
    (Done, 2026-06-15), but discovery was only the first gate; each new
    package hits a distinct downstream blocker, in rough order of effort:
-   - **concepts** (closest to a 2nd row): discovery works, but the
-     SystemLinker link fails with `unrecognized file extension`. concepts
-     is template-only so its `linkFiles` is **empty** — this is a
-     SystemLinker degenerate-link bug (empty/odd object set), not a
-     layout issue, and likely affects any zero-dependency package. Two
-     of its three modules are negative-compile tests
-     (`static assert(!__traits(compiles, ...))`) that skip when compiled
-     in isolation. Fix the empty-link path first.
-   - **unit-threaded** (the "meatier" target): its test modules
+   - **concepts**: done. The earlier `unrecognized file extension` /
+     empty-`linkFiles` diagnosis was stale after
+     `42ce8428 bench: make --dub builds work for system-linker by mirroring
+     dub`, which added package-root codegen via
+     `emitObjectFilesForDubPackage`. Verification on 2026-07-13:
+     `bin/bench -w 0 -r 1 -b system-linker --dub concepts` prepared five
+     fixtures and ran all 16 tests. Do not add a regression test for the old
+     failure: it no longer reproduces.
+   - **unit-threaded** (the next "meatier" target): its test modules
      **import each other by short name** (`unable to read module
      'normal'`) and the library `should` module collides with a fixture
      of the same name. Its suite is not structured for per-module

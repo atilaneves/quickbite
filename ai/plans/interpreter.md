@@ -31,6 +31,13 @@ constructs it does not implement.
 the code the interpreter must execute *itself* to reach those leaves with the
 right values.
 
+The unittest execution boundary returns success or a diagnostic directly. It
+does not format the final interpreter result: display is a separate REPL
+concern owned with `value.md`'s prelude formatter. Expressions and nested
+function returns inside a unittest still produce interpreter-private runtime
+results; separating the top-level contracts does not turn expression execution
+into a `void` operation.
+
 The measure of done is empirical and external: a real package's unittest suite
 runs green on `Interpreter` against the `SystemLinker` oracle. That same gate is
 the prerequisite `value.md` needs before it can measure any representation, so
@@ -77,7 +84,8 @@ execution, not the native boundary.
 ffi.md §34     calls body-less native leaves. DONE and not on this plan's path
                for the failures in §7 (verified §5: the FFI chokepoint is never
                reached — the interpreter fails earlier, executing source).
-value.md       how the interpreter represents aggregate Values. Assumes
+value.md       how the interpreter represents runtime results and addressable
+               storage. Assumes
                execution works; this plan delivers that assumption FOR THE
                LATENCY MEASUREMENT ONLY (corrected 2026-07-09). The meeting
                surface is wider than "a missing Value kind": any frontier
@@ -93,6 +101,34 @@ bytecode.md    a different backend; native-layout execution. Out of scope.
 This plan does not duplicate or modify FFI work. Where a cerealed failure turns
 out to need a native leaf (e.g. a sourceless Phobos function), that rung defers
 to `ffi.md` rather than reimplementing it.
+
+### 4.1 Unittest execution is not REPL evaluation
+
+The current `TreeNodeBackend` bridge implements `runUnitTest` by calling
+`Evaluator.eval(FuncDeclaration)`. `Interpreter.eval` then renders
+`Walker.result` through `displayString`, although `runUnitTest` discards that
+display and keeps only failure/diagnostic state. That couples the project's
+latency-critical product path to REPL formatting.
+
+The target has two entry points:
+
+```text
+executeUnitTest(UnitTestDeclaration) -> TestResult
+evaluateRepl(FuncDeclaration)        -> EvalResult
+```
+
+Names are illustrative; the separation is the contract. A successful unittest
+must reach `TestResult` without `displayString`, `Value.toString`, or
+`__quickbiteFormat`. A REPL expression cell executes the frontend-synthesized
+formatter and returns its string. Statement/no-display cells may use the same
+execution machinery without manufacturing a display value.
+
+Inside the walker, `runExpression` remains a recursive operation because all
+real D code, including unittests, computes expressions and calls value-returning
+functions. Its return type is not a public backend contract and need not remain
+`quickbite.lang.Value`; per `value.md`, it becomes an interpreter-private
+execution-result carrier containing only the immediate results, native handles,
+locations, callables, and metadata the walker needs.
 
 ## 5. The masking bug: CTFE-as-diagnostic (Phase 0, prerequisite)
 

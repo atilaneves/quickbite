@@ -113,10 +113,11 @@ the FFI seam.
   independent of latency.
 - `Value` is a Lox-derived tagged union (Crafting Interpreters). It exists to
   carry a runtime type tag that a *dynamically typed* interpreter needs;
-  Quickbite's DMD frontend stamps a static `Type` on every node, so the tag
-  is redundant. The box's only remaining benefit is host-language
-  convenience (a uniform D type to return from `eval(Expr)`); that benefit is
-  what is paid back at the seam.
+  Quickbite's DMD frontend stamps a static `Type` on every node, so the tag is
+  redundant for type safety. An interpreter-private box still has a narrower
+  benefit as the uniform D type returned by `eval(Expr)`, especially for
+  immediate scalar results. That expression currency is distinct from the
+  authoritative storage of an addressable guest value.
 
 Decision 2026-06-23 (research validation + reframe): a cross-language survey
 (LuaJIT, CPython, Ruby MRI, the JVM, .NET, Go; plus the static-language
@@ -163,6 +164,47 @@ two things bearing on the open question above.
   exhaustiveness. It moves the representation the wrong way along the axis above
   (toward a worse box); the fix moves the other way (toward native bytes behind a
   handle).
+
+Decision 2026-07-13: "boxed scalars stay" means **immediate scalar expression
+results**, not boxed-only scalar lvalue storage. `runExpression` may keep
+returning an interpreter-private uniform value with inline scalar arms: forcing
+every transient arithmetic result through a native block would add loads,
+stores, and bookkeeping, and the current scalar arms do not recursively box or
+allocate one GC object per value. Addressable storage has a different contract.
+Once `&local` or another operation makes a scalar location observable, it must
+have one stable native cell that is authoritative for direct reads and writes,
+pointer dereferences, byte reinterpretation, `memcpy`, and FFI. Do not create a
+boxed snapshot and reconcile it through writeback.
+
+Whether every scalar local starts in a native slot or an unaddressed scalar
+local starts immediate and is promoted when its address becomes observable is
+an empirical latency choice. Prefer the simpler eager-slot design unless a
+measurement justifies lazy promotion; if promotion is used, every subsequent
+direct or indirect access must use the promoted cell. A scalar rvalue passed to
+libffi may still need one fixed-width leaf copy into an ABI cell, while a stable
+scalar slot may hand over its address directly. Neither case is recursive
+aggregate marshalling.
+
+Decision 2026-07-13 (execution/display separation): do not preserve
+`Value runExpression(Expression)` as an architectural contract merely because
+the current tree walker has that signature. The walker does need a recursive
+expression-result operation: unittests execute ordinary expressions, and
+nested interpreted functions must return results to their callers. Its carrier
+is interpreter-private execution machinery, not a display value. Its required
+shape follows the representation: immediate scalar results, native aggregate
+handles, native locations/references, callables, and the remaining interpreter
+metadata. `RuntimeValue` is a descriptive name, not a prescribed new shared
+type.
+
+Top-level unittest execution and REPL evaluation are separate consumers. The
+unittest path needs only success or a diagnostic and must not render the
+walker's final result. The REPL expression path synthesizes
+`__quickbiteFormat(expr)` and returns that guest-produced string through
+`EvalResult`. The current `TreeNodeBackend.runUnitTest -> eval(FuncDeclaration)
+-> displayString` bridge is interim scaffolding: replace it with a direct
+unittest execution entry point while retaining a separate REPL evaluation
+entry point. This removes display work from the project's latency-critical
+unittest path; it does not remove expression evaluation inside a unittest.
 
 Progress 2026-06-19: the prelude formatter now owns the scalar literal
 suffix cases that were previously only pinned through `Value.toString`:
@@ -348,9 +390,10 @@ interpreter arrays are not addressable GC blocks. Consequences:
 - The unit of change stands per the 2026-06-23 measured result: not a
   bolt-on marshaller, and not a VM rewrite (`bytecode.md` is unaffected
   and remains the native-layout *execution* track). The experiment is the
-  survey's universal shape inside the tree-walker: boxed scalars,
-  native-layout aggregates/arrays behind a handle reusing DMD offsets.
-  See remaining-work item 7.
+  survey's universal shape inside the tree-walker: immediate boxed scalar
+  expression results, native storage for addressable locations, and
+  native-layout aggregates/arrays behind a handle reusing DMD offsets. See
+  remaining-work item 7.
 
 Progress 2026-07-09: item 7's "Next PR" list is started with an
 interpreter-internal native-layout array skeleton, landed but not wired
@@ -2521,15 +2564,20 @@ are done; what is still pending, in order:
    The interpreter's `std.conv.text` hook is temporary formatter scaffolding,
    not a general Phobos builtin: remove it once the formatter no longer needs
    that escape hatch to execute direct scalar display cells.
-2. Delete the private reify → `Value` → `toString` scaffolding per
-   backend (decision 4) as each gains the formatter.
+2. Separate unittest execution from REPL evaluation, then delete the private
+   reify → `Value` → `toString` scaffolding per backend (decision 4) as each
+   gains the formatter. `runTests` must receive success/diagnostic directly;
+   only a REPL expression cell executes the prelude formatter and consumes its
+   returned string. Do not retain `Value` or render a dummy `void` result just
+   to reuse the `Evaluator.eval(FuncDeclaration)` path.
 3. Remove the *shared* `quickbite.lang.Value` (decision 2026-06-17):
    once no backend depends on it as a cross-backend type, relocate the
-   tree-walking interpreter's internal boxed representation to an
-   interpreter-package-private type, then delete the shared struct and
-   `tests/ut/backends/evaluator/value.d` together. Only the shared type is
-   deleted; the interpreter keeps an internal value type whose *shape* is the
-   2026-06-23 open question.
+   tree-walking interpreter's execution-result carrier to its package, then
+   delete the shared struct and `tests/ut/backends/evaluator/value.d`
+   together. Do not reproduce a display-oriented general-purpose `Value`
+   privately: the carrier exists only for recursive expression/function
+   execution and uses immediate scalar results plus the native handles,
+   locations, callables, and metadata that execution actually requires.
 
 Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
 
@@ -2574,13 +2622,15 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    (§34.9/§34.10/§34.11) are landed as boxed marshalling, which is correct and
    keeps real dub tests runnable in the meantime.
 
-7. (2026-07-09, un-gated by the correctness-ceiling decision above.) Run the
-   native-layout-aggregates experiment in the tree-walker: boxed scalars stay,
-   aggregates/arrays live in native ABI layout behind a handle reusing DMD's
-   own field offsets; pointers become real addresses into that storage. This
-   is the interpreter-wide representation change the 2026-06-23 measured
-   result deferred to — the right unit of change, unlike the rejected bolt-on
-   marshaller. Success criteria, in order:
+7. (2026-07-09, un-gated by the correctness-ceiling decision above; scalar
+   storage clarified 2026-07-13.) Run the native-layout experiment in the
+   tree-walker: immediate scalar expression results may stay boxed, addressable
+   scalar locations use stable native cells, aggregates/arrays live in native
+   ABI layout behind a handle reusing DMD's own field offsets, and pointers
+   become real addresses into that storage. This is the interpreter-wide
+   representation change the 2026-06-23 measured result deferred to — the
+   right unit of change, unlike the rejected bolt-on marshaller. Success
+   criteria, in order:
    - the `interpreter.md` §9.10 shims are deleted one by one, each deletion
      proven by its ratchet fixtures staying green through the real path
      (`emplaceRef` executes its actual body; `memcpy` and the `gc_*` hooks
@@ -2598,17 +2648,20 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    over a block plus an offset; a raw `void*` is produced only at the last step
    before FFI or an intrinsic, and is never the ownership token.
 
-   - **Storage shape.** Scalars stay boxed: integral, floating, enum, null, and
-     pointer leaves keep expression evaluation direct. Recursive aggregate
-     boxes collapse to one aggregate-handle arm. A static array is one inline
-     block; a dynamic array is a real D slice header (`ptr`, `length`) over a
-     separately tracked element block; a struct is one block laid out with DMD
-     field offsets. Class references keep the boxed object representation until
-     the class phase.
+   - **Storage shape.** Integral, floating, enum, null, and pointer rvalues keep
+     expression evaluation direct through immediate scalar arms. This does not
+     make a box the authority for an addressable scalar local: use either an
+     eager native local slot or measured lazy promotion to one, as decided
+     above. Recursive aggregate boxes collapse to one aggregate-handle arm. A
+     static array is one inline block; a dynamic array is a real D slice header
+     (`ptr`, `length`) over a separately tracked element block; a struct is one
+     block laid out with DMD field offsets. Class references keep the boxed
+     object representation until the class phase.
    - **Address stability.** Every address reachable through `&local`,
      `array.ptr`, slice construction, pointer arithmetic, `memcpy`, or FFI
-     points into a native block, never into a boxed snapshot. Blocks must not
-     move while an interpreter pointer can reach them; when array growth
+     points into a native block, never into a boxed snapshot. Direct access to
+     an addressable scalar local reads and writes that same cell. Blocks must
+     not move while an interpreter pointer can reach them; when array growth
      reallocates, the owning slice header is updated and stale addresses go
      stale exactly as compiled D loses append capacity — no boxed value is ever
      copied back as the authority.
@@ -2773,11 +2826,13 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    still has no call site at all: no guest expression yet reaches
    `arrayElement`/`sliceElement`/
    `structElement`/`arrayField`/`sliceField`. What remains, the next step:
-   wire a guest-level `&local`/array/struct call site for the container
-   types themselves (not just the scalar reinterpret-load leaf) — including,
-   for `slice` specifically, the guest-level `~=`-on-a-slice reallocation
-   semantics the "array sub-slicing" progress note explicitly does not
-   model, and, for `setLength`, guest-level `~=`/append more generally
+   make a guest-level addressable local use authoritative native storage,
+   including a scalar `&local` cell rather than the current temporary scalar
+   byte snapshot, then wire array/struct call sites for the container types
+   themselves — including, for `slice` specifically, the guest-level
+   `~=`-on-a-slice reallocation semantics the "array sub-slicing" progress
+   note explicitly does not model, and, for `setLength`, guest-level
+   `~=`/append more generally
    (still a call-site allocate-and-rebind operation, per the "array length
    assignment" progress note) and keeping a previously written slice header
    in sync with a later reallocating `setLength` (the call site's problem,
