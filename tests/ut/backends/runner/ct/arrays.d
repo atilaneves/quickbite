@@ -1480,7 +1480,7 @@ enum pointerSliceAssignSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.sliceAssignmentWritesArrayStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1517,17 +1517,6 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         runBackendSourceFixtureTests!backend(
             pointerSliceArgumentEvaluatesPointerOnceSource,
         );
-    }
-}
-
-// Bytecode cannot take the address of a static array yet; pin its
-// structured diagnostic rather than dropping it from the matrix.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("pointer.sliceAssignmentWritesArrayStorage." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(pointerSliceAssignSource)
-            .shouldThrowWithMessage("Unsupported expression in bytecode core: & tmp");
     }
 }
 

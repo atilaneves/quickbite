@@ -47,7 +47,7 @@ private struct Compiler {
         DivExp, DotIdExp, DotVarExp, Expression,
         IdentityExp, IndexExp, LogicalExp, MulExp, FuncExp, DelegateExp,
         NegExp, NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp,
-        StringExp, StructLiteralExp, SymOffExp, ThrowExp, TypeidExp;
+        StringExp, StructLiteralExp, SymOffExp, ThrowExp, TupleExp, TypeidExp;
     import dmd.arraytypes: Expressions;
     import dmd.dclass: ClassDeclaration;
     import dmd.func: FuncDeclaration;
@@ -1668,6 +1668,9 @@ private struct Compiler {
             return compileExpression(comma.e2);
         }
 
+        if (auto tuple = expression.isTupleExp)
+            return compileTupleExpression(tuple);
+
         // A `null` pointer literal (the `(bounds, null)` false branch of `m[k]`):
         // an 8-byte zero pointer slot. The throw in the comma's first operand
         // aborts before this is read.
@@ -1753,13 +1756,22 @@ private struct Compiler {
                 "Unsupported compound assignment in bytecode core: ",
             );
 
-        if (auto rightShiftAssign = expression.isShrAssignExp)
+        if (auto rightShiftAssign = expression.isShrAssignExp) {
+            if (auto deref = rightShiftAssign.e1.isPtrExp)
+                if (auto store = tryPointerDereferenceIntegerCompoundAssign(
+                        deref,
+                        rightShiftAssign.e2,
+                        Op.shrInt4,
+                        Op.shrInt4,
+                    ))
+                    return *store;
             return compileLocalIntegerCompoundAssign(
                 rightShiftAssign,
                 Op.shrInt4,
                 Op.shrInt4,
                 "Unsupported compound assignment in bytecode core: ",
             );
+        }
 
         if (auto leftShiftAssign = expression.isShlAssignExp)
             return compileLocalIntegerCompoundAssign(
@@ -1987,6 +1999,20 @@ private struct Compiler {
             "Unsupported expression in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // DMD lowers tuple construction and `tupleof` assignment to a side-effect
+    // prefix followed by ordinary per-element expressions. Evaluate them in
+    // source order and preserve the final element's expression value.
+    private Operand compileTupleExpression(TupleExp tuple) {
+        if (tuple.e0 !is null)
+            compileExpression(tuple.e0);
+
+        auto result = Operand.init; // mutated while folding tuple elements
+        if (tuple.exps !is null)
+            foreach (element; *tuple.exps)
+                result = compileExpression(element);
+        return result;
     }
 
     // A struct literal as an rvalue (a struct-valued expression, e.g. a by-value
@@ -6245,6 +6271,27 @@ private struct Compiler {
                 return Operand(value.offset, scalarType(field.type));
             }
 
+        // `box.field = rhs` through a class reference: write the scalar rhs at
+        // `class pointer + field.offset`.
+        if (auto dot = assign.e1.isDotVarExp)
+            if (auto field = tryClassPointerField(dot)) {
+                const value = compileExpression(assign.e2);
+                const fieldScalar = scalarType(field.type);
+                if (value.type != fieldScalar)
+                    throw new Exception(text(
+                        "Unsupported assignment in bytecode core: ",
+                        expressionChars(assign),
+                    ));
+                const fieldPointer = classFieldAddress(*field);
+                _code ~= Instruction(
+                    pointerStoreOp(size(fieldScalar)),
+                    value.offset,
+                    fieldPointer,
+                    compileSizeConstant(0),
+                );
+                return Operand(value.offset, fieldScalar);
+            }
+
         if (isDynamicArrayArgument(assign.e1))
             if (auto descriptor = dynamicArrayDescriptorOrNull(assign.e1)) {
                 compileDynamicArrayInto(
@@ -6680,6 +6727,69 @@ private struct Compiler {
         _code ~= Instruction(
             addOp, current.offset, current.offset, rhsValue.offset,
         );
+        _code ~= Instruction(
+            pointerStoreOp(size(pointer.pointerElement)),
+            current.offset,
+            pointer.offset,
+            zero,
+        );
+        auto result = new Operand;
+        *result = Operand(current.offset, current.type);
+        return result;
+    }
+
+    // `*p op= rhs` through an integer pointer: load the current element, run
+    // the existing integer opcode, and store the result back through `p`.
+    private Operand* tryPointerDereferenceIntegerCompoundAssign(
+        PtrExp deref,
+        Expression rhs,
+        in Op op4,
+        in Op op8,
+    ) {
+        import std.conv: text;
+
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            return null;
+
+        const zero = compileSizeConstant(0);
+        const current = loadThroughPointer(pointer, zero);
+        const rhsValue = compileExpression(rhs);
+        if (!isCompoundIntegerScalar(current.type) ||
+            !isCompoundIntegerScalar(rhsValue.type) ||
+            isEightByteInteger(current.type) !=
+                isEightByteInteger(rhsValue.type) ||
+            (isEightByteInteger(current.type) &&
+                (rhsValue.type != current.type || op8 == op4)))
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(deref),
+            ));
+
+        const operationType = isEightByteInteger(current.type)
+            ? current.type
+            : ScalarType.int_;
+        const lhs = integerOperationOperand(current, operationType);
+        const rhsOperand = integerOperationOperand(rhsValue, operationType);
+        const destination = size(current.type) == size(operationType)
+            ? current.offset
+            : allocate(operationType);
+        const actualOp4 = op4 == Op.shrInt4 && !isSigned(current.type)
+            ? Op.ushrInt4
+            : op4;
+        _code ~= Instruction(
+            isEightByteInteger(operationType) ? op8 : actualOp4,
+            destination,
+            lhs.offset,
+            rhsOperand.offset,
+        );
+        if (destination != current.offset)
+            _code ~= Instruction(
+                Op.copy,
+                current.offset,
+                destination,
+                cast(ushort) size(current.type),
+            );
         _code ~= Instruction(
             pointerStoreOp(size(pointer.pointerElement)),
             current.offset,

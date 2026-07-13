@@ -5180,3 +5180,66 @@ the frame address and element count; general static-array materialisation stays
 copying so result bytes can outlive the VM stack. No fixture body changed.
 Verification: focused red then green, `ninja bin/ut`, and `bin/ut --random`
 passed (seed `4022505703`).
+
+`classReferencePassedByValueMutatesObject` promoted to `Bytecode`,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The focused Bytecode row was red with `Unsupported
+assignment in bytecode core: box.value = 42`. The typed-frame core already
+resolved class field addresses for reads (including the null-reference guard),
+so the narrow completion writes a scalar rhs through that same address and
+returns the assigned operand. It does not add class allocation, dynamic-array
+class fields, general object layout, or formatter support. Verification:
+focused red then green; `ninja bin/ut` and `bin/ut --random` passed (seed
+`1711526885`).
+
+`struct.tupleConstructionFromLocals` promoted to `Bytecode`, 2026-07-13:
+pre-approved promotion of the existing direct-SystemLinker-backed compile-time
+fixture. The focused Bytecode row was red because DMD lowers `Tuple`'s field
+initialization to a `TupleExp`, which the typed-frame compiler did not handle.
+The narrow lowering evaluates its optional prefix and each element in source
+order, returning the final element value; each element is already an ordinary
+supported assignment. This does not add tuple representation, generic tuple
+operations, or formatter support. Verification: focused red then green;
+`ninja bin/ut` and `bin/ut --random` passed (seed `3349317244`).
+
+`pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible` promoted
+to `Bytecode`, 2026-07-13: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported compound assignment in bytecode core: *p >>= 1`. The
+typed-frame core already reinterpreted same-size pointer loads and could store
+through those pointers; the narrow completion lowers right-shift compound
+assignment by loading the pointed-to integer, applying the existing integer
+opcode with normal width checks, and storing the result through the same
+pointer. It does not add pointer arithmetic, non-integer compound operations,
+or new pointer representations. Verification: focused red then green;
+`ninja bin/ut` and `bin/ut --random` passed (seed `951890973`).
+
+Reviewer fix, 2026-07-13: `pointer.uintCompoundRightShiftIsLogical` adds a
+direct SystemLinker-backed regression for `uint value = 0x8000_0000;` reached
+through a `uint*` and shifted with `*p >>= 1`. Bytecode was red, producing
+`0xC000_0000` from the signed shift opcode. Pointer compound right-shift
+lowering now chooses the existing unsigned opcode from the loaded pointee's
+type, matching ordinary shift lowering before its normal `int` promotion.
+Focused Bytecode and SystemLinker rows passed; `ninja bin/ut` and
+`bin/ut --random` passed (seed `1474536093`).
+
+`pointer.sliceAssignmentWritesArrayStorage` promoted to `Bytecode`,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The typed-frame core now handles the fixture unchanged,
+including taking the address of the inline static array and writing its slice
+through the derived pointer. The stale Bytecode-only expected-diagnostic block
+was removed; no production change was needed. Verification: focused Bytecode
+row, `ninja bin/ut`, and `bin/ut --random`.
+
+Merge resolution, 2026-07-13: retained the independently landed July 10
+Bytecode promotions and their implementation notes alongside this branch's
+later promotions. The duplicate static-array-copy ledger entry is represented
+once by the landed entry; no behavior was dropped.
+
+`struct.staticArrayCopyRunsPostblitAndDtors` Bytecode promotion reverted,
+2026-07-13: although the focused row passed, randomized execution exposed
+unsafe lifetime ordering that can corrupt the process during static-array
+postblit/destructor handling. Bytecode is removed from this matrix row until
+that lifetime path is safe under randomized suite ordering. No production
+change is included; compiled-oracle coverage remains on Ctfe, Interpreter,
+SystemLinker, and LLVMJit.
