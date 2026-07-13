@@ -1253,6 +1253,15 @@ unittest {
 **Verify:** standard gate, plus `bin/bench.sh --dub cerealed -b llvmjit` and
 `bin/bench.sh --dub cerealed -b system-linker`.
 
+**Progress (2026-07-13).** `LLVMJitInputs` now carries `DubPackage`, its
+benchmark constructor mirrors `SystemLinker`, and `makeLLVMJit` forwards the
+benchmark environment's flag. Both native loaders call the same
+`emitObjectFilesForBackend` dispatch, so the `--dub` choice cannot drift
+between their object-production paths. The approved construction pin was red
+before the constructor change and green afterwards. The standard unit-test
+gate is green; the requested optimized `cerealed` benchmark build was still
+not complete when this increment was committed.
+
 ## Slice E — matrix promotions
 
 **Context.** Step 4's "every SystemLinker-oracle block" claim has uncommented

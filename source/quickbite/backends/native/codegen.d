@@ -20,6 +20,22 @@ public struct CodegenInputs {
     // semantic3 sees the same frontend configuration as the original parse.
     public imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
         imported!"quickbite.frontend.compiler".FrontendFlags.init;
+    // A dub package is codegen'd as its own root set, without the
+    // single-snippet lightning rod and prune/adopt apparatus.
+    public bool dubPackage;
+}
+
+// The one object-production entry point used by both native loaders. Keeping
+// the dub-package choice with the codegen inputs makes their object production
+// identical by construction; only their loading strategy can then differ.
+public string[] emitObjectFilesForBackend(
+    imported!"dmd.dmodule".Module[] rootModules,
+    in string dir,
+    in CodegenInputs inputs,
+) {
+    return inputs.dubPackage
+        ? emitObjectFilesForDubPackage(rootModules, dir, inputs)
+        : emitObjectFilesForLink(rootModules, dir, inputs);
 }
 
 // Fork, run DMD's backend, and write one object file per emitted module into

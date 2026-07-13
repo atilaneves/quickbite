@@ -48,6 +48,8 @@ public class LLVMJit:
         in string packageRoot,
         in imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
             imported!"quickbite.frontend.compiler".FrontendFlags.init,
+        in imported!"quickbite.backends.native.system_linker".DubPackage dubPackage =
+            imported!"quickbite.backends.native.system_linker".DubPackage.no,
     ) {
         import quickbite.frontend.compiler: FrontendFlags;
 
@@ -57,6 +59,7 @@ public class LLVMJit:
                 sharedLibraries(linkFiles),
                 staticLibraries(linkFiles),
                 FrontendFlags(frontendFlags.compilerArguments.dup),
+                dubPackage,
             ),
         );
         loadDependencyImages(_inputs.dependencyImages);
@@ -298,6 +301,7 @@ public struct LLVMJitInputs {
     public const string[] staticLibraries;
     public imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
         imported!"quickbite.frontend.compiler".FrontendFlags.init;
+    public imported!"quickbite.backends.native.system_linker".DubPackage dubPackage;
 }
 
 private string[] sharedLibraries(in string[] linkFiles) @safe pure {
@@ -378,7 +382,8 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
     imported!"dmd.dmodule".Module[] modules,
     in LLVMJitInputs inputs,
 ) {
-    import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForLink;
+    import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForBackend;
+    import quickbite.backends.native.system_linker: DubPackage;
     import quickbite.frontend.compiler: FrontendFlags;
     import quickbite.frontend.compiler: withCompilerLock;
     import orc.loader: createJit;
@@ -399,12 +404,13 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
 
     string[] objPaths;
     withCompilerLock(() {
-        objPaths = emitObjectFilesForLink(
+        objPaths = emitObjectFilesForBackend(
             modules,
             dir,
             CodegenInputs(
                 inputs.archiveImportPaths,
                 FrontendFlags(inputs.frontendFlags.compilerArguments.dup),
+                inputs.dubPackage == DubPackage.yes,
             ),
         );
     });

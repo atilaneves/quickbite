@@ -37,6 +37,21 @@ unittest {
     assert(("interpreter" in runners) !is null);
 }
 
+@("makeRunners.llvmjitReceivesDubPackage")
+unittest {
+    import quickbite.backends.native: DubPackage, LLVMJit;
+    import quickbite.frontend.compiler: FrontendFlags;
+
+    static assert(__traits(compiles,
+        new LLVMJit(
+            cast(const string[]) [],
+            cast(const string[]) [],
+            "",
+            FrontendFlags.init,
+            DubPackage.yes,
+        )));
+}
+
 @("defaultBenchmarkBackendsIncludeInterpreter")
 unittest {
     import benchmarks.cli: defaultBackendNames;

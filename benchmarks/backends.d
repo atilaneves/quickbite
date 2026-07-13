@@ -50,6 +50,7 @@ private Runner makeLLVMJit(in BackendEnv env) {
         env.importPaths,
         env.packageRoot,
         env.frontendFlags,
+        env.dubPackage,
     );
 }
 
