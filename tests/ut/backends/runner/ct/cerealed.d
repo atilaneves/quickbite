@@ -1545,15 +1545,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // `assert(counters[0].postblitCount == 1)` fails with `0 != 1` — the
 // postblit body never runs. Retire the omission when value.md's
 // native-layout track lands and the shim is deleted (§9.10).
-// Bytecode omitted for an unrelated reason: passing a struct by
-// value through a `ref` array-element argument (here, `emplaceRef`'s
-// generated wrapper constructor) is only partially supported there
-// ("Unsupported variable in bytecode core: source"), confirmed by a
-// second, `emplaceRef`-free probe (a plain `ref` function assigning a
-// by-value struct parameter to an array element) that fails on
-// Bytecode with the sibling diagnostic "Unsupported ref argument
-// in bytecode core: counters[0]".
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+// Bytecode must preserve this one postblit while its `emplaceRef` wrapper
+// writes the indexed destination.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
     @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

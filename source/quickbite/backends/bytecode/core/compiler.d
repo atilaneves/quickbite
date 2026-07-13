@@ -4721,9 +4721,13 @@ private struct Compiler {
     // Pack the element type's default-init fill byte (high 8 bits) and element
     // size (low 8 bits) for `allocArrayDynamic`. `char.init` is 0xFF; every
     // other element type the core lowers default-inits to all-zero bytes.
-    private ushort packedFill(in ScalarType elementType) @safe pure {
+    private ushort packedFill(
+        in ScalarType elementType,
+        in uint elementSize = 0,
+    ) @safe pure {
         const fill = elementType == ScalarType.char_ ? 0xff : 0x00;
-        return cast(ushort) ((fill << 8) | size(elementType));
+        return cast(ushort) ((fill << 8) |
+            (elementSize == 0 ? size(elementType) : elementSize));
     }
 
     // The frame offset of a 16-byte slice descriptor denoting the value of an
@@ -6546,7 +6550,10 @@ private struct Compiler {
         _code ~= Instruction(
             Op.setArrayLength,
             descriptor.offset,
-            packedFill(descriptor.elementType),
+            packedFill(
+                descriptor.elementType,
+                dynamicArrayElementSize(length.e1.type, descriptor.elementType),
+            ),
             lengthSlot.offset,
         );
         writeBackDynamicArrayDescriptor(descriptor);
@@ -8145,6 +8152,37 @@ private struct Compiler {
             );
             if (elementSize > ulong.sizeof)
                 return null;
+
+            if (call.arguments.length == 2) {
+                bool sourceResolved;
+                const source = structBaseOffsetOrMaterialise(
+                    (*call.arguments)[1], sourceResolved,
+                );
+                if (!sourceResolved)
+                    return null;
+
+                const value = allocateStructBlock(index.type);
+                _code ~= Instruction(
+                    Op.copy,
+                    value,
+                    source,
+                    cast(ushort) elementSize,
+                );
+                if (auto postblit = structDeclarationOf(index.type).postblit)
+                    runStructMethod(value, postblit);
+
+                const indexSlot = compileExpression(index.e2);
+                _code ~= Instruction(
+                    indexStoreOp(elementSize),
+                    value,
+                    descriptor.offset,
+                    indexSlot.offset,
+                );
+
+                auto result = new Operand;
+                *result = Operand(value, ScalarType.void_);
+                return result;
+            }
 
             auto constructor = structDeclarationOf(index.type).ctor
                 .isFuncDeclaration;

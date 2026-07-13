@@ -5311,3 +5311,18 @@ LLVMJit pass the focused matrix. Interpreter remains excluded by its documented
 `Unsupported eval call.` `emplaceRef` shim; no Interpreter instance exists for
 this fixture to run. Verification: focused Bytecode red then green; passing
 focused matrix; `ninja bin/ut`; and `bin/ut --random` passed.
+
+`emplaceRefSkipsPostblitForStructElement` promoted to `Bytecode`, 2026-07-13:
+pre-approved SystemLinker-backed Cerealed fixture. The focused Bytecode row
+was red as a SIGSEGV (exit code 139): resizing `Counter[]` encoded the
+`void` scalar sentinel's zero width, leaving no backing storage for the
+indexed store. Array-length resize now carries the DMD-derived element width
+when it differs from the scalar representation. The narrow `emplaceRef`
+interception copies an eight-byte struct source into a frame block, runs its
+postblit once, then stores that completed block at the indexed dynamic-array
+element. This does not add larger aggregate support, postblit/destructor
+lifetime management, general `ref` arguments, or aggregate array operations.
+Ctfe, Bytecode, SystemLinker, and LLVMJit pass the focused matrix; Interpreter
+remains excluded for its documented missing postblit. Verification: focused
+Bytecode red then green; passing focused matrix; `ninja bin/ut`; and
+`bin/ut --random` passed (seed `2678926982`).
