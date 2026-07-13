@@ -629,10 +629,11 @@ private struct Walker {
         const(void)* objectPointer,
     ) {
         import quickbite.backends.interpreter.ffi_marshal: unmarshalNative;
+        import quickbite.backends.interpreter.layout: fieldByteOffset;
 
         return unmarshalNative(
             field.type.toBasetype,
-            cast(void*) (cast(ubyte*) objectPointer + field.offset),
+            cast(void*) (cast(ubyte*) objectPointer + fieldByteOffset(field)),
         );
     }
 

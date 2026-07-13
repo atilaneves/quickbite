@@ -2124,6 +2124,25 @@ was left to the orchestrator per the usual long-suite handoff. This is
 consolidation only: no new guest call site was added, and no §9.10 shim
 was retired.
 
+Progress 2026-07-13 (class-field offset authority): `nativeClassFieldValue`
+now routes its class-field byte offset through
+`layout.fieldByteOffset(VarDeclaration)` instead of reading
+`field.offset` directly. As `fieldByteOffset`'s own doc comment
+establishes, it returns `VarDeclaration.offset` verbatim, so this is an
+identity consolidation, not a behaviour change. This brings the
+class-field read path onto the same layout authority the struct field
+path already uses (see the struct-field-list authority note above). A
+new local `import quickbite.backends.interpreter.layout:
+fieldByteOffset;` was added inside `nativeClassFieldValue`, alongside
+its existing local import; no import was orphaned. No test was added or
+modified. Focused run: `bin/ut -s ut.backends.interpreter
+ut.backends.runner.ct.expressions ut.backends.runner.ct.structs
+ut.backends.evaluator.eval` (`ut.backends.runner.ct.classes` does not
+exist as a suite) -- 838 run, 0 failed, 5/5 failing as expected. The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff. This is consolidation only: no new guest call site
+was added, and no §9.10 shim was retired.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
