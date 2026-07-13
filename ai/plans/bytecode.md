@@ -5183,3 +5183,11 @@ lowering now chooses the existing unsigned opcode from the loaded pointee's
 type, matching ordinary shift lowering before its normal `int` promotion.
 Focused Bytecode and SystemLinker rows passed; `ninja bin/ut` and
 `bin/ut --random` passed (seed `1474536093`).
+
+`pointer.sliceAssignmentWritesArrayStorage` promoted to `Bytecode`,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The typed-frame core now handles the fixture unchanged,
+including taking the address of the inline static array and writing its slice
+through the derived pointer. The stale Bytecode-only expected-diagnostic block
+was removed; no production change was needed. Verification: focused Bytecode
+row, `ninja bin/ut`, and `bin/ut --random`.
