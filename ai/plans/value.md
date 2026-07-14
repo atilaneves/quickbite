@@ -3999,6 +3999,57 @@ fields, and any struct reached through anything other than a bare local
 variable remain out of `structCells`' scope entirely, unchanged by this
 slice, per the struct phase's original boundary.
 
+Progress 2026-07-14 (final-review fixes: struct-field-alias scalar guard,
+member struct-array-field cell write): a final Fable review of the
+arrayCells/structCells work above raised two BLOCKERs, both fixed here.
+
+Finding 1: `recordStructFieldAlias` records ANY `DotVarExp` initializer
+bound to a `ref` local, including a non-scalar (array/nested-struct) field,
+but `writeThroughStructFieldAlias`'s `structCells` refresh (the "struct
+field write-through-pointer" slice above) called `native_scalar.
+writeScalar` unconditionally, with no scalar guard -- once `&s.x` had
+promoted `s`'s cell, a later `ref int[] r = s.arr; r = [...];` reached the
+same unguarded write and threw ("unsupported native scalar type"). Fix:
+guard the write with `isNativeScalarType(cell.fieldDeclaration(alias_.
+index).type)`, matching `writeStructCellScalarFields`'s own per-field
+guard; a non-scalar aliased field now skips the cell write entirely and
+falls through to the boxed mirror write just above it, unchanged.
+
+Finding 2: once a plain array local has a promoted `arrayCells` entry
+(needing no address-of at all -- `foreach (v; a)` promotes it via
+`promoteSliceArrayCell`), a member-function write to that same array
+reached through a struct field (`Holder(a).bump()`, funnelled through
+`writeThroughThisStructArrayFieldAlias`) updated only the boxed `locals`
+mirror, never the source variable's `arrayCells` entry, so a later
+cell-authoritative index read kept answering with stale bytes. Fix:
+`writeThroughThisStructArrayFieldAlias` now also calls
+`writeThroughArrayCell(*sourceVariable, index, value)` -- the same helper
+every other array-cell write-through call site already uses -- right after
+its existing `locals` write. This runs in the callee's child `Walker`
+frame, whose `arrayCells` was duped from the caller (`child.arrayCells =
+arrayCells.dup`) sharing the same underlying `NativeArray` bytes by
+reference, so the caller's own cell is refreshed with no separate
+write-back needed.
+
+New fixtures (pre-approved, one per finding): `pointer.
+structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell` in `tests/ut/
+backends/runner/ct/expressions.d` and `struct.
+memberFunctionArrayFieldWriteRefreshesSourceArrayCell` in `tests/ut/
+backends/runner/ct/structs.d`, both scoped to `Interpreter`/`SystemLinker`
+only (omit-don't-pin convention), every value seeded from a runtime
+function call so DMD cannot fold it. Both confirmed red on Interpreter
+before any production change (finding 1: throws "unsupported native scalar
+type"; finding 2: `1 != 100`, the stale pre-`bump` value) and green on
+SystemLinker; green on both after.
+
+Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (391
+run, 0 failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.
+structs` (283 run, 0 failed); `bin/ut -s ut.backends.runner.ct.arrays` (330
+run, 0 failed); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0
+failed, 1/1 failing as expected); `bin/ut -s ut.backends.interpreter` (218
+run, 0 failed). The full `bin/ut --random` was left to the orchestrator per
+the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

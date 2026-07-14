@@ -2805,3 +2805,51 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// value.md final review (finding 1): `recordStructFieldAlias` records ANY
+// `DotVarExp` initializer bound to a `ref` local -- including a non-scalar
+// (array/nested-struct) field -- so `writeThroughStructFieldAlias` reached a
+// promoted `structCells` entry for a field it cannot represent as a native
+// scalar. Once `&s.x` has promoted `s`'s cell, a later `ref int[] r = s.arr;
+// r = [...]` write walked into the same unguarded `writeScalar` call the
+// scalar sibling uses, which throws on a non-scalar field type. Expect the
+// unrelated `s.x` field to still read `1`: the array-field write must skip
+// the cell write entirely and leave the boxed mirror path (unaffected by
+// this finding) as the sole record for a non-scalar aliased field.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            struct S {
+                int x;
+                int[] arr;
+            }
+
+            int f() {
+                S s = S(one(), [two()]);
+                int* p = &s.x;
+                ref int[] r = s.arr;
+                r = [three()];
+                return s.x;
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}

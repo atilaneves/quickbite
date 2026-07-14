@@ -1698,3 +1698,57 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
         });
     }
 }
+
+// value.md final review (finding 2): once `foreach (v; a)` has promoted an
+// `arrayCells` entry for `a` (`promoteSliceArrayCell` needs no address-of at
+// all), a member-function write to that same array reached through a
+// struct field (`Holder(a).bump()`, funnelled through
+// `writeThroughThisStructArrayFieldAlias`) updated only the boxed mirror,
+// never `a`'s promoted cell. `a[0]` reads through the cell-authoritative
+// path and so kept answering with the stale, pre-`bump` value.
+// `SystemLinker` is the oracle (dynamic arrays share backing storage, so
+// `Holder(a).values` aliases `a` and `bump`'s write is visible through
+// `a[0]`); other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("struct.memberFunctionArrayFieldWriteRefreshesSourceArrayCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            struct Holder {
+                int[] values;
+
+                void bump() {
+                    values[0] += ninetyNine();
+                }
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int total;
+                foreach (v; a)
+                    total += v;
+                auto h = Holder(a);
+                h.bump();
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 100);
+            }
+        });
+    }
+}

@@ -7559,6 +7559,19 @@ private struct Walker {
             throw new Exception("Unsupported interpreter struct field alias target.");
 
         locals[*sourceVariable] = source.withArrayElement(index, value);
+        // value.md final review, finding 2: once `sourceVariable` has a
+        // promoted `arrayCells` entry (needing no address-of at all --
+        // `foreach (v; a)` promotes it via `promoteSliceArrayCell`), a
+        // member-function write to the same array reached through a struct
+        // field must also refresh the cell, or a cell-authoritative index
+        // read (`runIndexExpression`) keeps answering with stale bytes. This
+        // runs in the callee's child `Walker` frame, whose `arrayCells` was
+        // duped from the caller (`child.arrayCells = arrayCells.dup`) and
+        // shares the same underlying `NativeArray` bytes by reference, so
+        // the caller sees the refreshed cell with no separate write-back.
+        // Mirrors every other `arrayCells` write-through call site; a no-op
+        // when no cell was ever promoted for `sourceVariable`.
+        writeThroughArrayCell(*sourceVariable, index, value);
         uninitializedLocals.remove(*sourceVariable);
     }
 
@@ -7919,14 +7932,22 @@ private struct Walker {
         // stale bytes. Mirrors `writeThroughArrayCell`'s treatment of the
         // array sibling. A no-op when no cell was ever promoted for
         // `alias_.source`.
+        //
+        // value.md final review, finding 1: `recordStructFieldAlias` records
+        // ANY `DotVarExp` initializer, including a non-scalar (array/nested-
+        // struct) field, but a `structCells` entry only ever holds native
+        // SCALAR field bytes (`writeStructCellScalarFields`'s own guard).
+        // Guard the cell write the same way, or a non-scalar aliased field
+        // reaches `writeScalar` with a type it cannot represent and throws;
+        // the boxed mirror write just above already handles a non-scalar
+        // field correctly on its own.
         if (auto cell = alias_.source in structCells) {
-            import quickbite.backends.interpreter.native_scalar: writeScalar;
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType, writeScalar;
 
-            writeScalar(
-                cell.fieldDeclaration(alias_.index).type,
-                cell.field(alias_.index),
-                value,
-            );
+            auto fieldType = cell.fieldDeclaration(alias_.index).type;
+            if (isNativeScalarType(fieldType))
+                writeScalar(fieldType, cell.field(alias_.index), value);
         }
         uninitializedLocals.remove(alias_.source);
     }
