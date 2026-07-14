@@ -5556,3 +5556,15 @@ run, confirming the existing dynamic-array descriptor pointer and pointer-load
 paths already agree. No production change was needed. This does not add array
 reserve, capacity, or interior-slice append semantics. Verification: passing
 focused five-backend matrix; `ninja bin/ut`; and `bin/ut --random`.
+
+`refCall.assignmentToRefReturningCallWritesArgument` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported assignment in bytecode core: self(i) = 42`. The typed-frame
+core now accepts an assignment through a direct `ref`-returning call when its
+sole return is a `ref` parameter: it executes the callee (including its
+existing ref-parameter writeback), then stores through that parameter's
+original caller slot. This deliberately does not add branch-dependent ref
+returns, ref returns of fields or globals, or member ref returns. Verification:
+focused Bytecode red then green; passing focused five-backend matrix; `ninja
+bin/ut`; and `bin/ut --random`.

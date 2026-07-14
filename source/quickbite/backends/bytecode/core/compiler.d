@@ -6315,6 +6315,13 @@ private struct Compiler {
         if (auto registryAssign = tryStaticDelegateAssocArrayAssign(assign))
             return *registryAssign;
 
+        // `ref T f(ref T value) { return value; }` used as an assignment
+        // target: execute the callee first, then write through the original
+        // argument slot rather than its copied callee-frame parameter.
+        if (auto call = assign.e1.isCallExp)
+            if (auto result = tryRefParameterCallAssign(call, assign.e2))
+                return *result;
+
         // `arr.length = n`: resize the array in place, preserving existing
         // elements and zero-filling growth. Detected by the ArrayLengthExp
         // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
@@ -6484,6 +6491,54 @@ private struct Compiler {
             cast(ushort) size(type),
         );
         return Operand(*slot, type);
+    }
+
+    private Operand* tryRefParameterCallAssign(
+        CallExp call,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        auto function_ = callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef || call.arguments is null)
+            return null;
+
+        auto returned = singleReturnExpression(function_.fbody);
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        if (parameter is null || !parameter.isReference)
+            return null;
+
+        auto parameterIndex = function_.parameters.length;
+        foreach (index; 0 .. function_.parameters.length)
+            if ((*function_.parameters)[index] is parameter) {
+                parameterIndex = index;
+                break;
+            }
+        if (parameterIndex >= call.arguments.length)
+            return null;
+
+        // Preserve ordinary call execution, including side effects and the
+        // existing ref-parameter writeback, before storing through its caller
+        // lvalue.
+        compileCall(call);
+
+        const destination = referenceOffset((*call.arguments)[parameterIndex]);
+        const value = compileExpression(rhs);
+        const scalar = scalarType(parameter.type);
+        if (value.type != scalar)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        _code ~= Instruction(
+            Op.copy, destination, value.offset, cast(ushort) size(scalar),
+        );
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
     }
 
     private Operand* tryStaticDelegateAssocArrayAssign(AssignExp assign) {

@@ -1953,7 +1953,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // callee and write through the returned lvalue, aliasing the caller's
 // argument.  automem's vector tests hit this shape 10× as
 // `Unsupported interpreter assignment target: call`.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("refCall.assignmentToRefReturningCallWritesArgument." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
