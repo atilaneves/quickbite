@@ -3025,3 +3025,190 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// Re-review finding 2 (BLOCKER, 2026-07-14): `writeCelledLocal`'s plain
+// rebind arm (`a = [...]`, no recursion involved at all) dropped
+// `arrayCells[variable]` but never the memoized `arrayAllocations`/
+// `arrayAllocationVariables` id -- the same per-binding fresh-id principle
+// finding 3 above established, applied incompletely to this arm. A pointer
+// taken BEFORE the rebind (`p`) kept resolving, via the still-live reverse
+// map, into the REBOUND array's own freshly-promoted cell instead of
+// declining to its own frozen snapshot. Before any production change,
+// Interpreter returned 7 (the rebound array's first element) instead of the
+// pre-rebind value 1. SystemLinker is the oracle; other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                a = [seven(), eight()];
+                int* q = &a[0];
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}
+
+// Crash twin of the same finding: the outer pointer indexes past the END of
+// the rebound (shorter) array. Before any production change, Interpreter
+// resolved the stale outer id into the rebound array's own (shorter) cell
+// and threw `NativeArray.element: index out of range` instead of declining
+// to the outer pointer's own frozen (in-range) snapshot.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int* p = &a[1];
+                a = [nine()];
+                int* q = &a[0];
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 2);
+            }
+        });
+    }
+}
+
+// Append twin of the same finding: `runArrayAppendAssignExpression` (`~=`)
+// has the identical drop-cell-keep-id shape as the plain-rebind arm above --
+// `arrayCells.remove(variable)` alone, without also invalidating the
+// memoized id, means a pointer re-taken AFTER the append (`q`) mints the
+// SAME id as one taken BEFORE it (`p`), because `a` itself was never
+// re-declared, so a write through `q` into the post-append cell became
+// visible through `p` too. A three-element array literal's GC block has
+// exactly enough spare capacity for 3 elements and none for a 4th (verified
+// separately against a standalone compiled program), so appending a 4th
+// here deterministically reallocates in real D -- `p`, taken before the
+// append, no longer aliases `a`'s post-append storage at all, and keeps
+// reading its own pre-append snapshot even after a write through `q`.
+// SystemLinker is the oracle for this exact value; other backends omitted
+// per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                int[] a = [one(), two(), three()];
+                int* p = &a[0];
+                a ~= seven();
+                int* q = &a[0];
+                *q = ninetyNine();
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}
+
+// New finding 3 (BLOCKER, re-review 2026-07-14): `mergeArrayAllocationMaps`
+// unconditionally unions a child's reverse (`arrayAllocationVariables`)
+// entries into the parent. A child's OWN fresh rebind of a shared
+// `VarDeclaration` mints a FRESH id for its own cell (finding 3 above), and
+// dynamic-array elements are GC-allocated, so a pointer into that fresh
+// child cell may legally escape upward (returned from the child). The
+// reverse map is keyed by `VarDeclaration`, not by binding, so routing that
+// child-minted id into the PARENT frame -- which holds its OWN live cell for
+// a DIFFERENT binding of the SAME `VarDeclaration` -- resolves the escaped
+// pointer through the parent's bytes instead of declining to its own frozen
+// snapshot. Before any production change, Interpreter's `*leak(1)` returned
+// 111 (`leak(1)`'s own outer `a`, resolved through the wrongly-merged id)
+// instead of 11 (`leak(0)`'s inner `a`, the value the escaped pointer
+// actually names). SystemLinker is the oracle; other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int eleven() {
+                return 11;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int* leak(int depth) {
+                int[] a = [depth * 100 + eleven(), two()];
+                int* p = &a[0];
+                if (depth == 0)
+                    return p;
+                int* q = leak(0);
+                return (*q == 11) ? q : null;
+            }
+
+            unittest {
+                assert(*leak(1) == 11);
+            }
+        });
+    }
+}

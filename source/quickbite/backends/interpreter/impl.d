@@ -2387,7 +2387,16 @@ private struct Walker {
                 foreach (index; 0 .. value.length)
                     writeScalar(cell.elementType, cell.element(index), value[index]);
             } else {
-                arrayCells.remove(variable);
+                // A rebind's cell drop must also drop the memoized
+                // allocation id (`dropArrayCell`, not a bare `arrayCells.
+                // remove`) -- the same per-binding fresh-id principle
+                // finding 3's fresh-binding sites already apply (value.md
+                // item 7 final review): an id left behind here would let a
+                // pointer minted BEFORE this rebind keep resolving, via the
+                // still-live reverse map, into whatever cell the REBOUND
+                // array's own next address-of promotes, instead of
+                // correctly declining to its own frozen snapshot.
+                dropArrayCell(variable);
             }
         }
 
@@ -4126,18 +4135,35 @@ private struct Walker {
     // id invalidation applies across recursion. Every id is minted from one
     // shared, monotonically increasing `allocationCount` (merged back
     // separately, unconditionally, above), so two frames never disagree
-    // about what a given id names -- the reverse map
-    // (`arrayAllocationVariables`) only ever needs entries ADDED, never
-    // replaced, so this frame's own entry for an id the callee's copy no
-    // longer has (because a DEEPER frame's own rebind dropped it from the
-    // callee's copy) simply survives untouched. The forward map
-    // (`arrayAllocations`) only adopts a variable THIS frame did not already
-    // have an entry for -- a rebind that happened only in a deeper frame's
-    // own copy cannot clobber this frame's own still-valid mapping for the
-    // same variable.
+    // about what a given id names. The forward map (`arrayAllocations`)
+    // only adopts a variable THIS frame did not already have an entry for --
+    // a rebind that happened only in a deeper frame's own copy cannot
+    // clobber this frame's own still-valid mapping for the same variable.
+    //
+    // Re-review finding 3 (2026-07-14): the reverse map
+    // (`arrayAllocationVariables`) merge used to union every child entry in
+    // unconditionally. That routed a child-MINTED id (a fresh rebind's own
+    // `&a[i]`, e.g. taken after a recursive callee re-declares the same
+    // `VarDeclaration`) into THIS frame's reverse map even when this frame's
+    // own forward map already binds that same `VarDeclaration` to a
+    // DIFFERENT (this frame's own) id -- and dynamic-array elements are
+    // GC-allocated, so a pointer minted under the child's id may legally
+    // escape upward (returned from the child) into this frame. Once merged,
+    // that escaped pointer resolved through THIS frame's OWN, unrelated cell
+    // for the same variable instead of correctly declining. A child entry
+    // whose variable this frame's forward map binds to a different id is
+    // therefore skipped -- precisely the "same `VarDeclaration`, different
+    // binding" condition -- while an entry for a variable this frame has no
+    // binding/cell for at all keeps merging unconditionally, since the
+    // cross-frame writeback machinery still needs those.
     private void mergeArrayAllocationMaps(ref Walker child) {
-        foreach (id, variable; child.arrayAllocationVariables)
+        foreach (id, variable; child.arrayAllocationVariables) {
+            if (auto ownId = variable in arrayAllocations)
+                if (*ownId != id)
+                    continue;
+
             arrayAllocationVariables[id] = variable;
+        }
 
         foreach (variable, id; child.arrayAllocations)
             if (variable !in arrayAllocations)
@@ -4149,12 +4175,30 @@ private struct Walker {
     // merge the identical, conflict-free way: ids are globally unique, so a
     // key present in both this frame's and the callee's copy always names
     // the same variable/field index.
+    //
+    // Re-review finding 3's symmetric guard (2026-07-14): applied here too,
+    // keyed on (variable, field index) rather than just variable, since a
+    // struct can have several independently-addressed fields -- a child
+    // entry is skipped only when this frame's OWN `fieldAddressAllocations`
+    // forward map already binds the SAME (variable, field index) pair to a
+    // DIFFERENT id. Escaping a pointer to a local struct field upward is UB
+    // in real D (unlike a dynamic array element, a struct field is not
+    // GC-allocated), so no fixture exercises this guard directly; it is
+    // symmetric hardening only, applied because it did not regress the
+    // existing cross-frame struct fixtures.
     private void mergeStructFieldPointerVariableMaps(ref Walker child) {
-        foreach (id, variable; child.structFieldPointerVariables)
-            structFieldPointerVariables[id] = variable;
+        foreach (id, variable; child.structFieldPointerVariables) {
+            auto fieldIndex = id in child.structFieldPointerFieldIndices;
+            if (fieldIndex !is null)
+                if (auto ownFieldIds = variable in fieldAddressAllocations)
+                    if (auto ownId = *fieldIndex in *ownFieldIds)
+                        if (*ownId != id)
+                            continue;
 
-        foreach (id, fieldIndex; child.structFieldPointerFieldIndices)
-            structFieldPointerFieldIndices[id] = fieldIndex;
+            structFieldPointerVariables[id] = variable;
+            if (fieldIndex !is null)
+                structFieldPointerFieldIndices[id] = *fieldIndex;
+        }
     }
 
     // `fieldAddressAllocations`' own forward-map merge, matching
@@ -4260,18 +4304,6 @@ private struct Walker {
                 continue;
 
             locals[variable] = structValueFromCell(*current, *cell);
-
-            // Idempotent today (re-deriving `locals[variable]` from the
-            // still-current cell is harmless if repeated), but the flag
-            // itself is otherwise never cleared and this map gets dup'd into
-            // every further child frame and merged back wholesale -- a
-            // future rebind that reuses `variable` but never itself takes a
-            // struct-field pointer could still see a stale "writeback
-            // pending" flag from an unrelated, already-processed call and
-            // re-derive `locals[variable]` against whatever cell exists for
-            // it then. Clear it once processed so it cannot outlive this
-            // writeback.
-            child.structFieldPointerWritebacks.remove(variable);
         }
     }
 
@@ -6536,7 +6568,19 @@ private struct Walker {
         // too-short cell answer a later read/write at the new index
         // (`readIndexExpression`'s cell arm, `writeThroughArrayCell`); the
         // next read falls through to this fresh `locals` mirror instead.
-        arrayCells.remove(variable);
+        //
+        // Re-review finding 2 (2026-07-14): dropping the CELL alone left the
+        // memoized `arrayAllocations`/`arrayAllocationVariables` id in
+        // place, since `variable` itself was never re-declared here -- a
+        // pointer re-taken AFTER this append then minted the SAME id as one
+        // taken BEFORE it, and a write through the new pointer became
+        // visible through the old one even though `~=` may have reallocated
+        // in real D. `dropArrayCell` mints a fresh id for the next
+        // address-of instead, matching the fresh-id principle finding 3's
+        // fresh-binding sites already apply -- the correct, D-matching
+        // choice even though it changes `p is q` identity for the case
+        // where the append happened not to reallocate.
+        dropArrayCell(variable);
 
         return locals[variable];
     }

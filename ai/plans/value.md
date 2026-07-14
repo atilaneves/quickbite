@@ -4296,6 +4296,113 @@ fixture); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed,
 failed). The full `bin/ut --random` was left to the orchestrator per the
 usual long-suite handoff.
 
+Progress 2026-07-14 (re-review fixes: id dies with the cell at
+rebind/append, wrong-frame merge guard, revert unsafe writeback-flag
+clear): a further Fable review of the arrayCells/structCells work above
+raised three new BLOCKERs, all introduced by the two final-review rounds
+directly above; this slice fixes all three.
+
+Finding 1 (BLOCKER, revert): the previous round's finding 8 added
+`child.structFieldPointerWritebacks.remove(variable)` in
+`writeBackStructFieldPointerTargets`, calling it "behaviour-neutral
+hardening" for a hypothetical stale-flag hazard. It was not neutral: an
+intermediate member-function frame (e.g. `Poker.poke` calling a free
+function `deposit` that writes through a struct-field pointer) dups
+`locals`/`structCells` from its own `this`-bound child `Walker`, passes the
+writeback check at the inner call's return, and clears the flag on ITS OWN
+throwaway duped copy -- so the flag never reaches the frame that actually
+owns the struct local. A member-function frame has no
+`writeBackNestedLocals` of its own, so the refresh died with the frame
+instead of propagating up to the caller. New fixture,
+`struct.memberFunctionForwardsPointerWriteToOwningFrame`
+(`tests/ut/backends/runner/ct/structs.d`, `Interpreter`/`SystemLinker`):
+confirmed red on Interpreter before the fix (`3 != 42`, the pre-write
+value) and green on SystemLinker; green on both after. Fix: reverted the
+`structFieldPointerWritebacks.remove(variable)` clear (and its comment)
+entirely -- the hazard it guarded against was explicitly hypothetical, and
+removing it restores the flag's cross-frame survival.
+
+Finding 2 (BLOCKER): `writeCelledLocal`'s array rebind arm (a plain `a =
+<new array>;`, no recursion involved) dropped `arrayCells[variable]` via a
+bare `arrayCells.remove(variable)` but never the memoized
+`arrayAllocations`/`arrayAllocationVariables` id -- the same per-binding
+fresh-id principle finding 3 of the round above established for
+`runDeclarationExpression`/`bindFunctionParameters`/
+`bindLazyFunctionParameter`, applied incompletely to this same-frame rebind
+arm. A pointer taken BEFORE the rebind kept resolving, via the still-live
+reverse map, into the REBOUND array's own freshly-promoted cell instead of
+declining to its own frozen snapshot. New fixture,
+`pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue`
+(`expressions.d`, `Interpreter`/`SystemLinker`): confirmed red on
+Interpreter (`7 != 1`, the rebound array's own value) and green on
+SystemLinker; green on both after. Crash twin,
+`pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash`
+(outer pointer at index 1, rebound array with only one element): confirmed
+red on Interpreter (host `NativeArray.element: index out of range`) and
+green on SystemLinker; green on both after. Fix: the rebind arm now calls
+`dropArrayCell(variable)` (drops the cell AND the id together) instead of
+the bare `arrayCells.remove(variable)`.
+
+The append site (`runArrayAppendAssignExpression`'s plain-`VarExp` arm,
+`~=`) had the identical drop-cell-keep-id shape, for the same reason (`a`
+itself is never re-declared by an append, so nothing else invalidated its
+id either). New fixture,
+`pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue` (`expressions.d`,
+`Interpreter`/`SystemLinker`): a three-element array literal is appended
+to once (verified separately, against a standalone compiled program, that
+a 3-element literal's GC block has exactly enough spare capacity for 3
+elements and forces a real reallocation on a 4th), then a pointer taken
+after the append writes a new value, and a pointer taken BEFORE the append
+is read back; confirmed red on Interpreter (`99 != 1`, the post-append
+write leaking backward through the shared stale id) and green on
+SystemLinker (real reallocated storage keeps the pre-append pointer
+stale); green on both after. Fix: the append site now also calls
+`dropArrayCell(variable)` instead of the bare `arrayCells.remove
+(variable)` -- append may reallocate, so minting a fresh id for the next
+address-of is the correct D-matching choice, even though it changes `p is
+q` identity for the (empirically far more common) case where the append
+happens not to reallocate; declining to the pre-append frozen snapshot
+still yields the correct value either way.
+
+Finding 3 (BLOCKER): `mergeArrayAllocationMaps`'s reverse-map merge unioned
+every child `arrayAllocationVariables` entry into the parent
+unconditionally. A child's OWN fresh rebind of a shared `VarDeclaration`
+mints a FRESH id for its own cell (finding 3 of the round above), and
+dynamic-array elements are GC-allocated, so a pointer into that fresh child
+cell may legally escape upward (returned from the child) -- the reverse
+map is keyed by `VarDeclaration`, not by binding, so routing that
+child-minted id into the PARENT frame, which holds its OWN live cell for a
+DIFFERENT binding of the SAME `VarDeclaration`, resolved the escaped
+pointer through the parent's bytes instead of declining to its own frozen
+snapshot. New fixture,
+`pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell`
+(`expressions.d`, `Interpreter`/`SystemLinker`): confirmed red on
+Interpreter (`111 != 11`, the outer frame's own value instead of the
+escaped pointer's inner-frame value) and green on SystemLinker; green on
+both after. Fix: `mergeArrayAllocationMaps` now skips a child reverse
+entry whose variable THIS frame's forward map (`arrayAllocations`) already
+binds to a DIFFERENT id -- precisely the "same `VarDeclaration`, different
+binding" condition -- while an entry for a variable this frame has no
+binding for at all keeps merging unconditionally, since the cross-frame
+writeback machinery still needs those. Applied the analogous guard to
+`mergeStructFieldPointerVariableMaps`, keyed on (variable, field index)
+rather than just variable since a struct can have several independently-
+addressed fields; verified it does not regress any existing cross-frame
+struct fixture. No fixture exercises the struct guard directly -- escaping
+a pointer to a local struct field upward is UB in real D (a struct field,
+unlike a dynamic array element, is not GC-allocated) -- so it is symmetric
+hardening only.
+
+Focused runs, all green: all five new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (407 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (285 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (332 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

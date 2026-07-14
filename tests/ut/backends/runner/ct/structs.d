@@ -1752,3 +1752,58 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// New finding 1 (BLOCKER, re-review 2026-07-14): `ff93e303` added
+// `child.structFieldPointerWritebacks.remove(variable)` in
+// `writeBackStructFieldPointerTargets` as "behaviour-neutral hardening" --
+// it is not neutral. An intermediate member-function frame (`Poker.poke`,
+// which dups `locals`/`structCells` from its own `this`-bound child
+// `Walker`) passes the writeback check at `deposit`'s return and clears the
+// flag on ITS OWN throwaway duped copy, so the flag never reaches the frame
+// that owns `s` -- a member-function frame has no `writeBackNestedLocals` of
+// its own, so the refresh dies with the frame instead of propagating up to
+// `f`. Before any production change, Interpreter's `s.x` read 3 (the
+// pre-write value) instead of 42. SystemLinker is the oracle; other
+// backends omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("struct.memberFunctionForwardsPointerWriteToOwningFrame." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int three() {
+                return 3;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            struct S {
+                int x;
+            }
+
+            struct Poker {
+                void poke(int* p) {
+                    deposit(p);
+                }
+            }
+
+            void deposit(int* p) {
+                *p = fortyTwo();
+            }
+
+            int f() {
+                S s = S(three());
+                int* p = &s.x;
+                Poker k;
+                k.poke(p);
+                return s.x;
+            }
+
+            unittest {
+                assert(f() == 42);
+            }
+        });
+    }
+}
