@@ -5424,3 +5424,10 @@ module-data segment rather than a startup copy. The compiler reserves every
 16-bit-addressable module-data byte when it creates the program, so a lazily
 compiled callee can grow the segment without invalidating raw module addresses
 already handed to bytecode. No new language surface or tests were added.
+
+Reviewer fix, 2026-07-14: scalar module slots now validate their initializer
+before becoming addressable. Integer literals retain the existing native-byte
+initialization, while `float`, `double`, and `real` literals use the same raw
+IEEE/native-real bytes as frame literals. Other initializer expressions fail
+deterministically instead of exposing a silently zero-initialized module slot.
+No tests were changed.

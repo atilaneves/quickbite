@@ -6543,31 +6543,44 @@ private struct Compiler {
             return existing;
 
         const type = scalarType(declaration.type);
+        const initializer = moduleScalarInitializerBytes(declaration, type);
         const offset = allocateModuleBytes(size(type), size(type));
         _moduleScalarVariables[declaration] = ModuleScalarVariable(offset, type);
-        initializeModuleScalar(declaration, offset, type);
+        _program.moduleData[offset .. offset + initializer.length] = initializer[];
         return declaration in _moduleScalarVariables;
     }
 
-    private void initializeModuleScalar(
+    private ubyte[] moduleScalarInitializerBytes(
         VarDeclaration declaration,
-        in ushort offset,
         in ScalarType type,
     ) {
         import std.bitmanip: nativeToLittleEndian;
+        import std.conv: text;
 
         auto initializer = declaration._init is null
             ? null
             : declaration._init.isExpInitializer;
         if (initializer is null)
-            return;
+            return null;
 
-        auto integer = initializerExpression(initializer.exp).isIntegerExp;
-        if (integer is null)
-            return;
+        auto expression = initializerExpression(initializer.exp);
+        if (auto integer = expression.isIntegerExp) {
+            const bytes = nativeToLittleEndian(cast(ulong) integer.toInteger);
+            return bytes[0 .. size(type)].dup;
+        }
 
-        const bytes = nativeToLittleEndian(cast(ulong) integer.toInteger);
-        _program.moduleData[offset .. offset + size(type)] = bytes[0 .. size(type)];
+        if (auto real_ = expression.isRealExp) {
+            if (type == ScalarType.real_)
+                return realBytes(real_).dup;
+
+            const bytes = nativeToLittleEndian(floatBits(real_, type));
+            return bytes[0 .. size(type)].dup;
+        }
+
+        throw new Exception(text(
+            "Unsupported module scalar initializer in bytecode core: ",
+            declarationChars(declaration),
+        ));
     }
 
     private ushort allocateModuleBytes(in uint bytes, in uint alignmentArgument)
