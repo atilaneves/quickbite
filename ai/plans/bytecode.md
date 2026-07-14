@@ -5514,3 +5514,14 @@ address remains a live alias for a subsequent scalar pointer store. No
 production change was needed. This does not add aggregate writes, heap
 structs, or general lvalue support. Verification: focused Bytecode row;
 `ninja bin/ut`; and `bin/ut --random`.
+
+`pointer.reinterpretWriteThroughRefParameterPointerReachesCaller` promoted to
+Bytecode, 2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row passes a caller `float`
+through a `ref` parameter, takes a same-size `uint*` view in the callee, and
+writes raw bits that the caller then reads as `1.0f`. The focused Bytecode row
+passed on its first candidate run, confirming that the existing typed-frame
+`ref` binding preserves the caller's live scalar storage across the ordinary
+call boundary. No production change was needed. This adds no general pointer
+or aggregate alias semantics. Verification: focused Bytecode row; `ninja
+bin/ut`; and `bin/ut --random`.

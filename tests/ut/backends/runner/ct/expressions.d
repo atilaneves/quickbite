@@ -1432,10 +1432,11 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // must observe the write after the call returns. This is the guest-level
 // call-site frontier of value.md item 7: a freshly promoted native cell for
 // the `ref` parameter must stay connected to the caller's own cell/box.
-// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
-// convention (address-of-a-local/parameter and float byte-reinterpretation
-// are unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+// SystemLinker is the oracle; Bytecode runs this confirmed typed-frame path.
+// Other backends remain omitted per the omit-don't-pin convention
+// (address-of-a-local/parameter and float byte-reinterpretation are
+// unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.reinterpretWriteThroughRefParameterPointerReachesCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
