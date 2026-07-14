@@ -7018,6 +7018,16 @@ private struct Walker {
         if (writeThroughArrayPointer(pointer, value))
             return;
 
+        // A struct-field pointer (`&s.field`): the same shared-storage
+        // helper `writeLocation`'s `PtrExp` arm already calls, so a
+        // compound-assignment/atomic/post-increment write-back (this
+        // function's only callers) refreshes the same promoted
+        // `structCells` entry that `structFieldPointerCellValue` above reads
+        // from -- instead of the stale boxed-value rewrite the fallback
+        // below would otherwise perform (value.md review, finding 6).
+        if (writeThroughStructFieldPointer(pointer, value))
+            return;
+
         if (auto address = expression.isAddrExp) {
             writeLocation(address.e1, value);
             return;
@@ -7411,6 +7421,17 @@ private struct Walker {
         }
 
         locals[alias_.source] = source.withArrayElement(alias_.lower + index, value);
+        // value.md review, finding 5: a slice-expression parameter (bound
+        // via `recordParameterSliceAlias`, which never calls
+        // `promoteSliceArrayCell`) has no `arrayCells` entry of its own, but
+        // `alias_.source` -- the slice's origin -- may already have one (an
+        // earlier `&a[0]` in the caller). Refresh it too, or a later direct
+        // read (`readIndexExpression`'s cell arm, authoritative over the
+        // boxed mirror just written above) keeps answering with stale bytes.
+        // Mirrors the treatment `writeThroughArrayElementAlias` already
+        // gives the `ref`-element-alias sibling; a no-op when no cell was
+        // ever promoted for `alias_.source`.
+        writeThroughArrayCell(alias_.source, alias_.lower + index, value);
         uninitializedLocals.remove(alias_.source);
     }
 
@@ -7778,6 +7799,25 @@ private struct Walker {
             );
 
         locals[alias_.source] = source.withStructField(alias_.index, value);
+        // value.md review, finding 7: a `ref` local bound directly to a
+        // struct field (`ref int r = s.x;`, recorded via
+        // `recordStructFieldAlias`) must also refresh `alias_.source`'s
+        // promoted `structCells` entry, if one exists (an earlier `&s.x`),
+        // or a later read through that pointer
+        // (`pointerTargetValue`/`structFieldPointerCellValue`, authoritative
+        // over the boxed mirror just re-derived above) keeps answering with
+        // stale bytes. Mirrors `writeThroughArrayCell`'s treatment of the
+        // array sibling. A no-op when no cell was ever promoted for
+        // `alias_.source`.
+        if (auto cell = alias_.source in structCells) {
+            import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+            writeScalar(
+                cell.fieldDeclaration(alias_.index).type,
+                cell.field(alias_.index),
+                value,
+            );
+        }
         uninitializedLocals.remove(alias_.source);
     }
 

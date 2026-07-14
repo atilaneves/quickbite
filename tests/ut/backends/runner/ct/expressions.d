@@ -2566,3 +2566,140 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// value.md review (finding 5): `bump(int[] s)` binds `s` via
+// `recordParameterSliceAlias` -- a slice-expression argument never calls
+// `promoteSliceArrayCell`, so `s` itself never gets an `arrayCells` entry --
+// while `a`, the slice's source, already has one (promoted here by
+// `&a[0]`). `s[0] = ninetyNine();` reached `writeThroughSliceAlias`, which
+// refreshed only the boxed `locals` mirror for `a`, never `a`'s own
+// promoted cell; the following `return a[0];` reads through
+// `readIndexExpression`'s cell arm, which is authoritative over the boxed
+// mirror and so kept answering with the stale, pre-write value.
+// SystemLinker is the oracle; other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void bump(int[] s) {
+                s[0] = ninetyNine();
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                auto p = &a[0];
+                bump(a[]);
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 99);
+            }
+        });
+    }
+}
+
+// value.md review (finding 6): `writePointerTarget` called
+// `writeThroughArrayPointer` but not `writeThroughStructFieldPointer`, so
+// `(*p)++` through a struct-field pointer read the promoted `structCells`
+// entry (via `pointerTargetValue`/`structFieldPointerCellValue`) but wrote
+// only the pointer's own boxed snapshot back through the fallback
+// `writeLocation` call at the bottom of `writePointerTarget` -- the next
+// `*p` re-read the stale cell instead of the freshly-incremented value.
+// SystemLinker is the oracle; other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.structFieldPointerCompoundIncrementWritesThroughCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int f() {
+                struct S {
+                    int x;
+                    int y;
+                }
+
+                S s = S(one(), two());
+                auto p = &s.x;
+                (*p)++;
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 2);
+            }
+        });
+    }
+}
+
+// value.md review (finding 7): once `&s.x` has promoted a `structCells`
+// entry for `s`, a `ref` LOCAL bound directly to `s.x` (recorded via
+// `recordStructFieldAlias`/`structFieldAliases`, the only reachable path to
+// `writeThroughStructFieldAlias`) writes `ninetyNine()` through
+// `writeThroughStructFieldAlias`, which refreshed only the boxed `locals`
+// mirror for `s`, never `s`'s own promoted cell. The following `return *p;`
+// reads through `pointerTargetValue`/`structFieldPointerCellValue`, which is
+// authoritative over the boxed mirror and so kept answering with the stale,
+// pre-write value. SystemLinker is the oracle; other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.structFieldRefLocalWriteThroughRefreshesCellAfterAddressOf." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                struct S {
+                    int x;
+                    int y;
+                }
+
+                S s = S(one(), two());
+                auto p = &s.x;
+                ref int r = s.x;
+                r = ninetyNine();
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 99);
+            }
+        });
+    }
+}

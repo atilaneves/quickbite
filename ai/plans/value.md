@@ -3763,6 +3763,82 @@ failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed). The full `bin/ut --random` was left to the orchestrator per the
 usual long-suite handoff.
 
+Progress 2026-07-14 (review fixes: slice-alias, struct compound-write,
+struct-field-alias cell refresh): a third Fable review of the same array/
+struct cell slices found three more blockers (findings 5-7), all still in
+the "a promoted `arrayCells`/`structCells` cell is READ-AUTHORITATIVE over
+the boxed `locals` mirror" family, this time in write paths that reach a
+promoted cell only indirectly -- through a slice-parameter alias, a
+compound assignment through a struct-field pointer, and a `ref`-local
+struct-field alias.
+
+Finding 5: `writeThroughSliceAlias`'s non-`hasFieldIndex` arm refreshed only
+the boxed `locals` mirror for the slice's source variable, never a promoted
+`arrayCells` entry the source might already have. Reachable with no cell of
+`s`'s own at all: a slice-expression parameter (`void bump(int[] s) { s[0]
+= ninetyNine(); }`) is bound via `recordParameterSliceAlias`, which never
+calls `promoteSliceArrayCell`, so `s` itself never gets a cell; but the
+caller's `a` (the slice's source, aliased via `sliceAliases`) can already
+have one from an earlier `&a[0]`. New fixture (pre-approved, confirmed red
+on Interpreter / green on SystemLinker):
+`pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf`
+(`tests/ut/backends/runner/ct/expressions.d`) -- `int[] a = [one(), two()];
+auto p = &a[0]; bump(a[]); return a[0];` -- SystemLinker `99`; Interpreter
+returned the stale `1` (`readIndexExpression`'s cell arm answered from the
+untouched cell). Fix: `writeThroughSliceAlias` now also calls
+`writeThroughArrayCell(alias_.source, alias_.lower + index, value)` after
+the `locals` write, exactly the treatment `writeThroughArrayElementAlias`
+already got in the prior review round -- a no-op when no cell was ever
+promoted for `alias_.source`.
+
+Finding 6: `writePointerTarget` (the compound-assignment/atomic/post-
+increment write-back path) called `writeThroughArrayPointer` but not
+`writeThroughStructFieldPointer`, so `(*p)++`/`*p += x`/atomics through a
+struct-field pointer read the promoted `structCells` entry (via
+`pointerTargetValue`/`structFieldPointerCellValue`, added earlier this
+session) but wrote only the pointer's own boxed snapshot back through the
+generic `writeLocation(expression, pointer.withPointerTarget(value))`
+fallback at the bottom. New fixture (confirmed red/green):
+`pointer.structFieldPointerCompoundIncrementWritesThroughCell`
+(`expressions.d`) -- `S s = S(one(), two()); auto p = &s.x; (*p)++; return
+*p;` -- SystemLinker `2`; Interpreter returned the stale `1` (the increment
+never reached the cell, so the next `*p` re-read it unchanged). Fix: call
+`writeThroughStructFieldPointer(pointer, value)` right after
+`writeThroughArrayPointer` in `writePointerTarget`, mirroring
+`writeLocation`'s own `PtrExp` arm, which already calls both in that order.
+
+Finding 7: `writeThroughStructFieldAlias` -- reached only via a `ref` LOCAL
+bound directly to a struct field (`ref int r = s.x;`, recorded by
+`recordStructFieldAlias`; a `ref` PARAMETER bound to `s.x` is not tracked by
+this alias table at all, so the local form is the only reachable case)
+-- refreshed only the boxed `locals` mirror for the receiver, never a
+promoted `structCells` entry. New fixture (confirmed red/green):
+`pointer.structFieldRefLocalWriteThroughRefreshesCellAfterAddressOf`
+(`expressions.d`) -- `S s = S(one(), two()); auto p = &s.x; ref int r =
+s.x; r = ninetyNine(); return *p;` -- SystemLinker `99`; Interpreter
+returned the stale `1` (`*p` read through
+`pointerTargetValue`/`structFieldPointerCellValue`, which is authoritative
+over the boxed mirror `r`'s write had already updated). Fix:
+`writeThroughStructFieldAlias` now also calls `writeScalar` into
+`cell.field(alias_.index)` (typed via
+`cell.fieldDeclaration(alias_.index).type`) when the receiver has a
+`structCells` entry, mirroring `writeThroughArrayCell`'s treatment of the
+array sibling -- a no-op when no cell was ever promoted for the receiver.
+
+All three share the same root cause as every finding in this family: a
+write reachable only through an ALIAS table (slice, array-element, or
+struct-field) must independently remember to refresh whichever native cell
+its ultimate target variable holds, because the read side always checks
+the cell first and never consults the alias tables at all.
+
+Focused runs, all green: all three new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (385 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
