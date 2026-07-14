@@ -1622,3 +1622,46 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
         });
     }
 }
+
+// cerealed's decode of a `@disable this()` struct (decode.d's "Types with
+// @disable this can be encoded/decoded" test) uses the `T val = void;`
+// property-getter overload (`Decerealiser.value`, `cerealed/decerealiser.d`)
+// because `T()` does not compile; `grain(this, val)` then reaches the
+// struct's single field only through a nested `ref`-forwarding call
+// (`grainAllMembersImpl` -> `grainAggregateMember` -> `grain(__traits(
+// getMember, val, member))`), matching this fixture's `writeByte(val.i)`
+// inside `grainField`. `Walker.bindFunctionParameters` (impl.d) bound a
+// `ref` parameter to the caller's deferred `Value.void_` placeholder
+// without marking the parameter itself `uninitializedLocals` in the
+// callee's own frame, so a nested `DotVarExp` field read through it saw
+// a bare `Value.void_` instead of the materialised default struct
+// `runExpression`'s `VarExp` branch already produces for a directly
+// uninitialized local. interpreter.md §9.7.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("refArgument.voidStructLocalFieldWritableThroughNestedRefWrite." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { ubyte i; }
+
+            void writeByte(ref ubyte val) {
+                val = 42;
+            }
+
+            void grainField(ref Holder val) {
+                writeByte(val.i);
+            }
+
+            ubyte readField() {
+                Holder val = void;
+                grainField(val);
+                return val.i;
+            }
+
+            unittest {
+                assert(readField() == 42);
+            }
+        });
+    }
+}

@@ -3725,6 +3725,22 @@ private struct Walker {
             }
 
             locals[parameter] = arguments[index];
+
+            // `runRefArgumentExpression` seeds a `ref` argument still bound to
+            // an uninitialized caller local with a bare `Value.void_`
+            // placeholder rather than reading through it (interpreter.md
+            // §9.7). Mirror that uninitialized status onto the callee's own
+            // parameter so a nested read through it — including a `DotVarExp`
+            // field access on a struct/static-array parameter, e.g. cerealed's
+            // `grain(__traits(getMember, val, member))` — hits the same
+            // "materialize the default aggregate" / "throw for a still-void
+            // scalar" handling `runExpression`'s `VarExp` branch already
+            // applies to a directly uninitialized local, instead of reading a
+            // bare `Value.void_` straight off `locals` and failing field
+            // access outright.
+            if (parameter.isReference && arguments[index] == Value.void_)
+                uninitializedLocals[parameter] = true;
+
             recordParameterSliceAlias(
                 parameter,
                 arguments[index],

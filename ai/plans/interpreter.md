@@ -1882,6 +1882,66 @@ mismatches: `decode.d(262)`, `encode_decode.d(75)`/`(80)`, `property.d(12)`
 `Expected struct.`) and `static_array.d(7)` (`Expected array.`) remain
 untriaged, each its own root.
 
+**2026-07-14 (void-init struct/aggregate `ref`-parameter root,
+`decode.d(262)` closed).** Triaged the 2 remaining tractable classes
+(`bin/bench.sh -b interpreter -b system-linker --dub cerealed`, HEAD
+`86ad4fb4`). `decode.d(262)` (cerealed's "Types with @disable this can
+be encoded/decoded" test) is language-surface: `Decerealiser.value`'s
+`T val = void;` property-getter overload (used because `T()` does not
+compile for a `@disable this()` struct) then calls `grain(this, val)`,
+which reaches the struct's field only through a chain of nested `ref`-
+forwarding calls (`grainAllMembersImpl` -> `grainAggregateMember` ->
+`grain(__traits(getMember, val, member))`) — the same shape as the
+already-closed scalar `.grain.b` void-init-`ref` gap above, but one
+level deeper: the forwarded expression is a struct **field**
+(`DotVarExp`), not a bare local.
+
+Root: `Walker.runRefArgumentExpression`'s existing deferred-read
+special case (impl.d, the earlier `.grain.b` fix) only marks the
+*caller's* argument as unread; it does nothing for the *callee's own*
+parameter binding. `Walker.bindFunctionParameters` stored the deferred
+`Value.void_` placeholder straight into the callee's `locals` without
+recording it in the callee's own `uninitializedLocals`. `runExpression`'s
+`VarExp` branch already special-cases a variable found in
+`uninitializedLocals`, materialising a default struct/array value so
+field access keeps working (mirroring dmd's own field-granular void
+diagnostic) — but that branch never ran for the callee's parameter,
+since it wasn't marked uninitialized there. So a nested `DotVarExp`
+field read on the still-void parameter (`runDotVarExpression`'s
+`runExpression(dot.e1)`) fell through to a plain `locals` lookup,
+returning the bare `Value.void_` placeholder, and field extraction on a
+non-`Struct` value threw `Value.structFieldAt`'s generic diagnostic,
+"Expected struct."
+
+Fix: `bindFunctionParameters` now also marks a `ref` parameter in the
+callee's own `uninitializedLocals` whenever its bound argument value is
+`Value.void_`, mirroring the caller-side deferred-read seed. This is a
+general fix, not struct-specific: it makes a nested ref-forwarding
+chain of any depth (scalar or aggregate) consistently defer through the
+same "still uninitialized" handling at every frame, instead of only the
+outermost one.
+
+Exposing fixture
+`refArgument.voidStructLocalFieldWritableThroughNestedRefWrite`
+(`tests/ut/backends/runner/ct/structs.d`): a `Holder { ubyte i; }`,
+`writeByte(ref ubyte)` forwarded through `grainField(ref Holder val) {
+writeByte(val.i); }`, called from a `Holder val = void;` local,
+asserting the field is readable as 42 after the call. Confirmed red on
+`Interpreter` (`Expected struct.`, the identical cerealed message)
+before this fix, green on `Ctfe`, `Bytecode`, `SystemLinker`, and
+`LLVMJit` throughout — full matrix, nothing omitted.
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 8 mismatches. After:
+`decode.d(262)` gone, no newly-unmasked classes; cerealed drops to 7
+mismatches: `encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
+`reset.d(9)`, `static_array.d(7)`, `structs.d(22)`. Of these,
+`encode_decode.d(75)`/`(80)`, `property.d(12)` ×2, `reset.d(9)`, and
+`structs.d(22)` stay representation-ceiling (deferred to value.md per
+§8); `static_array.d(7)` (`Expected array.`) remains untriaged — the
+sole remaining candidate this session left unattempted, per the
+"one clean root" guidance.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
