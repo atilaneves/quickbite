@@ -4216,6 +4216,22 @@ private struct Walker {
             }
     }
 
+    // Re-review BLOCKER (2026-07-14, cross-frame cell staleness):
+    // `runIndexExpression`'s cell arm makes a promoted `arrayCells` entry
+    // READ-AUTHORITATIVE over the boxed `locals` mirror, but this used to
+    // refresh only the mirror with a bare assignment, never reconciling the
+    // parent's own cell. A nested function mutating a captured array is a
+    // supported, tested Interpreter feature, so the parent's stale cell kept
+    // answering reads with the pre-call value (or, if the array grew,
+    // indexed a too-short cell and crashed the host) after `child` returned.
+    // Routing through `writeCelledLocal` -- the same reconciliation
+    // `writeBackRefArguments` already uses for a `ref` array parameter's
+    // writeback -- refreshes a same-length cell in place and drops a
+    // changed-length one, matching a rebind that cannot be represented as an
+    // in-place byte mutation. A no-op for any variable without a cell (falls
+    // through to the same plain `locals[variable] = value;` as before), and
+    // unchanged for a scalar/struct variable (`writeCelledLocal`'s own
+    // pre-existing scalarCells/structCells branches, not gated on this).
     private void writeBackNestedLocals(
         imported!"dmd.func".FuncDeclaration function_,
         ref Walker child,
@@ -4226,7 +4242,7 @@ private struct Walker {
 
         foreach (variable, value; child.locals)
             if (variable in locals)
-                locals[variable] = value;
+                writeCelledLocal(variable, value, /* arrayIsRefWriteback */ true);
     }
 
     private void writeBackGlobals(ref Walker child) {
@@ -4260,6 +4276,34 @@ private struct Walker {
         }
     }
 
+    // Same cross-frame cell reconciliation as `writeBackNestedLocals` above,
+    // for the non-nested case: a recursive call sharing a dynamic-array
+    // PARAMETER's backing storage (no `ref`, no closure) hits this call site
+    // instead, via `arrayAllocationVariables` rather than capture. Without
+    // routing through `writeCelledLocal` here too, an in-place element write
+    // made by the recursive callee left the caller's own promoted cell
+    // stale, the same read-authoritative staleness `writeBackNestedLocals`
+    // fixes for a captured local.
+    //
+    // Gated on `variable` being a PARAMETER, unlike `writeBackNestedLocals`:
+    // recursion reuses the same `VarDeclaration` for a plain LOCAL
+    // declaration at every call depth too (`runDeclarationExpression`'s own
+    // `dropArrayCell`), and that case is not aliasing at all -- each depth's
+    // `int[] a = ...;` is an unrelated array that only coincidentally shares
+    // the AST node. `bindFunctionParameters` calls `dropArrayCell` at every
+    // depth exactly the same way, so cell/id state alone cannot tell the two
+    // apart (both mint a fresh, non-matching allocation id per depth); a
+    // fresh local's differently-sized final value reaching here through the
+    // unconditional `writeCelledLocal` call regressed
+    // `pointer.recursiveArrayDeclarationDropsStaleArrayCell` (this frame's
+    // OWN still-valid cell was wrongly dropped because a deeper, unrelated
+    // recursive redeclaration happened to return a shorter array). A
+    // parameter, by contrast, is the one case the language actually shares
+    // storage through across a recursive call when the same array is passed
+    // straight back in (as in `pointer.
+    // recursiveArrayParameterElementWriteIsVisibleThroughCallerCell`), so
+    // only that case reconciles the cell; every other variable keeps the
+    // pre-existing plain mirror copy.
     private void writeBackArrayPointerTargets(ref Walker child) {
         foreach (_, variable; child.arrayAllocationVariables) {
             if ((variable in locals) is null)
@@ -4269,9 +4313,26 @@ private struct Walker {
                 (variable in child.arrayPointerWritebacks) is null)
                 continue;
 
-            if (auto value = variable in child.locals)
+            auto value = variable in child.locals;
+            if (value is null)
+                continue;
+
+            if (isParameterVariable(variable))
+                writeCelledLocal(variable, *value, /* arrayIsRefWriteback */ true);
+            else
                 locals[variable] = *value;
         }
+    }
+
+    // `parameterIsLazy`'s sibling: whether `variable` is a function parameter
+    // at all (`dmd`'s own `STC.parameter` storage-class flag), used by
+    // `writeBackArrayPointerTargets` above to tell a genuine cross-recursion
+    // parameter binding apart from a same-`VarDeclaration` local re-declared
+    // at a deeper call depth.
+    private bool isParameterVariable(VarDeclaration variable) {
+        import dmd.astenums: STC;
+
+        return (variable.storage_class & STC.parameter) != STC.none;
     }
 
     // Write-through-pointer counterpart of `writeBackArrayPointerTargets`,

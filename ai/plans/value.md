@@ -4403,6 +4403,105 @@ as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
 
+Progress 2026-07-14 (re-review fix: cross-frame writebacks reconcile the
+parent's array cell): `runIndexExpression`'s cell arm makes a promoted
+`arrayCells` entry READ-AUTHORITATIVE over the boxed `locals` mirror, but
+`writeBackNestedLocals` and `writeBackArrayPointerTargets` only ever
+refreshed the mirror with a bare assignment, never the parent's own cell.
+A nested function mutating a captured array, or a recursive call sharing a
+non-`ref` array parameter's backing storage, are both supported, tested
+Interpreter features, so the parent's stale cell kept answering `a[0]`
+reads with the pre-call value after `child` returned -- or, when the
+callee's mutation grew the array (`~=`), indexed a too-short cell and
+crashed the host with `NativeArray.element: index out of range` instead of
+seeing the grown length. Three new fixtures (pre-approved, runtime-seeded
+so DMD cannot fold them), all `Interpreter`/`SystemLinker` only: `pointer.
+nestedFunctionArrayRebindIsVisibleThroughParentCell` (a nested function
+rebinding a captured array to a same-length new array; confirmed red on
+Interpreter, `1 != 7`, green on SystemLinker, before any production
+change), `pointer.nestedFunctionArrayAppendGrowsArrayVisibleThroughParent
+Cell` (a nested function appending to a captured array; confirmed red on
+Interpreter -- the host `NativeArray.element: index out of range` crash,
+not a wrong-value assertion -- green on SystemLinker), and `pointer.
+recursiveArrayParameterElementWriteIsVisibleThroughCallerCell` (no
+nesting: a plain, non-`ref` array parameter mutated in place one recursion
+level down; confirmed red on Interpreter, `1 != 5`, green on SystemLinker).
+
+Fix: both writeback functions now route an array-typed variable's final
+value through `writeCelledLocal(variable, value, arrayIsRefWriteback:
+true)` -- the same reconciliation `writeBackRefArguments` already uses for
+a `ref` array parameter's callee-side mutation -- instead of a bare
+`locals[variable] = value;`. `writeCelledLocal` refreshes a same-length
+cell's bytes in place (the recursion/capture-mutation case) or
+`dropArrayCell`s a changed-length one (the rebind/append case, so the next
+read falls through to the freshly-refreshed boxed mirror instead of
+indexing stale/too-short cell bytes), and is already a plain mirror write
+-- unchanged from before -- for any variable with no cell at all, or a
+scalar/struct variable (those reconcile through `writeCelledLocal`'s own
+pre-existing, untouched `scalarCells`/`structCells` branches).
+
+This did not apply uniformly, though, and the reason is worth recording
+precisely rather than glossing over: `writeBackArrayPointerTargets` also
+covers plain recursion over a LOCAL declaration reusing the same
+`VarDeclaration` at every call depth (`pointer.
+recursiveArrayDeclarationDropsStaleArrayCell`, an existing fixture --
+depth 1's `a` is `[one(), two()]`, depth 0's fresh redeclaration of the
+same AST-node `a` is the unrelated, shorter `[hundred()]`). That is NOT
+aliasing -- each depth's `int[] a = ...;` is an independent array that only
+coincidentally shares the AST node -- yet `bindFunctionParameters` and
+`runDeclarationExpression` both call `dropArrayCell` at every depth the
+exact same way a genuine recursive parameter-passthrough does, so cell/id
+state alone cannot tell the two cases apart: both mint a fresh, mutually
+non-matching allocation id per depth, regardless of whether the value
+flowing in is really the same storage. Routing every dynamic-array
+variable in `writeBackArrayPointerTargets` through `writeCelledLocal`
+unconditionally (matching `writeBackNestedLocals`) made this existing
+fixture red (`100100 != 1100`): the deeper, unrelated recursive
+redeclaration's shorter final value caused THIS frame's own still-valid,
+different-length cell to be dropped, and the already-latent (previously
+harmless, because a live cell always shadowed it) bug of the bare mirror
+copy-back overwriting the boxed `locals` mirror with the unrelated child's
+value became directly observable once nothing masked it anymore.
+
+The fix distinguishes the two cases the one way the language actually
+does: `variable.storage_class & STC.parameter` (a new `isParameterVariable`
+helper, `parameterIsLazy`'s sibling). Only a genuine function PARAMETER
+routes through `writeCelledLocal`'s cell reconciliation in
+`writeBackArrayPointerTargets`; every other variable (a plain local
+redeclared at a deeper recursion depth) keeps the pre-existing plain
+mirror copy, leaving this frame's own cell -- and its read-authoritative
+answer -- untouched. `writeBackNestedLocals` needed no such gate: a
+captured local is never independently redeclared inside the nested
+function itself (a shadowing declaration would parse to a distinct
+`VarDeclaration`), so `child.locals` containing an entry for a variable
+this frame also has never represents the "same AST node, unrelated
+binding" ambiguity recursion creates for `writeBackArrayPointerTargets`.
+
+This is a heuristic, not a full fix, and the residual gap is worth naming:
+a recursive call passing an actually-different array through the SAME
+formal parameter (rather than forwarding the same array unchanged) would
+still wrongly reconcile the cell if the two arrays' lengths happened to
+match, because nothing in the current data model records array-value
+provenance across a parameter rebind -- `arrayAllocationAliases`/
+`sliceAliases` only ever get populated for a slice- or pointer-derived
+argument, never a plain by-value array forward. No fixture in this repo
+exercises that gap, and closing it for real would need genuine storage-
+identity tracking through parameter binding, out of this slice's bounded
+scope.
+
+Focused runs, all green: all three new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after,
+matching the exact failures above); `bin/ut -s
+ut.backends.runner.ct.expressions` (413 run, 0 failed, 5/5 failing as
+expected -- the same pre-existing `@ShouldFail` count as the 407-run
+baseline before these fixtures were added, confirmed by re-running the
+baseline unchanged); `bin/ut -s ut.backends.runner.ct.structs` (285 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (332 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
+`bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

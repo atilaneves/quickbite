@@ -3212,3 +3212,149 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// Re-review BLOCKER (2026-07-14, cross-frame cell staleness): the parent's
+// promoted `arrayCells` entry is READ-AUTHORITATIVE (`runIndexExpression`'s
+// cell arm shadows the boxed `locals` mirror), but `writeBackNestedLocals`
+// only ever refreshed the parent's boxed `locals` mirror with a bare
+// assignment, never reconciling the parent's own `arrayCells` entry. Once a
+// nested function rebinds a captured array (`a = [...]`, same length), the
+// parent's stale cell kept answering `a[0]` with the pre-call value even
+// though the boxed mirror was correctly refreshed. SystemLinker is the
+// oracle.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.nestedFunctionArrayRebindIsVisibleThroughParentCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                int[] a = [one(), two(), three()];
+                int* p = &a[0];
+                void g() {
+                    a = [seven(), eight(), nine()];
+                }
+                g();
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 7);
+            }
+        });
+    }
+}
+
+// Crash twin of the BLOCKER above: a nested function GROWING a captured
+// array (`a ~= x`) changes its length, so the parent's stale `arrayCells`
+// entry -- never reconciled by `writeBackNestedLocals` -- is not merely
+// wrong but too SHORT for the post-append index, and
+// `runIndexExpression`'s bounds check consults the (correctly refreshed)
+// boxed `locals` mirror's length, not the cell's, so the out-of-range cell
+// read crashes the host instead of throwing a `RangeError`. SystemLinker is
+// the oracle.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.nestedFunctionArrayAppendGrowsArrayVisibleThroughParentCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int four() {
+                return 4;
+            }
+
+            int f() {
+                int[] a = [one(), two(), three()];
+                int* p = &a[0];
+                void g() {
+                    a ~= four();
+                }
+                g();
+                return a[3];
+            }
+
+            unittest {
+                assert(f() == 4);
+            }
+        });
+    }
+}
+
+// Recursion twin of the BLOCKER above, with no nesting at all: a dynamic-
+// array PARAMETER (not `ref`) shares its backing storage across recursive
+// calls exactly like real D. `writeBackArrayPointerTargets` -- the
+// `writeBackNestedLocals` counterpart for a variable whose address was
+// taken via `arrayAllocationVariables` rather than capture -- has the same
+// bare-assignment gap, so a same-length in-place element write made by the
+// recursive callee never reconciled the caller's own stale cell.
+// SystemLinker is the oracle.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.recursiveArrayParameterElementWriteIsVisibleThroughCallerCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int five() {
+                return 5;
+            }
+
+            int f(int[] a, int depth) {
+                int* p = &a[0];
+                if (depth == 0) {
+                    a[0] = five();
+                    return 0;
+                }
+                f(a, 0);
+                return a[0];
+            }
+
+            unittest {
+                assert(f([one(), two()], 1) == 5);
+            }
+        });
+    }
+}
