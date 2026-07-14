@@ -1942,6 +1942,78 @@ mismatches: `encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
 sole remaining candidate this session left unattempted, per the
 "one clean root" guidance.
 
+**2026-07-14 (void-init static-array slice-alias write-back root,
+`static_array.d(7)` closed).** Triaged the last untriaged cerealed class
+(`bin/bench.sh -b interpreter -b system-linker --dub cerealed`, HEAD
+`ac73fbdf`). cerealed's `static.array` test (`static_array.d(7)`) calls
+`Decerealiser.value!(int[2])`, whose `T val = void;` overload (taken
+because `int[2]()` does not compile) then runs cereal.d's static-array
+`grain`: `foreach (ref e; val) cereal.grain(e);`. Bisected with a chain of
+standalone probes (a hand-rolled reinterpret-cast `grain`/`ungrain` pair
+matching cereal.d's shape, then a plain direct-write reproduction with no
+reinterpret cast at all) down to a two-line root: `void fillPair(ref
+int[2] val) { foreach (ref e; val) e = ...; }` called with a void-init
+caller local reproduces standalone; the same call with a *default*-init
+local (no `= void`) passes today — isolating the differentiator to
+void-init, not the reinterpret cast, the templated `value!T` dispatch, or
+`~=`'s operator overload.
+
+Root: dmd's foreach-to-for lowering slices *every* static array, even a
+plain local/parameter (`T[] __r = val[];`), not only aggregate-field
+cases (§9.7's earlier foreach-ref-over-struct-field-array entry above).
+`Walker.recordSliceAlias` (impl.d) records this correctly (`__r`'s
+`SliceAlias.source` is `val`), and the per-element write inside the loop
+correctly routes through `writeThroughSliceAlias`. But
+`writeThroughSliceAlias` read the alias source's `locals` entry as-is:
+`bindFunctionParameters` binds a `ref` parameter to the caller's deferred
+`Value.void_` placeholder (§9.7's void-init-ref-parameter seeding), so
+`val`'s `locals` entry is the bare placeholder, not a real `Array`.
+Rebuilding it via `Value.withArrayElement` then threw "Expected array."
+instead of writing the element — the identical cerealed message, located
+via a throwaway `stderr.writefln` trace at the top of
+`writeThroughSliceAlias` and its sibling `writeThroughArrayElementAlias`
+(both reverted before commit), which showed the alias chain
+`e -> __r -> val` and `val`'s still-void `locals` entry precisely at the
+write.
+
+Fix: `writeThroughSliceAlias` now materialises the alias source's default
+value first (`locals[alias_.source] = defaultValue(alias_.source)`)
+whenever that source is still in `uninitializedLocals`, mirroring the
+read-path materialisation `runExpression`'s `VarExp` branch already
+applies to a directly uninitialized local. This covers both of the
+function's branches (the plain-array case exercised here and the
+existing struct-field-array case) since `defaultValue` already dispatches
+on the variable's declared type. `writeThroughArrayElementAlias` (the
+sibling alias kind for a `ref` bound directly to an indexed source with
+no intervening slice) needs no change: tracing confirmed dmd's lowering
+always introduces the slice temporary for a static array, so that path
+is not exercised by this class; it is left as its pre-existing
+"Unsupported interpreter array element alias target." refusal if a future
+construct ever reaches it uninitialized.
+
+Exposing fixture `staticArray.foreachRefWritesVoidInitialisedElements`
+(`tests/ut/backends/runner/ct/arrays.d`): a `void fillPair(ref int[2]
+val, int first)` writing both elements via `foreach (ref e; val)`, called
+from `int[2] result = void;`, asserting the caller's array holds both
+written values afterward. Confirmed red on `Interpreter` ("Expected
+array.", the identical cerealed message) before this fix, green on
+`Ctfe`, `SystemLinker`, and `LLVMJit` throughout. `Bytecode` omitted:
+still under active development, does not yet write through this `ref`
+foreach loop variable (every element reads back as `0`) regardless of
+void-init status.
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 7 mismatches. After:
+`static_array.d(7)` gone, no newly-unmasked classes; cerealed drops to 6
+mismatches: `encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
+`reset.d(9)`, `structs.d(22)`. **All six remaining are
+representation-ceiling** (deferred to value.md per §8: ScopeBuffer
+native-memory aliasing, fuzz-seeded double/float reinterpret, and a
+`double`/AA field reinterpret-cast — none is a missing language-surface
+behaviour). This exhausts the language-surface cerealed frontier opened
+by §6/§7: every remaining cerealed/Interpreter disagreement now requires
+value.md's native-layout track, not further interpreter rungs.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

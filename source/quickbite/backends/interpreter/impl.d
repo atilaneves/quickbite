@@ -6483,6 +6483,18 @@ private struct Walker {
         if (alias_ is null)
             return;
 
+        // A still-void static array (e.g. a `ref` parameter bound to the
+        // caller's `T val = void;`, interpreter.md §9.7) leaves the source's
+        // `locals` entry holding the bare `Value.void_` placeholder rather
+        // than a real `Array`/`Struct` — `val[]`'s `foreach (ref e; val)`
+        // lowering slices it into a temporary, and a write through the
+        // temporary reaches here to rebuild `val`. Materialise the default
+        // value first, mirroring the read-path materialisation
+        // `runExpression`'s VarExp branch already applies to a directly
+        // uninitialized local, so the write has real storage to land in.
+        if (alias_.source in uninitializedLocals)
+            locals[alias_.source] = defaultValue(alias_.source);
+
         auto source = alias_.source in locals;
         if (source is null)
             throw new Exception("Unsupported interpreter slice assignment target.");

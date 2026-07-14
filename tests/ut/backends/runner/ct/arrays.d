@@ -1541,6 +1541,51 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+// cerealed's `static_array.d(7)` test decodes into a void-initialised static
+// array (`Decerealiser.value!(int[2])`'s `T val = void;` overload, taken
+// because `int[2]()` does not compile) and writes each element via
+// `foreach (ref e; val) cereal.grain(e);` (cereal.d's static-array `grain`).
+// dmd's foreach-to-for lowering slices a static array (`T[] __r = val[];`)
+// even when `val` is already a plain local, so a write through `__r`'s
+// per-element alias reaches `Walker.writeThroughSliceAlias` (impl.d), which
+// read the alias source's `locals` entry as-is. A `ref` parameter bound to
+// the caller's `= void` local carries the bare `Value.void_` placeholder
+// there (interpreter.md §9.7's deferred-read seeding), not a real `Array`,
+// so rebuilding it via `withArrayElement` threw "Expected array." instead of
+// writing the first element. `Bytecode` omitted: still under active
+// development, does not yet write through this `ref` foreach loop variable
+// (every element reads back as `0`).
+enum staticArrayForeachRefVoidInitSource = q{
+    void fillPair(ref int[2] val, int first) {
+        int i;
+        foreach (ref e; val) {
+            e = first + i;
+            ++i;
+        }
+    }
+
+    int[2] decode(int first) {
+        int[2] result = void;
+        fillPair(result, first);
+        return result;
+    }
+
+    unittest {
+        int seed = 34;
+        auto result = decode(seed);
+        assert(result[0] == 34);
+        assert(result[1] == 35);
+    }
+};
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("staticArray.foreachRefWritesVoidInitialisedElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(staticArrayForeachRefVoidInitSource);
+    }
+}
+
 // A zero-length slice assignment through a null pointer is a no-op in
 // compiled D: nothing is written, so the null provenance never matters
 // (ai/plans/interpreter.md Rung 3). ScopeBuffer's own unittest hits this by
