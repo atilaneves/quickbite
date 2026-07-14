@@ -5357,3 +5357,43 @@ Reviewer follow-up, 2026-07-13: removed the stale
 `emplaceRefWritesArrayElement` comment that said Bytecode was omitted for its
 `char[]`-literal assertion. Bytecode is in that fixture's matrix and now runs
 the assertion after the mixed comparison support landed.
+
+`pointer.uintBitsWrittenThroughPointerReadBackAsFloat` promoted to Bytecode,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The row writes the bit pattern for `1.0f` through a
+`uint*` reinterpreting a local `float`, then reads that local directly. The
+focused Bytecode row passed on its first candidate run, so no production change
+was needed. LLVMJit and Ctfe remain excluded under the existing
+omit-don't-pin convention. Verification: focused Bytecode row; `ninja bin/ut`;
+and `bin/ut --random` passed (seed `3645436118`).
+
+`pointer.directWriteToAddressTakenScalarUpdatesCell` promoted to Bytecode,
+2026-07-13: pre-approved promotion of the existing direct-SystemLinker-backed
+compile-time fixture. The row takes a `uint*` view of a local `float`, directly
+reassigns the `float`, then verifies both the scalar read and the raw pointer
+bits. The focused Bytecode row passed on its first candidate run, confirming
+the typed-frame local remains authoritative after a direct scalar assignment.
+No production change was needed. Ctfe and LLVMJit remain excluded under the
+existing omit-don't-pin convention. Verification: focused Bytecode row;
+`ninja bin/ut`; and `bin/ut --random` passed (seed `790590047`).
+
+`pointer.subWordReinterpretWriteThroughPointerWritesLowByte` promoted to
+Bytecode, 2026-07-13: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row writes `0xAB` through a
+`ubyte*` reinterpreting a `uint` local, then verifies the native scalar reads
+back as `0xAB`. The focused Bytecode row passed on its first candidate run, so
+no production change was needed. This advances subword native-layout coverage
+without adding broader pointer or aggregate semantics. Verification: focused
+Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
+
+`pointer.dereferencedPointerPostIncrementUsesPromotedScalarCell` promoted to
+Bytecode, 2026-07-13: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported post-increment in bytecode core: (*p)++`. The compiler now
+loads an `int*` pointee through the existing pointer-load opcode, preserves the
+old value, applies the existing integer increment opcode, and writes the value
+back through the existing pointer-store opcode. This is limited to the core's
+already-supported four- and eight-byte integer scalars; it does not add
+pointer arithmetic, non-integer post-increment, or a general lvalue layer.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random`.

@@ -1336,10 +1336,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 
 // Reinterpret-WRITE (not read) through a same-size pointer cast: writing raw
 // bits into a `float` local via a `uint*` must be visible to a subsequent
-// direct read of the local. SystemLinker is the oracle; Bytecode/LLVMJit/
-// Ctfe are omitted per the omit-don't-pin convention (address-of-a-local and
-// float byte-reinterpretation are unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+// direct read of the local. SystemLinker is the oracle; LLVMJit and Ctfe are
+// omitted per the omit-don't-pin convention (address-of-a-local and float
+// byte-reinterpretation are unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.uintBitsWrittenThroughPointerReadBackAsFloat." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1401,7 +1401,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // before the reassignment. SystemLinker is the oracle; other backends
 // omitted per the omit-don't-pin convention (address-of-a-local is
 // unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.directWriteToAddressTakenScalarUpdatesCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1547,7 +1547,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `localPointerTarget`/`writePointerTarget`'s local-pointer arm, which only
 // consulted the boxed `locals` mirror -- the same bypass post-increment's
 // `VarExp` arm had, but for the pointer-deref path.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.dereferencedPointerPostIncrementUsesPromotedScalarCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1572,7 +1572,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // narrower native-scalar pointee (a `ubyte*` reinterpret of a `uint`)
 // instead of writing into the low bytes the way the read side
 // (`reinterpretLocalPointerLoad`) already narrows by slicing.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.subWordReinterpretWriteThroughPointerWritesLowByte." ~
         backend.stringof)
     @Tags(backend.stringof)

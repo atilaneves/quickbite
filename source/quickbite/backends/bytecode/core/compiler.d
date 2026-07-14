@@ -2033,12 +2033,39 @@ private struct Compiler {
         return Operand(located.offset, located.type);
     }
 
-    // `i++` on an integer local or struct field: copy the old value to the
-    // result slot, then add `e2` (the increment) to the lvalue's slot. Scoped
-    // to integer lvalues, matching the compound-assignment path.
+    // `i++` on an integer local, struct field, or dereferenced pointer: copy
+    // the old value to the result slot, then add `e2` (the increment) to the
+    // lvalue's slot. Scoped to integer lvalues, matching compound assignment.
     private Operand compilePostIncrement(PostExp post) {
         import dmd.tokens: EXP;
         import std.conv: text;
+
+        if (auto deref = post.e1.isPtrExp) {
+            const pointer = compileExpression(deref.e1);
+            if (pointer.isPointer && isIntegerScalar(pointer.pointerElement)) {
+                const zero = compileSizeConstant(0);
+                const lvalue = loadThroughPointer(pointer, zero);
+                const result = allocate(lvalue.type);
+                _code ~= Instruction(
+                    Op.copy, result, lvalue.offset, cast(ushort) size(lvalue.type),
+                );
+
+                const increment = compileExpression(post.e2);
+                const stepOp = post.op == EXP.minusMinus
+                    ? (isEightByteInteger(lvalue.type) ? Op.subInt8 : Op.subInt4)
+                    : (isEightByteInteger(lvalue.type) ? Op.addInt8 : Op.addInt4);
+                _code ~= Instruction(
+                    stepOp, lvalue.offset, lvalue.offset, increment.offset,
+                );
+                _code ~= Instruction(
+                    pointerStoreOp(size(pointer.pointerElement)),
+                    lvalue.offset,
+                    pointer.offset,
+                    zero,
+                );
+                return Operand(result, lvalue.type);
+            }
+        }
 
         ushort lvalueSlot;
         auto lvalueType = ScalarType.void_;
