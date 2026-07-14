@@ -1844,6 +1844,50 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7 candidate: a pointer taken into a SLICE (not the source
+// array itself) must still see a later direct write to the source. This is
+// a genuine characterization test, not a gap fixture: `promoteSliceArrayCell`
+// already gives a slice local an `arrayCells` entry sharing the SAME
+// `NativeArray` bytes as its root source's own cell (`promoteArrayCell`
+// keyed by the slice-alias-resolved root, exactly as `arrayPointer`'s own
+// `&a[i]` resolution already does), so `&s[1]` promotes/reads that shared
+// cell directly -- confirmed green on Interpreter with no production change
+// alongside this fixture. SystemLinker's `p` aliases `a`'s real storage, so
+// the direct write is visible through `*p`. Other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two(), three()];
+                int[] s = a[];
+                int* p = &s[1];
+                a[1] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

@@ -3369,6 +3369,66 @@ expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
 `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (chained/nested slice coherence: array-cell coherence
+is saturated for these cases, no gap found): the prior slices closed direct-
+write, write-through-pointer, slice-aliasing (full slice only), `foreach
+(ref)`, compound/atomic, and cross-frame `ref`-array writeback. This slice
+tried the deeper chained/nested slice shapes item 7's migration order still
+listed as untested: (a) a pointer taken into a SLICE, source write visible
+through it (`int* p = &s[1]` where `s = a[]`); (b) sub-slice (non-zero lower
+bound) reverse propagation (`s = a[1 .. 3]`, write to `a[2]`, read `s[1]`);
+(c) slice-of-a-slice (chained, `t = s[1 .. 3]` where `s = a[1 .. 4]`),
+reverse propagation through TWO aliasing hops to the root; (d) two
+independent slices of the same array observing each other's writes THROUGH
+one of the slices, not the root (`s[0] = x; assert(u[0] == x);` where both
+`s` and `u` are `a[]`). All four were probed as scratch fixtures (built and
+run, not committed) and all four came back GREEN on Interpreter (and
+SystemLinker) with zero production changes -- no genuine red found.
+
+Reasoning why, confirmed by re-reading rather than assumed: `recordSliceAlias`
+already resolves every slice-of-a-slice to its ROOT source with a combined
+lower bound at record time (`if (auto alias_ = source in sliceAliases)
+sliceAliases[variable] = SliceAlias(alias_.source, alias_.lower + lower)`),
+so a `sliceAliases` entry never nests -- (c)'s `t` points directly at `a`
+with the correctly combined offset, and `promoteSliceArrayCell(t)` slices
+the SAME root cell `promoteSliceArrayCell(s)` already sliced, not a view of
+`s`'s own view. `arrayPointer`'s `&s[1]` (case (a)) resolves through the
+same one-hop `variable in sliceAliases` lookup and promotes/reads the root's
+cell using the boxed model's own `arrayAllocationOffset` bookkeeping for the
+index math, which already tracked slice offsets before any of this native
+work existed. Case (d) reduces to `NativeArray.slice`'s own documented
+contract -- a sub-range view over the SAME underlying bytes, not a copy --
+so a write through `s`'s cell view is a write to the identical bytes `u`'s
+cell view (of the same root) reads. No new call site needed to consult
+`arrayCells` for any of the four shapes; every one already routes through
+existing cell-priority read/write arms keyed by the root-resolved variable.
+
+Per the task's own fallback (do not fabricate a failure when saturated),
+kept case (a) as a genuine characterization fixture with NO production
+change: `pointer.
+arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+`SystemLinker` only (omitted elsewhere per the omit-don't-pin convention) --
+`int[] a = [one(), two(), three()]; int[] s = a[]; int* p = &s[1]; a[1] =
+ninetyNine(); assert(*p == 99);`, every value seeded from a runtime function
+call so DMD cannot fold it. Green on Interpreter and SystemLinker with no
+production change, characterizing rather than exposing a gap.
+
+What remains: array growth (`~=`, `.length = n`) on a chained/nested slice
+or its root, and a struct-field-rooted slice's own chaining, are still
+untouched, matching every prior slice's own scope notes -- unchanged by
+this slice, which made no production changes at all. No `interpreter.md`
+§9.10 shim is retired by this slice.
+
+Focused runs, all green: the new characterization fixture (green on
+Interpreter and SystemLinker, no production change); `bin/ut -s
+ut.backends.runner.ct.expressions` (369 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
