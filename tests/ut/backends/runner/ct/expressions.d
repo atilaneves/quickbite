@@ -1805,6 +1805,45 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7's cross-frame array-pointer aliasing candidate: a callee
+// takes `&a[i]` of a caller's array passed by `ref` and writes through it.
+// SystemLinker's `ref` parameter aliases the caller's real storage, so `p`
+// (taken in the caller BEFORE the call, into the SAME backing array) must
+// see the write too. Other backends omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void bump(ref int[] a) {
+                int* q = &a[0];
+                *q = ninetyNine();
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                bump(a);
+                assert(*p == 99 && a[0] == 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

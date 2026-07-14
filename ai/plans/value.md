@@ -3281,6 +3281,94 @@ as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
 
+Progress 2026-07-14 (cross-frame array-pointer aliasing: a callee taking
+`&a[i]` of a caller's `ref` array parameter now refreshes the caller's own
+`arrayCells` entry, closing the last untested item-7 candidate the prior
+slice flagged): two candidates were tried, in order.
+
+Candidate (a) -- a callee writes through an ordinary BY-VALUE `int*`
+parameter into the caller's array element, the caller reading back both
+through its own still-live pointer and directly:
+`void put(int* p, int v) { *p = v; } ... int[] a = [one(), two()]; int* p =
+&a[0]; put(p, ninetyNine()); assert(*p == 99 && a[0] == 99);`. Tried first
+and found GREEN on Interpreter already -- a genuine characterization, not a
+gap. Reasoning, confirmed by re-reading the call machinery rather than
+assumed: `arrayPointerVariable(pointer)` resolves `p`'s pointer to the SAME
+`VarDeclaration` (`a`) in every frame (the value carries the allocation id,
+not a re-derived AST lookup); `child.arrayCells = arrayCells.dup` shares
+that entry's underlying `NativeArray`/`NativeBlock` bytes by reference, so
+the callee's `writeThroughArrayPointer` write lands in memory the caller's
+own cell already aliases, before any writeback ever runs. `a[0]`'s direct
+read (`runIndexExpression`) also turned out to prefer a promoted `arrayCells`
+entry over the boxed `locals` mirror once one exists (found while
+investigating this slice -- the same cell-priority discipline
+`readCelledLocal` already documented for scalars, previously unnoticed for
+plain array-index reads), so even a lagging boxed-`locals` writeback
+(`writeBackArrayPointerTargets` copies `child.locals[variable]` back
+unconditionally for a dynamic array, unlike `writeBackLocalPointerTargets`'s
+explicit `scalarCells` skip) is harmless here: both `*p` and `a[0]` read the
+same shared, already-current cell bytes regardless.
+
+Candidate (b) -- a callee takes `&a[i]` of a caller's array passed by `ref`
+and writes through it: `void bump(ref int[] a) { int* q = &a[0]; *q =
+ninetyNine(); } ... int[] a = [one(), two()]; int* p = &a[0]; bump(a);
+assert(*p == 99 && a[0] == 99);`. This one is genuinely RED on Interpreter.
+Root cause, isolated by splitting the assert and by testing a plain `a[0] =
+ninetyNine();` ref-parameter write with no address ever taken (green) versus
+the same write with the caller having taken `&a[0]` first (red on the
+DIRECT `a[0]` read alone, "1 != 99", before `*p` was even consulted): a
+`ref int[]` parameter is its own, distinct `VarDeclaration` from the
+caller's array, so `&a[0]` inside `bump` promotes a brand-new, unrelated
+`arrayCells` entry for the PARAMETER, never touching the caller's own
+already-promoted cell. `writeBackRefArguments` -- the ONLY call site that
+funnels a `ref` parameter's final value back to the caller -- routes a
+plain dynamic-array target through `writeLocation`'s plain-`VarExp` arm,
+i.e. `writeCelledLocal`, which (until this slice) refreshed a promoted
+`scalarCells` entry but had no equivalent branch for `arrayCells` at all: it
+correctly updated the boxed `locals` mirror to the callee's final array
+value, but left the caller's OWN `arrayCells` entry holding stale bytes --
+exactly the entry both `*p`'s deref-read and (per the candidate-(a)
+finding above) `a[0]`'s own direct read now prefer over `locals`. Confirmed
+red on Interpreter before any production change and green on SystemLinker
+(`ref` genuinely aliases the caller's storage); green on both after.
+
+New fixture (pre-approved):
+`pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer`
+in `tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+`SystemLinker` only (omitted elsewhere per the omit-don't-pin convention).
+
+Fix, one production change in `impl.d`: `writeCelledLocal` gained an
+`arrayCells` branch alongside its existing `scalarCells` one, same
+cell-then-mirror pattern. When `variable in arrayCells` and the incoming
+value's length matches the cell's length -- the in-place-mutation case this
+bug exercises -- every element's bytes are rewritten into the cell from the
+incoming array value, exactly as `promoteArrayCell` seeds a fresh cell. A
+length MISMATCH (a genuine rebind to differently-sized storage, which a
+native cell cannot represent) instead drops the stale cell
+(`arrayCells.remove(variable)`) so later reads fall back to boxed `locals`,
+mirroring `promoteSliceArrayCell`'s existing decline-rather-than-corrupt
+guard for a drifted length. No new side table; `writeCelledLocal` is the
+same helper `writeLocation`'s `VarExp` arm already called for every direct
+variable write, scalar or not, so nothing outside a variable that already
+has a promoted `arrayCells`/`scalarCells` entry changes behaviour.
+
+What remains: the same narrow scope as every other `arrayCells` call site --
+only a plain array-typed local or `ref` parameter reached via a bare
+`VarExp`; a struct-field-rooted or nested-index array target is untouched.
+The length-mismatch drop path (a `ref` parameter wholesale-reassigned to a
+different-length array while the caller's original had a promoted cell) has
+no dedicated fixture of its own; only the same-length in-place path this
+slice's fixture exercises is confirmed. No `interpreter.md` §9.10 shim is
+retired by this slice. This closes the last cross-frame array-pointer
+candidate the prior slice's "What remains" flagged as untested.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (367 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

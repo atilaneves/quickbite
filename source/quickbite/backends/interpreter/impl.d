@@ -2120,12 +2120,20 @@ private struct Walker {
     }
 
     // Writes `value` -- already `variable`'s own storage type -- to
-    // `variable`, refreshing its promoted `scalarCells` entry (if one
-    // exists) and re-deriving the boxed `locals` mirror from the very bytes
-    // just written, so the two never drift no matter which a later read
-    // consults (value.md item 7 review, finding 3). Callers that write
-    // through a differently-typed pointee (a reinterpret write) do not use
-    // this helper; see `writeLocation`'s `PtrExp` arm.
+    // `variable`, refreshing its promoted `scalarCells`/`arrayCells` entry
+    // (if one exists) and re-deriving (or keeping current with) the boxed
+    // `locals` mirror, so the two never drift no matter which a later read
+    // consults (value.md item 7 review, finding 3, extended to arrays: the
+    // cross-frame `ref` array-parameter writeback gap). This is the ONLY
+    // call site `writeBackRefArguments` routes a `ref int[]` parameter's
+    // final value through (`writeLocation`'s plain-`VarExp` arm) -- without
+    // the `arrayCells` branch below, a caller whose array already had a cell
+    // promoted (an earlier `&a[i]`) kept reading the STALE cell (`
+    // runIndexExpression`'s cell-priority read, and any pointer's deref-read)
+    // even after a callee mutated the array in place through a `ref`
+    // parameter and the boxed `locals` mirror was correctly refreshed here.
+    // Callers that write through a differently-typed pointee (a reinterpret
+    // write) do not use this helper; see `writeLocation`'s `PtrExp` arm.
     private void writeCelledLocal(VarDeclaration variable, in Value value) {
         import quickbite.backends.interpreter.native_scalar:
             readScalar, writeScalar;
@@ -2135,6 +2143,24 @@ private struct Walker {
             locals[variable] = readScalar(variable.type, cell.bytes);
             uninitializedLocals.remove(variable);
             return;
+        }
+
+        if (auto cell = variable in arrayCells) {
+            // A same-length value is the in-place mutation this whole helper
+            // exists for -- refresh every element's bytes so the cell agrees
+            // with the mirror. A different length means `variable` was
+            // rebound to genuinely different storage (e.g. a `ref`
+            // parameter reassigned wholesale, not index-written); the cell
+            // can no longer faithfully represent it, so drop it rather than
+            // let a stale, wrong-length cell keep answering reads -- the
+            // same decline-rather-than-corrupt choice `promoteSliceArrayCell`
+            // already makes for a drifted source length.
+            if (value.isArray && value.length == cell.length) {
+                foreach (index; 0 .. value.length)
+                    writeScalar(cell.elementType, cell.element(index), value[index]);
+            } else {
+                arrayCells.remove(variable);
+            }
         }
 
         locals[variable] = value;
