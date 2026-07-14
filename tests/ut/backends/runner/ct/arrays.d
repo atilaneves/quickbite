@@ -1768,9 +1768,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // `cereal.grain(val.arr[$ - 1])`, where `grain` takes a `ref T` parameter,
 // so the callee's write must land back in the caller's array element.
 // ai/plans/interpreter.md §9.7 (ref-argument array-element write-back root).
-// Bytecode omitted: "Unsupported ref argument in bytecode core: arr[1]" -
-// index-expression ref arguments are not implemented there.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.refParamWriteBackThroughIndexArgument." ~
         backend.stringof)
     @Tags(backend.stringof)

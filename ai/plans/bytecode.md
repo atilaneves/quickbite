@@ -5568,3 +5568,15 @@ original caller slot. This deliberately does not add branch-dependent ref
 returns, ref returns of fields or globals, or member ref returns. Verification:
 focused Bytecode red then green; passing focused five-backend matrix; `ninja
 bin/ut`; and `bin/ut --random`.
+
+`dynamicArray.refParamWriteBackThroughIndexArgument` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported ref argument in bytecode core: arr[1]`. A scalar dynamic
+array element passed by `ref` now materializes in one call-local slot, uses the
+existing ref-parameter copy/writeback path during the call, and stores that
+slot back through the same already-evaluated descriptor and index after a
+normal return. This deliberately excludes aggregate elements, unknown array
+expressions, and exception-path writeback. Verification: focused Bytecode red
+then green; passing focused five-backend matrix; `ninja bin/ut`; and
+`bin/ut --random` passed (seed `3598663860`).

@@ -164,6 +164,13 @@ private struct Compiler {
     private ResultType _currentReturnType; // result type of the function whose
                                            // body is currently being compiled
 
+    private static struct DynamicArrayRefWriteBack {
+        ushort valueOffset;
+        ushort descriptorOffset;
+        ushort indexOffset;
+        ushort elementSize;
+    }
+
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
         // compiled callee is an ordinary function.
@@ -7833,11 +7840,19 @@ private struct Compiler {
                     nextArgumentIndex = 1;
                 }
 
+        DynamicArrayRefWriteBack[] dynamicArrayRefWriteBacks;
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
                     (argumentArea +
                         layout.offsets[nextArgumentIndex + argumentIndex]);
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitDynamicArrayRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        dynamicArrayRefWriteBacks,
+                    ))
+                        continue;
                 emitCallArgument(
                     slot,
                     layout.isReference[nextArgumentIndex + argumentIndex],
@@ -7865,6 +7880,13 @@ private struct Compiler {
             );
         } else
             _code ~= Instruction(Op.call, index, argumentArea, destination);
+        foreach (writeBack; dynamicArrayRefWriteBacks)
+            _code ~= Instruction(
+                indexStoreOp(writeBack.elementSize),
+                writeBack.valueOffset,
+                writeBack.descriptorOffset,
+                writeBack.indexOffset,
+            );
         if (isPointerType(call.type))
             return Operand(
                 destination, ScalarType.ulong_, false, true,
@@ -8612,6 +8634,52 @@ private struct Compiler {
             operand.offset,
             cast(ushort) size(operand.type),
         );
+    }
+
+    // A scalar dynamic-array element has no caller-frame offset for the
+    // ordinary ref-parameter machinery to pass. Copy it to a call-local slot,
+    // let the callee's existing ref writeback update that slot, then store it
+    // back to the same already-evaluated element after the call returns.
+    private bool emitDynamicArrayRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref DynamicArrayRefWriteBack[] writeBacks,
+    ) {
+        auto index = argument.isIndexExp;
+        if (index is null)
+            return false;
+
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        if (descriptor is null || descriptor.elementType == ScalarType.void_)
+            return false;
+
+        const elementSize = dynamicArrayElementSize(
+            index.e1.type, descriptor.elementType,
+        );
+        if (elementSize > ulong.sizeof)
+            return false;
+
+        const indexOffset = compileExpression(index.e2).offset;
+        const valueOffset = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize),
+            valueOffset,
+            descriptor.offset,
+            indexOffset,
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= DynamicArrayRefWriteBack(
+            valueOffset,
+            descriptor.offset,
+            indexOffset,
+            cast(ushort) elementSize,
+        );
+        return true;
     }
 
     // Emit a throw of the plain "Range violation" message and yield a null
