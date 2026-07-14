@@ -1707,6 +1707,41 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7's write-side counterpart of the fixture above: a write
+// THROUGH one pointer into a dynamic array element must be visible through a
+// SECOND, independently-taken pointer into the same element. SystemLinker's
+// `p`/`q` both alias `a`'s real storage, so a write through `p` is visible
+// through `q`. Other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                int* q = &a[0];
+                *p = ninetyNine();
+                assert(*q == 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

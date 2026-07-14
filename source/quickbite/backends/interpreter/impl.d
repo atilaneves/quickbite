@@ -112,11 +112,12 @@ private struct Walker {
     // item 7's array guest-local slice, mirroring `scalarCells` above):
     // populated eagerly the moment `&a[i]` is taken (see `promoteArrayCell`,
     // called from `arrayPointer`). Once a cell exists, a direct element
-    // write (`writeIndexLocation`) and a pointer deref-read
-    // (`runPointerExpression`) both route through the same underlying
+    // write (`writeIndexLocation`), a write THROUGH a pointer into the
+    // element (`writeThroughArrayPointer`), and a pointer deref-read
+    // (`runPointerExpression`) all route through the same underlying
     // `NativeArray` bytes instead of `locals`' detached, `.dup`'d elements,
-    // so a write through one is visible through the other. Every other
-    // array (non-scalar elements, static arrays, growth, slices) is
+    // so a write through any one of them is visible through the others. Every
+    // other array (non-scalar elements, static arrays, growth, slices) is
     // untouched and keeps using the existing boxed/aliasing paths.
     private NativeArray[VarDeclaration] arrayCells;
 
@@ -5312,6 +5313,17 @@ private struct Walker {
         }
 
         locals[*variable] = current.withArrayElement(
+            cast(size_t) pointer.pointerElementOffset,
+            value,
+        );
+        // A write THROUGH the pointer (`*p = x`, `p[k] = x`) must refresh the
+        // same promoted `arrayCells` entry a direct element write
+        // (`writeIndexLocation`) already keeps current, or a second pointer
+        // into the same element -- or a re-read through this one, both of
+        // which consult the cell first (`runPointerExpression`) -- would see
+        // stale bytes. A no-op when no cell was ever promoted for `variable`.
+        writeThroughArrayCell(
+            *variable,
             cast(size_t) pointer.pointerElementOffset,
             value,
         );

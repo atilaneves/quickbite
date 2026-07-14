@@ -2957,6 +2957,57 @@ ut.backends.evaluator.eval` (71 run, 0 failed); `bin/ut -s
 ut.backends.runner.ct.structs` (281 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (array-native storage's write-side closure: a write
+THROUGH the pointer now also authors the shared `arrayCells` block): the
+slice directly above closed the direct-write-then-pointer-read direction
+(`a[0] = x; assert(*p == x);`) but left the opposite direction open --
+`writeThroughArrayPointer` (the single function every `*p = x`/`p[k] = x`
+write-through-pointer call site funnels through: `writeLocation`'s `PtrExp`
+arm for a non-`LocalPointer` array-derived pointer, `runIndexAssignExpression`'s
+two pointer-target arms, and `applyPointerElementsWritebacks`) only ever
+wrote `locals`' detached, `.dup`'d array copy, never the promoted
+`arrayCells` entry a deref-read (`runPointerExpression`) or a later direct
+write (`writeIndexLocation`) actually consult. New fixture (pre-approved):
+`pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
+convention) -- `int[] a = [one(), two()]; int* p = &a[0]; int* q = &a[0];
+*p = ninetyNine(); assert(*q == 99);`, every value seeded from a runtime
+function call so DMD cannot fold it. Confirmed red on Interpreter before any
+production change (`1 != 99`: `q`'s own boxed element snapshot, taken at
+address-of time, never saw the later write through `p`) and green on
+SystemLinker (real aliased memory); green on both after. Fix:
+`writeThroughArrayPointer`'s array-element branch (`current.isArray`) now
+calls the same `writeThroughArrayCell(variable, index, value)` helper
+`writeIndexLocation`/`runIndexAssignExpression`'s plain-`VarExp` write arms
+already call, keyed by the same `arrayPointerVariable`-resolved variable the
+pre-existing `locals` write already uses -- no new side table, one shared
+`NativeArray` authority for both directions. `writeThroughArrayCell` is
+already a no-op when no cell was ever promoted for the variable (a
+non-native-scalar-element or static array, etc.), so this is a pure
+addition alongside the existing `locals` write, not a behavior change for
+anything outside item 7's narrow native-scalar-dynamic-array-element gating.
+The scalar (non-array, `scalarWithByte`) branch of `writeThroughArrayPointer`
+is untouched -- `arrayPointerVariable` only ever resolves to a variable
+`promoteArrayCell` promoted while its boxed value was an array, so that
+branch's variable never has an `arrayCells` entry to refresh.
+
+What remains: a write through a pointer to a struct field's array element or
+a nested-`IndexExp`/pointer-target write (the `DotVarExp` and other non-
+plain-`VarExp` arms of `writeIndexLocation`/`runIndexAssignExpression`) still
+does not consult `arrayCells` at all, matching the direct-write slice's own
+scope note -- unchanged by this slice either. Array growth (`~=`, `.length =
+n`) and slice construction (`a[]`) remain on the existing boxed/aliasing
+paths. No `interpreter.md` §9.10 shim is retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (361 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.arrays` (320 run, 0 failed); `bin/ut -s
+ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
