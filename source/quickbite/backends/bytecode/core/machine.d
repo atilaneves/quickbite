@@ -193,6 +193,17 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case setArrayLengthFromTemplate:
+                heap ~= resizeArrayWithTemplate(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    instruction.d,
+                    scalarValue!size_t(stack, base + instruction.c),
+                );
+                ++ip;
+                break;
+
             case nullSlice:
                 stack[
                     base + instruction.a
@@ -2203,6 +2214,31 @@ private ubyte[] resizeArray(
     block[] = fill;
     const keptBytes = min(oldLength, newLength) * elementSize;
     block[0 .. keptBytes] = (cast(const(ubyte)*) pointer)[0 .. keptBytes];
+
+    writeSliceDescriptor(stack, descriptorOffset, block, newLength);
+    return block;
+}
+
+// Resize an array of aggregates whose default initializer is a non-uniform
+// byte block. Existing elements are retained while each newly grown element is
+// copied from the compiler-materialized `T.init` template in the current frame.
+private ubyte[] resizeArrayWithTemplate(
+    ref ubyte[] stack,
+    in size_t descriptorOffset,
+    in size_t templateOffset,
+    in uint elementSize,
+    in size_t newLength,
+) @trusted {
+    import std.algorithm.comparison: min;
+
+    const oldLength = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
+    const pointer = scalarValue!size_t(stack, descriptorOffset);
+    auto block = new ubyte[](newLength * elementSize);
+    const keptBytes = min(oldLength, newLength) * elementSize;
+    block[0 .. keptBytes] = (cast(const(ubyte)*) pointer)[0 .. keptBytes];
+    foreach (index; oldLength .. newLength)
+        block[index * elementSize .. (index + 1) * elementSize] =
+            stack[templateOffset .. templateOffset + elementSize];
 
     writeSliceDescriptor(stack, descriptorOffset, block, newLength);
     return block;
