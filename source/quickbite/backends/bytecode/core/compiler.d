@@ -5648,6 +5648,9 @@ private struct Compiler {
 
         const lhs = compileExpression(divide.e1);
         const rhs = compileExpression(divide.e2);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.divDouble, lhs, rhs, ScalarType.double_);
+
         return compileIntBinaryResult(
             divide,
             lhs,

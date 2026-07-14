@@ -1058,6 +1058,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case divDouble:
+                const ubyte[double.sizeof] quotient = floatBytes(
+                    floatValue!double(stack, base + instruction.b) /
+                    floatValue!double(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = quotient;
+                ++ip;
+                break;
+
             case subDouble:
                 const ubyte[double.sizeof] difference = floatBytes(
                     floatValue!double(stack, base + instruction.b) -

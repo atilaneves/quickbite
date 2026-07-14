@@ -5482,3 +5482,15 @@ array comparisons, bounds checks, or array values beyond the existing
 descriptor support. No test body changed. Verification: focused SystemLinker
 and Bytecode rows (Bytecode red `130 != 3`, then green); `ninja bin/ut`; and
 `bin/ut --random` plus the requested seed replays.
+
+`refArgument.floatWriteBackSkipComparesBitPatternNotEquality` promoted to
+Bytecode, 2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. Its focused Bytecode row was red
+with `Unsupported division in bytecode core: 1.0 / d`. The typed-frame core
+now emits and executes a `double` division instruction, allowing the fixture
+to distinguish positive from negative zero after a `ref` write-back. This does
+not add float or real division, division-by-zero diagnostics, or broader
+floating arithmetic. Verification: focused Bytecode red then green; `ninja
+bin/ut`; and `bin/ut --random` initially hit an unrelated LLVMJit
+`dependencyImage.externDStructDestructor` assertion failure, while the
+required `bin/ut --seed 2107431968 --quiet` replay passed.
