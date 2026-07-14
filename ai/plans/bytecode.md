@@ -5591,3 +5591,15 @@ compares it. This deliberately does not support larger struct loads, struct
 pointer assignment, or general pointer-based aggregate operations.
 Verification: focused Bytecode red then green; `ninja bin/ut`; and
 `bin/ut --random` plus replay with seed `2456686981` passed.
+
+`pointer.addressOfRefReturningCallAliasesArgument` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported expression in bytecode core: &self(i)`. A direct scalar
+`ref` return that returns one `ref` parameter now executes normally, then
+forms a typed-frame address of that parameter's original caller lvalue. This
+does not add branch-dependent ref returns, ref returns of fields or globals,
+or member ref returns. Verification: focused Bytecode red then green;
+`ninja bin/ut`; and `bin/ut --random` encountered an unrelated LLVMJit
+symbol-materialization failure, while the required
+`bin/ut --seed 1147723882 --quiet` replay passed.

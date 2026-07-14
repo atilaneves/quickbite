@@ -1702,7 +1702,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // must run the call and yield the address of the returned lvalue, aliasing
 // the caller's argument so writes through the pointer stick.  automem's
 // vector tests hit this on every `theAllocator` fetch.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.addressOfRefReturningCallAliasesArgument." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -1872,6 +1872,8 @@ private struct Compiler {
                 return *pointer;
             if (auto pointer = tryAddressOfLocal(address))
                 return *pointer;
+            if (auto pointer = tryAddressOfRefParameterCall(address))
+                return *pointer;
             // `&f` of a free or static nested function: the function-pointer
             // value is the callee's VM function index in a size_t slot.
             if (auto variable = address.e1.isVarExp)
@@ -6566,6 +6568,42 @@ private struct Compiler {
         );
         auto result = new Operand;
         *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    // `&refReturning(ref value)` must execute the callee, then point at the
+    // caller lvalue the returned ref aliases. This narrow form handles a
+    // direct return of one ref parameter.
+    private Operand* tryAddressOfRefParameterCall(AddrExp address) {
+        auto call = address.e1.isCallExp;
+        auto function_ = call is null ? null : callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef || call.arguments is null)
+            return null;
+
+        auto returned = singleReturnExpression(function_.fbody);
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        if (parameter is null || !parameter.isReference)
+            return null;
+
+        auto parameterIndex = function_.parameters.length;
+        foreach (index; 0 .. function_.parameters.length)
+            if ((*function_.parameters)[index] is parameter) {
+                parameterIndex = index;
+                break;
+            }
+        if (parameterIndex >= call.arguments.length)
+            return null;
+
+        compileCall(call);
+        const slot = referenceOffset((*call.arguments)[parameterIndex]);
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameAddress, pointer, slot);
+        auto result = new Operand;
+        *result = Operand(
+            pointer, ScalarType.ulong_, false, true, scalarType(parameter.type),
+        );
         return result;
     }
 
