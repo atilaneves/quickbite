@@ -4050,6 +4050,161 @@ failed, 1/1 failing as expected); `bin/ut -s ut.backends.interpreter` (218
 run, 0 failed). The full `bin/ut --random` was left to the orchestrator per
 the usual long-suite handoff.
 
+Progress 2026-07-14 (final-review fixes: binding-aware cell resolution
+across recursion): a final Fable review of the arrayCells/structCells work
+above raised one BLOCKER (finding 3) and one SHOULD-FIX (finding 4), both
+fixed here.
+
+Finding 3 (BLOCKER): `allocationId`/`fieldSnapshotAllocationId` memoize
+their id per `VarDeclaration` and are never removed -- every fresh-binding
+site (`runDeclarationExpression`, `bindFunctionParameters`,
+`bindLazyFunctionParameter`) already drops the CELL (`scalarCells`/
+`arrayCells`/`structCells`, since the review round above) but left the ID
+memo (`arrayAllocations`/`arrayAllocationVariables`,
+`fieldAddressAllocations`) untouched. Recursion reuses the same
+`VarDeclaration` at every call depth: a pointer minted at an OUTER depth,
+passed DOWN into a call that re-declares the same variable, still carries
+the OLD id -- which, in the inner frame, resolves (via
+`arrayAllocationVariables`/`structFieldPointerVariables`, unchanged) into
+whatever cell the inner re-declaration just promoted for ITSELF, instead of
+declining. Depending on the inner binding's value/length this reads the
+WRONG frame's bytes or indexes past a shorter re-declared array
+(`NativeArray.element: index out of range`). Three new fixtures in
+`tests/ut/backends/runner/ct/expressions.d`, all scoped to
+`Interpreter`/`SystemLinker` (omit-don't-pin convention), every value seeded
+from a runtime function call: `pointer.
+recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue` (a recursive
+`f(depth, p)` taking `&a[0]` at each depth and passing it down, expecting
+`f(2, null) == 207`, confirmed red on Interpreter -- `107 != 207`, the inner
+depth's own value -- and green on SystemLinker); the struct sibling,
+`pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue`
+(`&s.x` instead of `&a[0]`, identical red/green); and the crash twin,
+`pointer.recursiveArrayPointerPassedAcrossShorterRebindDoesNotCrash` (outer
+`&a[3]` on a 4-element array, inner `a` re-declared with length 1 and its
+own `&a[0]` taken to promote its own short cell, confirmed red on
+Interpreter -- `NativeArray.element: index out of range` -- and green on
+SystemLinker, expecting `4`).
+
+Chosen fix, of the two directions the reviewer offered: mint a FRESH id per
+binding (rather than tag cells/pointers with a separate generation and leave
+the id memo untouched). Two new/extended helpers, called from the SAME
+three fresh-binding sites that already drop the cell, right alongside the
+existing `scalarCells.remove`/`dropStructCell`: (1) a new `dropArrayCell
+(variable)`, the array sibling of `dropStructCell`, removes `arrayCells
+[variable]` together with `arrayAllocations[variable]` and the matching
+`arrayAllocationVariables[id]` reverse entry; (2) `dropStructCell` itself
+gained one more line, `fieldAddressAllocations.remove(variable)` --
+`fieldSnapshotAllocationId`'s own forward memo, which the existing reverse-
+map cleanup never touched, so a fresh `&s.field` after a rebind was still
+reusing the OLD id even after finding 1's original fix (the round-2 review
+above only closed the reverse half of this same gap for structs). Once the
+id memo is gone, the NEXT `&a[i]`/`&s.field` in the fresh binding mints a
+genuinely new id (`++allocationCount`); a pointer already minted under the
+OLD id then fails `arrayPointerVariable`/`structFieldPointerVariables`'s
+reverse lookup in the rebound frame and `pointerTargetValue` falls through
+to the pointer's own frozen boxed snapshot (`pointer.pointerTarget`, taken
+at address-of time) -- which is exactly PRE-cell-machinery master
+semantics, and provably the correct value for every fixture above: nothing
+mutates the OUTER binding's storage between the outer `&a[i]`/`&s.field` and
+the inner rebind, so the frozen snapshot and the outer cell's live bytes
+still agree. This was chosen over a separate generation tag because it
+needs no `Value`/`NativeArray`/`NativeStruct` schema change -- the
+allocation id already travels inside the pointer `Value` and already serves
+as the cross-frame identity token everything else keys off -- and it slots
+directly into the fresh-binding-drop pattern the prior review rounds already
+established, rather than adding a second, parallel invalidation mechanism.
+Verified this does not regress boxed (non-celled) pointer identity: within
+one still-live binding (no fresh re-declaration in between), the id is
+minted once, lazily, and never touched again, so repeated `&a[i]`/`&a[j]`
+calls keep returning the SAME id exactly as before -- the invalidation only
+ever fires at the three fresh-binding call sites, never on an ordinary
+address-of. Worth noting: this incidentally closes the identical, previously
+untested latent bug in the plain BOXED reverse-lookup paths
+(`readPointerElement`, `writeThroughArrayPointer`,
+`canWriteThroughArrayPointer`) that share the same `arrayAllocationVariables`
+map -- those never had a cell at all, but were exposed to the exact same
+stale-id-resolves-into-the-wrong-frame's-`locals` bug; no separate fixture
+was written for the boxed-only case since the three fixtures above already
+exercise the shared reverse-lookup map, cell or not.
+
+Finding 4 (SHOULD-FIX), and its array-symmetric risk this slice had to avoid
+introducing: `structFieldPointerVariables`/`FieldIndices`/`Writebacks` were
+copied back wholesale (`= child.X`) at every call-return merge point.
+`dropStructCell`'s reverse-map cleanup (existing since the round-2 review)
+means a callee's OWN fresh re-declaration of a shared `VarDeclaration`
+removes an id->variable entry from the CALLEE's own (duped) copy -- even
+when the callee never itself re-takes the field's address -- and the
+wholesale replace then adopts the callee's (now-missing-the-entry) map,
+discarding the CALLER's own still-live entry for the SAME id. New fixture,
+`pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn`
+(`expressions.d`, `Interpreter`/`SystemLinker`): a two-level recursion where
+`f(1)` takes `&s.x`, calls `f(0)` (which re-declares its own `S s = ...;`
+but never takes `&s.x`), then does `*p = 42; return *p + s.x;` after `f(0)`
+returns -- confirmed red on Interpreter (`Unsupported interpreter assignment
+target.`, the write silently failing to resolve) and green on SystemLinker
+(`84`). Extending finding 3's id-invalidation to `arrayAllocations`/
+`arrayAllocationVariables` (this slice's own new `dropArrayCell`) would
+introduce the IDENTICAL class of bug for arrays' own wholesale array-map
+copy-back, which had never been destructively mutated before this slice and
+so never needed this treatment until now.
+
+Fix, both struct and array: replaced every wholesale `= child.X` copy-back
+of these maps with a non-destructive MERGE, via three new helpers next to
+`mergeNativeThrowableRoots` (`writeBackFunctionState`,
+`writeBackMemberFunctionState`, `runDestructor`'s tail, and -- for
+`fieldAddressAllocations` only, matching those two sites' existing narrower
+scope -- the `new`-with-user-ctor struct/class child tails).
+`mergeArrayAllocationMaps`/`mergeStructFieldPointerVariableMaps` union the
+REVERSE (id-keyed) maps unconditionally: every id is minted from one shared,
+monotonically increasing `allocationCount` (already merged back
+separately), so two frames never disagree about what a given id names --
+adding every entry the callee still has can never destroy an entry only
+THIS frame has, since a plain union never removes a key.
+`mergeArrayAllocationMaps`/`mergeFieldAddressAllocations` also merge the
+FORWARD (variable-keyed) maps, but with THIS frame's own existing entry
+winning on conflict: a variable this frame already has an id for keeps it
+(so a deeper frame's own rebind, which only ever mints a NEW id for ITS OWN
+copy, cannot clobber this frame's mapping for the same variable); a
+variable this frame has never seen adopts the callee's entry (needed for
+e.g. a nested function first taking a shared enclosing local's address).
+Confirmed safe for every pre-existing (already-green) fixture: before
+finding 3's `dropArrayCell`, the array forward/reverse maps were NEVER
+destructively mutated, so parent's and child's copies were always identical
+anyway -- this merge only changes behaviour in the NEW recursion-rebind
+scenario finding 3 introduced, where "this frame's own entry wins" is
+exactly the derived-correct semantics.
+
+Documented residue, precisely: (1) the frozen-boxed-snapshot fallback this
+fix relies on is correct only because nothing mutates the OUTER binding's
+storage between its own `&a[i]`/`&s.field` and a callee's later rebind of
+the same `VarDeclaration` -- if the outer binding's own cell WERE mutated in
+that window (e.g. `a[0] = x;` right before the recursive call), the frozen
+snapshot the decline falls back to would not reflect that later write; no
+fixture (old or new) exercises this narrower corner, and it is a real,
+un-closed gap, not a hidden success. (2) `runNewClassExpression`'s child
+`Walker` still neither dupes nor merges `arrayAllocations`/
+`arrayAllocationVariables`/`structFieldPointerVariables`/`FieldIndices` at
+all -- a pre-existing asymmetry predating this slice (noted in the "struct
+cross-frame pointer coherence" progress entry above); only its
+`fieldAddressAllocations` copy-back was given the same merge treatment,
+matching that site's own existing narrower scope rather than introducing a
+new asymmetry. (3) `promoteSliceArrayCell`'s own internal `arrayCells.remove
+(variable)` (a slice-temporary's fresh binding, e.g. a `foreach` loop's
+per-iteration slice) was left unchanged -- it drops `variable`'s own cell
+only and never mints or memoizes an id itself (ids are minted solely by
+`arrayPointer`, keyed off `source`, already covered by the three call sites
+this slice changed), so there was no id memo there to invalidate.
+
+Focused runs, all green: all four new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (399 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (283 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

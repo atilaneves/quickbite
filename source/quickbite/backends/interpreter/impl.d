@@ -2249,6 +2249,19 @@ private struct Walker {
     // every fresh-binding site alongside `scalarCells.remove`/
     // `arrayCells.remove`. Collects matching ids before removing rather than
     // mutating `structFieldPointerVariables` while iterating it.
+    //
+    // Also drops `variable`'s `fieldAddressAllocations` entry (final review,
+    // finding 3): that forward memo -- `fieldSnapshotAllocationId`'s own
+    // per-(receiver, field index) cache -- was never cleared by the reverse-
+    // lookup cleanup above, so a fresh `&s.field` taken after THIS fresh
+    // binding reused the OLD id rather than minting a new one, defeating the
+    // very invalidation this function exists for: the reverse-lookup entries
+    // just removed would simply be re-created, unchanged, the moment code in
+    // the new binding retook the field's address. Without a fresh id, a
+    // stale pointer minted under the OLD binding (e.g. held across a
+    // recursive call that re-declares `variable`) still resolves -- via
+    // `structFieldPointerVariables`, re-populated under the SAME id -- into
+    // whatever cell THIS binding promotes, instead of correctly declining.
     private void dropStructCell(VarDeclaration variable) {
         structCells.remove(variable);
 
@@ -2260,6 +2273,30 @@ private struct Walker {
         foreach (id; staleIds) {
             structFieldPointerVariables.remove(id);
             structFieldPointerFieldIndices.remove(id);
+        }
+
+        fieldAddressAllocations.remove(variable);
+    }
+
+    // Array sibling of `dropStructCell` above (value.md item 7 final review,
+    // finding 3): drops `variable`'s `arrayCells` entry together with its
+    // memoized `arrayAllocations`/`arrayAllocationVariables` id, for exactly
+    // the same reason -- `allocationId` memoizes per `VarDeclaration` and was
+    // never cleared by the pre-existing `arrayCells.remove` alone, so a
+    // fresh `&a[i]` taken after this fresh binding reused the OLD id, and a
+    // stale pointer minted under that id before this binding (e.g. passed
+    // into a recursive call that re-declares `variable`) kept resolving --
+    // via `arrayAllocationVariables`, unchanged -- into whatever cell THIS
+    // binding promotes next, reading the wrong frame's bytes (or indexing
+    // past a shorter re-declared array) instead of correctly declining to
+    // its own frozen boxed snapshot. Called from every fresh-binding site
+    // alongside `scalarCells.remove`/`dropStructCell`.
+    private void dropArrayCell(VarDeclaration variable) {
+        arrayCells.remove(variable);
+
+        if (auto id = variable in arrayAllocations) {
+            arrayAllocationVariables.remove(*id);
+            arrayAllocations.remove(variable);
         }
     }
 
@@ -4012,14 +4049,12 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
-        arrayAllocationVariables = child.arrayAllocationVariables;
-        fieldAddressAllocations = child.fieldAddressAllocations;
+        mergeArrayAllocationMaps(child);
+        mergeFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
-        structFieldPointerVariables = child.structFieldPointerVariables;
-        structFieldPointerFieldIndices = child.structFieldPointerFieldIndices;
+        mergeStructFieldPointerVariableMaps(child);
         structFieldPointerWritebacks = child.structFieldPointerWritebacks;
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
@@ -4048,14 +4083,12 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
-        arrayAllocationVariables = child.arrayAllocationVariables;
-        fieldAddressAllocations = child.fieldAddressAllocations;
+        mergeArrayAllocationMaps(child);
+        mergeFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
-        structFieldPointerVariables = child.structFieldPointerVariables;
-        structFieldPointerFieldIndices = child.structFieldPointerFieldIndices;
+        mergeStructFieldPointerVariableMaps(child);
         structFieldPointerWritebacks = child.structFieldPointerWritebacks;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -4071,6 +4104,61 @@ private struct Walker {
     private void mergeNativeThrowableRoots(ref Walker child) {
         foreach (pointer, throwable; child.nativeThrowableRoots)
             nativeThrowableRoots[pointer] = throwable;
+    }
+
+    // Non-destructive merge for `arrayAllocations`/`arrayAllocationVariables`
+    // after a call returns (value.md item 7 final review, finding 4's array
+    // counterpart): a wholesale `= child.X` copy-back would let a callee's
+    // own fresh-binding invalidation (`dropArrayCell`, finding 3 above) of a
+    // stale id it inherited from THIS frame's own dup silently erase THIS
+    // frame's still-live entry for the same `VarDeclaration` too, now that
+    // id invalidation applies across recursion. Every id is minted from one
+    // shared, monotonically increasing `allocationCount` (merged back
+    // separately, unconditionally, above), so two frames never disagree
+    // about what a given id names -- the reverse map
+    // (`arrayAllocationVariables`) only ever needs entries ADDED, never
+    // replaced, so this frame's own entry for an id the callee's copy no
+    // longer has (because a DEEPER frame's own rebind dropped it from the
+    // callee's copy) simply survives untouched. The forward map
+    // (`arrayAllocations`) only adopts a variable THIS frame did not already
+    // have an entry for -- a rebind that happened only in a deeper frame's
+    // own copy cannot clobber this frame's own still-valid mapping for the
+    // same variable.
+    private void mergeArrayAllocationMaps(ref Walker child) {
+        foreach (id, variable; child.arrayAllocationVariables)
+            arrayAllocationVariables[id] = variable;
+
+        foreach (variable, id; child.arrayAllocations)
+            if (variable !in arrayAllocations)
+                arrayAllocations[variable] = id;
+    }
+
+    // Struct sibling of the merge above -- `structFieldPointerVariables`/
+    // `FieldIndices` (finding 4 itself, the reviewer's own struct fixture)
+    // merge the identical, conflict-free way: ids are globally unique, so a
+    // key present in both this frame's and the callee's copy always names
+    // the same variable/field index.
+    private void mergeStructFieldPointerVariableMaps(ref Walker child) {
+        foreach (id, variable; child.structFieldPointerVariables)
+            structFieldPointerVariables[id] = variable;
+
+        foreach (id, fieldIndex; child.structFieldPointerFieldIndices)
+            structFieldPointerFieldIndices[id] = fieldIndex;
+    }
+
+    // `fieldAddressAllocations`' own forward-map merge, matching
+    // `mergeArrayAllocationMaps`' "this frame's own entry wins" rule: a
+    // (variable, field index) pair this frame already has an id for keeps
+    // it; only a pair this frame has never seen adopts the callee's.
+    private void mergeFieldAddressAllocations(ref Walker child) {
+        foreach (variable, fieldIds; child.fieldAddressAllocations)
+            foreach (fieldIndex, id; fieldIds) {
+                auto existing = variable in fieldAddressAllocations;
+                if (existing !is null && (fieldIndex in *existing) !is null)
+                    continue;
+
+                fieldAddressAllocations[variable][fieldIndex] = id;
+            }
     }
 
     private void writeBackNestedLocals(
@@ -4255,10 +4343,9 @@ private struct Walker {
         child.runStatement(function_.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
         allocationCount = child.allocationCount;
-        arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
-        arrayAllocationVariables = child.arrayAllocationVariables;
-        fieldAddressAllocations = child.fieldAddressAllocations;
+        mergeArrayAllocationMaps(child);
+        mergeFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -4364,7 +4451,7 @@ private struct Walker {
             // review round 2, finding 1) -- recursion reuses the same
             // `VarDeclaration` for a parameter at every call depth.
             scalarCells.remove(parameter);
-            arrayCells.remove(parameter);
+            dropArrayCell(parameter);
             dropStructCell(parameter);
             locals[parameter] = arguments[index];
 
@@ -4413,7 +4500,7 @@ private struct Walker {
         // stack slot for its own `VarDeclaration`, so drop any inherited/
         // stale cell.
         scalarCells.remove(parameter);
-        arrayCells.remove(parameter);
+        dropArrayCell(parameter);
         dropStructCell(parameter);
         locals[parameter] = Value.undisplayable;
 
@@ -7277,7 +7364,7 @@ private struct Walker {
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
             allocationCount = child.allocationCount;
-            fieldAddressAllocations = child.fieldAddressAllocations;
+            mergeFieldAddressAllocations(child);
             fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
@@ -7413,7 +7500,7 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        fieldAddressAllocations = child.fieldAddressAllocations;
+        mergeFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         return child.thisValue;
     }
@@ -7599,7 +7686,7 @@ private struct Walker {
         // promoted eagerly by `promoteSliceArrayCell` with no address-of
         // needed at all.
         scalarCells.remove(variable);
-        arrayCells.remove(variable);
+        dropArrayCell(variable);
         dropStructCell(variable);
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {

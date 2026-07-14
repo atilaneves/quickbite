@@ -2199,6 +2199,178 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Final-review finding 3 (BLOCKER): `allocationId`/`fieldSnapshotAllocationId`
+// memoize their id per `VarDeclaration` and were never removed alongside the
+// cell drop the two fixtures above already exercise, so a pointer minted at
+// an OUTER recursion depth and passed DOWN into a call that re-declares the
+// same `VarDeclaration` still carries the OLD id -- which, in the inner
+// frame, now resolves (via `arrayAllocationVariables`) into whatever cell
+// the inner re-declaration just promoted for ITSELF, instead of declining to
+// the outer pointer's own frozen snapshot. SystemLinker (real aliased
+// storage) returns 207; before any production change Interpreter returned
+// 107, the inner depth's own unrelated value. SystemLinker is the oracle;
+// other backends omitted per the omit-don't-pin convention (unconfirmed
+// there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seven() {
+                return 7;
+            }
+
+            int zero() {
+                return 0;
+            }
+
+            int f(int depth, int* p) {
+                int[] a = [depth * 100 + seven(), zero()];
+                int* q = &a[0];
+                if (depth == 2)
+                    return f(1, q);
+                return *p;
+            }
+
+            unittest {
+                assert(f(2, null) == 207);
+            }
+        });
+    }
+}
+
+// Struct sibling of the fixture above: the same stale-id bug for
+// `fieldSnapshotAllocationId`/`structFieldPointerVariables`.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int g(int depth, int* p) {
+                S s = S(depth * 100 + seven());
+                int* q = &s.x;
+                if (depth == 2)
+                    return g(1, q);
+                return *p;
+            }
+
+            unittest {
+                assert(g(2, null) == 207);
+            }
+        });
+    }
+}
+
+// Crash twin of the same finding: the outer pointer indexes past the END of
+// the inner (shorter) re-declared array. Before any production change,
+// Interpreter resolved the stale outer id into the inner frame's own
+// (shorter) cell and threw `NativeArray.element: index out of range`
+// instead of declining to the outer pointer's own frozen (in-range)
+// snapshot.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.recursiveArrayPointerPassedAcrossShorterRebindDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int four() {
+                return 4;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int h(int depth, int* p) {
+                int[] a = depth == 2
+                    ? [one(), two(), three(), four()]
+                    : [ninetyNine()];
+                int* q = &a[depth == 2 ? 3 : 0];
+                if (depth == 2)
+                    return h(1, q);
+                return *p;
+            }
+
+            unittest {
+                assert(h(2, null) == 4);
+            }
+        });
+    }
+}
+
+// Final-review finding 4 (SHOULD-FIX): `structFieldPointerVariables`/
+// `FieldIndices` are copied back wholesale after a call returns. A
+// recursive callee's own fresh `S s = ...;` re-declaration drops the
+// reverse-lookup entry for `s` from the CALLEE's own (duped) copy via
+// `dropStructCell` -- even though the callee here never itself re-takes
+// `&s.x` -- and the wholesale replace then adopts the callee's
+// (now-missing-the-entry) map wholesale, discarding the CALLER's own
+// still-live entry for its own `s`/`p`. Before any production change,
+// Interpreter's `*p = 42;` after the call returns did not take effect (the
+// write silently declined), so `*p + s.x` read back the pre-write value
+// instead of the correct post-write one.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            int f(int depth) {
+                S s = S(depth == 1 ? seven() : three());
+                if (depth == 1) {
+                    int* p = &s.x;
+                    f(0);
+                    *p = fortyTwo();
+                    return *p + s.x;
+                }
+                return 0;
+            }
+
+            unittest {
+                assert(f(1) == 84);
+            }
+        });
+    }
+}
+
 // value.md item 7's struct phase left cross-frame struct-field-pointer
 // write-through unexercised: the caller takes `&s.x` (promoting a
 // `structCells` entry and a `structFieldPointerVariables`/
