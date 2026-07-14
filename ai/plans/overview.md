@@ -76,10 +76,12 @@ Live plans:
   9 (native session) not started.
 - `bench.md` — the edit-test latency benchmark. Open: per-package fork
   fix for multi-`--dub`, bench-scoped GC lever.
-- `llvm-jit.md` — mostly an outcome log (backend live), but now carries
-  the SystemLinker-peer parity plan: `bench-exec` ORC mode to un-gate
-  the LDC bench, two `rt/` promotions, plus the upstream JITLink repro
-  item.
+- `llvm-jit.md` — mostly an outcome log (backend live; full matrix +
+  LDC bench parity done, parity slices 1–4 complete). The
+  `rt/dependency_image.d` `--random` RTLD_GLOBAL-collision flake is fixed
+  (per-backend unique module names). Open: two upstream JITLink minimal
+  repros (duplicate-`UND`; hidden-weak `DW.ref.*`), both worked around in
+  `orc/elf.d`, neither filed.
 - `dub-deps.md` — dub dependency images. Open: per-fixture completeness
   (unblocked since 2026-06-19).
 - `coverage.md` — corpus semantic-density process; the generative

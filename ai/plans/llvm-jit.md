@@ -17,12 +17,16 @@ fix (Step 4), and ELF normalizer writeups are the load-bearing history. Original
 goal was a POC viability gate; that was met at Step 1/3 and the goal has since
 moved to full-matrix + benchmark parity.
 
-**Agent entry point.** Work the "Critique execution plan (2026-07-07)" at the
-end of this file: slices A→F, in order, one branch/PR per slice. After F, the
-remaining work is slices 3–4 of the "SystemLinker-peer parity plan
-(2026-07-06)" (also below; until then the LDC-built bench cannot run this
-backend). Parity slices 1–2 are ✅ done. The only other open item is the
-upstream JITLink duplicate-`UND` minimal repro (see the normalizer section).
+**Agent entry point.** The critique execution plan (slices A→F) and parity
+slices 1–4 are ✅ done: the full SystemLinker-oracle matrix runs `LLVMJit`, the
+LDC-built bench runs it via the `bench-exec` ORC path, and the
+`rt/dependency_image.d` `--random` isolation flake is fixed with per-backend
+unique module names (see Slice 4, 2026-07-14). The only remaining work is two
+**upstream JITLink minimal repros** (duplicate-`UND` zero-GOT-stub; hidden-weak
+`DW.ref.*` cross-graph externalization, both worked around in `orc/elf.d`,
+neither filed). Two unrelated pre-existing suite flakes surfaced during the
+Slice 4 gate (environmental `liblto_plugin.so`; a Bytecode `cerealed` flake) —
+neither is LLVMJit's, both out of scope here.
 
 ## Scope
 
@@ -721,13 +725,61 @@ Original design (kept for reference):
   (archives + dep image over the wire), DMD-host benchmark config unchanged,
   `ninja bin/ut` + `bin/ut --random` untouched.
 
-### Slice 4: `ci.sh` gate + bookkeeping
+### Slice 4: `ci.sh` gate + bookkeeping ✅ DONE (bench + dep-image flake fix)
 
 - `./ci.sh` end-to-end: llvmjit rows render timed results in corpus and
   `--dub` modes, restoring the AGENTS.md "benchmarks run properly for every
   backend" invariant.
 - Update `bench.md`'s "LLVMJit stays unavailable under the LDC build"
   section and `overview.md`'s parked-status line.
+
+**Bench + docs done (2026-07-14).** Both `bench.md`'s stale "unavailable under
+the LDC build" paragraph and `overview.md`'s parity-plan line are rewritten to
+record that LLVMJit runs under the LDC bench via the `bench-exec` ORC path.
+Measured the two timed rows directly (LDC `-O`, executor path): corpus
+(`example`) llvmjit `46/46 ~38.0 ms` vs system-linker `46/46 ~77.2 ms`; `--dub
+cerealed` llvmjit `156/156 ~1264 ms` vs system-linker `156/156 ~1013 ms`. The
+direction flips by fixture shape (corpus favors LLVMJit's killed-spawn; the
+single big cerealed link favors system-linker) — both correct, no "JIT child
+died".
+
+**Gate finding — `rt/dependency_image.d` `--random` isolation flake (found
+2026-07-14, seed `1126153379`) — FIXED.** The first `ci.sh` was red: 8 fixtures
+in `rt/dependency_image.d` failed (`passed` asserts `true`, gets `false`) — 6
+`LLVMJit`, 2 `Interpreter`. Root cause: every fixture builds a distinct
+dependency-image `.so` but the `LLVMJit` and `Interpreter` variants of one
+fixture reused the *same* module name and symbol names, loaded
+`dlopen(RTLD_GLOBAL)`. One variant's native writeback leaks its mutated,
+un-unloaded image into the long-lived `bin/ut` parent; under `--random` a later
+same-named load (or an `LLVMJit` fork child inheriting the parent) binds to that
+stale image (RTLD_GLOBAL first-loaded wins) and reads the wrong value. Slice E's
+"run `LLVMJit` before `Interpreter`" mitigation is *source-order only* and
+`--random` defeats it. This reproduced on master (PR #416 validated only seed
+`55736904`).
+
+Fix (test-only, this PR): the `uniqueDepModule` helper suffixes each fixture's
+dependency-image **module name** with `backend.stringof`, so every
+`(fixture, backend)` module — and every D-mangled symbol under it — is globally
+unique and no leaked image can collide on them. The two `extern(C)`
+ctor-ordering globals (`seedBase`, `dtNeededSeed`) are unmangled, so they are
+suffixed with a second `uniqueDepModule` call to keep their variants isolated
+too (otherwise the ctor-ordering fixtures could false-pass against a stale
+already-initialized image rather than exercise the backend's own ctor). The
+remaining shared-named `extern(C)` functions are stateless and identical across
+variants, so they carry no stale state. Verified: the original failing seed
+`1126153379` now passes, and across 8 full-suite orderings (3 historical/known
+seeds + 5 fresh `--random`) there were **zero** dependency-image collision
+failures. The only failures observed were two unrelated pre-existing flakes,
+neither in this PR's surface: (1) an environmental `cc: '-fuse-linker-plugin',
+liblto_plugin.so not found` link error in the `SystemLinker` oracle
+(toolchain/LTO-plugin, machine-level), and (2)
+`ct.cerealed.dynamicArrayTruthinessControlsEnforceFallback.Bytecode` (`130 !=
+3`, a Bytecode backend flake; `dependency_image.d` never runs Bytecode).
+
+After Slice 4 the plan's only other open items are those two unrelated
+pre-existing flakes (out of scope here) and the two upstream JITLink minimal
+repros (duplicate-`UND`; hidden-weak `DW.ref.*` cross-graph externalization),
+both worked around in `orc/elf.d` and neither yet filed.
 
 ## Risks / watch items
 
@@ -1429,5 +1481,13 @@ JIT and returns the normal result frame. Dependency images are no longer
 `dlopen`'d in the LDC host. The executor spawn helper is shared by both native
 backends; `llvmjit` is restored to LDC benchmark defaults and explicit
 selection. `bench-exec` now builds the frontend-free `orc` package and links
-LLVM. DMD `ninja bin/ut` passed. The optimized LDC benchmark build is in
-progress; complete the three Slice-3 benchmark commands before the PR.
+LLVM. DMD `ninja bin/ut` passed.
+
+**Verified (2026-07-14).** The three Slice-3 benchmark commands now run green
+against the optimized LDC build: `bin/bench.sh -b llvmjit -b system-linker`
+(corpus, both render timed rows — llvmjit `46/46 ~38.0 ms`, system-linker
+`46/46 ~77.2 ms`) and `bin/bench.sh --dub cerealed -b llvmjit -b system-linker`
+(archives + dep image over the wire — llvmjit `156/156 ~1264 ms`,
+system-linker `156/156 ~1013 ms`). `llvmjit` is accepted both in the defaults
+and via explicit `-b llvmjit`. Slice 3 is ✅ done; see Slice 4 for the `ci.sh`
+gate and doc bookkeeping.
