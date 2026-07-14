@@ -127,6 +127,13 @@ private struct Walker {
     private size_t[VarDeclaration] arrayAllocationAliases;
     private VarDeclaration[size_t] arrayAllocationVariables;
     private bool[VarDeclaration] arrayPointerWritebacks;
+    // Per-(receiver variable, field index) memo for `&s.field` allocation
+    // ids (Rung 7): repeated address-of evaluations of the same field must
+    // return the same identity. Every id minted through that path (memoized
+    // or not) is also recorded in `fieldSnapshotAllocationIds` so
+    // `writeLocation`'s `PtrExp` path can refuse writing through it.
+    private size_t[size_t][VarDeclaration] fieldAddressAllocations;
+    private bool[size_t] fieldSnapshotAllocationIds;
     private size_t allocationCount;
     private size_t lastGCArrayUsedAllocation;
     private Value result;
@@ -1653,6 +1660,17 @@ private struct Walker {
 
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
+
+            // Any other field type: a pointer snapshotting the field's
+            // current value, mirroring runNewScalarPointerExpression's
+            // single-value allocation. The id is memoized per (receiver
+            // variable, field index) so re-taking the same field's address
+            // returns the same identity, matching real addresses, while
+            // distinct receivers (`&a.f` vs `&b.f`) still differ. It does not
+            // alias writes back to the field; writeLocation's PtrExp path
+            // refuses writing through a known field-snapshot id.
+            return Value.arrayPointerValue(
+                [runExpression(dot)], fieldSnapshotAllocationId(dot), 0);
         }
 
         // `&call()` of a ref-returning function: run the call and yield the
@@ -1668,6 +1686,33 @@ private struct Walker {
 
         const offset = runExpression(index.e2).asLong;
         return arrayPointer(index.e1, offset, op);
+    }
+
+    // Stable allocation id for `&s.field`, memoized per (receiver variable,
+    // field index) when the receiver resolves to a plain `VarExp`; a
+    // receiver that cannot be resolved to a variable (e.g. `&call().field`)
+    // gets a fresh id every time. Either way the id is recorded as a field
+    // snapshot so writeLocation's PtrExp path can refuse writing through it.
+    private size_t fieldSnapshotAllocationId(
+        imported!"dmd.expression".DotVarExp dot,
+    ) {
+        auto var = dot.e1.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable is null) {
+            const id = ++allocationCount;
+            fieldSnapshotAllocationIds[id] = true;
+            return id;
+        }
+
+        const fieldIndex = structFieldIndex(dot);
+        if (auto forReceiver = variable in fieldAddressAllocations)
+            if (auto id = fieldIndex in *forReceiver)
+                return *id;
+
+        const id = ++allocationCount;
+        fieldAddressAllocations[variable][fieldIndex] = id;
+        fieldSnapshotAllocationIds[id] = true;
+        return id;
     }
 
     // The address of a ref return's lvalue, evaluated in the returning
@@ -1732,6 +1777,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
@@ -1740,10 +1787,10 @@ private struct Walker {
         try {
             child.runStatement(call.f.fbody);
         } catch (InterpretedException exception) {
-            writeBackFunctionState(call.f, argumentExpressions, child);
+            writeBackFunctionState(call.f, argumentExpressions, child, arguments);
             throw exception;
         }
-        writeBackFunctionState(call.f, argumentExpressions, child);
+        writeBackFunctionState(call.f, argumentExpressions, child, arguments);
 
         return returnedLvalueAddress(call.f, argumentExpressions, child);
     }
@@ -2210,7 +2257,22 @@ private struct Walker {
 
         const left = runExpression(identity.e1);
         const right = runExpression(identity.e2);
-        const same = left == right;
+        // dmd lowers a POD struct's `==` (no user-defined `opEquals`) into an
+        // `is` expression (`IdentityExp`), since memberwise equality and
+        // bitwise identity coincide for such structs. Route that case through
+        // `equalValues` (the same field-recursive, numeric-scalar-coercing
+        // comparison a direct `==` uses) instead of a raw `Value` compare: a
+        // struct field written by anything other than an enum-typed literal
+        // `IntegerExp` (default-init, a decoded value, ...) keeps a plain
+        // scalar `Value` rather than the `EnumValue` variant `runExpression`
+        // tags a literal `Enum.Member` reference with, so a raw compare of
+        // two otherwise-identical structs falsely disagrees whenever one
+        // side's enum field took a different path to the same value. Other
+        // `is` comparisons (pointers, class references, floats) keep their
+        // existing raw-value identity semantics.
+        const same = left.isStruct && right.isStruct
+            ? equalValues(left, right)
+            : left == right;
         if (identity.op == EXP.notIdentity)
             return Value(!same);
 
@@ -2358,7 +2420,9 @@ private struct Walker {
                     : (*call.f.parameters)[index];
                 arguments ~= parameter !is null && parameterIsLazy(parameter)
                     ? Value.undisplayable
-                    : runExpression(argument);
+                    : parameter !is null && parameter.isReference
+                        ? runRefArgumentExpression(argument)
+                        : runExpression(argument);
                 argumentExpressions ~= argument;
             }
         }
@@ -2640,6 +2704,24 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    // A `ref` argument aliases the caller's storage; compiled D binds the
+    // address without reading through it. Evaluating it like an ordinary
+    // rvalue throws when the caller's local is still `= void` (cerealed's
+    // `ubyte b = void; cereal.grain(b);`, where `grain`'s `ref` parameter is
+    // only ever written, never read, before the call). Seed a void
+    // placeholder instead of reading; `writeBackRefArguments` overwrites it
+    // with whatever the callee actually wrote once the call returns.
+    private Value runRefArgumentExpression(
+        imported!"dmd.expression".Expression argument,
+    ) {
+        auto var = argument.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable !is null && variable in uninitializedLocals)
+            return Value.void_;
+
+        return runExpression(argument);
     }
 
     private Value runEmplaceRefCall(imported!"dmd.expression".CallExp call) {
@@ -3410,6 +3492,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
@@ -3422,6 +3506,7 @@ private struct Walker {
                 function_,
                 argumentExpressions,
                 child,
+                arguments,
                 captureLocals,
             );
             throw exception;
@@ -3430,6 +3515,7 @@ private struct Walker {
             function_,
             argumentExpressions,
             child,
+            arguments,
             captureLocals,
         );
         return child.result;
@@ -3462,6 +3548,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         if (receiverExpression !is null)
@@ -3499,6 +3587,7 @@ private struct Walker {
                 receiverExpression,
                 argumentExpressions,
                 child,
+                arguments,
             );
             throw exception;
         }
@@ -3507,6 +3596,7 @@ private struct Walker {
             receiverExpression,
             argumentExpressions,
             child,
+            arguments,
         );
 
         if (function_.isConstructorFunction)
@@ -3519,6 +3609,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
+        in Value[] arguments,
         in bool captureLocals = false,
     ) {
         mergeNativeThrowableRoots(child);
@@ -3534,12 +3625,14 @@ private struct Walker {
         arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
+        fieldAddressAllocations = child.fieldAddressAllocations;
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
-        writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackRefArguments(function_, argumentExpressions, child, arguments);
         writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
     }
@@ -3549,6 +3642,7 @@ private struct Walker {
         imported!"dmd.expression".Expression receiverExpression,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
+        in Value[] arguments,
     ) {
         mergeNativeThrowableRoots(child);
         nextLocalPointerId = child.nextLocalPointerId;
@@ -3563,11 +3657,13 @@ private struct Walker {
         arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
+        fieldAddressAllocations = child.fieldAddressAllocations;
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
-        writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackRefArguments(function_, argumentExpressions, child, arguments);
         writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
@@ -3692,6 +3788,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
         child.hasThis = true;
@@ -3702,6 +3800,8 @@ private struct Walker {
         arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
+        fieldAddressAllocations = child.fieldAddressAllocations;
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
     }
@@ -3744,7 +3844,8 @@ private struct Walker {
         return
             expression.isVarExp !is null ||
             expression.isDotVarExp !is null ||
-            expression.isThisExp !is null;
+            expression.isThisExp !is null ||
+            expression.isIndexExp !is null;
     }
 
     private bool isDynamicArrayPointerRefArgument(
@@ -3806,6 +3907,22 @@ private struct Walker {
             // every call depth.
             scalarCells.remove(parameter);
             locals[parameter] = arguments[index];
+
+            // `runRefArgumentExpression` seeds a `ref` argument still bound to
+            // an uninitialized caller local with a bare `Value.void_`
+            // placeholder rather than reading through it (interpreter.md
+            // §9.7). Mirror that uninitialized status onto the callee's own
+            // parameter so a nested read through it — including a `DotVarExp`
+            // field access on a struct/static-array parameter, e.g. cerealed's
+            // `grain(__traits(getMember, val, member))` — hits the same
+            // "materialize the default aggregate" / "throw for a still-void
+            // scalar" handling `runExpression`'s `VarExp` branch already
+            // applies to a directly uninitialized local, instead of reading a
+            // bare `Value.void_` straight off `locals` and failing field
+            // access outright.
+            if (parameter.isReference && arguments[index] == Value.void_)
+                uninitializedLocals[parameter] = true;
+
             recordParameterSliceAlias(
                 parameter,
                 arguments[index],
@@ -3989,6 +4106,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
+        in Value[] arguments,
     ) {
         if (function_.parameters is null)
             return;
@@ -4005,6 +4123,27 @@ private struct Walker {
                 continue;
 
             if (auto value = parameter in child.locals) {
+                // Compiled D never re-evaluates a `ref` argument's lvalue
+                // expression to write a value back: it binds the address once
+                // at the call and the callee either writes through it or
+                // doesn't. This simulation instead re-runs the argument
+                // expression to locate the write destination, which is only
+                // safe when the callee actually changed the parameter — an
+                // unconditional write-back re-executes a side-effecting
+                // location expression (e.g. `shouldEqual(*dec.value!(int*),
+                // ...)`, whose `ref` argument `*dec.value!(int*)` re-runs the
+                // decoding call itself) even though the callee only ever read
+                // it. Skip the whole write-back (and its re-evaluation) when
+                // the parameter's value is unchanged. Use `identicalValues`,
+                // not plain `==`, for this comparison: for floating scalars
+                // D's `==` considers `-0.0 == +0.0` and `NaN != NaN`, either
+                // of which would give the wrong skip decision here (dropping
+                // a real `+0.0` writeback, or re-executing a side-effecting
+                // argument expression because an unchanged `NaN` looks
+                // "changed").
+                if (index < arguments.length && identicalValues(*value, arguments[index]))
+                    continue;
+
                 if (isDynamicArrayPointerRefArgument(argument)) {
                     writeLocation(argument, *value);
                     continue;
@@ -4024,6 +4163,19 @@ private struct Walker {
                 writeLocation(argument, *value);
             }
         }
+    }
+
+    // Used only for writeBackRefArguments' unchanged-parameter skip decision.
+    // Floating scalars compare by bit pattern (D's `is` semantics for
+    // floats), not `==`: `-0.0 is not +0.0` (so a real sign-of-zero write
+    // still triggers a write-back) and `NaN is NaN` (so an unchanged NaN
+    // ref argument still gets skipped instead of re-executing its location
+    // expression). Every other kind defers to the existing `==`.
+    private bool identicalValues(in Value left, in Value right) {
+        if (left.isFloatingScalar && right.isFloatingScalar)
+            return left.asReal is right.asReal;
+
+        return left == right;
     }
 
     private void writeBackByValueClassArguments(
@@ -4159,6 +4311,9 @@ private struct Walker {
         if (left.isArray && right.isArray)
             return equalArrayValues(left, right);
 
+        if (left.isStruct && right.isStruct)
+            return equalStructValues(left, right);
+
         return left == right;
     }
 
@@ -4168,6 +4323,27 @@ private struct Walker {
 
         foreach (index; 0 .. left.length)
             if (!equalValues(left[index], right[index]))
+                return false;
+
+        return true;
+    }
+
+    // A struct field written by anything other than an enum-typed literal
+    // `IntegerExp` (default-init, arithmetic, a cast/pointer write-back, ...)
+    // keeps its plain scalar `Value` kind instead of `runExpression`'s
+    // `Value.enumValue` tagging, so a raw `Value == Value` compare (the
+    // `left == right` fallback above) never considers it equal to a
+    // same-valued `EnumValue`-tagged field, even though real D's memberwise
+    // struct equality does. Recurse field-by-field through `equalValues`
+    // (mirroring `equalArrayValues`) so each field gets the same
+    // numeric-scalar coercion a top-level `==` already applies.
+    private bool equalStructValues(in Value left, in Value right) {
+        const count = left.structFieldCount;
+        if (count != right.structFieldCount)
+            return false;
+
+        foreach (index; 0 .. count)
+            if (!equalValues(left.structFieldAt(index), right.structFieldAt(index)))
                 return false;
 
         return true;
@@ -4734,6 +4910,13 @@ private struct Walker {
             if (writeThroughArrayPointer(pointer, value))
                 return;
 
+            // `&s.field` (addressOfExpression's DotVarExp branch) yields a
+            // read-only value snapshot, not an alias to the field: refuse
+            // loudly instead of silently rewriting the throwaway pointer
+            // variable and losing the write.
+            if (pointer.pointerAllocation in fieldSnapshotAllocationIds)
+                throw new Exception("Unsupported interpreter assignment target.");
+
             writeLocation(ptr.e1, pointer.withPointerTarget(value));
             return;
         }
@@ -4801,6 +4984,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
@@ -4815,6 +5000,7 @@ private struct Walker {
                 dot.e1,
                 argumentExpressions,
                 child,
+                arguments,
             );
             throw exception;
         }
@@ -4823,6 +5009,7 @@ private struct Walker {
             dot.e1,
             argumentExpressions,
             child,
+            arguments,
         );
         return true;
     }
@@ -4884,6 +5071,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
@@ -4892,10 +5081,10 @@ private struct Walker {
         try {
             child.runStatement(call.f.fbody);
         } catch (InterpretedException exception) {
-            writeBackFunctionState(call.f, argumentExpressions, child);
+            writeBackFunctionState(call.f, argumentExpressions, child, arguments);
             throw exception;
         }
-        writeBackFunctionState(call.f, argumentExpressions, child);
+        writeBackFunctionState(call.f, argumentExpressions, child, arguments);
         return true;
     }
 
@@ -5177,11 +5366,21 @@ private struct Walker {
             return runNestedIndexAssignExpression(outer, index, rhs);
 
         if (auto dot = index.e1.isDotVarExp) {
-            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-            const value = runExpression(rhs);
+            // `$` inside index.e2 is a DollarExp bound to index.lengthVar, so
+            // it must see the field array's current length: resolve the
+            // field and seed lengthVar from it before evaluating index.e2,
+            // the same order runIndexExpression (read path) already uses for
+            // the same `$` binding. Evaluating e2 first left lengthVar
+            // holding a stale (or default zero) length, so `h.arr[$ - 1] =
+            // v` right after growing `h.arr` underflowed to size_t.max.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpression(dot.e1);
-            const updatedArray = receiver.structFieldAt(fieldIndex).withArrayElement(arrayIndex, value);
+            const source = receiver.structFieldAt(fieldIndex);
+            if (index.lengthVar !is null)
+                locals[index.lengthVar] = Value(source.length);
+            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+            const value = runExpression(rhs);
+            const updatedArray = source.withArrayElement(arrayIndex, value);
             writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
             return value;
         }
@@ -5530,9 +5729,18 @@ private struct Walker {
                 ? (*current)[index]
                 : defaultValue(arrayElementType(variable.type));
 
-        locals[variable] = Value.arrayValue(elements);
-        uninitializedLocals.remove(variable);
-        sliceAliases.remove(variable);
+        // Go through `writeLocation`, not a direct `locals[variable] = ...`:
+        // dmd's postfix `.length++`/`.length--` lowering binds a synthetic
+        // `ref` local (e.g. `ref int[] __arraylength3 = h.arr;`) to the real
+        // array-length target and resizes through that alias, so `variable`
+        // here can itself be a struct-field/array-element alias source
+        // recorded by `recordStructFieldAlias`/`recordArrayElementAlias`.
+        // Writing `locals[variable]` directly (the previous code) updated
+        // only the synthetic alias local and silently dropped the grown
+        // array on the caller's aliased struct field; `writeLocation`'s
+        // `VarExp` branch runs the same write-through-alias propagation as
+        // every other assignment target.
+        writeLocation(var, Value.arrayValue(elements));
         return lengthValue;
     }
 
@@ -6099,11 +6307,19 @@ private struct Walker {
                 .assocArrayElement(runExpression(index.e2));
         }
 
-        // matches CTFE, which formats the index as unsigned
-        arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
+        // `$` inside index.e2 is a DollarExp bound to index.lengthVar, so it
+        // must see the array's current length: run index.e1 and seed
+        // lengthVar from its result before evaluating index.e2, the same
+        // order runSliceExpression already uses for the same `$` binding.
+        // Evaluating e2 first left lengthVar holding a stale (or default
+        // zero) length, so `arr[$ - 1]` on a just-grown array underflowed to
+        // size_t.max instead of the intended last-element index.
         const source = runExpression(index.e1);
         if (index.lengthVar !is null)
             locals[index.lengthVar] = Value(source.length);
+
+        // matches CTFE, which formats the index as unsigned
+        arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
 
         // covers both array-backed pointers and druntime hook results such
         // as `_d_aaGetRvalueX` slot pointers, which DMD dereferences with a
@@ -6333,9 +6549,15 @@ private struct Walker {
             child.result = Value(false);
             child.thisValue = structVal;
             child.hasThis = true;
+            child.fieldAddressAllocations = fieldAddressAllocations.dup;
+            child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
+            child.allocationCount = allocationCount;
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
+            allocationCount = child.allocationCount;
+            fieldAddressAllocations = child.fieldAddressAllocations;
+            fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             import quickbite.backends.interpreter.layout: structFields;
@@ -6353,7 +6575,12 @@ private struct Walker {
             }
         }
 
-        return Value.pointerValue(structVal);
+        // A fresh allocation id (mirroring runNewScalarPointerExpression and the
+        // AddrExp(DotVarExp) fresh-identity fix) so two `new`-allocated structs
+        // with equal field contents compare as distinct pointers, matching real
+        // heap addresses; `Value.pointerValue` alone leaves allocation/offset at
+        // their zero default, so unrelated `new` results collide on identity.
+        return Value.arrayPointerValue([structVal], ++allocationCount, 0);
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
@@ -6445,6 +6672,9 @@ private struct Walker {
         child.delegates = delegates.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
+        child.allocationCount = allocationCount;
         child.thisValue = object;
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
@@ -6456,6 +6686,9 @@ private struct Walker {
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
+        allocationCount = child.allocationCount;
+        fieldAddressAllocations = child.fieldAddressAllocations;
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         return child.thisValue;
     }
 
@@ -6494,6 +6727,28 @@ private struct Walker {
             return;
         }
 
+        // `foreach (ref e; val.field)` lowers to `T[] tmp = val.field[];`
+        // (dmd's own foreach-to-for rewrite): the sliced aggregate is a
+        // struct field (a `DotVarExp`), not a plain local. Track the
+        // field's owner and index so the write-through below can rebuild
+        // `val.field[...]`, not a nonexistent whole-array local.
+        if (auto dot = slice.e1.isDotVarExp) {
+            auto var = dot.e1.isVarExp;
+            auto source = var is null ? null : var.var.isVarDeclaration;
+            if (source is null) {
+                sliceAliases.remove(variable);
+                return;
+            }
+
+            sliceAliases[variable] = SliceAlias(
+                source,
+                lower,
+                true,
+                structFieldIndex(dot),
+            );
+            return;
+        }
+
         auto var = slice.e1.isVarExp;
         if (var is null) {
             sliceAliases.remove(variable);
@@ -6524,9 +6779,30 @@ private struct Walker {
         if (alias_ is null)
             return;
 
+        // A still-void static array (e.g. a `ref` parameter bound to the
+        // caller's `T val = void;`, interpreter.md §9.7) leaves the source's
+        // `locals` entry holding the bare `Value.void_` placeholder rather
+        // than a real `Array`/`Struct` — `val[]`'s `foreach (ref e; val)`
+        // lowering slices it into a temporary, and a write through the
+        // temporary reaches here to rebuild `val`. Materialise the default
+        // value first, mirroring the read-path materialisation
+        // `runExpression`'s VarExp branch already applies to a directly
+        // uninitialized local, so the write has real storage to land in.
+        if (alias_.source in uninitializedLocals)
+            locals[alias_.source] = defaultValue(alias_.source);
+
         auto source = alias_.source in locals;
         if (source is null)
             throw new Exception("Unsupported interpreter slice assignment target.");
+
+        if (alias_.hasFieldIndex) {
+            const updatedField = source.structFieldAt(alias_.fieldIndex)
+                .withArrayElement(alias_.lower + index, value);
+            locals[alias_.source] =
+                source.withStructField(alias_.fieldIndex, updatedField);
+            uninitializedLocals.remove(alias_.source);
+            return;
+        }
 
         locals[alias_.source] = source.withArrayElement(alias_.lower + index, value);
         uninitializedLocals.remove(alias_.source);
@@ -7425,6 +7701,11 @@ private bool isEmplaceRef(imported!"dmd.func".FuncDeclaration function_) {
 private struct SliceAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t lower;
+    // Set when the sliced aggregate is itself a struct field of `source`
+    // (e.g. `T[] tmp = val.field[];`, dmd's `foreach (ref e; val.field)`
+    // lowering) rather than `source` directly.
+    public bool hasFieldIndex;
+    public size_t fieldIndex;
 }
 
 

@@ -1398,3 +1398,303 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
         });
     }
 }
+
+// cerealed's `grainWithLengthInBytesAttr` (ffi.md/interpreter.md §9.7,
+// 2026-07-13 follow-up) grows an array-typed FIELD of a `ref` struct
+// parameter with `__traits(getMember, val, member).length++;`. dmd lowers
+// postfix `.length++` on a field access through a synthetic `ref` local
+// (`ref int[] __tmp = h.arr; ... _d_arraysetlengthT(__tmp, ...)`), unlike
+// plain `.length = .length + 1`, which resizes the field directly. Keep
+// this fixture's index deliberately `$`-free (`arr[arr.length - 1]`): a
+// distinct `$`/`lengthVar`-ordering bug in the assignment-target path
+// (`Walker.runIndexAssignExpression`'s `DotVarExp` branch) affects
+// `h.arr[$ - 1] = ...` and is tracked separately in interpreter.md §9.7,
+// not fixed here, to keep this fixture pinned to the one root it exposes.
+// `Bytecode` omitted: still red there (under active development), per
+// interpreter.md §8's omit-don't-pin rule for matrix width.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.postfixLengthIncrementGrowsRefParamArrayField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { int[] arr; }
+
+            void growByOne(ref Holder h) {
+                h.arr.length++;
+                h.arr[h.arr.length - 1] = 7;
+            }
+
+            unittest {
+                Holder h;
+                growByOne(h);
+                assert(h.arr.length == 1);
+                assert(h.arr[0] == 7);
+            }
+        });
+    }
+}
+
+// The third root named in the fixture above (interpreter.md §9.7):
+// `Walker.runIndexAssignExpression`'s `DotVarExp` branch (impl.d) used to
+// evaluate `index.e2` before running `index.e1`/seeding `index.lengthVar`,
+// so `$` inside an index-ASSIGN target through a struct FIELD (`h.arr[$ -
+// 1] = ...`) read a stale/default-zero length and underflowed. This is
+// the write-path counterpart of the read-path fix in
+// `dynamicArray.dollarReflectsLengthAfterInPlaceGrowth` (arrays.d).
+// `Bytecode` omitted: `$` is not implemented there (`Unsupported variable
+// in bytecode core: $`), per interpreter.md §8's omit-don't-pin rule.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { int[] arr; }
+
+            void fillLast(ref Holder h) {
+                h.arr.length = 3;
+                h.arr[$ - 1] = 9;
+            }
+
+            unittest {
+                Holder h;
+                fillLast(h);
+                assert(h.arr.length == 3);
+                assert(h.arr[2] == 9);
+            }
+        });
+    }
+}
+
+// cerealed's cereal.d (`ubyte b = void; cereal.grain(b);` inside the
+// isOutputRange `grain(U, C, T)` template, then `val.put(b)`) writes a
+// void-initialised local through two nested `ref`-forwarding calls before
+// reading it back. interpreter.md §9.7 (void-init `ref`-argument reads).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("refArgument.voidLocalIsReadableAfterNestedRefWrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void writeByte(ref ubyte val) {
+                val = 42;
+            }
+
+            void grain(ref ubyte val) {
+                writeByte(val);
+            }
+
+            ubyte readGrain() {
+                ubyte b = void;
+                grain(b);
+                return b;
+            }
+
+            unittest {
+                assert(readGrain() == 42);
+            }
+        });
+    }
+}
+
+// cerealed's `shouldEqual(*dec.value!(int*), *i)` (pointers.d's
+// `pointer.to.int` test) passes a dereferenced decode-and-return-a-pointer
+// call as a `ref` argument to a comparison function that never assigns to
+// its parameter. `Walker.writeBackRefArguments` (impl.d) wrote back through
+// every `ref` argument unconditionally, even when the callee never touched
+// it; for a `PtrExp` argument, `writeLocation`'s `*ptr = ...` branch
+// re-evaluates `ptr.e1` to find the write destination, re-running
+// `decodeNext()` a second time on an already-exhausted decoder and throwing
+// a bogus `RangeError` instead of the intended comparison. Real D never
+// re-evaluates a `ref` argument's lvalue after the call: it binds the
+// address once. Root: skip the write-back (and its re-evaluation) whenever
+// the parameter's value is unchanged after the call. interpreter.md §9.7.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Decoder {
+                int[] values;
+
+                int* decodeNext() {
+                    auto value = new int;
+                    *value = values[0];
+                    values = values[1 .. $];
+                    return value;
+                }
+            }
+
+            void compare(ref int actual, ref int expected) {
+                assert(actual == expected);
+            }
+
+            unittest {
+                auto dec = Decoder([4]);
+                int expected = 4;
+                compare(*dec.decodeNext(), expected);
+                assert(dec.values.length == 0);
+            }
+        });
+    }
+}
+
+// Rung 7 review finding, sibling of the fix just above: the unchanged-
+// parameter skip check compared `Value`s with plain `==`, which is wrong for
+// floating scalars two ways. `-0.0 == 0.0` is true, so a callee that
+// genuinely rewrites a negative zero to a positive zero got its write-back
+// silently dropped (a regression, not merely a missed optimisation) — this
+// fixture pins that case. `Walker.identicalValues` (impl.d) now compares
+// floating scalars by bit pattern (D's `is` semantics), matching real D's
+// actual `-0.0`/`+0.0` distinction, and defers to `==` for everything else.
+// Bytecode omitted: floating-point division is not implemented there yet
+// (`Unsupported division in bytecode core`), unrelated to this fix.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("refArgument.floatWriteBackSkipComparesBitPatternNotEquality." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setPositiveZero(ref double x) {
+                x = 0.0;
+            }
+
+            double negativeZero() {
+                return -0.0;
+            }
+
+            unittest {
+                double d = negativeZero;
+                setPositiveZero(d);
+                assert(1.0 / d == double.infinity);
+            }
+        });
+    }
+}
+
+// cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
+// units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
+// element's fields through a hidden temporary dmd's foreach-to-for lowering
+// introduces: `T[] __r = val.units[]; for (...; ) { ref Unit e = __r[__k]; }`.
+// `Walker.recordSliceAlias` (impl.d) only recognised the sliced aggregate
+// (`slice.e1`) when it was a plain local `VarExp`, so a `DotVarExp` aggregate
+// (a struct field, here `val.units`) left `__r` untracked as a slice alias:
+// writes to `e`'s fields updated the interpreter's local snapshot of `__r`
+// but never propagated back to `val.units`, so the caller's array element
+// silently kept its default value. interpreter.md §9.7. `Bytecode` omitted:
+// it segfaults on this fixture (under active development, omit-don't-pin).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.foreachRefOverFieldArrayPersistsElementWrites." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Item { ushort a; ubyte b; }
+            struct Container { Item[] items; }
+
+            void fill(ref Item item, ubyte hi, ubyte lo, ubyte b) {
+                item.a = cast(ushort) ((hi << 8) | lo);
+                item.b = b;
+            }
+
+            void fillAll(ref Container container, ubyte[] bytes) {
+                container.items.length = 2;
+                size_t i;
+                foreach (ref item; container.items) {
+                    fill(item, bytes[i], bytes[i + 1], bytes[i + 2]);
+                    i += 3;
+                }
+            }
+
+            unittest {
+                Container container;
+                fillAll(container, [0, 6, 2, 0, 7, 3]);
+                assert(container.items[0].a == 6);
+                assert(container.items[0].b == 2);
+                assert(container.items[1].a == 7);
+                assert(container.items[1].b == 3);
+            }
+        });
+    }
+}
+
+// cerealed's decode of an enum-typed struct field (structs.d's `EnumStruct`
+// and `MqttFixedHeader` tests) writes the decoded byte through the field
+// without going through an enum-typed literal `IntegerExp`, so `Walker.
+// runExpression`'s `Value.enumValue` tagging (impl.d, only reached for an
+// `IntegerExp` whose type is `Tenum`) never applies to it: the field ends up
+// holding a plain scalar `Value` instead of the `EnumValue` variant a literal
+// `Enum.Member` reference produces. Both variants carry the identical numeric
+// value. dmd lowers a POD struct's `==` (no user `opEquals`) into an `is`
+// expression rather than leaving it an `EqualExp` — confirmed with a
+// throwaway trace of `assert_.e1.op` in the `AssertExp` branch, reverted
+// before commit — so `Walker.runIdentityExpression` ran the comparison, not
+// `runEqualExpression`/`equalValues`: it used a raw `left == right` (`Value`'s
+// own `opEquals`, a strict `SumType` compare) with no per-field recursion or
+// numeric-scalar coercion, so an `EnumValue`-tagged field never equalled a
+// same-valued plain-scalar field even though real D's memberwise struct
+// equality does. This is the simplest reproduction: a struct's
+// default-initialised enum field (a plain scalar `Value`, per
+// `defaultValue`'s `toBasetype`-driven dispatch) against the same enum
+// member from a literal-constructed struct. No cast, pointer, or cereal
+// machinery needed. interpreter.md §9.7.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("struct.equalityComparesEnumFieldByValueAcrossOrigin." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum Enum { Foo, Bar, Baz }
+            struct Holder { Enum e; }
+
+            unittest {
+                Holder defaultInit;
+                auto literal = Holder(Enum.Foo);
+                assert(defaultInit == literal);
+            }
+        });
+    }
+}
+
+// cerealed's decode of a `@disable this()` struct (decode.d's "Types with
+// @disable this can be encoded/decoded" test) uses the `T val = void;`
+// property-getter overload (`Decerealiser.value`, `cerealed/decerealiser.d`)
+// because `T()` does not compile; `grain(this, val)` then reaches the
+// struct's single field only through a nested `ref`-forwarding call
+// (`grainAllMembersImpl` -> `grainAggregateMember` -> `grain(__traits(
+// getMember, val, member))`), matching this fixture's `writeByte(val.i)`
+// inside `grainField`. `Walker.bindFunctionParameters` (impl.d) bound a
+// `ref` parameter to the caller's deferred `Value.void_` placeholder
+// without marking the parameter itself `uninitializedLocals` in the
+// callee's own frame, so a nested `DotVarExp` field read through it saw
+// a bare `Value.void_` instead of the materialised default struct
+// `runExpression`'s `VarExp` branch already produces for a directly
+// uninitialized local. interpreter.md §9.7.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+    @("refArgument.voidStructLocalFieldWritableThroughNestedRefWrite." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { ubyte i; }
+
+            void writeByte(ref ubyte val) {
+                val = 42;
+            }
+
+            void grainField(ref Holder val) {
+                writeByte(val.i);
+            }
+
+            ubyte readField() {
+                Holder val = void;
+                grainField(val);
+                return val.i;
+            }
+
+            unittest {
+                assert(readField() == 42);
+            }
+        });
+    }
+}

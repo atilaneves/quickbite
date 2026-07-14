@@ -1742,6 +1742,212 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// `&struct.field` is AddrExp(DotVarExp); until now only a static-array field
+// was handled (arrayPointer), so any other field type fell through to the
+// generic unsupported-expression throw.  cerealed's pointer roundtrip test
+// (`struct.with.class.reference`) hits this taking the address of a decoded
+// struct's class-reference field to assert it is a distinct object from the
+// original.  Ctfe omitted: DMD CTFE genuinely refuses to convert a struct
+// field's address for pointer-identity comparison at compile time
+// (`cannot cast '&Holder(7).value' to 'ulong' at compile time`), not a gap
+// to close here.  Bytecode omitted: AddrExp of a DotVarExp is not
+// implemented there yet (still under active development).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.addressOfStructFieldIsDistinctAcrossInstances." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            unittest {
+                int seed = 7;
+                auto a = Holder(seed);
+                auto b = Holder(seed);
+
+                int* pa = &a.value;
+                int* pb = &b.value;
+
+                assert(pa !is pb);
+                assert(*pa == seed);
+                assert(*pb == seed);
+            }
+        });
+    }
+}
+
+// Rung 7 review finding: addressOfExpression's DotVarExp branch minted a
+// fresh `++allocationCount` identity on *every* evaluation of `&s.field`, so
+// re-taking the same field's address gave a different identity each time
+// (`&a.value !is &a.value`) — real D gives the same address back. Fixed by
+// memoizing the allocation id per (receiver variable, field index). Ctfe
+// omitted: DMD CTFE genuinely refuses this construct at compile time.
+// Bytecode omitted: AddrExp of a DotVarExp is not implemented there yet.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.addressOfStructFieldIsStableAcrossReEvaluation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                auto a = Holder(seed);
+                int* p = &a.value;
+
+                assert(p is &a.value);
+                assert(*p == 7);
+            }
+        });
+    }
+}
+
+// Rung 7 review finding, sibling of the identity fix above: writing through
+// a `&s.field` pointer used to silently write into the pointer's own
+// throwaway value snapshot instead of `s`'s storage, losing the write with
+// no diagnostic. SystemLinker pins real D's actual (aliasing) write-through
+// behaviour.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                auto a = Holder(seed);
+                int* p = &a.value;
+                *p = 5;
+
+                assert(a.value == 5);
+            }
+        });
+    }
+}
+
+// The interpreter cannot yet write through an arbitrary field address (its
+// `&s.field` value is a read-only snapshot, not an alias to the field), so
+// it must refuse loudly instead of the silent wrong answer above. Same
+// fixture, pinned against the Interpreter's honest refusal.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                auto a = Holder(seed);
+                int* p = &a.value;
+                *p = 5;
+
+                assert(a.value == 5);
+            }
+        }).shouldThrowWithMessage("Unsupported interpreter assignment target.");
+    }
+}
+
+// Regression sibling of the refusal fixture above: a `new`-with-user-ctor
+// child `Walker` (both the struct and class variants in
+// `runNewStructPointerExpression`/`runNewClassExpression`) restarted
+// `allocationCount` at 0 instead of seeding it from the parent, and never
+// merged it (or `fieldAddressAllocations`/`fieldSnapshotAllocationIds`) back.
+// A pointer minted inside such a ctor could numerically collide with an
+// already-live field-snapshot id from an unrelated `&s.field`, so a later
+// legitimate write through it was wrongly refused as an aliasing write.
+// Ctfe/Bytecode omitted: `new`-with-user-ctor pointer indirection through a
+// class field is not exercised on those backends yet (unrelated gaps, not
+// this fix). LLVMJit omitted: allocation ids are an Interpreter-only
+// bookkeeping detail with no compiled-code analogue to pin.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.newCtorPointerWriteNotRefusedAfterFieldAddress." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct H {
+                int v;
+            }
+
+            class C {
+                int* q;
+
+                this(int x) {
+                    q = new int;
+                    *q = x;
+                }
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            unittest {
+                auto h = H(seven);
+                int* p0 = &h.v;
+                auto c = new C(0);
+                *c.q = 5;
+                assert(*c.q == 5);
+            }
+        });
+    }
+}
+
+// `new Struct(args)` for a struct with no user-defined constructor (the
+// aggregate-initialiser branch of `runNewStructPointerExpression`) returned
+// `Value.pointerValue(structVal)`, which never assigns an allocation id —
+// every such pointer carries the same all-zero `(allocation, offset)` pair,
+// so two independently-`new`-allocated pointers with equal field contents
+// compared equal by content instead of by identity.  cerealed's
+// `struct.pointer` test (`decOuter.inner.shouldNotEqual(outer.inner)`) hits
+// this: the decoded pointer and the original both allocate a fresh
+// `InnerStruct` via a bodyless-constructor-free `new`, and both landed on
+// allocation id 0.  Bytecode omitted: dereferencing a struct pointer (`*a`)
+// is not implemented there yet (still under active development).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.newStructPointersWithEqualContentAreDistinct." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int value;
+            }
+
+            unittest {
+                int seed = 7;
+                auto a = new Inner(seed);
+                auto b = new Inner(seed);
+
+                assert(a !is b);
+                assert(*a == *b);
+            }
+        });
+    }
+}
+
 // A ref-returning call as the *assignment target* (`f(i) = v`) must run the
 // callee and write through the returned lvalue, aliasing the caller's
 // argument.  automem's vector tests hit this shape 10× as

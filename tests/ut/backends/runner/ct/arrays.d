@@ -1561,6 +1561,51 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+// cerealed's `static_array.d(7)` test decodes into a void-initialised static
+// array (`Decerealiser.value!(int[2])`'s `T val = void;` overload, taken
+// because `int[2]()` does not compile) and writes each element via
+// `foreach (ref e; val) cereal.grain(e);` (cereal.d's static-array `grain`).
+// dmd's foreach-to-for lowering slices a static array (`T[] __r = val[];`)
+// even when `val` is already a plain local, so a write through `__r`'s
+// per-element alias reaches `Walker.writeThroughSliceAlias` (impl.d), which
+// read the alias source's `locals` entry as-is. A `ref` parameter bound to
+// the caller's `= void` local carries the bare `Value.void_` placeholder
+// there (interpreter.md §9.7's deferred-read seeding), not a real `Array`,
+// so rebuilding it via `withArrayElement` threw "Expected array." instead of
+// writing the first element. `Bytecode` omitted: still under active
+// development, does not yet write through this `ref` foreach loop variable
+// (every element reads back as `0`).
+enum staticArrayForeachRefVoidInitSource = q{
+    void fillPair(ref int[2] val, int first) {
+        int i;
+        foreach (ref e; val) {
+            e = first + i;
+            ++i;
+        }
+    }
+
+    int[2] decode(int first) {
+        int[2] result = void;
+        fillPair(result, first);
+        return result;
+    }
+
+    unittest {
+        int seed = 34;
+        auto result = decode(seed);
+        assert(result[0] == 34);
+        assert(result[1] == 35);
+    }
+};
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("staticArray.foreachRefWritesVoidInitialisedElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(staticArrayForeachRefVoidInitSource);
+    }
+}
+
 // A zero-length slice assignment through a null pointer is a no-op in
 // compiled D: nothing is written, so the null provenance never matters
 // (ai/plans/interpreter.md Rung 3). ScopeBuffer's own unittest hits this by
@@ -1685,6 +1730,63 @@ static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
 
                 assert(tail.ptr is tailPtr);
                 assert(tail[2] == 99);
+            }
+        });
+    }
+}
+
+// cerealed's decode loop grows an array one element at a time and reads the
+// element it just appended via `$` (`val.length++; cereal.grain(val[$ - 1])`,
+// cereal.d's grainRawArray/grainWithLengthInBytesAttr): `$` must reflect the
+// array's length as of *this* index expression, computed after the growth
+// that precedes it, not a stale value from before the growth ran.
+// ai/plans/interpreter.md §9.7 (size_t underflow rung). The write inside
+// `grown` deliberately indexes via `arr.length - 1`, not `$`, so this fixture
+// isolates the read-side `$` defect the fix targets. Bytecode omitted:
+// "Unsupported variable in bytecode core: $" - `$` is not implemented there.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.dollarReflectsLengthAfterInPlaceGrowth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] grown(int count) {
+                int[] arr;
+                foreach (i; 0 .. count) {
+                    arr.length++;
+                    arr[arr.length - 1] = i + 1;
+                }
+                return arr;
+            }
+
+            unittest {
+                assert(grown(3)[$ - 1] == 3);
+            }
+        });
+    }
+}
+
+// cerealed's `grainWithLengthInBytesAttr` shape:
+// `cereal.grain(val.arr[$ - 1])`, where `grain` takes a `ref T` parameter,
+// so the callee's write must land back in the caller's array element.
+// ai/plans/interpreter.md §9.7 (ref-argument array-element write-back root).
+// Bytecode omitted: "Unsupported ref argument in bytecode core: arr[1]" -
+// index-expression ref arguments are not implemented there.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.refParamWriteBackThroughIndexArgument." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int v) {
+                x = v;
+            }
+
+            unittest {
+                int[] arr;
+                arr.length = 3;
+                setTo(arr[1], 7);
+                assert(arr[1] == 7);
             }
         });
     }

@@ -1315,6 +1315,821 @@ These drafts need review and real red-first proof before they are committed.
 Do not present them as completed fixtures until the focused red and green
 commands have been run and recorded.
 
+**2026-07-13 (size_t underflow rung, partial close).** Re-triaged the 6
+`index [18446744073709551615 / 0] out of bounds` cerealed mismatches
+(`bin/bench.sh -b interpreter -b system-linker --dub cerealed`, with a
+throwaway `failure.location` probe in `testResultsMismatches` to locate
+each by file/line, reverted before commit): `pointers.d(82)`,
+`protocol_unit.d(114)`/`(151)`/`(169)`, `static_array.d(27)`,
+`structs.d(184)`. The last two share one root, now fixed:
+`Walker.runIndexExpression` (impl.d, `arr[e2]` handling) evaluated
+`index.e2` — which can reference `$` bound to `index.lengthVar` — *before*
+running `index.e1` and seeding `lengthVar` from its length, so
+`arr[$ - 1]` right after growing `arr` read a stale or default-zero `$`
+and underflowed to `size_t.max`. `runSliceExpression` already runs `e1`
+and seeds `lengthVar` before its bounds check, so `runIndexExpression`
+now matches that order. Exposing fixture
+`dynamicArray.dollarReflectsLengthAfterInPlaceGrowth`
+(`tests/ut/backends/runner/ct/arrays.d`), modelled on cerealed's
+`val.length++; cereal.grain(val[$ - 1])` decode loop (grainRawArray /
+grainWithLengthInBytesAttr in cereal.d): red on `Interpreter` (`array
+index 18446744073709551615 is out of bounds` before the fix), green on
+`Ctfe`, `SystemLinker`, `LLVMJit` throughout; `Bytecode` omitted
+(`Unsupported variable in bytecode core: $`, not implemented there).
+Re-measure: `static_array.d(27)` and `structs.d(184)` are gone from the
+cerealed mismatch list; both go through `grainRawArray`'s direct
+`val[$-1]`.
+
+The `protocol_unit.d` trio and `pointers.d(82)` remain red — **not** the
+same root. A probe fixture (`void grow(ref Holder val) { val.arr.length
+++; }`) reproduces a silent wrong answer with no `$` involved at all:
+mutating an array-typed field through a `ref` struct parameter
+(`__traits(getMember, val, member).length++`, exactly
+`grainWithLengthInBytesAttr`'s shape, `val: ref T`) does not persist
+back to the caller — `h.arr.length` reads `0` after `growLast(h)`
+returns. That silent loss is why the three `protocol_unit.d`
+`@LengthInBytes` tests still underflow `$` afterwards: the array never
+actually grows from the caller's perspective, so `$` (now correctly
+computed) is legitimately `0` even after the interpreted `length++`.
+This is a distinct rung-7 root (ref-parameter struct-field array
+mutation, not the `$`/`lengthVar` ordering bug) and needs its own
+standalone exposing fixture and fix; not attempted here per the "prefer
+one clean root" guidance. `pointers.d(82)`'s `index [0] is out of
+bounds for array of length 0` is a deliberate `dec.value!ubyte
+.shouldThrow!RangeError` (compiled D throws on purpose); Interpreter
+fails the same way `decode.d:109` did before the 2026-07-08 native-
+`RangeError`-is-an-`Error` fix — still unexplained here, needs its own
+triage. Net: 2 of the 6 cerealed failures in this class close; 4 remain
+(3 ref-struct-field-mutation, 1 unclassified `shouldThrow!RangeError`
+miss), tracked here for follow-up.
+
+**2026-07-13 (ref-struct-array-field-mutation root, partial close).**
+Root-caused the ref-parameter struct-field array mutation gap from the
+follow-up above. Reproduced `void grow(ref Holder val) { val.arr.
+length++; }` under a temporary `stderr` trace of `Walker.
+runDeclarationExpression`/`runLoweredAssignExpression`/
+`writeBackRefArguments` (reverted before commit): dmd lowers postfix
+`h.arr.length++` (unlike plain `h.arr.length = h.arr.length + 1`, which
+stays a `LoweredAssignExp` whose `e1` is the `h.arr` `ArrayLengthExp`
+directly) through a synthetic `ref` local bound to the field, e.g.
+`(ref int[] __arraylength3 = h.arr;) , _d_arraysetlengthT(
+__arraylength3, __arraylength3.length + 1LU)`. The interpreter's
+`recordStructFieldAlias` correctly records `__arraylength3` as an alias
+of `h`'s `arr` field (confirmed live via the trace). The break was in
+`Walker.runLoweredAssignExpression` (impl.d): once `assign.e1.
+isArrayLengthExp.e1` resolves to a plain `VarExp` (`__arraylength3`,
+not a `DotVarExp` like `h.arr`), the function took a "fast path" that
+wrote the grown array straight into `locals[variable]` and only cleared
+`uninitializedLocals`/`sliceAliases` — bypassing `writeLocation`
+entirely, so `writeThroughStructFieldAlias` (and
+`writeThroughArrayElementAlias`) never ran and the growth never
+reached `h`. The `DotVarExp` fallback branch (`var is null`) already
+went through `writeArrayLengthLocation` → `writeLocation`, which is why
+plain `h.arr.length = h.arr.length + 1` worked before this fix while
+`h.arr.length++` did not.
+
+Fix: replace the direct `locals[variable] = Value.arrayValue(elements)`
+write with `writeLocation(var, Value.arrayValue(elements))`, so the
+`VarExp` alias-target case runs through the same single write-location
+authority as every other assignment, including
+`writeThroughStructFieldAlias`.
+
+Exposing fixture
+`struct.postfixLengthIncrementGrowsRefParamArrayField`
+(`tests/ut/backends/runner/ct/structs.d`): a `Holder { int[] arr; }`,
+`ref Holder` parameter, `h.arr.length++` then `h.arr[h.arr.length - 1]
+= 7` (deliberately `$`-free — see below), asserting the caller's `h`
+sees both the grown length and the written element after the call
+returns. Confirmed red on `Interpreter` (`index
+[18446744073709551615] is out of bounds for array of length 0`,
+i.e. the growth silently never happened) on the pre-fix parent,
+green on `Ctfe`/`SystemLinker`/`LLVMJit` throughout; `Bytecode`
+omitted (still red, under active development, existing omit-don't-pin
+rule).
+
+This fixture is deliberately kept `$`-free. Probing `h.arr[$ - 1] = 7`
+after `h.arr.length++` (or even after the already-working `h.arr.
+length = h.arr.length + 1`) still underflows on `Interpreter`: that is
+a **third**, still-separate root — `Walker.runIndexAssignExpression`'s
+`DotVarExp` branch (the `arr[i] = v` assignment-target path for an
+array-typed struct field) evaluates `index.e2` (`$ - 1`) before running
+`index.e1`/seeding `index.lengthVar`, the same class of bug already
+fixed for the *read* path (`runIndexExpression`, this rung's earlier
+2026-07-13 entry) but never applied to this assignment-target branch.
+Not fixed here, to keep this commit to the one root its test pins.
+
+Net effect on the `protocol_unit.d` trio (`__unittest_L114/151/169`):
+this fix closes the size_t-underflow **crash** (`index
+[18446744073709551615] is out of bounds`) that was masking their real
+comparison. Re-measuring `bin/bench.sh -b interpreter -b system-linker
+--dub cerealed` with only this fix applied shows all three now fail as
+plain value mismatches instead (`Expected: 3` / `Expected: 1` /
+`Expected: Struct(...)`), still red against `SystemLinker`. cerealed's
+actual `grainWithLengthInBytesAttr` body is `__traits(getMember, val,
+member).length++; cereal.grain(__traits(getMember, val, member)[$ -
+1]);` — the decoded element is written through a `ref int` **call
+argument** that is an `IndexExp` (`arr[$ - 1]`), not a direct
+assignment. A fourth probe,
+`struct.probeGrowArrayFieldThenPassLastElementByRef` (not committed,
+scratch-only), confirms this is its own gap: `Walker.
+isWritableLocation` does not include `IndexExp`, so `Walker.
+writeBackRefArguments` silently skips writing back a `ref` parameter
+whose caller-side argument expression is an index into an array — the
+decoded value never lands in the caller's array element. So the
+`protocol_unit.d` trio needs a fourth root (ref-argument array-element
+write-back) fixed before it turns green; this fix and its test close
+the crash but not the trio itself. `pointers.d(82)` is unaffected by
+any of this — same `index [0] is out of bounds for array of length 0`
+`shouldThrow!RangeError` miss as before, still needing its own,
+unrelated triage.
+
+**2026-07-13 (index-assign `$`-ordering root, closed).** Fixed the third
+root named just above: `Walker.runIndexAssignExpression`'s `DotVarExp`
+branch (impl.d, the `h.arr[i] = v` assignment-target path for an
+array-typed struct field) evaluated `index.e2` (which can reference `$`
+bound to `index.lengthVar`) and computed the receiver/field *before*
+seeding `lengthVar` from the field's actual length — the write-path twin
+of the read-path bug this rung's earlier 2026-07-13 entry fixed in
+`runIndexExpression`. `h.arr[$ - 1] = v` right after growing `h.arr`
+underflowed `$` to `size_t.max`. Fix: resolve the field, seed
+`lengthVar` from the field array's length, then evaluate `index.e2`,
+mirroring the read path's order.
+
+Exposing fixture
+`struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth`
+(`tests/ut/backends/runner/ct/structs.d`): `Holder { int[] arr; }`, a
+`ref Holder` parameter grows the field with plain `h.arr.length = 3`
+(not postfix `++`, to keep this pinned to the index-assign root and not
+the already-fixed postfix-length-increment one) then writes
+`h.arr[$ - 1] = 9`. Confirmed red on `Interpreter` (`index
+[18446744073709551615] is out of bounds for array of length 3`),
+green on `Ctfe`/`SystemLinker`/`LLVMJit` throughout; `Bytecode` omitted
+(`$` unimplemented there, per §8's omit-don't-pin rule).
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` still shows the `protocol_unit.d` trio
+(`__unittest_L114/151/169`) as plain value mismatches (`Expected: 3` /
+`Expected: 1` / `Expected: Struct(...)`), unchanged from before this
+fix. That trio's actual cerealed code
+(`cereal.grain(__traits(getMember, val, member)[$ - 1])`) reads the
+grown element through a `ref` **call argument** that is an `IndexExp`,
+not a direct index-assignment, so it never reaches the `DotVarExp`
+branch fixed here — it needs the fourth root already named above
+(ref-argument array-element write-back, `Walker.isWritableLocation`/
+`writeBackRefArguments` not handling an `IndexExp` argument). That root
+remains open; this fix closes a distinct, real bug but does not turn
+the trio green.
+
+**2026-07-13 (ref-argument array-element write-back root, closed).**
+Fixed the fourth root named just above: `Walker.isWritableLocation`
+(impl.d) did not recognize an `IndexExp` (an array element, e.g.
+`arr[i]` or `arr[$ - 1]`) as a writable location, so
+`writeBackRefArguments` silently skipped writing a `ref` parameter's
+final value back into the caller's array element whenever the call
+argument was an index expression — exactly cerealed's
+`grainWithLengthInBytesAttr` shape, `cereal.grain(__traits(getMember,
+val, member)[$ - 1])`, where `grain` takes `ref T`. Fix: add
+`expression.isIndexExp !is null` to `isWritableLocation`'s accepted
+kinds. `writeBackRefArguments` already called the general
+`writeLocation`, which already dispatches an `IndexExp` target to the
+existing `writeIndexLocation` (both the plain-`VarExp`-array and
+`DotVarExp`-array-field branches); only the `isWritableLocation` gate
+was blocking the call, so no other write-path code changed. The same
+gate is shared by `writeBackThis`, `writeBackByValueClassArguments`,
+and `writeBackByValueStructArguments`, so an indexed receiver/argument
+for those write-back paths is now handled too, for free, by the same
+single-authority mechanism.
+
+Exposing fixture `dynamicArray.refParamWriteBackThroughIndexArgument`
+(`tests/ut/backends/runner/ct/arrays.d`): `void setTo(ref int x, int
+v) { x = v; }` called as `setTo(arr[1], 7)`, asserting the caller's
+`arr[1] == 7` afterwards. Confirmed red on `Interpreter` (`0 != 7`,
+i.e. the write silently never happened) before this fix, green on
+`Ctfe`/`SystemLinker`/`LLVMJit` throughout; `Bytecode` omitted
+(`Unsupported ref argument in bytecode core: arr[1]`, not implemented
+there, per §8's omit-don't-pin rule).
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after this fix (same worktree, fix
+stashed/popped to compare). Before: the `protocol_unit.d` trio
+(`__unittest_L114/151/169`) shows as value mismatches (`Expected: 3` /
+`Expected: 1` / `Expected: Struct(...)`). After: all three lines are
+gone from the interpreter/system-linker disagreement list entirely —
+the trio is now **green**, closing the `protocol_unit` root chain
+opened by this rung's earlier 2026-07-13 entries (`$`/`lengthVar`
+ordering on both the read and index-assign paths, plus this
+ref-argument write-back gap). `pointers.d(82)` is unaffected — same
+`index [0] is out of bounds for array of length 0`
+`shouldThrow!RangeError` miss as before, still needing its own,
+unrelated triage.
+
+**2026-07-13 (void-init `ref`-argument read, `.grain.b` root closed).**
+Root-caused the 3× `cannot read uninitialized variable \`.grain.b\` in
+ctfe` class. Not a struct-field-read bug as first guessed from the
+message shape (`.<function>.<var>`): cerealed's `cereal.d` `grain(U, C,
+T)` (the `isOutputRange!(T, ubyte)` overload) declares `ubyte b =
+void;` then calls `cereal.grain(b);`, a **plain local**, written only
+through two nested `ref`-parameter-forwarding calls (`grain(ref ubyte
+val) { writeByte(val); }`) before the caller reads `b` back. Root:
+`Walker.runCallExpression`'s argument-evaluation loop (impl.d, the
+`Value[] arguments` build) called `runExpression(argument)` for every
+argument unconditionally, including `ref` parameters — but compiled D
+never reads through a `ref` binding at the call site, it only takes the
+address. Reading a still-void local eagerly here hit the existing
+uninitialized-read guard and threw, even though the callee was about to
+write it, not read it. Fix: a new `runRefArgumentExpression` (impl.d,
+directly after `runCallExpression`) used for `ref` parameters — returns
+`Value.void_` without reading when the argument is a `VarExp` whose
+variable is still in `uninitializedLocals`, otherwise defers to the
+normal `runExpression`; `writeBackRefArguments` (already existing)
+overwrites the placeholder with whatever the callee wrote once the call
+returns, restoring the caller-visible value and clearing
+`uninitializedLocals` through the existing `writeLocation` path.
+
+Exposing fixture `refArgument.voidLocalIsReadableAfterNestedRefWrite`
+(`tests/ut/backends/runner/ct/structs.d`): `void writeByte(ref ubyte
+val) { val = 42; }`, `void grain(ref ubyte val) { writeByte(val); }`,
+`ubyte readGrain() { ubyte b = void; grain(b); return b; }`, asserting
+`readGrain() == 42`. Confirmed red on `Interpreter` (`cannot read
+uninitialized variable \`.readGrain.b\` in ctfe`) before this fix, green
+on `Ctfe`, `Bytecode`, `SystemLinker`, and `LLVMJit` throughout — full
+matrix, nothing omitted.
+
+cerealed impact: `bin/bench.sh -b system-linker -b interpreter --dub
+cerealed` re-measured before/after. Before: 16 disagreements, including
+all 3 `.grain.b` sites (`range.d` lines 31/42/92, the `output.range.*`
+and `embedded.output.range` tests — `grain.d` in the task description
+was the enclosing function's name, not a file). After: all 3 are gone;
+the tests advance past `grain`/`writeByte` into two new, deeper frontier
+classes uncovered by removing this blocker — `Expected struct.`
+(`classes.d`) and `Expected array.` (`decode.d`) — both new triage
+items, not regressions. Net: 16 → 15 disagreements (3 closed, 2 newly
+exposed by advancing further).
+
+**2026-07-13 (foreach-ref-over-struct-field-array root, closed).**
+Re-measured `bin/bench.sh -b interpreter -b system-linker --dub cerealed`
+(HEAD `e3f7486f`): 15 mismatches, unchanged in shape from the table above
+except the `.grain.b` class is gone (closed by the entry just above) and
+two new frontier classes are visible one level deeper: `Expected struct.`
+(`decode.d:262`, an enum-in-struct `shouldThrow` case) and `Expected
+array.` (`static_array.d:7`) — both untriaged, tracked below, not fixed
+here.
+
+Picked the highest-leverage remaining class: `protocol_unit.d`'s
+`__unittest_L24`/`__unittest_L58` (`pkt.units[1].us.shouldEqual(6)` /
+`pkt.units[2].us.shouldEqual(5)`), both `Expected: N / Got: 0` — a
+silent-wrong-answer, the most urgent §7 category, and the array length
+itself (`pkt.units.length`) was already correct, narrowing the fault to
+element writes. cerealed's `@ArrayLength` field decode
+(`grainWithArrayLengthAttr` in cereal.d) is `member.length = length;
+foreach (ref e; member) cereal.grain(e);` where `member` is `val.units`,
+a dynamic-array **field** of a `ref Packet val` parameter, and `grain(e)`
+writes `e`'s scalar fields through further nested `ref` forwarding.
+
+Root: dmd's own foreach-to-for lowering (`statementsem.d`) rewrites
+`foreach (ref e; val.units)` into `T[] __r = val.units[]; for (size_t
+__k = 0; __k < __r.length; ++__k) { ref Unit e = __r[__k]; ... }` — a
+hidden slice-typed temporary `__r` aliases the field array, and `e`
+aliases an element of `__r`. `Walker.recordSliceAlias` (impl.d) recorded
+`__r` as a slice alias only when the sliced expression (`slice.e1`) was
+a plain local `VarExp`; a `DotVarExp` aggregate (`val.units`, a struct
+field) fell through to `sliceAliases.remove(variable)`, leaving `__r`
+untracked. `Walker.writeThroughArrayElementAlias` already cascades an
+element write into `writeThroughSliceAlias` when the array variable
+(`__r`) has a recorded slice alias — but with none recorded, writes to
+`e`'s fields updated only the interpreter's local snapshot of `__r`,
+never `val.units`, so the caller's array element silently kept its
+default (`0`) value. Fix: `recordSliceAlias` gains a `DotVarExp` branch
+(mirroring `recordStructFieldAlias`'s existing one) that resolves the
+field's owner and index and records them on `SliceAlias` (two new
+fields, `hasFieldIndex`/`fieldIndex`); `writeThroughSliceAlias` rebuilds
+`val.units` via `structFieldAt`/`withStructField` when set, instead of
+treating `__r`'s source as a whole array local.
+
+Exposing fixture `struct.foreachRefOverFieldArrayPersistsElementWrites`
+(`tests/ut/backends/runner/ct/structs.d`): a `Container { Item[] items;
+}`, a `ref Container` parameter grows `items` then `foreach (ref item;
+container.items)` calls a helper writing `item`'s fields through one more
+`ref`-forwarding layer, asserting the caller sees both elements' fields
+afterward. Confirmed red on `Interpreter` (`0 != 6`) before this fix,
+green on `Ctfe`, `SystemLinker`, `LLVMJit` throughout; `Bytecode` omitted
+(segfaults on this fixture, under active development, §8's omit-don't-pin
+rule).
+
+cerealed impact: re-measured before/after with the same worktree (fix
+stashed/popped). Before: 15 mismatches, including `protocol_unit.d`'s
+`__unittest_L24`/`__unittest_L58`. After: both are gone; cerealed drops to
+13 mismatches with no newly-unmasked classes — the tests fully agree with
+`SystemLinker` past this point. The `decode.d`/`static_array.d` classes
+from the re-measure above remain open and untriaged.
+
+**2026-07-14 (struct-identity enum-field root, closed).** Re-measured the
+13 remaining cerealed mismatches (`bin/bench.sh -b interpreter -b
+system-linker --dub cerealed`, HEAD `ccf34201`, with a throwaway
+`failure.location`-and-full-`message` probe in `testResultsMismatches`,
+reverted before commit) and triaged the two silent-wrong-answer structs.d
+sites (`__unittest_L146`, the `EnumStruct` roundtrip, and `__unittest_L298`,
+the `MqttFixedHeader` roundtrip): both showed the decoded enum field
+displayed as a bare number (`EnumStruct(1, 2)`, `MqttFixedHeader(3, ...)`)
+instead of its member name, alongside the same underlying numeric value
+`SystemLinker` produced. Bisecting via standalone probes (a hand-rolled
+`grain`/`FakeDecerealiser` matching `cerealed/src/cerealed/cereal.d`'s enum
+dispatch — `grain(T)(ref T val) if(is(T==enum))` casts to the base type and
+grains that, a chain of nested `ref`-forwarding calls and a pointer
+reinterpret) all *passed* under `Interpreter`, isolating the gap: a direct
+field or scalar `==` already agreed, but comparing the *whole struct* via
+`==` did not, even for a minimal `struct Holder { Enum e; }` with no cast,
+pointer, or decode machinery at all (`Holder.init == Holder(Enum.Foo)`).
+
+Root: dmd lowers a POD struct's `==` (no user `opEquals`) into an `is`
+expression rather than an `EqualExp` — confirmed with a throwaway trace of
+`assert_.e1.op` inside the `AssertExp` branch (impl.d), reverted before
+commit — so `Walker.runIdentityExpression` (impl.d) ran the comparison, not
+`runEqualExpression`/`equalValues`. `runIdentityExpression` used a raw
+`left == right` (`Value`'s own `opEquals`, a strict `SumType` compare) with
+no per-field recursion or numeric-scalar coercion. Separately, `Value.
+enumValue` (the `EnumValue` `SumType` member, tagged with the member's
+display name) is only constructed by `runExpression` for an `IntegerExp`
+whose `.type.ty == Tenum` — i.e. a literal enum-member reference — every
+other origin (default-init via `defaultValue`, whose `Type.toBasetype`
+dispatch resolves an enum to its underlying scalar `TY`, or any computed/
+decoded value) keeps a plain scalar `Value`. Both tag kinds carry the
+identical numeric value and a *scalar* `==`/`equalValues` already treats
+them as equal (`isNumericScalar` accepts `EnumValue`, compared via
+`.asReal`), but the raw `SumType` compare `runIdentityExpression` used
+requires identical tags, so a `EnumValue`-tagged field never equalled a
+same-valued plain-scalar field in a whole-struct comparison even though
+real D's memberwise struct equality does.
+
+Fix: `equalValues` (impl.d) gains a `Struct`-vs-`Struct` branch,
+`equalStructValues`, recursing field-by-field through `equalValues` itself
+(mirroring the existing `Array`-vs-`Array` branch, `equalArrayValues`), so
+each field gets the same numeric-scalar coercion a top-level `==` already
+applies. `runIdentityExpression` routes its struct-vs-struct case through
+this same `equalValues` instead of the raw compare; every other `is`
+comparison (pointers, class references, floats) keeps its existing
+raw-value identity semantics.
+
+Exposing fixture `struct.equalityComparesEnumFieldByValueAcrossOrigin`
+(`tests/ut/backends/runner/ct/structs.d`): `enum Enum { Foo, Bar, Baz }`,
+`struct Holder { Enum e; }`, comparing a default-initialised `Holder` to a
+literal-constructed one holding the same member, asserting they're equal.
+Confirmed red on `Interpreter` (`Holder(0) != Holder(Enum.Foo)`, the same
+bare-number display bug seen in cerealed) before this fix, green on `Ctfe`,
+`Bytecode`, `SystemLinker`, and `LLVMJit` throughout — full matrix, nothing
+omitted.
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 13 mismatches, including both
+`structs.d(146)` (`EnumStruct`) and `structs.d(298)` (`MqttFixedHeader`).
+After: both are gone; cerealed drops to 11 mismatches with no
+newly-unmasked classes. Remaining 11: `decode.d(262)` (`Expected struct.`,
+untriaged), `encode_decode.d(75)`/`(80)` and `reset.d(9)` (ScopeBuffer
+native-memory aliasing, representation-ceiling per §8, deferred to
+value.md), `pointers.d(20)` (truncated `Value:` message, untriaged),
+`pointers.d(62)` (`address of dotVariable`, untriaged),
+`pointers.d(82)` (`shouldThrow!RangeError` miss, untriaged),
+`property.d(12)` ×2 (fuzz-seeded float property test, representation-
+ceiling per §8's double/float-reinterpret exclusion), `static_array.d(7)`
+(`Expected array.`, untriaged), and `structs.d(22)` (`DummyStruct`, a
+`double`/AA field showing reinterpret-cast garbage — representation-
+ceiling — plus an unrelated `string`-vs-array-of-int display detail on the
+same test, not separable from the ceiling class without its own fixture).
+
+**2026-07-14 (address-of-struct-field root, closed).** Triaged the 11
+remaining cerealed mismatches (`bin/bench.sh -b interpreter -b
+system-linker --dub cerealed`, HEAD `89863f28`, with a throwaway
+`failure.location`-and-full-`message` probe in `testResultsMismatches`,
+reverted before commit). `pointers.d(62)` (cerealed's
+`struct.with.class.reference` test) is language-surface, not
+representation-ceiling: `Walker.addressOfExpression`'s `DotVarExp` branch
+(impl.d) only handled a struct's **static-array** field (`&field` /
+`field.ptr`, routed through `arrayPointer`); any other field type fell
+through to the generic `Unsupported eval expression: address of
+dotVariable` throw. cerealed's test takes `&decOuter.inner` and
+`&outer.inner`, the address of a class-reference-typed struct field, to
+assert the decoded object is distinct from the original
+(`shouldNotEqual(&decOuter.inner, &outer.inner)`).
+
+Fix: the `DotVarExp` branch gains an else case producing a fresh,
+uniquely-identified single-value pointer — `Value.arrayPointerValue(
+[runExpression(dot)], ++allocationCount, 0)` — mirroring the existing
+`runNewScalarPointerExpression`'s `new int` pattern (impl.d) rather than
+inventing a new representation. The fresh `allocationCount` id guarantees
+`&a.field !is &b.field` for distinct receivers; it is read-only (a value
+snapshot of the field at the time the address was taken, not aliased to
+the field storage), so identity is stable only while the field's value
+stays unchanged — `p is &s.x` goes false again once `s.x` is written, a
+known representation-ceiling limitation deferred to value.md. This is
+sufficient here since neither this fixture nor cerealed's test writes
+through the pointer — write-through support for an arbitrary field
+address is a separate, deeper gap, not attempted.
+
+Exposing fixture
+`pointer.addressOfStructFieldIsDistinctAcrossInstances`
+(`tests/ut/backends/runner/ct/expressions.d`): a `Holder { int value; }`,
+two separately-constructed locals with equal field values, asserting
+`&a.value !is &b.value` and both dereference to the seeded value.
+Confirmed red on `Interpreter` (`Unsupported eval expression: address of
+dotVariable`) before this fix, green on `SystemLinker`/`LLVMJit`
+throughout. `Ctfe` omitted: DMD CTFE genuinely refuses this construct at
+compile time (`cannot cast '&Holder(7).value' to 'ulong' at compile
+time`), a real CTFE restriction, not a gap to close. `Bytecode` omitted:
+`AddrExp` of a `DotVarExp` is not implemented there yet (still under
+active development).
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 11 mismatches, including
+`pointers.d(62)`. After: gone, no newly-unmasked classes; cerealed drops
+to 10 mismatches: `decode.d(262)`, `encode_decode.d(75)`/`(80)`,
+`pointers.d(20)`, `pointers.d(82)`, `property.d(12)` ×2, `reset.d(9)`,
+`static_array.d(7)`, `structs.d(22)` — unchanged from the list above
+except `pointers.d(62)`'s removal. Of these, `encode_decode.d(75)`/`(80)`,
+`property.d(12)` ×2, `reset.d(9)`, and `structs.d(22)` stay
+representation-ceiling (deferred to value.md per §8); `decode.d(262)`,
+`pointers.d(20)`, `pointers.d(82)`, and `static_array.d(7)` remain
+untriaged.
+
+**2026-07-14 (unconditional `ref`-argument write-back re-evaluation,
+`pointers.d(82)` closed).** Triaged the 4 untriaged cerealed classes
+(`bin/bench.sh -b interpreter -b system-linker --dub cerealed`, HEAD
+`466d5396`). `decode.d(262)` (`@disable this()` decode) and
+`static_array.d(7)` stayed untriaged (deferred, see below);
+`pointers.d(20)` is a `Value`-identity/content gap, unrelated to this
+entry. `pointers.d(82)` (`pointer.to.int`:
+`shouldEqual(*dec.value!(int*), *i)`) turned out **not** to be a
+representation gap in the decode chain itself: a standalone hand-rolled
+reproduction of cerealed's exact `grain`/`grainReinterpret`/nested
+`auto ref` forwarding (`int*` → reinterpret-cast `uint*` → byte-at-a-time
+`ubyte` reads), using plain `assert`, passed on `Interpreter` first try.
+Bisected by re-running cerealed's real `tests/pointers.d` file verbatim
+as a standalone (non-dub) fixture with `--import-path` pointed at the
+vendored `cerealed`/`concepts` sources: the identity-comparison test
+(`pointers.d(20)`) reproduced immediately, but `pointer.to.int` only
+failed inside the full 32-module `--dub cerealed` run, never in
+isolation with plain `assert` in place of unit-threaded's `shouldEqual`.
+Swapping the assert-based reproduction for a real `shouldEqual(*dec.
+value!(int*), *i)` call (unit-threaded's `shouldEqual(V, E)(auto ref V
+value, auto ref E expected, ...)`) reproduced it standalone too,
+isolating the differentiator to the `auto ref` call, not dub-mode or
+module ordering.
+
+Root: `*dec.value!(int*)` is a `PtrExp`, always an lvalue in D, so `auto
+ref` genuinely binds `value` by `ref` here — real D agrees the parameter
+is `ref`. `Walker.writeBackRefArguments` (impl.d) wrote back through
+*every* `ref` parameter unconditionally after the call returned,
+regardless of whether the callee's body ever assigned to it (`shouldEqual`
+only reads `value`/`expected` to compare them). For a `ref` argument
+spelled as a `PtrExp`, the write-back path (`writeLocation`'s `*ptr = ...`
+branch) re-evaluates `ptr.e1` to relocate the write destination — here,
+`ptr.e1` is `dec.value!(int*)` itself, a decoding call with a side effect
+(consuming bytes from `_bytes`). Re-running it a second time hit
+`_bytes[0]` on an already-fully-consumed decerealiser and threw a bogus
+`RangeError` (`index [0] is out of bounds for array of length 0`) instead
+of the intended comparison — compiled D never re-evaluates a `ref`
+argument's lvalue after the call (the address is bound once), so this was
+a pure interpreter artifact of the call-by-value-plus-write-back
+simulation, not a missing feature.
+
+Fix: `writeBackRefArguments` now receives the call's original argument
+`Value`s (already computed by every caller for `bindFunctionParameters`)
+alongside the post-call `child.locals` snapshot, and skips the whole
+write-back — including the location expression's re-evaluation — when
+the parameter's final value equals what it was seeded with. This is a
+general `ref`-argument correctness fix, not specific to `PtrExp`: it also
+prevents the same double-execution for a `ref` argument spelled as a
+ref-returning call (`writeLocation`'s `CallExp` branch actually re-runs
+the callee), which was an unnoticed sibling of the same defect. Every
+call site of `writeBackFunctionState`/`writeBackMemberFunctionState`
+already had the argument `Value[]` in scope and now forwards it.
+
+Exposing fixture
+`refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten`
+(`tests/ut/backends/runner/ct/structs.d`): a `Decoder` struct whose
+`decodeNext()` pops one `int` off a slice and returns a freshly-allocated
+pointer to it (mirroring cerealed's decode-then-return-pointer shape,
+without cerealed), passed dereferenced as a `ref` argument to a `compare`
+function that never assigns to its parameters. Confirmed red on
+`Interpreter` (`index [0] is out of bounds for array of length 0`, the
+same message cerealed produced) before this fix; green on `Ctfe`,
+`Bytecode`, `SystemLinker`, and `LLVMJit` throughout — full matrix,
+nothing omitted.
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 10 mismatches. After:
+`pointers.d(82)` gone, no newly-unmasked classes; cerealed drops to 9
+mismatches: `decode.d(262)`, `encode_decode.d(75)`/`(80)`,
+`pointers.d(20)`, `property.d(12)` ×2, `reset.d(9)`, `static_array.d(7)`,
+`structs.d(22)`. Of these, `encode_decode.d(75)`/`(80)`, `property.d(12)`
+×2, `reset.d(9)`, and `structs.d(22)` stay representation-ceiling
+(deferred to value.md per §8); `decode.d(262)`, `pointers.d(20)`, and
+`static_array.d(7)` remain untriaged (checked this session:
+`decode.d(262)`'s `@disable this()` struct hits `Expected struct.` via
+the `T val = void;` property-getter overload, a language-surface gap in
+aggregate default-construction, not attempted this rung;
+`static_array.d(7)`'s `Expected array.` and `pointers.d(20)`'s `Value`
+content-vs-identity mismatch are each their own untriaged root).
+
+**2026-07-14 (struct-pointer identity root, `pointers.d(20)` closed).**
+Triaged the 9 remaining cerealed mismatches (`bin/bench.sh -b interpreter
+-b system-linker --dub cerealed`, HEAD `df1b5b4a`, full-message throwaway
+probe in `testResultsMismatches`, reverted before commit — confirmed clean
+via `git diff --stat`/`git status`). `pointers.d(20)`
+(`struct.with.pointer.to.struct`) is the suggested `Value`-identity gap,
+language-surface not representation-ceiling: `runNewStructPointerExpression`
+(impl.d) returned `Value.pointerValue(structVal)` for every `new
+StructType(...)`/`new StructType` with no user constructor — the
+member-ctor branch, the aggregate-initialiser branch, and the no-args
+default-init branch all funnel through this one `return`. `pointerValue`'s
+`Pointer([target])` ctor never sets `allocation`/`offset`, so *every*
+struct-pointer `new` this way carries the same all-zero identity, and
+`equalValues`'s fallback (`left == right`, `Value.opEquals` → `data ==
+other.data` → the SumType's field-wise `Pointer` compare) considers two
+such pointers equal whenever their pointed-to contents match — a pure
+content compare masquerading as identity. cerealed's test allocates
+`outer.inner` via `new InnerStruct(7, 2)` and cerealed's own decode path
+(vendored `cereal.d:235`, `val = new ValueType;`) allocates
+`decOuter.inner` the same way; both land on allocation id 0, so
+`decOuter.inner.shouldNotEqual(outer.inner)` (unit-threaded, real D,
+lowering to `!=`) fails on `Interpreter` even though the two are genuinely
+distinct heap objects on `SystemLinker`.
+
+Fix: that one `return` now assigns a fresh id —
+`Value.arrayPointerValue([structVal], ++allocationCount, 0)` — mirroring
+`runNewScalarPointerExpression`'s existing `new int`-style pattern and the
+§9.7 address-of-struct-field fix's fresh-`allocationCount` idiom. Scope:
+only this call site changed; the sibling body-less-native-constructor path
+(`runNewStructNativeConstructor`, its own `return
+Value.pointerValue(constructed)`) is a different `NewExp` branch not
+exercised by this fixture or by cerealed's disagreement, so it is left
+untouched — a candidate for the same fix if a future gap implicates it.
+
+Exposing fixture `pointer.newStructPointersWithEqualContentAreDistinct`
+(`tests/ut/backends/runner/ct/expressions.d`): a runtime-seeded `Inner`
+struct `new`-allocated twice with equal field contents, asserting `a !is
+b` and `*a == *b`. Confirmed red on `Interpreter` before the fix
+(`const(Pointer)([Inner(7)], 0, 0) is const(Pointer)([Inner(7)], 0, 0)`,
+the identical all-zero-identity shape cerealed hit); green throughout on
+`Ctfe`, `SystemLinker`, `LLVMJit`. `Bytecode` omitted: dereferencing a
+struct pointer (`*a`) is not implemented there yet (still under active
+development).
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 9 mismatches. After:
+`pointers.d(20)` gone, no newly-unmasked classes; cerealed drops to 8
+mismatches: `decode.d(262)`, `encode_decode.d(75)`/`(80)`, `property.d(12)`
+×2, `reset.d(9)`, `static_array.d(7)`, `structs.d(22)`. Of these,
+`encode_decode.d(75)`/`(80)`, `property.d(12)` ×2, `reset.d(9)`, and
+`structs.d(22)` stay representation-ceiling (deferred to value.md per
+§8); `decode.d(262)` (`@disable this()` / `T val = void;` decode,
+`Expected struct.`) and `static_array.d(7)` (`Expected array.`) remain
+untriaged, each its own root.
+
+**2026-07-14 (void-init struct/aggregate `ref`-parameter root,
+`decode.d(262)` closed).** Triaged the 2 remaining tractable classes
+(`bin/bench.sh -b interpreter -b system-linker --dub cerealed`, HEAD
+`86ad4fb4`). `decode.d(262)` (cerealed's "Types with @disable this can
+be encoded/decoded" test) is language-surface: `Decerealiser.value`'s
+`T val = void;` property-getter overload (used because `T()` does not
+compile for a `@disable this()` struct) then calls `grain(this, val)`,
+which reaches the struct's field only through a chain of nested `ref`-
+forwarding calls (`grainAllMembersImpl` -> `grainAggregateMember` ->
+`grain(__traits(getMember, val, member))`) — the same shape as the
+already-closed scalar `.grain.b` void-init-`ref` gap above, but one
+level deeper: the forwarded expression is a struct **field**
+(`DotVarExp`), not a bare local.
+
+Root: `Walker.runRefArgumentExpression`'s existing deferred-read
+special case (impl.d, the earlier `.grain.b` fix) only marks the
+*caller's* argument as unread; it does nothing for the *callee's own*
+parameter binding. `Walker.bindFunctionParameters` stored the deferred
+`Value.void_` placeholder straight into the callee's `locals` without
+recording it in the callee's own `uninitializedLocals`. `runExpression`'s
+`VarExp` branch already special-cases a variable found in
+`uninitializedLocals`, materialising a default struct/array value so
+field access keeps working (mirroring dmd's own field-granular void
+diagnostic) — but that branch never ran for the callee's parameter,
+since it wasn't marked uninitialized there. So a nested `DotVarExp`
+field read on the still-void parameter (`runDotVarExpression`'s
+`runExpression(dot.e1)`) fell through to a plain `locals` lookup,
+returning the bare `Value.void_` placeholder, and field extraction on a
+non-`Struct` value threw `Value.structFieldAt`'s generic diagnostic,
+"Expected struct."
+
+Fix: `bindFunctionParameters` now also marks a `ref` parameter in the
+callee's own `uninitializedLocals` whenever its bound argument value is
+`Value.void_`, mirroring the caller-side deferred-read seed. This is a
+general fix, not struct-specific: it makes a nested ref-forwarding
+chain of any depth (scalar or aggregate) consistently defer through the
+same "still uninitialized" handling at every frame, instead of only the
+outermost one.
+
+Exposing fixture
+`refArgument.voidStructLocalFieldWritableThroughNestedRefWrite`
+(`tests/ut/backends/runner/ct/structs.d`): a `Holder { ubyte i; }`,
+`writeByte(ref ubyte)` forwarded through `grainField(ref Holder val) {
+writeByte(val.i); }`, called from a `Holder val = void;` local,
+asserting the field is readable as 42 after the call. Confirmed red on
+`Interpreter` (`Expected struct.`, the identical cerealed message)
+before this fix, green on `Ctfe`, `Bytecode`, `SystemLinker`, and
+`LLVMJit` throughout — full matrix, nothing omitted.
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 8 mismatches. After:
+`decode.d(262)` gone, no newly-unmasked classes; cerealed drops to 7
+mismatches: `encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
+`reset.d(9)`, `static_array.d(7)`, `structs.d(22)`. Of these,
+`encode_decode.d(75)`/`(80)`, `property.d(12)` ×2, `reset.d(9)`, and
+`structs.d(22)` stay representation-ceiling (deferred to value.md per
+§8); `static_array.d(7)` (`Expected array.`) remains untriaged — the
+sole remaining candidate this session left unattempted, per the
+"one clean root" guidance.
+
+**2026-07-14 (void-init static-array slice-alias write-back root,
+`static_array.d(7)` closed).** Triaged the last untriaged cerealed class
+(`bin/bench.sh -b interpreter -b system-linker --dub cerealed`, HEAD
+`ac73fbdf`). cerealed's `static.array` test (`static_array.d(7)`) calls
+`Decerealiser.value!(int[2])`, whose `T val = void;` overload (taken
+because `int[2]()` does not compile) then runs cereal.d's static-array
+`grain`: `foreach (ref e; val) cereal.grain(e);`. Bisected with a chain of
+standalone probes (a hand-rolled reinterpret-cast `grain`/`ungrain` pair
+matching cereal.d's shape, then a plain direct-write reproduction with no
+reinterpret cast at all) down to a two-line root: `void fillPair(ref
+int[2] val) { foreach (ref e; val) e = ...; }` called with a void-init
+caller local reproduces standalone; the same call with a *default*-init
+local (no `= void`) passes today — isolating the differentiator to
+void-init, not the reinterpret cast, the templated `value!T` dispatch, or
+`~=`'s operator overload.
+
+Root: dmd's foreach-to-for lowering slices *every* static array, even a
+plain local/parameter (`T[] __r = val[];`), not only aggregate-field
+cases (§9.7's earlier foreach-ref-over-struct-field-array entry above).
+`Walker.recordSliceAlias` (impl.d) records this correctly (`__r`'s
+`SliceAlias.source` is `val`), and the per-element write inside the loop
+correctly routes through `writeThroughSliceAlias`. But
+`writeThroughSliceAlias` read the alias source's `locals` entry as-is:
+`bindFunctionParameters` binds a `ref` parameter to the caller's deferred
+`Value.void_` placeholder (§9.7's void-init-ref-parameter seeding), so
+`val`'s `locals` entry is the bare placeholder, not a real `Array`.
+Rebuilding it via `Value.withArrayElement` then threw "Expected array."
+instead of writing the element — the identical cerealed message, located
+via a throwaway `stderr.writefln` trace at the top of
+`writeThroughSliceAlias` and its sibling `writeThroughArrayElementAlias`
+(both reverted before commit), which showed the alias chain
+`e -> __r -> val` and `val`'s still-void `locals` entry precisely at the
+write.
+
+Fix: `writeThroughSliceAlias` now materialises the alias source's default
+value first (`locals[alias_.source] = defaultValue(alias_.source)`)
+whenever that source is still in `uninitializedLocals`, mirroring the
+read-path materialisation `runExpression`'s `VarExp` branch already
+applies to a directly uninitialized local. This covers both of the
+function's branches (the plain-array case exercised here and the
+existing struct-field-array case) since `defaultValue` already dispatches
+on the variable's declared type. `writeThroughArrayElementAlias` (the
+sibling alias kind for a `ref` bound directly to an indexed source with
+no intervening slice) needs no change: tracing confirmed dmd's lowering
+always introduces the slice temporary for a static array, so that path
+is not exercised by this class; it is left as its pre-existing
+"Unsupported interpreter array element alias target." refusal if a future
+construct ever reaches it uninitialized.
+
+Exposing fixture `staticArray.foreachRefWritesVoidInitialisedElements`
+(`tests/ut/backends/runner/ct/arrays.d`): a `void fillPair(ref int[2]
+val, int first)` writing both elements via `foreach (ref e; val)`, called
+from `int[2] result = void;`, asserting the caller's array holds both
+written values afterward. Confirmed red on `Interpreter` ("Expected
+array.", the identical cerealed message) before this fix, green on
+`Ctfe`, `SystemLinker`, and `LLVMJit` throughout. `Bytecode` omitted:
+still under active development, does not yet write through this `ref`
+foreach loop variable (every element reads back as `0`) regardless of
+void-init status.
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 7 mismatches. After:
+`static_array.d(7)` gone, no newly-unmasked classes; cerealed drops to 6
+mismatches: `encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
+`reset.d(9)`, `structs.d(22)`. **All six remaining are
+representation-ceiling** (deferred to value.md per §8: ScopeBuffer
+native-memory aliasing, fuzz-seeded double/float reinterpret, and a
+`double`/AA field reinterpret-cast — none is a missing language-surface
+behaviour). This exhausts the language-surface cerealed frontier opened
+by §6/§7: every remaining cerealed/Interpreter disagreement now requires
+value.md's native-layout track, not further interpreter rungs.
+
+**2026-07-14 (Fable review: field-address identity, float writeback
+compare, snapshot write refusal).** A code review of the `&s.field`
+address-of rung (this section's 2026-07-14 "address-of-struct-field
+root" entry) and the ref-argument write-back skip (this section's
+2026-07-14 "unconditional `ref`-argument write-back re-evaluation"
+entry) found three defects, fixed together:
+
+1. `addressOfExpression`'s `AddrExp(DotVarExp)` non-static-array branch
+   minted a fresh `++allocationCount` identity on *every* evaluation of
+   `&s.field`, so re-taking the same field's address gave a different
+   identity each time (`&a.value !is &a.value`), unlike real D. Fixed by
+   memoizing the allocation id per (receiver `VarDeclaration`, field
+   index) in a new `size_t[size_t][VarDeclaration]
+   fieldAddressAllocations` map, propagated across child `Walker` frames
+   the same way `arrayAllocations` already is. A receiver that cannot be
+   resolved to a variable (e.g. `&call().field`) still gets a fresh id
+   every time. Exposing fixture
+   `pointer.addressOfStructFieldIsStableAcrossReEvaluation`
+   (`tests/ut/backends/runner/ct/expressions.d`).
+
+2. Sibling defect: writing through a `&s.field` pointer silently wrote
+   into the pointer's own throwaway value snapshot instead of `s`'s
+   storage, losing the write with no diagnostic (previously this
+   refused loudly; the address-of-struct-field rung's fresh-identity
+   fix made it fall through to a silent write instead). Every id minted
+   by the `&s.field` path (memoized or fresh) is now also recorded in a
+   `bool[size_t] fieldSnapshotAllocationIds` set; `writeLocation`'s
+   `PtrExp` branch throws `Unsupported interpreter assignment target.`
+   when the target pointer's allocation id is a known field snapshot,
+   instead of silently rewriting it. `new Struct(...)`/`new Class(...)`
+   pointer writes are unaffected only once the `new`-with-user-ctor
+   child `Walker` correctly seeds and merges back `allocationCount`
+   (and `fieldAddressAllocations`/`fieldSnapshotAllocationIds`) the same
+   way every other child frame does; without that, ids minted inside
+   such a ctor can numerically collide with a live parent field-
+   snapshot id and get wrongly refused (fixed 2026-07-14, see the
+   `pointer.newCtorPointerWriteNotRefusedAfterFieldAddress` entry
+   below). There is no separate id namespace — `allocationCount` is one
+   shared counter — so collisions are avoided by propagation, not by
+   construction.
+   Fixtures: `pointer.addressOfStructFieldWriteThroughUpdatesField`,
+   split by backend — `SystemLinker` pins the real aliasing
+   write-through, a separate `Interpreter`-only block asserts the loud
+   refusal via `shouldThrowWithMessage` (both in
+   `tests/ut/backends/runner/ct/expressions.d`).
+
+3. Unrelated defect in the same review, in `writeBackRefArguments`'s
+   unchanged-parameter skip check (this section's 2026-07-14
+   "unconditional `ref`-argument write-back re-evaluation" entry): it
+   compared `Value`s with plain `==`, wrong for floating scalars two
+   ways — `-0.0 == 0.0` is `true`, so a callee that genuinely rewrites a
+   negative zero to a positive zero got that write silently dropped (a
+   real regression risk, not just a missed optimisation), and `NaN ==
+   NaN` is `false`, so an unchanged `NaN` ref argument would not be
+   skipped, re-executing a side-effecting location expression exactly
+   like the original `pointers.d(82)` bug (for the `NaN` case only).
+   Fixed with a new interpreter-local `identicalValues(a, b)`, used only
+   for this skip decision: floating scalars (`float`/`double`/`real`)
+   compare by bit pattern (`asReal is asReal`, matching D's `is`
+   semantics for floats), everything else defers to plain `==`.
+   Exposing fixture
+   `refArgument.floatWriteBackSkipComparesBitPatternNotEquality`
+   (`tests/ut/backends/runner/ct/structs.d`); `Bytecode` omitted
+   (floating-point division not implemented there yet, unrelated to
+   this fix).
+
+All three fixtures confirmed red on `Interpreter`/green on
+`SystemLinker` before the fix (reconstructed on the pre-fix parent per
+this section's 2026-07-09 handoff protocol). Re-measure: `bin/bench.sh
+-b interpreter -b system-linker --dub cerealed` is unchanged at 6
+disagreements (`encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
+`reset.d(9)`, `structs.d(22)`) — no regression, and the closed
+`pointers.d(82)` `ref`-argument rung stays closed (its fixture,
+`refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten`,
+still passes green with the new `identicalValues` compare).
+
+**Sibling gap, not fixed here (Finding 4, plan note only).** The rung-6
+`recordSliceAlias` `DotVarExp` branch (this section's
+foreach-ref-over-struct-field-array entry) resolves the field's owner
+only when the sliced aggregate's receiver (`slice.e1.isDotVarExp.e1`)
+is itself a plain `VarExp`. Two related shapes still fall through to
+`sliceAliases.remove(variable)`, silently losing element writes, same
+as the base (pre-rung) behaviour: a member function's `foreach (ref e;
+this.field)` (the receiver is a `ThisExp`, not a `VarExp`), and a
+nested-field foreach-ref such as `foreach (ref e; outer.inner.items)`
+(the receiver is itself a `DotVarExp`, not a `VarExp`). Both are
+untested and unfixed; a future rung should extend
+`recordStructFieldAlias`/`recordSliceAlias`'s owner resolution to walk
+an arbitrary `DotVarExp`/`ThisExp` chain instead of requiring a single
+`VarExp` hop.
+
+**2026-07-14 (regression fix: `new`-ctor allocation-id collision with a
+field snapshot).** A code review found that the previous entry's two
+new `Walker` maps (`fieldAddressAllocations`/`fieldSnapshotAllocationIds`)
+exposed a pre-existing gap in the `new T(...)`-with-user-constructor
+child `Walker` sites (`runNewStructPointerExpression`,
+`runNewClassExpression`, impl.d): both restarted `allocationCount` at 0
+for the child instead of seeding it from the parent, and never merged it
+(or the two maps) back — unlike every other child-frame site
+(`runFunction`, `runMemberFunction`, `refReturningCallAddress`, and the
+other existing child sites), which all seed and merge `allocationCount`
+plus these maps. A pointer minted inside such a ctor (`q = new int;`)
+could therefore land on the same small id as an already-live parent
+field-snapshot id, so a later legitimate write through it was wrongly
+refused by `writeLocation`'s `PtrExp` branch. Fixed by seeding and
+merging `allocationCount`/`fieldAddressAllocations`/
+`fieldSnapshotAllocationIds` at both sites, matching the established
+six-site pattern exactly. Exposing fixture
+`pointer.newCtorPointerWriteNotRefusedAfterFieldAddress`
+(`tests/ut/backends/runner/ct/expressions.d`): confirmed red on
+`Interpreter` (`Unsupported interpreter assignment target.`), green on
+`SystemLinker`, before this fix.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
