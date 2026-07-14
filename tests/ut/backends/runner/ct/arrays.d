@@ -431,6 +431,41 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+// value.md item 7's SLICE guest-local, reverse direction: `int[] s = a[];`
+// should alias `a`'s storage exactly like `&a[0]` does, so a later direct
+// write to `a` is visible through `s` too -- the opposite direction from
+// `nestedSliceWritesPropagateToOriginalArray` above (a write through the
+// slice, visible in the source). SystemLinker's `s` aliases `a`'s real
+// storage, so the direct write to `a` is visible through `s`. Other backends
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                a[0] = ninetyNine();
+                assert(s[0] == 99);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.nestedSliceAppendKeepsOriginalArrayTail." ~
         backend.stringof)

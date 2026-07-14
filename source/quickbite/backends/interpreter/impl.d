@@ -2035,6 +2035,50 @@ private struct Walker {
         arrayCells[variable] = cell;
     }
 
+    // Gives a slice local (`int[] s = a[];`) an `arrayCells` entry that
+    // shares the SAME `NativeArray` block as its slice source, rather than
+    // the detached boxed `.dup` `locals` already holds -- value.md item 7's
+    // array-native storage extended to the reverse slice-aliasing direction
+    // (a write to the SOURCE visible through an earlier-taken slice; the
+    // forward direction -- a write through the slice, visible in the source
+    // -- was already covered by `sliceAliases`/`writeThroughSliceAlias`).
+    // Called right after `recordSliceAlias` has resolved `variable`'s own
+    // `SliceAlias`, following any chain of nested slices to the ROOT source
+    // and the combined lower bound relative to it -- so this reuses that
+    // same resolution rather than re-deriving it from `slice.e1` itself.
+    //
+    // `promoteArrayCell(alias_.source)` mirrors the address-of-time
+    // promotion `arrayPointer` already does for `&a[i]`: eager, idempotent,
+    // and gated by the same guards (non-dataseg, dynamic array, native-
+    // scalar element). Once the source has a cell, `NativeArray.slice`
+    // gives a real, bidirectionally-aliasing sub-range view over it -- not
+    // a copy -- for `variable`'s own entry, using `alias_.lower` and the
+    // slice's own already-computed length (`locals[variable]`, the boxed
+    // dup `runSliceExpression` just produced, whose length is exactly the
+    // slice's element count regardless of nesting).
+    //
+    // A no-op, leaving `variable` on the existing boxed/aliasing paths, for:
+    // a struct-field-rooted slice (`alias_.hasFieldIndex`, e.g. `val.field[]`
+    // -- not a plain local, out of this narrow first slice's scope); and any
+    // source whose element type isn't `native_scalar.isNativeScalarType` or
+    // that is `isDataseg`, both of which make `promoteArrayCell` itself a
+    // no-op, leaving no cell here to share.
+    private void promoteSliceArrayCell(VarDeclaration variable) {
+        auto alias_ = variable in sliceAliases;
+        if (alias_ is null || alias_.hasFieldIndex)
+            return;
+
+        promoteArrayCell(alias_.source);
+
+        auto cell = alias_.source in arrayCells;
+        if (cell is null)
+            return;
+
+        auto current = variable in locals;
+        const length = current is null ? 0 : current.length;
+        arrayCells[variable] = cell.slice(alias_.lower, alias_.lower + length);
+    }
+
     // Reads `variable`'s current value: a promoted `scalarCells` entry (the
     // byte-level authority once `&variable` has promoted one) takes
     // priority over the boxed `locals` mirror, which in turn takes priority
@@ -6467,6 +6511,24 @@ private struct Walker {
             ));
         }
 
+        // Byte-level authority (value.md item 7's SLICE guest-local, reverse
+        // direction): once `promoteSliceArrayCell` has given `variable` an
+        // `arrayCells` entry sharing storage with its slice source (or
+        // `promoteArrayCell` gave the source itself one), its bytes -- not
+        // `source`'s own boxed snapshot, which a direct write to the OTHER
+        // aliased variable never refreshes -- are the true value. A no-op
+        // for any variable without a promoted cell (falls through to the
+        // existing boxed read below), and for a non-`VarExp` `index.e1`
+        // (a struct field, nested index, ...), which this narrow first
+        // slice does not extend.
+        if (auto var = index.e1.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                if (auto cell = variable in arrayCells) {
+                    import quickbite.backends.interpreter.native_scalar: readScalar;
+
+                    return readScalar(cell.elementType, cell.element(arrayIndex));
+                }
+
         return source[arrayIndex];
     }
 
@@ -7080,6 +7142,7 @@ private struct Walker {
             uninitializedLocals.remove(variable);
             arrayElementAliases.remove(variable);
             recordSliceAlias(variable, slice, lower);
+            promoteSliceArrayCell(variable);
             structArrayFieldAliases.remove(variable);
             structFieldAliases.remove(variable);
             return value;

@@ -3008,6 +3008,85 @@ ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (array-native storage extended to SLICE aliasing,
+reverse direction: a write to the SOURCE is now visible through an
+earlier-taken slice): the two slices above closed both directions of
+POINTER aliasing (`&a[i]`); a guest `int[] s = a[];` was still handled
+entirely by the pre-existing BOXED `sliceAliases`/`writeThroughSliceAlias`
+machinery, which only ever propagated writes FORWARD (through `s`, into
+`a`'s `locals` mirror) -- a direct write to `a` after `s` was created never
+reached `s`'s own `locals` entry, a detached `.dup` snapshot taken at slice-
+creation time, because a slice is not a real aliasing view in the boxed
+model at all. New fixture (pre-approved):
+`dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice` in
+`tests/ut/backends/runner/ct/arrays.d`, scoped to `Interpreter`/
+`SystemLinker` only (omitted elsewhere per the omit-don't-pin convention)
+-- `int[] a = [one(), two()]; int[] s = a[]; a[0] = ninetyNine(); assert(
+s[0] == 99);`, every value seeded from a runtime function call so DMD
+cannot fold it. Confirmed red on Interpreter before any production change
+(`1 != 99`: `s`'s own boxed `.dup` snapshot never saw the later direct
+write to `a`) and green on SystemLinker (real aliased memory); green on
+both after.
+
+Fix: two production changes in `impl.d`. (1) A new `promoteSliceArrayCell
+(variable)`, called from `runDeclarationExpression`'s `SliceExp`-
+initializer arm right after `recordSliceAlias` has resolved `variable`'s
+own `SliceAlias`
+(following any chain of nested slices to the ROOT source and the combined
+lower bound, exactly as `recordSliceAlias` itself already does) -- a no-op
+for a struct-field-rooted slice (`alias_.hasFieldIndex`, e.g. `val.field[]`,
+out of this slice's scope) or when `promoteArrayCell(alias_.source)` itself
+stays a no-op (a non-dataseg/dynamic-array/native-scalar-element guard
+failure, mirroring `promoteArrayCell`'s own gating). Once the source has a
+cell, `NativeArray.slice(begin, end)` -- already built for exactly this
+(its own doc: "a write through the returned handle is visible through this
+array and vice versa") -- gives a real, bidirectionally-aliasing sub-range
+view over the SAME underlying bytes (`NativeBlock.subRange` slices the
+block's own `ubyte[]`, sharing the GC allocation, not copying it); that
+view becomes `arrayCells[variable]`, sized from `alias_.lower` and the
+slice's own already-computed length (`locals[variable]`, the boxed dup
+`runSliceExpression` just produced) -- ONE shared `NativeArray` authority
+for source and slice, no new boxed reverse side-table. (2)
+`runIndexExpression`'s plain-`VarExp` read arm (`a[i]`/`s[i]`, the actual
+code path `index.e1.isVarExp` reaches) now checks `variable in arrayCells`
+before falling back to `source[arrayIndex]` (the boxed value), reading
+`readScalar(cell.elementType, cell.element(arrayIndex))` instead when a
+cell exists -- mirroring the read-priority `runPointerExpression`'s deref
+arm and `readCelledLocal` already give scalar cells. This was the missing
+piece: before this slice, NOTHING ever consulted `arrayCells` on a whole-
+array read path (only a pointer deref and the direct-write arms did), so
+even giving `s` a shared cell would have been invisible to `s[0]` without
+it. Confirmed the fix does not merely special-case the one fixture:
+manually extended (in a scratch, uncommitted edit, reverted before this
+commit) to a sub-slice (`int[] s = a[1 .. 3]; a[1] = ninetyNine();
+assert(s[0] == 99);`) and a bidirectional case (`int[] s = a[]; int* p =
+&a[0]; s[0] = ninetyNine(); assert(*p == 99 && a[0] == 99);`) -- both
+passed on Interpreter with no further production change, confirming this
+is genuine shared storage, not a snapshot patched to fit one shape.
+
+What this slice does NOT do: a struct-field-rooted slice keeps using the
+existing boxed `sliceAliases` machinery untouched, matching
+`hasFieldIndex`'s existing gate elsewhere. Array growth (`~=`, `.length =
+n`) on either the source or the slice remains on the existing boxed paths
+-- `NativeArray.reserve`/`setLength`'s own documented reallocation
+behaviour for a `borrowed` (sliced) block is "throw", so a promoted slice
+cell would need a call site to rebind or fall back to boxed growth before
+this slice's `arrayCells` entry could safely see `~=`/`.length =`; there is
+no such call site yet. Only the plain-`VarExp` read arm of
+`runIndexExpression` was extended to consult `arrayCells` -- a struct
+field's array element (`DotVarExp`) and nested-`IndexExp` reads still read
+the boxed value only, matching every other `arrayCells` call site's
+existing plain-`VarExp`-only scope. No `interpreter.md` §9.10 shim is
+retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (361 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
