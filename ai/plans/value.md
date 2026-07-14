@@ -3087,6 +3087,54 @@ expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (slice-cell promotion guard: fixing a regression the
+above slice introduced): the cerealed matrix test
+`ut.backends.runner.ct.cerealed.multidimensionalArrayWritesNestedLengths`,
+GREEN on master before the slice-aliasing work above, went RED on
+Interpreter: `NativeArray.slice: end > length`, thrown from the last line of
+`promoteSliceArrayCell`. Root cause: the fixture's `encode(int[][] values)`
+grows a `ubyte[] bytes` local via repeated `~=` inside helper functions, and
+separately does `foreach (row; values) { foreach (value; row) ... }`, whose
+inner loop DMD lowers to a fresh `auto __r16 = row[];` on every OUTER
+iteration. Each such re-declaration re-enters `promoteSliceArrayCell`, whose
+`alias_.lower + length` (bounds computed against the CURRENT `row`) could
+exceed `alias_.source`'s (`row`'s) cell length -- either because the source
+had grown past its cell since the cell was promoted, or, as diagnosed here
+with a temporary debug print, because `row` is the SAME `VarDeclaration`
+reused every outer-loop pass, and `promoteArrayCell`'s own idempotent "already
+has a cell, no-op" guard left `row`'s cell stuck at an EARLIER iteration's
+(shorter) length once one had been promoted.
+
+Fix, both in `promoteSliceArrayCell` (`impl.d`): (1) the guard the length
+comparison already called for -- decline the promotion (return without
+setting `arrayCells[variable]`) whenever `alias_.lower + length >
+cell.length`, instead of handing that range to `NativeArray.slice`, which
+throws. (2) Discovered only by testing (1) in isolation, which turned the
+`end > length` throw into a DIFFERENT crash, `NativeArray.element: index out
+of range`: `promoteSliceArrayCell` must also unconditionally
+`arrayCells.remove(variable)` at entry, before the guard. Without it, a
+declined promotion on a LATER binding of the same loop-reused `variable`
+(e.g. `__r16` on the second outer-loop pass) left an EARLIER binding's
+still-present, now-too-short cell in `arrayCells[variable]`, which a later
+index read (`runIndexExpression`'s `arrayCells`-consulting arm) then indexed
+out of range instead of falling through to the boxed `locals` value. Neither
+fix touches `NativeArray.slice` or `promoteArrayCell` itself: a declined or
+invalidated promotion leaves `variable` on the pre-existing boxed `locals` +
+`writeThroughSliceAlias` aliasing path, exactly as it worked before this
+promotion existed.
+
+Confirmed red before the fix (`end > length`) and green after on the exact
+regressed test, and confirmed slice 3's own fixture
+(`dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice`) still
+green (its full-slice case has `lower == 0, length == cell.length` and still
+promotes). Focused runs, all green: `bin/ut -s ut.backends.runner.ct.cerealed`
+(164 run, 0 failed, 1/1 failing as expected); `bin/ut -s
+ut.backends.runner.ct.arrays` (322 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.expressions` (361 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full
+`bin/ut --random` was left to the orchestrator per the usual long-suite
+handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

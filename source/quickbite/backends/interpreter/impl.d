@@ -2064,6 +2064,15 @@ private struct Walker {
     // that is `isDataseg`, both of which make `promoteArrayCell` itself a
     // no-op, leaving no cell here to share.
     private void promoteSliceArrayCell(VarDeclaration variable) {
+        // `variable`'s declaration statement re-executes on every fresh
+        // binding (a loop-reused slice temp taken over a differently-sized
+        // array each pass, as a `foreach` body's per-iteration `auto r =
+        // row[];` does): drop any cell a PRIOR binding promoted before
+        // deciding whether THIS one gets a fresh cell, or a stale, wrong-
+        // length cell from an earlier binding survives to be read against
+        // this binding's own bounds.
+        arrayCells.remove(variable);
+
         auto alias_ = variable in sliceAliases;
         if (alias_ is null || alias_.hasFieldIndex)
             return;
@@ -2076,6 +2085,18 @@ private struct Walker {
 
         auto current = variable in locals;
         const length = current is null ? 0 : current.length;
+
+        // The source cell's own length can have drifted from the boxed
+        // `locals` bookkeeping this slice's bounds were computed against
+        // -- e.g. the source array was grown by `~=` after its cell was
+        // promoted, leaving the cell too short for `alias_.lower + length`.
+        // A native cell cannot faithfully represent such a slice, so decline
+        // the promotion rather than let `NativeArray.slice` throw: `variable`
+        // stays on the boxed `locals` + `writeThroughSliceAlias` aliasing
+        // path, exactly as it worked before this promotion existed.
+        if (alias_.lower + length > cell.length)
+            return;
+
         arrayCells[variable] = cell.slice(alias_.lower, alias_.lower + length);
     }
 
