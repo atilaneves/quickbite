@@ -5455,3 +5455,19 @@ after the preceding `length++`; it does not add slice bounds, writes through
 indexed `ref` arguments, or general `$` support. Verification: focused
 Bytecode row red (`Unsupported variable in bytecode core: $`) then green; full
 `ninja bin/ut`; and `bin/ut --random` passed (seed `3470295131`).
+
+`struct.voidInitialisedFieldSliceAssignment` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The focused Bytecode row was red first because a static
+array field could not become a slice view; after that narrow support it exposed
+the string parameter's compact descriptor and a runtime static-array index.
+Static-array field offsets now feed the existing slice-view materialization;
+string slicing converts the compact descriptor to the existing native one; and
+only constant static-array indices retain the direct inline-offset path, with
+runtime indices using the existing slice descriptor. This does not add bounds
+checks, struct default initialization, or general static-array lifetime work.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random` reproduced the pre-existing
+`dynamicArrayTruthinessControlsEnforceFallback.Bytecode` failure; mandated
+`bin/ut --seed 3353579115 --quiet` replay also exposed pre-existing
+SystemLinker temporary-library races.

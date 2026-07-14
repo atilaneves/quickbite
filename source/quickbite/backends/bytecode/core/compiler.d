@@ -4807,7 +4807,17 @@ private struct Compiler {
             return;
         }
 
-        const descriptor = dynamicArrayDescriptor(slice.e1);
+        DynamicArrayLocal descriptor;
+        if (isStringType(slice.e1.type)) {
+            const string_ = compileExpression(slice.e1);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.stringSliceToArray, offset, string_.offset,
+            );
+            descriptor = DynamicArrayLocal(offset, ScalarType.char_);
+        } else {
+            descriptor = dynamicArrayDescriptor(slice.e1);
+        }
 
         // Materialise lo and hi into adjacent size_t slots; the opcode reads
         // the pair from the single `bounds` offset.
@@ -7124,6 +7134,9 @@ private struct Compiler {
     private StaticArrayElement* tryStaticArrayElement(
         IndexExp index,
     ) {
+        if (index.e2.isIntegerExp is null)
+            return null;
+
         if (!indexesStaticArray(index.e1))
             return null;
 
@@ -7382,6 +7395,8 @@ private struct Compiler {
     // The inline frame offset of a static-array local denoted by an
     // expression (through any casts), or null if it is not one.
     private ushort* staticArrayOffsetOf(Expression expression) {
+        import dmd.astenums: TY;
+
         if (auto cast_ = expression.isCastExp)
             return staticArrayOffsetOf(cast_.e1);
 
@@ -7392,6 +7407,11 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _staticArrayLocals)
                     return existing;
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                if (field.type.toBasetype.ty == TY.Tsarray)
+                    return &field.offset;
 
         return null;
     }
