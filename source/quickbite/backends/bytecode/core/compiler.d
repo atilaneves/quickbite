@@ -8916,6 +8916,8 @@ private struct Compiler {
                     return *existing;
                 if (auto existing = declaration in _dynamicArrayLocals)
                     return existing.offset;
+                if (auto existing = declaration in _staticArrayLocals)
+                    return *existing;
             }
 
         if (auto structOffset = structBaseOffsetOrNull(argument))
@@ -10047,16 +10049,21 @@ private struct Compiler {
                 continue;
             }
 
-            // A by-value static-array parameter is an inline block in the
-            // argument area, tracked like a static-array local so indexing and
-            // block-copy paths resolve against its base offset.
+            // A static-array parameter is an inline block in the argument area,
+            // tracked like a static-array local so indexing and block-copy paths
+            // resolve against its base offset. A `ref` parameter receives the
+            // caller slot offset and writes the completed block back on return.
             if (parameter.type.toBasetype.ty == TY.Tsarray) {
                 const arrayAlign = staticArrayAlign(parameter.type);
                 const arrayBytes = cast(uint) staticArraySize(parameter.type);
                 layout.blockSize =
                     (layout.blockSize + arrayAlign - 1) & ~(arrayAlign - 1);
                 layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= false;
+                layout.isReference ~= parameter.isReference;
+                if (parameter.isReference)
+                    layout.refParameters ~= RefParameter(
+                        cast(ushort) layout.blockSize, arrayBytes,
+                    );
                 layout.blockSize += arrayBytes;
                 continue;
             }

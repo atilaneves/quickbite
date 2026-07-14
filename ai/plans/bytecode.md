@@ -5525,3 +5525,15 @@ passed on its first candidate run, confirming that the existing typed-frame
 call boundary. No production change was needed. This adds no general pointer
 or aggregate alias semantics. Verification: focused Bytecode row; `ninja
 bin/ut`; and `bin/ut --random`.
+
+`staticArray.foreachRefWritesVoidInitialisedElements` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The focused Bytecode row was red (`0 != 34`) because a
+`ref int[2]` parameter was treated as a by-value static-array block. Static
+array parameter layout now passes a caller-frame offset for `ref` parameters,
+records the block-size write-back, and accepts static-array locals as ref
+arguments. The existing frame copy/write-back mechanism then preserves the
+loop's element writes in the caller's `= void` array. This does not add general
+foreach lowering, aggregate lifetime handling, or static-array copies.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random`.

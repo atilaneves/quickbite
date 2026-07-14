@@ -1598,7 +1598,7 @@ enum staticArrayForeachRefVoidInitSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("staticArray.foreachRefWritesVoidInitialisedElements." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
