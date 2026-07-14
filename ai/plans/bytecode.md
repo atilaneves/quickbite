@@ -5547,3 +5547,12 @@ that its typed-frame slots do not inherit stale local state across recursion.
 No production change was needed. This does not add general recursive aggregate
 or pointer lifetime semantics. Verification: focused Bytecode row; `ninja
 bin/ut`; and `bin/ut --random`.
+
+`dynamicArray.ptrPointsAtFirstElement` promoted to Bytecode, 2026-07-14:
+pre-approved promotion of the existing direct SystemLinker-backed compile-time
+fixture. The row compares `values.ptr` to `&values[0]`, dereferences it, and
+uses pointer indexing. The focused Bytecode row passed on its first candidate
+run, confirming the existing dynamic-array descriptor pointer and pointer-load
+paths already agree. No production change was needed. This does not add array
+reserve, capacity, or interior-slice append semantics. Verification: passing
+focused five-backend matrix; `ninja bin/ut`; and `bin/ut --random`.

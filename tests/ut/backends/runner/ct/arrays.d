@@ -1433,8 +1433,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-// Bytecode ("Unsupported cast target: Tpointer"), Bytecode
-// ("Unsupported type in bytecode core: int[]"), and IR (unsupported array
+// Bytecode ("Unsupported cast target: Tpointer") and IR (unsupported array
 // literal expression) cannot run this .ptr fixture.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.ptrPointsAtFirstElement." ~ backend.stringof)
