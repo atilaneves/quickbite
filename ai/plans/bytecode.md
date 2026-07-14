@@ -5537,3 +5537,13 @@ loop's element writes in the caller's `= void` array. This does not add general
 foreach lowering, aggregate lifetime handling, or static-array copies.
 Verification: focused Bytecode red then green; `ninja bin/ut`; and
 `bin/ut --random`.
+
+`pointer.recursiveDeclarationDropsStaleScalarCell` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The row recursively takes the address of a same-AST
+local at two call depths, requiring each call frame to retain distinct native
+storage. The focused Bytecode row passed on its first candidate run, confirming
+that its typed-frame slots do not inherit stale local state across recursion.
+No production change was needed. This does not add general recursive aggregate
+or pointer lifetime semantics. Verification: focused Bytecode row; `ninja
+bin/ut`; and `bin/ut --random`.
