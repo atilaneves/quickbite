@@ -2192,7 +2192,13 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
 
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = sliceLengthSlot(DynamicArrayLocal(
+            descriptorOffset,
+            elementType,
+        ));
         const indexSlot = compileExpression(indexExpr);
+        _activeDollarLength = savedDollarLength;
         const elementSize = resultType.toBasetype.ty == TY.Tstruct
             ? cast(uint) staticArraySize(resultType)
             : size(elementType);
@@ -5199,7 +5205,10 @@ private struct Compiler {
             return result;
         }
 
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = sliceLengthSlot(*descriptor);
         const indexSlot = compileExpression(index.e2);
+        _activeDollarLength = savedDollarLength;
         auto result = new Operand;
         *result = pointerToElement(
             descriptor.offset, descriptor.elementType, indexSlot.offset,

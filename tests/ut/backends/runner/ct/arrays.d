@@ -1742,9 +1742,8 @@ static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
 // that precedes it, not a stale value from before the growth ran.
 // ai/plans/interpreter.md §9.7 (size_t underflow rung). The write inside
 // `grown` deliberately indexes via `arr.length - 1`, not `$`, so this fixture
-// isolates the read-side `$` defect the fix targets. Bytecode omitted:
-// "Unsupported variable in bytecode core: $" - `$` is not implemented there.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+// isolates the read-side `$` defect the fix targets.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.dollarReflectsLengthAfterInPlaceGrowth." ~
         backend.stringof)
     @Tags(backend.stringof)

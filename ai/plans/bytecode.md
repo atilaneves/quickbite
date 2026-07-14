@@ -5443,3 +5443,15 @@ initialization, while `float`, `double`, and `real` literals use the same raw
 IEEE/native-real bytes as frame literals. Other initializer expressions fail
 deterministically instead of exposing a silently zero-initialized module slot.
 No tests were changed.
+
+`dynamicArray.dollarReflectsLengthAfterInPlaceGrowth` promoted to Bytecode,
+2026-07-14: pre-approved SystemLinker-backed matrix promotion. DMD lowers the
+assertion's indexed operand into a `ref` temporary, so obtaining the element
+address compiles the `$ - 1` index before the ordinary array-load path. The
+compiler now makes the current descriptor length available while compiling
+both dynamic-array load indices and dynamic-element address indices. This
+keeps `$` scoped to an individual index expression and reflects the descriptor
+after the preceding `length++`; it does not add slice bounds, writes through
+indexed `ref` arguments, or general `$` support. Verification: focused
+Bytecode row red (`Unsupported variable in bytecode core: $`) then green; full
+`ninja bin/ut`; and `bin/ut --random` passed (seed `3470295131`).
