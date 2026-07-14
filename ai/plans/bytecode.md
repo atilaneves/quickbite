@@ -5494,3 +5494,14 @@ floating arithmetic. Verification: focused Bytecode red then green; `ninja
 bin/ut`; and `bin/ut --random` initially hit an unrelated LLVMJit
 `dependencyImage.externDStructDestructor` assertion failure, while the
 required `bin/ut --seed 2107431968 --quiet` replay passed.
+
+`pointer.addressOfStructFieldIsStableAcrossReEvaluation` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The focused Bytecode row passed on its first candidate
+run, confirming that repeated `&localStruct.field` evaluation reuses the
+typed-frame address identity, complementing the preceding distinct-instances
+promotion. This adds no field write-through, heap-struct, or aggregate-address
+semantics. Verification: focused Bytecode row; `ninja bin/ut`; and
+`bin/ut --random` failed in the unrelated SystemLinker
+`refCursorReadAdvancesPosition` row; the mandated `--seed 3463408491 --quiet`
+replay reproduced its temporary-library link failure.

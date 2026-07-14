@@ -1783,8 +1783,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // (`&a.value !is &a.value`) — real D gives the same address back. Fixed by
 // memoizing the allocation id per (receiver variable, field index). Ctfe
 // omitted: DMD CTFE genuinely refuses this construct at compile time.
-// Bytecode omitted: AddrExp of a DotVarExp is not implemented there yet.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+// Bytecode shares the typed-frame field-address path; Ctfe still rejects the
+// pointer-identity comparison during compile-time evaluation.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.addressOfStructFieldIsStableAcrossReEvaluation." ~
         backend.stringof)
     @Tags(backend.stringof)
