@@ -1827,6 +1827,61 @@ aggregate default-construction, not attempted this rung;
 `static_array.d(7)`'s `Expected array.` and `pointers.d(20)`'s `Value`
 content-vs-identity mismatch are each their own untriaged root).
 
+**2026-07-14 (struct-pointer identity root, `pointers.d(20)` closed).**
+Triaged the 9 remaining cerealed mismatches (`bin/bench.sh -b interpreter
+-b system-linker --dub cerealed`, HEAD `df1b5b4a`, full-message throwaway
+probe in `testResultsMismatches`, reverted before commit — confirmed clean
+via `git diff --stat`/`git status`). `pointers.d(20)`
+(`struct.with.pointer.to.struct`) is the suggested `Value`-identity gap,
+language-surface not representation-ceiling: `runNewStructPointerExpression`
+(impl.d) returned `Value.pointerValue(structVal)` for every `new
+StructType(...)`/`new StructType` with no user constructor — the
+member-ctor branch, the aggregate-initialiser branch, and the no-args
+default-init branch all funnel through this one `return`. `pointerValue`'s
+`Pointer([target])` ctor never sets `allocation`/`offset`, so *every*
+struct-pointer `new` this way carries the same all-zero identity, and
+`equalValues`'s fallback (`left == right`, `Value.opEquals` → `data ==
+other.data` → the SumType's field-wise `Pointer` compare) considers two
+such pointers equal whenever their pointed-to contents match — a pure
+content compare masquerading as identity. cerealed's test allocates
+`outer.inner` via `new InnerStruct(7, 2)` and cerealed's own decode path
+(vendored `cereal.d:235`, `val = new ValueType;`) allocates
+`decOuter.inner` the same way; both land on allocation id 0, so
+`decOuter.inner.shouldNotEqual(outer.inner)` (unit-threaded, real D,
+lowering to `!=`) fails on `Interpreter` even though the two are genuinely
+distinct heap objects on `SystemLinker`.
+
+Fix: that one `return` now assigns a fresh id —
+`Value.arrayPointerValue([structVal], ++allocationCount, 0)` — mirroring
+`runNewScalarPointerExpression`'s existing `new int`-style pattern and the
+§9.7 address-of-struct-field fix's fresh-`allocationCount` idiom. Scope:
+only this call site changed; the sibling body-less-native-constructor path
+(`runNewStructNativeConstructor`, its own `return
+Value.pointerValue(constructed)`) is a different `NewExp` branch not
+exercised by this fixture or by cerealed's disagreement, so it is left
+untouched — a candidate for the same fix if a future gap implicates it.
+
+Exposing fixture `pointer.newStructPointersWithEqualContentAreDistinct`
+(`tests/ut/backends/runner/ct/expressions.d`): a runtime-seeded `Inner`
+struct `new`-allocated twice with equal field contents, asserting `a !is
+b` and `*a == *b`. Confirmed red on `Interpreter` before the fix
+(`const(Pointer)([Inner(7)], 0, 0) is const(Pointer)([Inner(7)], 0, 0)`,
+the identical all-zero-identity shape cerealed hit); green throughout on
+`Ctfe`, `SystemLinker`, `LLVMJit`. `Bytecode` omitted: dereferencing a
+struct pointer (`*a`) is not implemented there yet (still under active
+development).
+
+cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
+cerealed` re-measured before/after. Before: 9 mismatches. After:
+`pointers.d(20)` gone, no newly-unmasked classes; cerealed drops to 8
+mismatches: `decode.d(262)`, `encode_decode.d(75)`/`(80)`, `property.d(12)`
+×2, `reset.d(9)`, `static_array.d(7)`, `structs.d(22)`. Of these,
+`encode_decode.d(75)`/`(80)`, `property.d(12)` ×2, `reset.d(9)`, and
+`structs.d(22)` stay representation-ceiling (deferred to value.md per
+§8); `decode.d(262)` (`@disable this()` / `T val = void;` decode,
+`Expected struct.`) and `static_array.d(7)` (`Expected array.`) remain
+untriaged, each its own root.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

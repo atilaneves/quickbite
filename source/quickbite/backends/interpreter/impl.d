@@ -6270,7 +6270,12 @@ private struct Walker {
             }
         }
 
-        return Value.pointerValue(structVal);
+        // A fresh allocation id (mirroring runNewScalarPointerExpression and the
+        // AddrExp(DotVarExp) fresh-identity fix) so two `new`-allocated structs
+        // with equal field contents compare as distinct pointers, matching real
+        // heap addresses; `Value.pointerValue` alone leaves allocation/offset at
+        // their zero default, so unrelated `new` results collide on identity.
+        return Value.arrayPointerValue([structVal], ++allocationCount, 0);
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
