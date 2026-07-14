@@ -2199,6 +2199,58 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7's struct phase left cross-frame struct-field-pointer
+// write-through unexercised: the caller takes `&s.x` (promoting a
+// `structCells` entry and a `structFieldPointerVariables`/
+// `structFieldPointerFieldIndices` reverse-lookup entry in the CALLER's own
+// frame), then passes the pointer into a callee that writes through it. The
+// callee's own child `Walker` dupes `structCells` (so the cell's bytes are
+// shared) but never dupes the reverse-lookup maps themselves, so the
+// callee's `writeThroughStructFieldPointer` reverse-lookup misses and the
+// write falls through to the `fieldSnapshotAllocationIds` refusal check
+// (also duped) instead of aliasing. SystemLinker is the oracle; other
+// backends omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                S s = S(one(), two());
+                int* p = &s.x;
+                put(p, ninetyNine());
+                return *p + s.x;
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}
+
 // Regression sibling of the refusal fixture above: a `new`-with-user-ctor
 // child `Walker` (both the struct and class variants in
 // `runNewStructPointerExpression`/`runNewClassExpression`) restarted

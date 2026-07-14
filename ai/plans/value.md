@@ -3839,6 +3839,115 @@ failed); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0 failed);
 `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (struct cross-frame pointer coherence): the struct
+starter slice's own scope note named this gap directly -- "cross-frame
+struct-field pointer dereference... is unexercised: `structCells` itself is
+duped into child frames, but the reverse-lookup maps are not". This slice
+closes it for a callee that writes THROUGH a pointer a caller took before
+the call.
+
+Candidate (a) (`struct S{int x;int y;} void put(int* p,int v){ *p=v; } int
+f(){ S s=S(one(),two()); int* p=&s.x; put(p, ninetyNine()); return *p +
+s.x; }`, expecting `198`) was confirmed red first: the Interpreter threw
+`Unsupported interpreter assignment target.` from inside `put`'s `*p = v;`
+-- `writeThroughStructFieldPointer` looked `pointer.pointerAllocation` up
+in ITS OWN frame's `structFieldPointerVariables`/
+`structFieldPointerFieldIndices`, which the caller's `&s.x` had populated
+but no child-frame spawn site ever duped (unlike `arrayAllocationVariables`,
+the array phase's own reverse lookup, which every spawn site already
+dupes), so the lookup missed and the write fell through to the
+`fieldSnapshotAllocationIds` refusal check (which WAS duped) instead of
+aliasing. SystemLinker returned `198` as expected (real aliasing). Committed
+as `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`Interpreter`/`SystemLinker` only.
+
+Merely duping the reverse-lookup maps turned out not to be enough on its
+own, for a reason worth recording precisely: `put` is an ordinary
+(non-nested, non-`ref`) free function, so its child `Walker`'s `locals`
+starts as `datasegLocals` (dataseg variables only) -- `s`, a plain local of
+the CALLER `f`, is never present in the callee's own `locals` at all, only
+`p`/`v` (its actual parameters) are. `writeThroughStructFieldPointer`'s
+existing `current = *variable in locals` guard (needed to re-derive the
+boxed mirror in the SAME-frame case) would therefore still see `current is
+null` and bail, even with the reverse-lookup dupe alone. Worse, unlike an
+array element read (`a[i]`, which `runIndexExpression` already checks
+`arrayCells` for FIRST), a direct struct-field read (`s.x`, via
+`runDotVarExpression` -> generic `VarExp` handling) never consults
+`structCells` at all -- only a `*pointer` deref does (`structCells` was
+deliberately scoped that way from the struct phase's first slice onward).
+So even a cell write with perfectly shared bytes would leave a later direct
+`s.x` read in the CALLER's own frame seeing the pre-call value once `put`
+returns, unless something explicitly re-syncs the caller's boxed
+`locals[s]` mirror after the call.
+
+Production changes, `source/quickbite/backends/interpreter/impl.d`:
+1. `structFieldPointerVariables`/`structFieldPointerFieldIndices` are now
+   duped into a child `Walker` at all 7 child-frame spawn sites (the same
+   ones that already dupe `structCells`), mirroring `arrayAllocationVariables`.
+2. A new `bool[VarDeclaration] structFieldPointerWritebacks` map (the
+   struct counterpart of `arrayPointerWritebacks`), duped at the same 7
+   sites: `writeThroughStructFieldPointer` now flags the receiver
+   `variable` in it after every successful cell write, whether or not
+   `variable` was present in the writing frame's own `locals`.
+3. `writeThroughStructFieldPointer` no longer requires `current` (`variable
+   in locals`) to be non-null to proceed -- only to decline (as before) when
+   `current` IS present but is no longer a struct (a genuine rebind). When
+   `current` is present it still refreshes `locals[*variable]` immediately,
+   exactly as before (needed for a same-frame later direct read); when
+   absent (the cross-frame case), the cell write alone is applied and the
+   boxed-mirror refresh is deferred.
+4. A new `writeBackStructFieldPointerTargets(ref Walker child)`, the struct
+   counterpart of `writeBackArrayPointerTargets`, called from
+   `writeBackFunctionState` and `writeBackMemberFunctionState` (the two
+   merge points every ordinary/member call funnels through) right after
+   `writeBackArrayPointerTargets`. For each `variable` in
+   `child.structFieldPointerVariables` flagged in
+   `child.structFieldPointerWritebacks`, it re-derives the OWNING frame's
+   (here, the caller's) `locals[variable]` from the shared, already-updated
+   `structCells[variable]` cell via a new `structValueFromCell(current,
+   cell)` helper -- the read-side mirror of `writeStructCellScalarFields`,
+   overlaying every `native_scalar.isNativeScalarType` field's cell bytes
+   onto the variable's existing boxed value and leaving any non-scalar
+   field exactly as it was. `structFieldPointerVariables`/
+   `structFieldPointerFieldIndices`/`structFieldPointerWritebacks` are also
+   merged back (plain assignment, not `.dup`) alongside
+   `arrayAllocationVariables`'s own merge-back, so a NEW cell/pointer the
+   callee itself promoted survives past return, matching that map's
+   existing discipline.
+
+`runDestructor` and the `new`-with-user-ctor child (the 2 of the 7 spawn
+sites that do not fold into `writeBackFunctionState`/
+`writeBackMemberFunctionState`, and where `arrayAllocationVariables`
+itself is either not duped or not merged back through
+`writeBackArrayPointerTargets` either) get the same DUPE-IN for
+consistency with `structCells`'s own duping, but no merge-back wiring --
+matching the array reverse-lookup's own precedent at those two sites
+exactly, not a new asymmetry this slice introduces.
+
+What this slice does NOT do: candidates (b) (`&s.x` taken INSIDE a callee
+on a `ref S` parameter) and (c) (a `ref S` parameter's field written
+directly, `s.x = v`, in the callee) were not exercised as new fixtures --
+both route entirely through the callee's OWN frame at write time (the
+`ref` parameter's address-of/write happen against the callee's own
+`structCells`/`locals`, never the caller's), then rely on the PRE-EXISTING
+`writeBackRefArguments` -> `writeLocation` -> `writeCelledLocal` whole-
+struct writeback (which already refreshes the caller's own `structCells`
+entry, per this track's 2026-07-13 review-round work) to reconcile the
+caller's pointer and direct read once the `ref` argument's final value is
+written back; no cross-frame reverse-lookup gap applies to either. Nested-
+struct fields, array fields, class fields, union fields, and any struct
+reached through anything other than a bare local variable remain exactly
+as scoped by the struct phase's first slice -- unchanged by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (387 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
