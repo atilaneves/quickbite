@@ -5505,3 +5505,12 @@ semantics. Verification: focused Bytecode row; `ninja bin/ut`; and
 `bin/ut --random` failed in the unrelated SystemLinker
 `refCursorReadAdvancesPosition` row; the mandated `--seed 3463408491 --quiet`
 replay reproduced its temporary-library link failure.
+
+`pointer.addressOfStructFieldWriteThroughUpdatesField` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row passed on
+its first candidate run, confirming that the existing typed-frame field
+address remains a live alias for a subsequent scalar pointer store. No
+production change was needed. This does not add aggregate writes, heap
+structs, or general lvalue support. Verification: focused Bytecode row;
+`ninja bin/ut`; and `bin/ut --random`.

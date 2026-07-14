@@ -1815,7 +1815,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // throwaway value snapshot instead of `s`'s storage, losing the write with
 // no diagnostic. SystemLinker pins real D's actual (aliasing) write-through
 // behaviour.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
     @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
