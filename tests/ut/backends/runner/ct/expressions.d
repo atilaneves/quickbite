@@ -2479,3 +2479,90 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
         });
     }
 }
+
+// value.md item 7 review, finding 3: `a ~= x` grew the boxed array but left
+// a promoted `arrayCells` entry (here promoted by `&a[0]`) at its OLD
+// length. A subsequent in-bounds write to the newly-appended element
+// (`a[1] = five();`) is unaffected -- `writeThroughArrayCell` is a silent
+// no-op past the cell's own length -- but `readIndexExpression`'s cell arm
+// still answers the following read from the stale, too-short cell, which
+// used to throw a spurious out-of-range error before the fix. SystemLinker
+// is the oracle; other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayAppendRefreshesStaleCellAfterAddressOf." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int five() {
+                return 5;
+            }
+
+            int f() {
+                int[] a = [one()];
+                auto p = &a[0];
+                a ~= two();
+                a[1] = five();
+                return a[1];
+            }
+
+            unittest {
+                assert(f() == 5);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, finding 4: `runSliceAssignExpression`'s bounded
+// form (`a[i .. j] = x`) writes `locals[variable]` directly but never
+// refreshes a promoted `arrayCells` entry -- here promoted by `&a[0]` --
+// which `readIndexExpression`'s cell arm reads in preference to the boxed
+// mirror. Only indices `0 .. 2` are assigned; `a[2]` must stay untouched.
+// See the sibling `dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell`
+// fixture in arrays.d for the full-slice-fill variant. SystemLinker is the
+// oracle; other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                int[] a = [one(), two(), three()];
+                int* p = &a[0];
+                a[0 .. 2] = ninetyNine();
+                return a[0] + a[1] + a[2];
+            }
+
+            unittest {
+                assert(f() == 99 + 99 + 3);
+            }
+        });
+    }
+}

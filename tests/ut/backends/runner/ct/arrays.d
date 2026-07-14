@@ -1914,3 +1914,80 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// value.md item 7 review, finding 3: `a ~= x` (`runArrayAppendAssignExpression`'s
+// plain-`VarExp` arm) grew `locals` but left a promoted `arrayCells` entry at
+// its OLD length -- a slice (`int[] s = a[];`) eagerly promotes `a`'s cell via
+// `promoteSliceArrayCell`, with no address-of needed at all. A later read of
+// the newly-appended element then goes through `readIndexExpression`'s cell
+// arm against the stale, too-short cell. SystemLinker is the oracle; other
+// backends omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("dynamicArray.appendRefreshesSlicePromotedStaleCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int f() {
+                int[] a = [one()];
+                int[] s = a[];
+                a ~= two();
+                return a[1];
+            }
+
+            unittest {
+                assert(f() == 2);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, finding 4: `runSliceAssignExpression` (`a[] = x` /
+// `a[i .. j] = x`) writes `locals[variable]` directly but never refreshes a
+// promoted `arrayCells` entry, which `readIndexExpression`'s cell arm reads
+// in preference to the boxed mirror. Here `s = a[]` promotes `a`'s cell
+// eagerly (no address-of), so `a[] = ninetyNine()` fills the boxed array but
+// a later `a[0]` read returns the stale cell's original value instead. See
+// the sibling `pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell`
+// fixture in expressions.d for the bounded/`&a[0]` variant. SystemLinker is
+// the oracle; other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                a[] = ninetyNine();
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 99);
+            }
+        });
+    }
+}

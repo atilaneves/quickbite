@@ -5996,14 +5996,35 @@ private struct Walker {
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
+        // A fill assignment (`a[] = scalar;`) evaluates `rhs` to a single
+        // element-typed value, not an array to index into -- only the copy
+        // form (`a[] = otherArray[];`, whose `rhs.type` matches the SLICE's
+        // own array type) yields something `value[index - lower]` can index.
+        // `block` (a fill whose ELEMENT type is itself an array, e.g.
+        // `matrix[] = row;`) already takes the `copyArrayValue` branch;
+        // `value.isArray` distinguishes the remaining two: a genuine array
+        // copy vs. a scalar-element fill, which must reuse `value` itself at
+        // every position instead of indexing into it.
         Value[] elements;
         foreach (index; 0 .. current.length)
             elements ~= index < lower || index >= upper
                 ? (*current)[index]
-                : block ? copyArrayValue(value) : value[index - lower];
+                : block ? copyArrayValue(value)
+                : value.isArray ? value[index - lower] : value;
 
         locals[variable] = Value.arrayValue(elements);
         uninitializedLocals.remove(variable);
+
+        // value.md item 7 review, finding 4: a promoted `arrayCells` entry
+        // (e.g. from an earlier `&a[i]` or a slice sharing `variable`'s
+        // storage) is read-authoritative over this `locals` mirror --
+        // `readIndexExpression`'s cell arm -- so every element this
+        // assignment actually covers must also land in the cell, not just
+        // the boxed array. A no-op via `writeThroughArrayCell` when no cell
+        // was ever promoted.
+        foreach (index; lower .. upper)
+            writeThroughArrayCell(variable, index, elements[index]);
+
         return value;
     }
 
@@ -6273,6 +6294,17 @@ private struct Walker {
         locals[variable] = current.withAppendedArrayElement(value);
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
+
+        // value.md item 7 review, finding 3: `~=` may reallocate (D's own
+        // "append may reallocate, old pointers go stale" semantics), and even
+        // when it does not, a promoted `arrayCells` entry is a fixed-length
+        // `NativeArray` sized at promotion time -- it cannot represent the
+        // grown length either way. Drop it rather than let a stale,
+        // too-short cell answer a later read/write at the new index
+        // (`readIndexExpression`'s cell arm, `writeThroughArrayCell`); the
+        // next read falls through to this fresh `locals` mirror instead.
+        arrayCells.remove(variable);
+
         return locals[variable];
     }
 

@@ -3269,8 +3269,12 @@ untested by any slice so far -- the `child.arrayCells = arrayCells.dup`
 sharing already in place is expected to cover it for the same reason it
 does for scalars, but still no fixture confirms it; it is the next
 candidate to try. Array growth (`~=`, `.length = n`) and non-full slice
-construction guards from the prior slices are unaffected. No
-`interpreter.md` §9.10 shim is retired by this slice.
+construction guards from the prior slices are untouched by THIS slice's own
+change (correction, 2026-07-14 review fixes below: "unaffected" here
+understated the actual risk -- once a slice or `&a[i]` had promoted a cell,
+`~=` growing the same variable left that cell stranded at its old length,
+a real stale-read/throw bug fixed only later, as finding 3 of that review).
+No `interpreter.md` §9.10 shim is retired by this slice.
 
 Focused runs, all green: the new fixture (confirmed red on Interpreter /
 green on SystemLinker before the fix, green on both after); `bin/ut -s
@@ -3668,6 +3672,96 @@ failed); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0 failed);
 as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
+
+Progress 2026-07-14 (review fixes: append and slice-assign cell coherence):
+a second Fable code review of the same array/struct cell slices found two
+more blockers, both in the same "a promoted `arrayCells` cell is
+READ-AUTHORITATIVE over the boxed `locals` mirror" family as the pair fixed
+immediately above, this time on the WRITE side of the two ops that change
+an array's contents wholesale rather than one element at a time.
+
+Finding 3: `runArrayAppendAssignExpression`'s plain-`VarExp` arm (`a ~= x`)
+grew `locals[variable]` (via `withAppendedArrayElement`) and dropped
+`sliceAliases`, but never touched a promoted `arrayCells` entry, which stays
+at its old, pre-append length -- a fixed-size `NativeArray` allocated once,
+at promotion time. A cell can be promoted with NO address-of at all: `int[]
+s = a[];` eagerly promotes `a`'s own cell via `promoteSliceArrayCell`. New
+fixture (pre-approved, confirmed red on Interpreter / green on
+SystemLinker): `dynamicArray.appendRefreshesSlicePromotedStaleCell`
+(`tests/ut/backends/runner/ct/arrays.d`) -- `int[] a = [one()]; int[] s =
+a[]; a ~= two(); return a[1];` -- red (`NativeArray.element: index out of
+range`: the plain read of the newly-appended index went through
+`readIndexExpression`'s cell arm against the stale, length-1 cell instead of
+the grown `locals` mirror). A sibling fixture with an explicit `&a[0]`
+address-of, `pointer.arrayAppendRefreshesStaleCellAfterAddressOf`
+(`tests/ut/backends/runner/ct/expressions.d`) -- `int[] a = [one()]; auto p
+= &a[0]; a ~= two(); a[1] = five(); return a[1];` -- confirmed the same
+failure mode via a different promotion path. Fix: `arrayCells.remove
+(variable)` added to the append arm, alongside the existing `sliceAliases.
+remove(variable)` -- matching D's own "append may reallocate, old pointers
+go stale" semantics (a cell cannot be resized in place; growth may have
+moved the storage even in real D), and the same decline-rather-than-corrupt
+choice `promoteSliceArrayCell`'s own drifted-length guard and
+`writeCelledLocal`'s length-mismatch arm already make. A later read falls
+through to the fresh, correctly-grown `locals` mirror.
+
+Finding 4: `runSliceAssignExpression` (`a[] = x` and `a[i .. j] = x`) wrote
+`locals[variable]` directly from a freshly-built `elements` array but never
+consulted `arrayCells` at all, so a promoted cell (again reachable with no
+address-of, via a slice) kept answering `readIndexExpression`'s cell-arm
+reads with its pre-assignment bytes. New fixture (pre-approved, confirmed
+red / green): `dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell`
+(`arrays.d`) -- `int[] a = [one(), two()]; int[] s = a[]; a[] =
+ninetyNine(); return a[0];` -- master (SystemLinker) `99`; Interpreter
+before any fix did not merely return the reviewer-predicted stale `1`, it
+threw `Expected array.` Writing this fixture surfaced a THIRD, pre-existing
+bug in the same function, not previously covered by any fixture:
+`isBlockSliceAssignment`'s non-`block` branch unconditionally treated the
+assignment as an array-to-array COPY (`value[index - lower]`), but a scalar
+FILL assignment (`a[] = scalar;`, where `rhs`'s type equals the slice's
+ELEMENT type rather than its own array type) evaluates `rhs` to a plain
+scalar `Value`, which is not indexable -- `value[index - lower]` threw
+"Expected array." Confirmed this crash reproduces even with NO cell
+involved at all (a plain `int[] a = [1, 2]; a[] = 99;` with no
+slice/pointer taken), i.e. scalar-element slice fill was never a tested,
+working path before this fix, independent of cell coherence. Fix, both in
+`runSliceAssignExpression`: (1) the elements loop now checks `value.isArray`
+to pick between indexing into a real array-copy RHS and reusing a
+scalar-fill RHS directly at every covered position, alongside the
+pre-existing `block` (nested-array-element fill, e.g. `matrix[] = row;`)
+branch, which is unchanged; (2) after the boxed `locals` write, a new loop
+over exactly the assigned range (`lower .. upper`) calls the existing
+`writeThroughArrayCell(variable, index, elements[index])` helper per index
+-- a no-op when no cell was ever promoted, so this is additive outside item
+7's narrow native-scalar-dynamic-array-element gating. A second fixture,
+`pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell`
+(`expressions.d`) -- `int[] a = [one(), two(), three()]; int* p = &a[0];
+a[0 .. 2] = ninetyNine(); return a[0] + a[1] + a[2];` -- exercises the
+BOUNDED (non-full) form promoted via address-of instead of a slice, and
+confirms `a[2]` (outside the assigned range) is left untouched. What
+remains: `runPointerSliceAssignExpression` and `runFieldSliceAssignExpression`
+share the same `block`-ternary shape and likely have the identical
+scalar-fill-vs-copy bug for a pointer- or struct-field-rooted slice target,
+but neither is exercised by any fixture yet -- untested, not fixed here.
+
+Both findings share a root cause with the one immediately above them in
+this file: the plan's own prior wording calling array growth (`~=`)
+"exactly as before" or "unaffected" (see the correction added in-place a
+few paragraphs up, at the "compound/post-increment gap" entry) undersold
+the real risk once a cell existed to strand -- growth's OWN code path was
+indeed unchanged by those earlier slices, but "unchanged" was not the same
+as "safe" the moment array-cell promotion became reachable with no
+address-of at all (a plain slice). Finding 3 above is the fix that wording
+was missing.
+
+Focused runs, all green: all four new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (379 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1
+failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed). The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.
 
 ## Audit findings (June 2026)
 
