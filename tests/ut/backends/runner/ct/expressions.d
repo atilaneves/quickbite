@@ -1888,6 +1888,46 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7's struct phase, first guest call site: `&s.x` snapshotted
+// the field's value at address-of time instead of aliasing `s`'s own
+// storage, so a later direct write to the field (`s.x = ninetyNine()`) was
+// invisible through the earlier pointer -- the same snapshot gap the array
+// phase closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so
+// the direct write is visible through `*p`. Other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S s = S(one(), two());
+                int* p = &s.x;
+                s.x = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

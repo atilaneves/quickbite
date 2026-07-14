@@ -89,6 +89,7 @@ private struct Walker {
     import dmd.statement: Statement;
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.native_struct: NativeStruct;
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
 
@@ -120,6 +121,31 @@ private struct Walker {
     // other array (non-scalar elements, static arrays, growth, slices) is
     // untouched and keeps using the existing boxed/aliasing paths.
     private NativeArray[VarDeclaration] arrayCells;
+
+    // Authoritative native bytes for a struct local that has had one of its
+    // `native_scalar.isNativeScalarType` fields address-taken (value.md item
+    // 7's struct phase starts, mirroring `arrayCells` above): populated
+    // eagerly the moment `&s.field` is taken for a scalar field (see
+    // `promoteStructCell`, called from `addressOfExpression`'s `DotVarExp`
+    // arm). Once a cell exists, a direct field write (`writeLocation`'s
+    // `DotVarExp` arm, via `writeCelledLocal`) and a pointer deref-read
+    // (`runPointerExpression`/`pointerTargetValue`, via
+    // `structFieldPointerCellValue`) route through the same underlying
+    // `NativeStruct` bytes instead of the boxed snapshot `&s.field` used to
+    // return, so a write through one is visible through the other. Only the
+    // address-taken field(s) of a plain (non-nested, non-dataseg) struct
+    // local are covered; every other field access (nested struct/array/class
+    // fields, non-address-taken structs) is untouched and keeps using the
+    // existing boxed `locals` path.
+    private NativeStruct[VarDeclaration] structCells;
+
+    // Reverse lookup from a promoted `&s.field` pointer's allocation id
+    // (`fieldAddressAllocations`'s own id, reused rather than duplicated)
+    // back to which struct variable and field index (declaration order)
+    // share the SAME `structCells` entry's bytes -- the struct-field
+    // counterpart of `arrayAllocationVariables`' reverse lookup for `&a[i]`.
+    private VarDeclaration[size_t] structFieldPointerVariables;
+    private size_t[size_t] structFieldPointerFieldIndices;
 
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
@@ -1682,10 +1708,21 @@ private struct Walker {
             // variable, field index) so re-taking the same field's address
             // returns the same identity, matching real addresses, while
             // distinct receivers (`&a.f` vs `&b.f`) still differ. It does not
-            // alias writes back to the field; writeLocation's PtrExp path
-            // refuses writing through a known field-snapshot id.
-            return Value.arrayPointerValue(
-                [runExpression(dot)], fieldSnapshotAllocationId(dot), 0);
+            // alias WRITES THROUGH THE POINTER back to the field;
+            // writeLocation's PtrExp path still refuses writing through a
+            // known field-snapshot id -- unchanged by the promotion below.
+            //
+            // value.md item 7's struct phase starts: for a scalar field of a
+            // plain struct LOCAL, `promoteStructFieldCell` additionally gives
+            // the receiver a `structCells` entry and records this id's
+            // (receiver, field index) in the reverse lookup, so a direct
+            // field write after this point (`s.field = v`) becomes visible
+            // through THIS pointer's deref-read
+            // (`structFieldPointerCellValue`) -- closing the reverse-
+            // propagation gap the array phase already closed for `&a[i]`.
+            const id = fieldSnapshotAllocationId(dot);
+            promoteStructFieldCell(dot, id);
+            return Value.arrayPointerValue([runExpression(dot)], id, 0);
         }
 
         // `&call()` of a ref-returning function: run the call and yield the
@@ -1782,6 +1819,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
+        child.structCells = structCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -2100,6 +2138,93 @@ private struct Walker {
         arrayCells[variable] = cell.slice(alias_.lower, alias_.lower + length);
     }
 
+    // Eagerly gives an address-taken struct local a `NativeStruct` cell the
+    // first time `&s.field` is taken for one of its own scalar fields
+    // (value.md item 7's struct phase starts, mirroring `promoteArrayCell`
+    // above), seeded from the struct's current boxed field values. Narrow
+    // first slice: only a plain (non-dataseg) struct-typed local gets a
+    // cell; a dataseg variable, or a receiver that never resolves to a
+    // struct-typed boxed value, is left untouched and keeps using the
+    // existing boxed `locals` path.
+    private void promoteStructCell(VarDeclaration variable) {
+        if (variable.isDataseg)
+            return;
+
+        if (variable in structCells)
+            return;
+
+        auto structType = variable.type.toBasetype.isTypeStruct;
+        if (structType is null)
+            return;
+
+        auto current = defaultValue(variable);
+        if (auto existing = variable in locals)
+            current = *existing;
+
+        if (!current.isStruct)
+            return;
+
+        auto cell = NativeStruct.allocate(structType);
+        writeStructCellScalarFields(cell, current);
+        structCells[variable] = cell;
+    }
+
+    // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
+    // `cell` from `structValue`'s boxed fields (the struct counterpart of
+    // `promoteArrayCell`'s element loop): a non-scalar field (nested struct,
+    // array, class) is left untouched, matching this narrow first slice's
+    // scope -- only an address-taken SCALAR field is ever read back through
+    // a `structCells` entry, so leaving another field's bytes stale here is
+    // harmless.
+    private void writeStructCellScalarFields(ref NativeStruct cell, in Value structValue) {
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, writeScalar;
+
+        foreach (index; 0 .. cell.fieldCount) {
+            auto fieldType = cell.fieldDeclaration(index).type;
+            if (!isNativeScalarType(fieldType))
+                continue;
+
+            writeScalar(fieldType, cell.field(index), structValue.structFieldAt(index));
+        }
+    }
+
+    // `&s.field`'s promotion moment (value.md item 7's struct phase starts):
+    // when `dot`'s receiver resolves to a plain local variable and the field
+    // itself is `native_scalar.isNativeScalarType`, gives the receiver a
+    // `structCells` entry (`promoteStructCell`, mirroring `promoteArrayCell`'s
+    // role in `arrayPointer`) and records `id` -- the SAME allocation id
+    // `addressOfExpression`'s caller already memoized via
+    // `fieldSnapshotAllocationId` -- in the reverse lookup
+    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`, so a
+    // later deref-read through this id's pointer
+    // (`structFieldPointerCellValue`) can find the same cell and field. A
+    // no-op (no cell, no reverse-lookup entry) for a non-`VarExp` receiver
+    // (e.g. `&call().field`), a non-scalar field, or a receiver whose boxed
+    // value isn't a struct -- every one of those leaves `promoteStructCell`
+    // itself a no-op, so there is no cell here to point at.
+    private void promoteStructFieldCell(
+        imported!"dmd.expression".DotVarExp dot,
+        in size_t id,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        auto var = dot.e1.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable is null)
+            return;
+
+        if (!isNativeScalarType(dot.type))
+            return;
+
+        promoteStructCell(variable);
+        if ((variable in structCells) is null)
+            return;
+
+        structFieldPointerVariables[id] = variable;
+        structFieldPointerFieldIndices[id] = structFieldIndex(dot);
+    }
+
     // Reads `variable`'s current value: a promoted `scalarCells` entry (the
     // byte-level authority once `&variable` has promoted one) takes
     // priority over the boxed `locals` mirror, which in turn takes priority
@@ -2161,6 +2286,23 @@ private struct Walker {
             } else {
                 arrayCells.remove(variable);
             }
+        }
+
+        // Same in-place-mutation refresh, for a struct local's `structCells`
+        // entry (value.md item 7's struct phase starts): `writeLocation`'s
+        // `DotVarExp` arm always rewrites the WHOLE struct (`receiver.
+        // withStructField(fieldIndex, value)`) before reaching here, so this
+        // refreshes every scalar field's bytes rather than just the one that
+        // changed -- the same whole-value refresh `arrayCells` above performs
+        // for a same-length array write. A boxed value that is no longer a
+        // struct (a genuinely different rebinding) cannot be represented in
+        // the cell, so the cell is dropped rather than corrupted, mirroring
+        // the array branch's own decline-rather-than-corrupt choice.
+        if (auto cell = variable in structCells) {
+            if (value.isStruct)
+                writeStructCellScalarFields(*cell, value);
+            else
+                structCells.remove(variable);
         }
 
         locals[variable] = value;
@@ -2269,6 +2411,17 @@ private struct Walker {
             // `pointerTarget` fallback.
             Value cellValue;
             if (arrayPointerCellValue(value, cellValue))
+                return cellValue;
+
+            // Byte-level authority for a struct-field pointer (value.md item
+            // 7's struct phase starts): once `&s.field` has promoted a
+            // `structCells` entry, its bytes -- not the boxed field snapshot
+            // `addressOfExpression` took -- are the true value, so a direct
+            // field write (`writeLocation`'s `DotVarExp` arm) after the
+            // pointer was taken is visible here. Every other struct-field
+            // pointer (no promoted cell, a non-scalar field) keeps the
+            // existing boxed `pointerTarget` fallback.
+            if (structFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
             return value.pointerTarget;
@@ -3654,6 +3807,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
+        child.structCells = structCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -3711,6 +3865,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
+        child.structCells = structCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -3959,6 +4114,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
+        child.structCells = structCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -5149,6 +5305,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
+        child.structCells = structCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -5237,6 +5394,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
+        child.structCells = structCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -6633,6 +6791,40 @@ private struct Walker {
         return true;
     }
 
+    // Byte-level authority for a struct-field pointer (value.md item 7's
+    // struct phase starts): once `&s.field` has promoted a `structCells`
+    // entry for the struct variable a non-local pointer points into, its
+    // bytes -- not the boxed snapshot `addressOfExpression` took at
+    // address-of time -- are the true value. Shared by
+    // `runPointerExpression`'s deref-read arm and `pointerTargetValue` (the
+    // compound-assignment/atomic/post-increment read path), mirroring
+    // `arrayPointerCellValue` above for the array-element case. Returns
+    // `false` (leaving `value` untouched) for every other field pointer --
+    // no promoted cell, a non-scalar field, or a pointer that was never a
+    // struct-field address at all -- which keeps the existing boxed
+    // `pointerTarget` fallback at each call site.
+    private bool structFieldPointerCellValue(in Value pointer, out Value value) {
+        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+            return false;
+
+        auto variable = pointer.pointerAllocation in structFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in structCells;
+        if (cell is null)
+            return false;
+
+        auto fieldIndex = pointer.pointerAllocation in structFieldPointerFieldIndices;
+        if (fieldIndex is null)
+            return false;
+
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        value = readScalar(cell.fieldDeclaration(*fieldIndex).type, cell.field(*fieldIndex));
+        return true;
+    }
+
     private Value pointerTargetValue(in Value pointer) {
         if (pointer.isLocalPointer)
             return localPointerTarget(pointer);
@@ -6642,6 +6834,8 @@ private struct Walker {
 
         Value cellValue;
         if (arrayPointerCellValue(pointer, cellValue))
+            return cellValue;
+        if (structFieldPointerCellValue(pointer, cellValue))
             return cellValue;
 
         return pointer.pointerTarget;
@@ -6934,6 +7128,7 @@ private struct Walker {
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
+        child.structCells = structCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;

@@ -3429,6 +3429,83 @@ as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
 
+Progress 2026-07-14 (struct phase starts: scalar-field native cell, reverse
+propagation through `&s.field`): item 7's "Migration order" bullet moves to
+its second named phase -- "Structs second, reusing the same block/offset
+machinery" -- now that the array phase above is saturated. This is the
+FIRST struct-phase slice; it closes exactly one gap and leaves most struct
+cases boxed, precisely as the array phase's own first slice did for `&a[i]`.
+
+Confirmed red first: `struct S { int x; int y; } int f() { S s =
+S(one(), two()); int* p = &s.x; s.x = ninetyNine(); return *p; }` (all three
+values seeded from runtime function calls) returned `1` on the Interpreter
+-- `*p` still read the boxed snapshot `&s.x` took at address-of time, not
+`s`'s later direct write -- while SystemLinker's real aliasing gave `99`.
+Committed as `pointer.
+structFieldWrittenDirectlyIsVisibleThroughEarlierPointer` in `tests/ut/
+backends/runner/ct/expressions.d`, scoped to `Interpreter`/`SystemLinker`
+only.
+
+Production change, `source/quickbite/backends/interpreter/impl.d`: a new
+`NativeStruct[VarDeclaration] structCells` map, parallel to `arrayCells`,
+plus a reverse lookup (`structFieldPointerVariables`/
+`structFieldPointerFieldIndices`, `VarDeclaration`/`size_t` keyed by a
+`&s.field` pointer's existing `fieldSnapshotAllocationId`) mirroring
+`arrayAllocationVariables`. `addressOfExpression`'s `DotVarExp` arm --
+exactly where `&s.field`'s read-only snapshot has always been built -- now
+also calls the new `promoteStructFieldCell`: for a scalar field
+(`native_scalar.isNativeScalarType`) of a plain (non-dataseg) struct
+LOCAL resolved from a bare `VarExp` receiver, it promotes a `structCells`
+entry (`promoteStructCell`, seeded from the struct's current boxed field
+values via a new `writeStructCellScalarFields` helper that walks
+`NativeStruct.fieldCount`/`fieldDeclaration`/`field` and skips non-scalar
+fields) and records the pointer's id in the reverse lookup. Three read/write
+call sites now consult that cell ahead of the boxed fallback, mirroring the
+array phase's own three: `writeCelledLocal` (the direct-field-write path --
+`s.x = v` rewrites the WHOLE struct via `writeLocation`'s `DotVarExp` arm,
+which recurses into the `VarExp` arm this helper already owns, so it now
+also refreshes every scalar field's bytes in the cell, or drops the cell if
+the new boxed value is no longer a struct at all) and a new
+`structFieldPointerCellValue` helper (the counterpart of
+`arrayPointerCellValue`), consulted by both `runPointerExpression` (`*p` as
+an rvalue) and `pointerTargetValue` (compound-assignment/atomic/post-
+increment reads, for parity with the array cell even though no fixture in
+this slice exercises that path). `child.structCells = structCells.dup;`
+added at the same 7 child-frame-spawn sites that already dup
+`scalarCells`/`arrayCells`, so a nested call sees the promoted cell too
+(sharing its bytes by reference, exactly as `scalarCells`/`arrayCells` do --
+no pop-back merge is needed or added, matching those two). Writing THROUGH
+the pointer (`*p = v`) is deliberately left untouched: the id is still
+recorded in `fieldSnapshotAllocationIds` exactly as before, so
+`writeLocation`'s `PtrExp` arm continues to refuse it with "Unsupported
+interpreter assignment target." -- the existing pinned
+`pointer.addressOfStructFieldWriteThroughUpdatesField.Interpreter`
+fixture is unchanged and still green.
+
+What this slice does NOT do, to be precise about item 7's struct-phase
+state: only an address-taken SCALAR field of a plain, non-dataseg struct
+LOCAL gets a cell. Nested-struct fields, array fields, class fields, union
+fields, and any struct reached through anything other than a bare local
+variable (a class field, an array element, a `new`-allocated struct, a
+dataseg/`__gshared` struct) are all untouched and stay on the pre-existing
+boxed `locals` path. Writing THROUGH the pointer (`*p = v`) still throws
+rather than aliasing, as it did before this slice -- only the
+direct-write/reverse-read gap this slice's fixture named is closed. Cross-
+frame struct-field-pointer dereference (a pointer into a caller's struct,
+passed by argument into and dereferenced inside a callee) is unexercised:
+`structCells` itself is duped into child frames, but the reverse-lookup
+maps are not, matching the task's own bounded instruction; no fixture in
+this slice needs it. No `interpreter.md` §9.10 shim is retired by this
+slice.
+
+Focused runs, all green: the new fixture (green on Interpreter and
+SystemLinker); `bin/ut -s ut.backends.runner.ct.expressions` (371 run, 0
+failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.structs`
+(281 run, 0 failed); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0
+failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
