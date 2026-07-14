@@ -3948,6 +3948,57 @@ expected); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0 failed);
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (whole-struct assignment field-cell coherence):
+checked whether `writeCelledLocal`'s existing struct branch (landed in the
+previous slice above) already keeps a promoted `structCells` entry coherent
+across a whole-struct assignment (`s = S(...)`), as opposed to only a
+single-field write (`s.x = v`). Tried, in order, per the plan's candidates:
+(a) `int* p = &s.x; s = S(eight(), nine()); return *p;` (expect `8`), (b)
+assigning from another struct variable (`a = b;`) with a pointer into `a`
+taken beforehand, and (c) two independent field pointers (`&s.x`, `&s.y`)
+observing one whole-struct assignment. All three were run as fixtures
+against both `Interpreter` and `SystemLinker`: every one was GREEN on both
+backends already, with zero production changes -- characterization only.
+
+Why this is coherent by construction, not luck: `s = S(...)` is a plain
+`VarExp` assignment target, so `runAssignExpression` routes it through
+`writeLocation`'s `VarExp` arm exactly like any other rebind, which calls
+`writeCelledLocal(variable, storageValue(...), false)` unconditionally. That
+helper's struct branch (`if (auto cell = variable in structCells) { if
+(value.isStruct) writeStructCellScalarFields(*cell, value); ... }`) does not
+distinguish a whole-struct assignment from a single-field
+`DotVarExp`-triggered rewrite -- both arrive here as a full boxed struct
+`Value`, and the branch refreshes every `native_scalar.isNativeScalarType`
+field's cell bytes from it either way. So the SAME code path that keeps
+`s.x = v` coherent (closed in the "struct field write-through-pointer"
+slice) already keeps `s = S(...)` coherent for free: there is no separate
+"whole-struct assignment" code path to have missed.
+`structFieldPointerCellValue` (the `*p` deref-read) then reads the freshly-
+written cell bytes regardless
+of which assignment shape produced them. Candidate (b) (assigning from
+another struct variable) and (c) (two independent field pointers) exercise
+no additional machinery beyond (a): `runExpression` on `S(eight(), nine())`
+or the `b` variable's boxed value both simply become the RHS `Value` handed
+to the identical `writeCelledLocal` call, and `writeStructCellScalarFields`
+already loops over every scalar field index, not just one.
+
+Kept only fixture (a),
+`pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer`, scoped to
+`Interpreter`/`SystemLinker`, in
+`tests/ut/backends/runner/ct/expressions.d` -- (b) and (c) were probed
+as temporary fixtures to confirm the "all green" conclusion, observed green
+with 0 failures, then removed rather than kept as duplicative coverage of
+the same already-shared code path. No production change this slice. Focused
+runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (389 run, 0
+failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.structs`
+(281 run, 0 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed); `bin/ut -s ut.backends.evaluator.eval` (71 run, 0 failed).
+
+What remains: nested-struct fields, array fields, class fields, union
+fields, and any struct reached through anything other than a bare local
+variable remain out of `structCells`' scope entirely, unchanged by this
+slice, per the struct phase's original boundary.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

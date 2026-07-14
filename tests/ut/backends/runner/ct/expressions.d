@@ -2755,3 +2755,53 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// Whole-struct assignment (`s = S(...)`) is a genuine in-place copy into
+// `s`'s existing storage in D -- unlike an array rebind, `s` keeps denoting
+// the SAME storage after the assignment. An earlier `int* p = &s.x` must
+// therefore observe the new field value afterward: `writeCelledLocal`'s
+// struct branch refreshes the promoted `structCells` entry's scalar-field
+// bytes (`writeStructCellScalarFields`) whenever the assigned value is still
+// a struct, so a later deref-read through `p`
+// (`structFieldPointerCellValue`) sees the new value rather than a stale
+// cell.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                S s = S(one(), two());
+                int* p = &s.x;
+                s = S(eight(), nine());
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 8);
+            }
+        });
+    }
+}
