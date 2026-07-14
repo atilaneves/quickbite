@@ -2069,7 +2069,18 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 // throwaway value snapshot instead of `s`'s storage, losing the write with
 // no diagnostic. SystemLinker pins real D's actual (aliasing) write-through
 // behaviour.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+//
+// Promoted 2026-07-14 (value.md item 7's struct phase, write-through-pointer
+// slice): `Holder` has exactly one scalar field of a plain struct LOCAL,
+// address-taken via `&a.value` -- precisely the case the `structCells`
+// native cell (already promoted at address-of time) now supports end to
+// end. The Interpreter used to refuse this write outright
+// (`shouldThrowWithMessage("Unsupported interpreter assignment target.")`,
+// characterizing the pre-cell limitation); now it writes through the same
+// cell exactly like SystemLinker's real aliasing, so both backends assert
+// the SAME value and share one fixture rather than a throw pinned only for
+// Interpreter.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2091,35 +2102,6 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
                 assert(a.value == 5);
             }
         });
-    }
-}
-
-// The interpreter cannot yet write through an arbitrary field address (its
-// `&s.field` value is a read-only snapshot, not an alias to the field), so
-// it must refuse loudly instead of the silent wrong answer above. Same
-// fixture, pinned against the Interpreter's honest refusal.
-static foreach (backend; AliasSeq!(Interpreter)) {
-    @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Holder {
-                int value;
-            }
-
-            int seed() {
-                return 7;
-            }
-
-            unittest {
-                auto a = Holder(seed);
-                int* p = &a.value;
-                *p = 5;
-
-                assert(a.value == 5);
-            }
-        }).shouldThrowWithMessage("Unsupported interpreter assignment target.");
     }
 }
 

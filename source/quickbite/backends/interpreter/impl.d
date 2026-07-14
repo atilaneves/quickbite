@@ -5241,10 +5241,17 @@ private struct Walker {
             if (writeThroughArrayPointer(pointer, value))
                 return;
 
-            // `&s.field` (addressOfExpression's DotVarExp branch) yields a
-            // read-only value snapshot, not an alias to the field: refuse
-            // loudly instead of silently rewriting the throwaway pointer
-            // variable and losing the write.
+            // `&s.field` of a scalar field on a plain struct LOCAL promoted
+            // a `structCells` entry at address-of time (value.md item 7's
+            // struct phase): write through it exactly like SystemLinker's
+            // real aliasing, instead of refusing below.
+            if (writeThroughStructFieldPointer(pointer, value))
+                return;
+
+            // Every OTHER `&s.field` (addressOfExpression's DotVarExp
+            // branch) yields a read-only value snapshot, not an alias to
+            // the field: refuse loudly instead of silently rewriting the
+            // throwaway pointer variable and losing the write.
             if (pointer.pointerAllocation in fieldSnapshotAllocationIds)
                 throw new Exception("Unsupported interpreter assignment target.");
 
@@ -5571,6 +5578,48 @@ private struct Walker {
             value,
         );
         arrayPointerWritebacks[*variable] = true;
+        uninitializedLocals.remove(*variable);
+        return true;
+    }
+
+    // Write-through-pointer counterpart of `structFieldPointerCellValue`
+    // (value.md item 7's struct phase, closing the write-through-pointer
+    // gap left open when the struct phase started): once `&s.field` has
+    // promoted a `structCells` entry, `*p = value` writes `value`'s bytes
+    // straight into the cell's field slice and re-derives the boxed
+    // `locals` mirror from the (already-updated) whole struct, exactly the
+    // same cell-then-mirror discipline `writeCelledLocal`/
+    // `writeThroughArrayCell` already use for the direct-write and
+    // array-element-pointer cases. Returns `false` (writing nothing) for
+    // every field pointer that never promoted a cell -- no `structCells`
+    // entry for the receiver, no reverse-lookup field index, or a receiver
+    // whose boxed value is no longer a struct -- leaving `writeLocation`'s
+    // `PtrExp` arm to keep refusing those exactly as before.
+    private bool writeThroughStructFieldPointer(in Value pointer, in Value value) {
+        auto variable = pointer.pointerAllocation in structFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in structCells;
+        if (cell is null)
+            return false;
+
+        auto fieldIndex = pointer.pointerAllocation in structFieldPointerFieldIndices;
+        if (fieldIndex is null)
+            return false;
+
+        auto current = *variable in locals;
+        if (current is null || !current.isStruct)
+            return false;
+
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+        writeScalar(
+            cell.fieldDeclaration(*fieldIndex).type,
+            cell.field(*fieldIndex),
+            value,
+        );
+        locals[*variable] = current.withStructField(*fieldIndex, value);
         uninitializedLocals.remove(*variable);
         return true;
     }

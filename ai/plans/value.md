@@ -3506,6 +3506,71 @@ failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (struct field write-through-pointer: `*p = v` through
+`&s.field` now aliases via the native cell): the previous slice's own "What
+this slice does NOT do" named the gap directly -- writing THROUGH a
+`&s.field` pointer still threw "Unsupported interpreter assignment target."
+even after that slice gave the receiver a `structCells` entry. This slice
+closes exactly that gap for the same narrow, already-cell-supported case.
+
+The existing fixture `pointer.addressOfStructFieldWriteThroughUpdatesField`
+(`tests/ut/backends/runner/ct/expressions.d`) turned out to already BE that
+exact case: `struct Holder { int value; }`, `auto a = Holder(seed)` (a
+plain, non-dataseg struct LOCAL with one scalar field), `int* p =
+&a.value;` (address-of a scalar field via a bare `VarExp` receiver) -- so
+this was a promotion, not a new fixture. The two backend-split blocks (a
+`SystemLinker`-only real-value assertion, and an `Interpreter`-only
+`shouldThrowWithMessage("Unsupported interpreter assignment target.")`
+pinning the refusal) were merged into a single `AliasSeq!(Interpreter,
+SystemLinker)` block asserting the same `a.value == 5` both backends now
+agree on, matching the sibling
+`structFieldWrittenDirectlyIsVisibleThroughEarlierPointer` fixture's shape.
+Confirmed RED first: with only the test change applied (production code
+unchanged), `bin/ut -s ut.backends.runner.ct.expressions` reported exactly
+one new failure, `pointer.addressOfStructFieldWriteThroughUpdatesField.
+Interpreter` (still throwing, now wrongly so per the updated expectation).
+
+Production change, `source/quickbite/backends/interpreter/impl.d`: a new
+`writeThroughStructFieldPointer` helper, the write-through-pointer
+counterpart of the read-side `structFieldPointerCellValue` (and the
+struct-field analogue of `writeThroughArrayPointer`/`writeThroughArrayCell`
+for array elements). Given the pointer value, it looks the allocation id up
+in `structFieldPointerVariables`/`structFieldPointerFieldIndices` (the
+reverse lookup the previous slice populated) to find the receiver's
+`structCells` entry and field index; if any of that lookup misses, or the
+receiver's current boxed `locals` value is no longer a struct, it returns
+`false` and does nothing, leaving every other case exactly as refused as
+before. On a hit, it writes the value's bytes straight into the cell's
+field slice (`NativeStruct.field(index)` + `native_scalar.writeScalar`,
+sized by the field's own declared type) and re-derives the boxed `locals`
+mirror as `current.withStructField(index, value)`, mirroring
+`writeCelledLocal`'s cell-then-mirror discipline. `writeLocation`'s
+`PtrExp` arm now calls this helper right after `writeThroughArrayPointer`
+and before the existing `fieldSnapshotAllocationIds` refusal check, so only
+a field pointer WITHOUT a promoted cell still reaches that throw. No new
+side-table, no name-based shim: the write goes through the same
+block/offset machinery the previous slice already stood up.
+
+What remains: the refusal ("Unsupported interpreter assignment target.")
+still stands for every struct-field pointer without a `structCells` entry
+-- a nested-struct field, an array field, a class field, a union field, or
+any struct reached through anything other than a bare local variable (a
+class field, an array element, a `new`-allocated struct, a
+dataseg/`__gshared` struct) -- exactly item 7's struct-phase scope as
+stated by the previous slice. Cross-frame struct-field-pointer dereference
+(a pointer into a caller's struct, write-through-pointer from inside a
+callee) remains unexercised: the reverse-lookup maps are still not duped
+into child frames, matching the previous slice's own bounded instruction;
+no fixture in this slice needs it. No `interpreter.md` §9.10 shim is
+retired by this slice.
+
+Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (371
+run, 0 failed, 5/5 failing as expected); `bin/ut -s
+ut.backends.runner.ct.structs` (281 run, 0 failed); `bin/ut -s
+ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
