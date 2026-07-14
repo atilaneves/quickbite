@@ -1750,9 +1750,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // original.  Ctfe omitted: DMD CTFE genuinely refuses to convert a struct
 // field's address for pointer-identity comparison at compile time
 // (`cannot cast '&Holder(7).value' to 'ulong' at compile time`), not a gap
-// to close here.  Bytecode omitted: AddrExp of a DotVarExp is not
-// implemented there yet (still under active development).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+// to close here.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.addressOfStructFieldIsDistinctAcrossInstances." ~
         backend.stringof)
     @Tags(backend.stringof)

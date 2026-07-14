@@ -5419,6 +5419,18 @@ the ordinary call boundary without a production change. Ctfe and LLVMJit
 remain omitted under the existing omit-don't-pin convention. Verification:
 focused Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
 
+`pointer.addressOfStructFieldIsDistinctAcrossInstances` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The row takes the addresses of identically initialized
+scalar fields from two local struct instances, requires distinct addresses,
+and reads both pointees. The focused Bytecode row passed on its first candidate
+run, confirming the existing inline struct-field offset and frame-address
+paths already match compiled D. This adds no broader aggregate-address or
+heap-struct semantics. Verification: focused Bytecode row; `ninja bin/ut`;
+and `bin/ut --random` attempted with seed `874019670`, which failed in the
+concurrently modified `dynamicArrayTruthinessControlsEnforceFallback.Bytecode`
+row (`130 != 3`), outside this rung's files.
+
 Reviewer fix, 2026-07-14: the running machine now uses the program's live
 module-data segment rather than a startup copy. The compiler reserves every
 16-bit-addressable module-data byte when it creates the program, so a lazily
