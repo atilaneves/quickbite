@@ -1991,3 +1991,40 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// value.md item 7 review, final-review finding 7: `runSliceAssignExpression`'s
+// cell-refresh loop indexed `lower .. upper` unconditionally against
+// `elements` (built with only `current.length` entries), so an out-of-bounds
+// guest `a[0 .. 5] = x` on a 2-element array indexed `elements` past its own
+// bounds and died with a HOST `core.exception.RangeError` -- even when
+// `variable` never had a promoted cell at all, since `elements[index]` is
+// built as the call argument before `writeThroughArrayCell`'s own no-op
+// check ever runs. Fix: reject an out-of-bounds `upper` up front, before
+// `elements` is built (or `rhs` is even evaluated), with the interpreter's
+// own guest-visible `RangeError`, using the exact wording compiled D's own
+// `ArraySliceError` raises for the identical slice assignment (confirmed
+// against a real `dmd`-compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`).
+// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("dynamicArray.sliceAssignPastLengthThrowsRangeError." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(1);
+                int[] a = [first, first + 1];
+                size_t lower = cast(size_t) value(0);
+                size_t upper = cast(size_t) value(5);
+
+                a[lower .. upper] = value(9);
+            }
+        }).shouldThrowWithMessage(
+            "slice [0 .. 5] extends past source array of length 2",
+        );
+    }
+}

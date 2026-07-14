@@ -4205,6 +4205,97 @@ as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
 
+Progress 2026-07-14 (final-review nits: union guard, slice-assign range,
+writeback flag clear; whole-value-read staleness documented): a further
+Fable review of the arrayCells/structCells work above raised four items
+(one SHOULD-FIX, three NITs); this slice addresses all four.
+
+Finding 5 (SHOULD-FIX, documented only): after `int[] s = a[]; a[0] =
+ninetyNine();`, an INDEX read `s[0]` is cell-authoritative (99), but a
+WHOLE-value read of `s` (`return s;`, `s == [...]`, `s.dup`, passing `s` by
+value) still reads the stale boxed `[1, 2]` mirror -- `writeCelledLocal`'s
+byte write refreshes `a`'s cell (and `s`'s, sharing storage), but never
+touches `s`'s own boxed `locals` entry, which whole-value reads still
+consult directly instead of re-deriving from the cell. Symmetric case:
+after a `ref int[]` writeback in-place-refreshes a slice-view cell, the
+ROOT variable's boxed mirror is not touched either, so the root's own
+whole-value reads stay stale while its index reads (which do consult the
+cell) are fresh. Neither is a master regression -- master was consistently
+stale for both index and whole-value reads through an aliased variable --
+but the split between a fresh index read and a stale whole-value read
+through the SAME variable, in the SAME statement sequence, is new,
+introduced by the cell machinery's read side becoming index-read-only.
+Not fixed this slice: closing it needs re-deriving the aliased variable's
+boxed mirror from its cell on every reverse write (mirroring
+`structValueFromCell`'s struct-side re-derivation), which is unbounded in
+this narrow slice's scope -- it would need to walk every `sliceAliases`
+entry (and the reverse array-cell direction) on every scalar
+write-through, not just the one variable directly touched. Documented
+here as the precise, known boundary instead: a whole-value read of an
+aliased variable remains boxed-stale after any write reaches the SAME
+storage through a DIFFERENT aliased variable's cell; only reads through
+the variable whose OWN write triggered the refresh, and index reads
+through any aliasing variable, are cell-fresh.
+
+Finding 6 (NIT, fixed): `promoteStructCell` didn't exclude unions, though
+an earlier "What remains" note above claimed union fields are untouched --
+a `union` is itself a `TypeStruct` (`structType.sym` an
+`UnionDeclaration`), so a union local would get a `structCells` entry the
+same as any other struct, and `writeStructCellScalarFields` would then
+seed every field at its own overlapping byte range with no
+union-vs-struct branch, corrupting `&u.a`'s later deref with whatever
+field was seeded last. Fix: `promoteStructCell` now declines (returns, no
+cell, boxed path unchanged) when `structType.sym.isUnionDeclaration !is
+null`, making the "unions untouched" claim true by construction. No
+fixture: no existing suite exercises `&union.field` on Interpreter
+(`ct.structs` has no union coverage at all), and the boxed fallback path
+is unchanged pre-existing behaviour, so there is nothing new to
+characterize.
+
+Finding 7 (NIT, fixed): `runSliceAssignExpression`'s cell-refresh loop
+indexed `lower .. upper` against `elements` (built with only
+`current.length` entries) with no bounds check, so an out-of-bounds guest
+`a[0 .. 5] = x` on a 2-element array indexed `elements` past its own
+length and died with a HOST `core.exception.RangeError` -- even when
+`variable` had no promoted cell at all, since `elements[index]` is built
+as the call argument before `writeThroughArrayCell`'s own no-op check
+ever runs. Fix: reject `upper > current.length` up front, before
+`elements` is built or `rhs` is even evaluated (matching compiled D's own
+evaluation order, verified separately), throwing the interpreter's
+guest-visible `RangeError` with the exact wording druntime's
+`ArraySliceError` uses for the identical slice assignment (verified
+against a real compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`), so
+`SystemLinker` agrees exactly. New fixture (pre-approved),
+`dynamicArray.sliceAssignPastLengthThrowsRangeError` in `tests/ut/
+backends/runner/ct/arrays.d`, scoped to `Interpreter`/`SystemLinker`,
+runtime-seeded: confirmed red on Interpreter before the fix (uncaught
+host `core.exception.ArrayIndexError`, indexing `elements` itself) and
+green on SystemLinker; green on both after.
+
+Finding 8 (NIT, hardening, fixed): `structFieldPointerWritebacks` flags
+were set (`writeThroughStructFieldPointer`) but never cleared, and the
+map is dup'd into every further child frame and merged back wholesale --
+a latent trap where a stale flag from an already-processed call could
+survive into an unrelated later frame that never itself wrote through a
+struct-field pointer, and get re-applied against whatever cell exists for
+that variable then. Harmless today (re-deriving `locals[variable]` from a
+still-current cell is idempotent), but a future missed-write path could
+turn it into a stale-cell clobber. Fix: `writeBackStructFieldPointerTargets`
+now removes the processed variable's entry from `child.
+structFieldPointerWritebacks` right after re-deriving `locals[variable]`
+from the cell, so the flag cannot outlive the writeback it was raised
+for. No behavioural change today; no new fixture. Confirmed the existing
+cross-frame struct fixtures (`ct.structs`, `ct.expressions`) stay green.
+
+Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions`
+(399 run, 0 failed, 5/5 failing as expected); `bin/ut -s
+ut.backends.runner.ct.structs` (283 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.arrays` (332 run, 0 failed -- +2 for finding 7's new
+fixture); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed,
+1/1 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed). The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

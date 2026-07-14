@@ -2170,6 +2170,17 @@ private struct Walker {
         if (structType is null)
             return;
 
+        // A `union` is itself a `TypeStruct` (`structType.sym` an
+        // `UnionDeclaration`), so without this guard a union local would get
+        // a cell here too; `writeStructCellScalarFields` seeds every field
+        // at its own (overlapping, offset-0-for-a-plain-union) byte range
+        // with no union-vs-struct branch, so a second field's seed would
+        // clobber the first's bytes. Leave a union local on the existing
+        // boxed path entirely -- matching the plan's "union fields untouched"
+        // note, true by construction now.
+        if (structType.sym.isUnionDeclaration !is null)
+            return;
+
         auto current = defaultValue(variable);
         if (auto existing = variable in locals)
             current = *existing;
@@ -4249,6 +4260,18 @@ private struct Walker {
                 continue;
 
             locals[variable] = structValueFromCell(*current, *cell);
+
+            // Idempotent today (re-deriving `locals[variable]` from the
+            // still-current cell is harmless if repeated), but the flag
+            // itself is otherwise never cleared and this map gets dup'd into
+            // every further child frame and merged back wholesale -- a
+            // future rebind that reuses `variable` but never itself takes a
+            // struct-field pointer could still see a stale "writeback
+            // pending" flag from an unrelated, already-processed call and
+            // re-derive `locals[variable]` against whatever cell exists for
+            // it then. Clear it once processed so it cannot outlive this
+            // writeback.
+            child.structFieldPointerWritebacks.remove(variable);
         }
     }
 
@@ -6184,6 +6207,22 @@ private struct Walker {
         const upper = slice.upr is null
             ? current.length
             : cast(size_t) runExpression(slice.upr).asLong;
+
+        // An out-of-bounds `upper` must be rejected here, before `rhs` is
+        // even evaluated (matching compiled D, which raises this before any
+        // side effect in `rhs` runs) and before the cell-write loop below
+        // indexes `elements[lower .. upper]` -- `elements` only ever holds
+        // `current.length` entries, so an unchecked `upper > current.length`
+        // would index it out of range with a HOST `RangeError` even when
+        // `variable` has no promoted cell at all. Message text matches
+        // druntime's own `ArraySliceError` verbatim (confirmed against a
+        // compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`), so `SystemLinker`
+        // agrees exactly.
+        if (upper > current.length)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] extends past source array of length ", current.length,
+            ));
 
         rejectOverlappingSliceAssignment(variable, rhs, lower, upper, current.length);
 
