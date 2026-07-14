@@ -152,6 +152,7 @@ private void defineHostSymbols(
     imported!"orc.bindings".LLVMOrcLLJITRef jit,
     imported!"orc.bindings".LLVMOrcJITDylibRef dylib,
     imported!"orc.bindings".LLVMMemoryBufferRef buffer,
+    in bool[string] tlsSymbols,
 ) {
     import orc.bindings:
         LLVMCreateBinary,
@@ -196,6 +197,8 @@ private void defineHostSymbols(
                 LLVMMoveToNextSymbol(iterator)) {
             auto name = LLVMGetSymbolName(iterator);
             if (name is null)
+                continue;
+            if (name.fromStringz in tlsSymbols)
                 continue;
             // RTLD_DEFAULT searches the global scope the loader built for
             // the host process, i.e. libphobos2.so and friends; a hit is the
@@ -256,11 +259,33 @@ private void addObjectFile(
         LLVMCreateMemoryBufferWithContentsOfFile,
         LLVMMemoryBufferRef,
         LLVMOrcLLJITAddObjectFile;
-    import orc.elf: normalizeObjectFile;
+    import orc.elf:
+        normalizeObjectFile,
+        rewriteTlsGdRelocations,
+        tlsGdSymbolNames,
+        tlsSymbolNames;
+    import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    import core.sys.posix.dlfcn: dlsym;
     import std.conv: text;
+    import std.file: read, write;
     import std.string: fromStringz, toStringz;
 
     normalizeObjectFile(objPath);
+    auto objectBytes = cast(ubyte[]) read(objPath);
+    bool[string] tlsSymbols;
+    foreach (name; tlsSymbolNames(objectBytes))
+        tlsSymbols[name] = true;
+    ulong[string] tlsAddresses;
+    // Resolve each TLSGD relocation directly in the child. Giving dlsym's
+    // per-thread TLS address to ORC as an ordinary absolute symbol would make
+    // JITLink interpret it as a TLS descriptor instead (see rewrite above).
+    foreach (name; tlsGdSymbolNames(objectBytes)) {
+        auto address = dlsym(RTLD_DEFAULT, name.toStringz);
+        if (address !is null)
+            tlsAddresses[name] = cast(ulong) address;
+    }
+    if (rewriteTlsGdRelocations(objectBytes, tlsAddresses))
+        write(objPath, objectBytes);
 
     LLVMMemoryBufferRef buffer;
     char* message;
@@ -272,7 +297,7 @@ private void addObjectFile(
     // before adding it, so ORC binds calls to libphobos2 rather than to the
     // object's (sometimes degenerate) weak COMDAT bodies. This borrows the
     // buffer; AddObjectFile below consumes it.
-    defineHostSymbols(jit, dylib, buffer);
+    defineHostSymbols(jit, dylib, buffer, tlsSymbols);
     // AddObjectFile takes ownership of the buffer even on failure.
     throwOnError(
         LLVMOrcLLJITAddObjectFile(jit, dylib, buffer),

@@ -72,6 +72,140 @@ public bool normalizeDuplicateUndefinedGlobals(ubyte[] objectBytes) {
     return changed;
 }
 
+// ORC's process-symbol generator represents a dlsym result as an absolute
+// address. That is valid for ordinary data, but not for STT_TLS: dlsym returns
+// one thread's instance, whereas the TLSGD relocation names a TLS module and
+// offset. The LLVMJit child only executes on that same thread, so replace the
+// dmd TLSGD sequence with the resolved instance address before JITLink sees
+// it. This is the object-file counterpart of dmd_codegen.d's RAM TLSGD
+// rewrite; movabs is used here because a JIT allocation need not be within
+// RIP-relative range of the dependency image.
+public bool rewriteTlsGdRelocations(
+    ubyte[] objectBytes,
+    in ulong[string] tlsAddresses,
+) @safe {
+    auto elf = Elf64(objectBytes);
+    const symtabIndex = elf.singleSectionOfType(SectionType.symtab);
+    const symtab = elf.section(symtabIndex);
+    const stringTable = elf.sectionBytes(symtab.link);
+    const symbols = elf.symbols(symtab);
+
+    bool changed;
+    foreach (rela; elf.sections) {
+        if (rela.type != SectionType.rela || rela.link != symtabIndex)
+            continue;
+
+        bool[ulong] tlsGdCallOffsets;
+        foreach (entryOffset; elf.entryOffsets(rela)) {
+            const info = elf.readU64(entryOffset + 8);
+            if (cast(uint) info != X86_64Relocation.tlsGd)
+                continue;
+
+            const symbolIndex = cast(uint) (info >> 32);
+            if (symbolIndex >= symbols.length)
+                throw new Exception("ELF TLSGD relocation has an invalid symbol index");
+            const address = symbolName(stringTable, symbols[symbolIndex].name)
+                in tlsAddresses;
+            if (address is null)
+                continue;
+
+            auto target = elf.sectionBytes(rela.info);
+            auto relocationOffset = elf.readU64(entryOffset);
+            if (relocationOffset < 4 || relocationOffset + 12 > target.length)
+                throw new Exception("ELF TLSGD relocation is outside its target section");
+            const instructionOffset = cast(size_t) relocationOffset - 4;
+            if (target[instructionOffset] != 0x66
+                || target[instructionOffset + 1] != 0x48
+                || target[instructionOffset + 2] != 0x8d
+                || target[instructionOffset + 3] != 0x3d
+                || target[instructionOffset + 8] != 0x66
+                || target[instructionOffset + 9] != 0x66
+                || target[instructionOffset + 10] != 0x48
+                || target[instructionOffset + 11] != 0xe8)
+                throw new Exception("ELF TLSGD relocation has an unsupported instruction sequence");
+
+            target[instructionOffset] = 0x48; // movabs rax, imm64
+            target[instructionOffset + 1] = 0xb8;
+            elf.writeU64In(target, instructionOffset + 2, *address);
+            foreach (offset; instructionOffset + 10 .. instructionOffset + 16)
+                target[offset] = 0x90;
+            elf.writeU64(entryOffset + 8, info & ~cast(ulong) uint.max);
+            tlsGdCallOffsets[relocationOffset + 8] = true;
+            changed = true;
+        }
+
+        foreach (entryOffset; elf.entryOffsets(rela)) {
+            // Not `const`: associative-array `in` takes its key as an lvalue.
+            auto relocationOffset = elf.readU64(entryOffset);
+            if (relocationOffset !in tlsGdCallOffsets)
+                continue;
+            const info = elf.readU64(entryOffset + 8);
+            const type = cast(uint) info;
+            if (type != X86_64Relocation.pc32 && type != X86_64Relocation.plt32)
+                throw new Exception("ELF TLSGD call has an unsupported relocation type");
+            elf.writeU64(entryOffset + 8, info & ~cast(ulong) uint.max);
+        }
+    }
+
+    return changed;
+}
+
+// The TLSGD relocations, rather than every STT_TLS definition, are the ones
+// that need a per-thread address substituted before ORC links the object.
+public string[] tlsGdSymbolNames(ubyte[] objectBytes) @safe {
+    auto elf = Elf64(objectBytes);
+    const symtabIndex = elf.singleSectionOfType(SectionType.symtab);
+    const symtab = elf.section(symtabIndex);
+    const stringTable = elf.sectionBytes(symtab.link);
+    const symbols = elf.symbols(symtab);
+
+    bool[string] seen;
+    string[] names;
+    foreach (rela; elf.sections) {
+        if (rela.type != SectionType.rela || rela.link != symtabIndex)
+            continue;
+        foreach (entryOffset; elf.entryOffsets(rela)) {
+            const info = elf.readU64(entryOffset + 8);
+            if (cast(uint) info != X86_64Relocation.tlsGd)
+                continue;
+            const symbolIndex = cast(uint) (info >> 32);
+            if (symbolIndex >= symbols.length)
+                throw new Exception("ELF TLSGD relocation has an invalid symbol index");
+            const name = symbolName(stringTable, symbols[symbolIndex].name);
+            if (name.length == 0 || name in seen)
+                continue;
+            seen[name] = true;
+            names ~= name;
+        }
+    }
+
+    return names;
+}
+
+// TLS symbols must never become ORC absolute symbols: dlsym reports a
+// thread's instance address, not the module-and-offset definition JITLink
+// needs for a TLS relocation.
+public string[] tlsSymbolNames(ubyte[] objectBytes) @safe {
+    auto elf = Elf64(objectBytes);
+    const symtabIndex = elf.singleSectionOfType(SectionType.symtab);
+    const symtab = elf.section(symtabIndex);
+    const stringTable = elf.sectionBytes(symtab.link);
+
+    bool[string] seen;
+    string[] names;
+    foreach (symbol; elf.symbols(symtab)) {
+        if (symbol.type != SymbolType.tls)
+            continue;
+        const name = symbolName(stringTable, symbol.name);
+        if (name.length == 0 || name in seen)
+            continue;
+        seen[name] = true;
+        names ~= name;
+    }
+
+    return names;
+}
+
 // dmd gives every object its own `DW.ref.*` unwind indirection cell as a weak,
 // hidden object, and references it from `.eh_frame` with a PC-relative 32-bit
 // fixup. JITLink admits the first object's copy into the JITDylib and
@@ -199,6 +333,14 @@ private enum SymbolBinding: ubyte {
 
 private enum SymbolType: ubyte {
     section = 3,
+    tls = 6,
+}
+
+private enum X86_64Relocation: uint {
+    none = 0,
+    pc32 = 2,
+    plt32 = 4,
+    tlsGd = 19,
 }
 
 private struct SectionHeader {
@@ -206,6 +348,7 @@ private struct SectionHeader {
     ulong offset;
     ulong size;
     uint link;
+    uint info;
     ulong entrySize;
 }
 
@@ -239,6 +382,7 @@ private struct Elf64 {
             readU64(offset + 24),
             readU64(offset + 32),
             readU32(offset + 40),
+            readU32(offset + 44),
             readU64(offset + 56),
         );
     }
@@ -308,6 +452,15 @@ private struct Elf64 {
             _bytes[offset + i] = cast(ubyte)(value >> (i * 8));
     }
 
+    void writeU64In(
+        ubyte[] bytes,
+        in size_t offset,
+        in ulong value,
+    ) @safe @nogc nothrow pure {
+        foreach (i; 0 .. ulong.sizeof)
+            bytes[offset + i] = cast(ubyte)(value >> (i * 8));
+    }
+
     private void validateHeader() const @safe {
         if (_bytes.length < 64)
             throw new Exception("ELF object is too small");
@@ -330,7 +483,7 @@ private struct Elf64 {
         return _bytes[offset .. offset + size];
     }
 
-    private size_t[] entryOffsets(in SectionHeader section) const @safe {
+    size_t[] entryOffsets(in SectionHeader section) const @safe {
         if (section.entrySize == 0)
             throw new Exception("ELF section has zero-sized entries");
         if (section.size % section.entrySize != 0)

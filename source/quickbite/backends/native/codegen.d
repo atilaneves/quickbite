@@ -6,7 +6,7 @@ private:
 
 // Codegen-relevant subset of a backend's inputs. The loader's link files are
 // not part of object production, so they are deliberately absent: both
-// SystemLinker (dmd -shared) and the future LLVMJit (in-process ORC link)
+// SystemLinker (dmd -shared) and LLVMJit (in-process ORC link)
 // share this object-production path and differ only in how they consume the
 // emitted objects.
 public struct CodegenInputs {

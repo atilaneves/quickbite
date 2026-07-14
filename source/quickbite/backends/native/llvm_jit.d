@@ -39,7 +39,8 @@ public class LLVMJit:
                 staticLibraries(linkFiles),
             ),
         );
-        loadDependencyImages(_inputs.dependencyImages);
+        version (LDC) {}
+        else loadDependencyImages(_inputs.dependencyImages);
     }
 
     public this(
@@ -52,6 +53,7 @@ public class LLVMJit:
             imported!"quickbite.backends.native.system_linker".DubPackage.no,
     ) {
         import quickbite.frontend.compiler: FrontendFlags;
+        import quickbite.backends.native.link_files: archiveImportPathsUnder;
 
         this(
             LLVMJitInputs(
@@ -62,7 +64,8 @@ public class LLVMJit:
                 dubPackage,
             ),
         );
-        loadDependencyImages(_inputs.dependencyImages);
+        version (LDC) {}
+        else loadDependencyImages(_inputs.dependencyImages);
     }
 
     public override TestResult[] runTests(Module module_) {
@@ -70,10 +73,15 @@ public class LLVMJit:
     }
 
     public override TestResult[] runTests(Module[] modules) {
-        return runTestsInChild(modules, _inputs);
+        version (LDC)
+            return runTestsViaExecutor(modules, _inputs);
+        else
+            return runTestsInChild(modules, _inputs);
     }
 
     public override EvalResult eval(FuncDeclaration function_) {
+        version (LDC)
+            throw new Exception("LLVMJit.eval is unavailable under the LDC build");
         return evalInChild(function_, _inputs);
     }
 }
@@ -110,6 +118,9 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsInChild(
     if (pipe(fds) != 0)
         throw new Exception("pipe() failed");
 
+    // runChildAndReport eventually takes withCompilerLock in this child.
+    // AGENTS.md requires serial suite execution, so the child cannot inherit
+    // that mutex locked by another test and deadlock here.
     const pid = fork();
     if (pid < 0)
         throw new Exception("fork() failed");
@@ -124,6 +135,11 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsInChild(
     // parent: read the report before reaping the child so a report larger than
     // the pipe buffer cannot deadlock against waitpid.
     close(fds[1]);
+    bool childReaped;
+    scope(failure) {
+        if (!childReaped)
+            closeAndReapChild(fds[0], pid);
+    }
     ubyte[] data;
     ubyte[4096] buffer;
     for (;;) {
@@ -131,19 +147,22 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsInChild(
         if (got < 0) {
             if (errno == EINTR)
                 continue;
-            break;
+            throw new Exception("read from result pipe failed");
         }
         if (got == 0)
             break;
         data ~= buffer[0 .. got];
     }
     close(fds[0]);
+    fds[0] = -1;
 
     int status;
     for (;;) {
         const reaped = waitpid(pid, &status, 0);
-        if (reaped == pid)
+        if (reaped == pid) {
+            childReaped = true;
             break;
+        }
         if (reaped < 0 && errno == EINTR)
             continue;
         throw new Exception("waitpid failed for the JIT child");
@@ -193,11 +212,12 @@ private void runChildAndReport(
 
         writeResults(fd, cases);
     } catch (Throwable throwable) {
-        // toString can itself throw and would unwind into the parent's frames;
-        // msg is a plain field, so report it and swallow any further failure.
+        string message;
         try
-            writeError(fd, throwable.msg);
-        catch (Throwable) {}
+            message = throwable.toString;
+        catch (Throwable)
+            message = throwable.msg;
+        writeError(fd, message);
     }
 }
 
@@ -233,6 +253,11 @@ private imported!"quickbite.backends.evaluator".EvalResult evalInChild(
     }
 
     close(fds[1]);
+    bool childReaped;
+    scope(failure) {
+        if (!childReaped)
+            closeAndReapChild(fds[0], pid);
+    }
     ubyte[] data;
     ubyte[4096] buffer;
     for (;;) {
@@ -240,19 +265,22 @@ private imported!"quickbite.backends.evaluator".EvalResult evalInChild(
         if (got < 0) {
             if (errno == EINTR)
                 continue;
-            break;
+            throw new Exception("read from result pipe failed");
         }
         if (got == 0)
             break;
         data ~= buffer[0 .. got];
     }
     close(fds[0]);
+    fds[0] = -1;
 
     int status;
     for (;;) {
         const reaped = waitpid(pid, &status, 0);
-        if (reaped == pid)
+        if (reaped == pid) {
+            childReaped = true;
             break;
+        }
         if (reaped < 0 && errno == EINTR)
             continue;
         throw new Exception("waitpid failed for the JIT child");
@@ -281,10 +309,32 @@ private void runEvalChildAndReport(
         auto jit = jitForObjects([function_.getModule], inputs);
         writeEvalResult(fd, evalCompiledFunction(jit, function_));
     } catch (Throwable throwable) {
+        string message;
         try
-            writeError(fd, throwable.msg);
-        catch (Throwable) {}
+            message = throwable.toString;
+        catch (Throwable)
+            message = throwable.msg;
+        writeError(fd, message);
     }
+}
+
+// If the parent cannot finish reading a child report, leaving the read end
+// open can strand the child in write(2), and throwing before waitpid leaves a
+// zombie. This cleanup runs only before the normal reap succeeds.
+private void closeAndReapChild(ref int readFd, int pid) @nogc nothrow {
+    import core.stdc.errno: EINTR, errno;
+    import core.sys.posix.signal: SIGKILL, kill;
+    import core.sys.posix.sys.wait: waitpid;
+    import core.sys.posix.unistd: close;
+
+    if (readFd >= 0) {
+        close(readFd);
+        readFd = -1;
+    }
+    kill(pid, SIGKILL);
+
+    int status;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
 }
 
 public struct LLVMJitInputs {
@@ -305,6 +355,7 @@ public struct LLVMJitInputs {
 }
 
 private string[] sharedLibraries(in string[] linkFiles) @safe pure {
+    import quickbite.backends.native.link_files: isSharedLibraryPath;
     import std.algorithm.iteration: filter, map;
     import std.array: array;
 
@@ -315,42 +366,13 @@ private string[] sharedLibraries(in string[] linkFiles) @safe pure {
 }
 
 private string[] staticLibraries(in string[] linkFiles) @safe pure {
+    import quickbite.backends.native.link_files: isSharedLibraryPath;
     import std.algorithm.iteration: filter, map;
     import std.array: array;
 
     return linkFiles
         .filter!(linkFile => !linkFile.isSharedLibraryPath)
         .map!(linkFile => linkFile.idup)
-        .array;
-}
-
-private bool isSharedLibraryPath(in string linkFile) @safe pure {
-    import std.string: endsWith;
-
-    return linkFile.endsWith(".so");
-}
-
-// import paths under the package belong to the project under test and are
-// compiled fresh per run; the rest belong to dependencies, whose code lives in
-// the cold dependency image loaded into the process.
-private string[] archiveImportPathsUnder(in string[] importPaths, in string packageRoot) @safe {
-    import std.algorithm.iteration: filter, map;
-    import std.algorithm.searching: startsWith;
-    import std.array: array;
-    import std.path: absolutePath, buildNormalizedPath, dirSeparator;
-
-    if (packageRoot.length == 0)
-        return [];
-
-    const root = packageRoot.absolutePath.buildNormalizedPath;
-    bool underPackage(in string path) {
-        const normalised = path.absolutePath.buildNormalizedPath;
-        return normalised == root
-            || normalised.startsWith(root ~ dirSeparator);
-    }
-    return importPaths
-        .filter!(path => !underPackage(path))
-        .map!(path => path.idup)
         .array;
 }
 
@@ -374,6 +396,63 @@ private void loadDependencyImage(in string dependencyImage) {
     }
 }
 
+// The LDC host emits DMD objects but cannot execute them in-process. Hand the
+// objects, cold dependency images, archive paths, and discovered symbols to
+// the DMD-built executor, which performs the ORC link and test calls.
+version (LDC)
+private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
+    imported!"dmd.dmodule".Module[] modules,
+    in LLVMJitInputs inputs,
+) {
+    import quickbite.backends.runner: TestResult;
+    import quickbite.backends.native.run_executor: runExecutor;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
+    import run_wire:
+        RunKind, RunRequest, UnitTestSymbol, decodeResults, encodeRequest;
+    import dmd.mangle: mangleExact;
+    import core.sys.posix.unistd: getpid;
+    import std.conv: text;
+    import std.file: mkdirRecurse, read, rmdirRecurse, tempDir, write;
+    import std.path: buildPath;
+    import std.string: fromStringz;
+
+    const index = _jitCounter++;
+    const dir = buildPath(tempDir, text("quickbite_jit_", getpid, "_", index));
+    mkdirRecurse(dir);
+    // Unlike the in-process path, the executor reads these files after this
+    // function has emitted them, so retain the directory through its reply.
+    scope(exit) rmdirRecurse(dir);
+    // RunRequest owns mutable arrays while its encoder walks them.
+    auto objectFiles = emitObjects(modules, dir, inputs);
+
+    UnitTestSymbol[] symbols;
+    foreach (module_; modules)
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            symbols ~= UnitTestSymbol(
+                mangleExact(unitTest).fromStringz.idup,
+                unitTest.ident.toChars.fromStringz.idup,
+                unitTest.loc.toChars.fromStringz.idup,
+            );
+        });
+
+    const requestFile = buildPath(dir, "request.bin");
+    const resultsFile = buildPath(dir, "results.bin");
+    write(requestFile, encodeRequest(RunRequest(
+        RunKind.orcObjects,
+        "",
+        inputs.dependencyImages.dup,
+        objectFiles,
+        inputs.staticLibraries.dup,
+        symbols,
+    )));
+    runExecutor(requestFile, resultsFile);
+
+    TestResult[] cases;
+    foreach (result; decodeResults(cast(ubyte[]) read(resultsFile)))
+        cases ~= TestResult(result.passed, result.name, result.location, result.message);
+    return cases;
+}
+
 // Emit the objects (shared codegen path, child emits, no link) and hand them
 // to the frontend-free ORC loader (orc.loader), which stands up an LLJIT with
 // them all added to the main JITDylib, plus a process-symbol generator so
@@ -382,12 +461,7 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
     imported!"dmd.dmodule".Module[] modules,
     in LLVMJitInputs inputs,
 ) {
-    import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForBackend;
-    import quickbite.backends.native.system_linker: DubPackage;
-    import quickbite.frontend.compiler: FrontendFlags;
-    import quickbite.frontend.compiler: withCompilerLock;
     import orc.loader: createJit;
-    import core.atomic: atomicFetchAdd;
     import core.sys.posix.unistd: getpid;
     import std.conv: text;
     import std.file: mkdirRecurse, rmdirRecurse, tempDir;
@@ -395,16 +469,30 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
 
     // Unique per call; a crashed run leaks its directory, and a later run with
     // the same path would otherwise be ambiguous.
-    const index = atomicFetchAdd(_jitCounter, 1u);
+    const index = _jitCounter++;
     const dir = buildPath(tempDir, text("quickbite_jit_", getpid, "_", index));
     mkdirRecurse(dir);
     // The loader reads the objects into memory buffers before it returns, so
     // the files can go as soon as it has.
     scope(exit) rmdirRecurse(dir);
 
-    string[] objPaths;
+    const objPaths = emitObjects(modules, dir, inputs);
+
+    return createJit(objPaths, inputs.staticLibraries);
+}
+
+private string[] emitObjects(
+    imported!"dmd.dmodule".Module[] modules,
+    in string dir,
+    in LLVMJitInputs inputs,
+) {
+    import quickbite.backends.native.codegen: CodegenInputs, emitObjectFilesForBackend;
+    import quickbite.backends.native.system_linker: DubPackage;
+    import quickbite.frontend.compiler: FrontendFlags, withCompilerLock;
+
+    string[] objectFiles;
     withCompilerLock(() {
-        objPaths = emitObjectFilesForBackend(
+        objectFiles = emitObjectFilesForBackend(
             modules,
             dir,
             CodegenInputs(
@@ -414,8 +502,7 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
             ),
         );
     });
-
-    return createJit(objPaths, inputs.staticLibraries);
+    return objectFiles;
 }
 
 private imported!"quickbite.backends.runner".TestResult runUnitTest(
@@ -512,7 +599,7 @@ private void writeAll(int fd, scope const(void)[] data) {
         if (wrote < 0) {
             if (errno == EINTR)
                 continue;
-            return;
+            throw new Exception("write to result pipe failed");
         }
         written += wrote;
     }
@@ -593,6 +680,33 @@ private ubyte readByte(const(ubyte)[] data, ref size_t pos) {
     if (pos + 1 > data.length)
         throw new Exception("truncated result stream");
     return data[pos++];
+}
+
+@("jitPipe.writeFailureIsReportedNotSwallowed")
+unittest {
+    import quickbite.backends.runner: TestResult;
+    import core.sys.posix.signal: SIG_IGN, SIGPIPE, signal;
+    import core.sys.posix.unistd: close, pipe;
+    import ut;
+
+    int[2] fds;
+    pipe(fds).should == 0;
+    scope(exit) close(fds[1]);
+    close(fds[0]);
+    const oldSigpipe = signal(SIGPIPE, SIG_IGN);
+    scope(exit) signal(SIGPIPE, oldSigpipe);
+
+    writeResults(fds[1], [TestResult(true, "t", "loc", "")])
+        .shouldThrowWithMessage("write to result pipe failed");
+}
+
+@("archiveImportPathsUnder.emptyPackageRootClassifiesNothing")
+unittest {
+    import quickbite.backends.native.link_files: archiveImportPathsUnder;
+    import ut;
+
+    string[] expected;
+    archiveImportPathsUnder(["/somewhere/else/src"], "").should == expected;
 }
 
 private __gshared uint _jitCounter;

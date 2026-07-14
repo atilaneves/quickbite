@@ -2,10 +2,25 @@ module ut.backends.runner.rt.dependency_image;
 
 
 import ut.backends;
+import dmd.dmodule: Module;
 
 
-@("dependencyImage.externDFunction.Interpreter")
-@Tags("Interpreter")
+private auto runDependencyImage(alias backend)(
+    const string[] linkFiles,
+    const string[] importPaths,
+    Module module_,
+) {
+    static if (is(backend == LLVMJit)) {
+        return (new backend(linkFiles, importPaths)).runTests(module_);
+    } else {
+        return (new backend(linkFiles)).runTests(module_);
+    }
+}
+
+
+static foreach (backend; AliasSeq!(LLVMJit, Interpreter)) {
+@("dependencyImage.externDFunction." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -53,15 +68,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDTwoArgumentFunction.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDTwoArgumentFunction." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -110,15 +128,17 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
-
-@("dependencyImage.externDStringArgumentFunction.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDStringArgumentFunction." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -166,15 +186,17 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
-
-@("dependencyImage.externDStringReturnFunction.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDStringReturnFunction." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -225,15 +247,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDRefReturn.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDRefReturn." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -285,15 +310,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDTypedSliceFunction.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDTypedSliceFunction." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -355,15 +383,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDStackSpillFunction.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDStackSpillFunction." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -452,15 +483,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDMemberFunction.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDMemberFunction." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -515,15 +549,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDMemberFunctionWithArguments.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDMemberFunctionWithArguments." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -580,10 +617,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -592,8 +632,8 @@ unittest {
 // the bridge reifies via NativeMarshaller.readResult. Already works; this pins
 // that behaviour across the §5 seam. The asymmetric fields also re-exercise the
 // §27 extern(D) argument reversal alongside the sret return.
-@("dependencyImage.externDLargeStructReturn.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDLargeStructReturn." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -654,15 +694,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.nativeException.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nativeException." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -714,15 +757,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.nativeCustomException.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nativeCustomException." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -787,15 +833,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.nativeCustomExceptionField.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nativeCustomExceptionField." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -865,15 +914,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.nativeCustomExceptionFieldViaBaseCatch.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nativeCustomExceptionFieldViaBaseCatch." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -947,15 +999,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.nativeCustomExceptionFieldAcrossHelperCatch.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nativeCustomExceptionFieldAcrossHelperCatch." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1043,15 +1098,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.nativeChainedException.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nativeChainedException." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1110,15 +1168,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externCVariadic.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externCVariadic." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1179,10 +1240,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -1190,8 +1254,8 @@ unittest {
 // arrive as int and a float as double (ffi_prep_cif_var rejects unpromoted
 // small-int/float variadic types), whether the frontend promotes at the call
 // site or the bridge has to.
-@("dependencyImage.externCVariadicPromotion.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externCVariadicPromotion." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1250,15 +1314,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externCppFunctionAndMember.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externCppFunctionAndMember." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1325,15 +1392,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDMutatingMember.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDMutatingMember." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1390,15 +1460,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDMutableSliceWriteback.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDMutableSliceWriteback." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1451,10 +1524,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -1462,8 +1538,8 @@ unittest {
 // crosses in both directions through the existing recursive struct walk reusing
 // the {length, ptr} slice descriptor; already works, so this pins it. Covers the
 // argument direction (reading `s.name`/`s.id`) and the struct-returning variant.
-@("dependencyImage.externDNestedSliceStruct.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDNestedSliceStruct." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1527,18 +1603,21 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
 // A by-value struct with a static-array field (ffi.md §34.3.1 item 0): the
 // static array crosses as a STRUCT ffi_type of `dim` element copies, so the
 // containing struct is no longer refused. Covers the argument direction.
-@("dependencyImage.externDStaticArrayField.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDStaticArrayField." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1597,15 +1676,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externCScalarOutParameter.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externCScalarOutParameter." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1655,10 +1737,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -1666,8 +1751,8 @@ unittest {
 // An in-out scalar parameter (ffi.md §34.8): the callee reads the pointed-to
 // value before writing it back, so the marshalled cell must carry the
 // argument's current value into the call, not start zeroed.
-@("dependencyImage.externCInOutScalarParameter.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externCInOutScalarParameter." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1719,10 +1804,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -1731,8 +1819,8 @@ unittest {
 // `char**` shape alone does not make it an out slot, so the argument's current
 // pointer value must reach the callee. The fixture null-checks so the flaw
 // shows as a wrong return value rather than a crash.
-@("dependencyImage.externCPointerToPointerInput.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externCPointerToPointerInput." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1789,10 +1877,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -1801,8 +1892,8 @@ unittest {
 // but ffiStructType walks them as if sequential, so libffi's computed size
 // disagrees with DMD's and the layout cross-check assert kills the call
 // instead of either calling correctly or falling back gracefully.
-@("dependencyImage.externCUnionReturn.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externCUnionReturn." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1862,10 +1953,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -1875,8 +1969,8 @@ unittest {
 // marshaller only handles delegates as direct arguments — reifying the
 // returned {context, funcptr} pair dies on the unmarshalValue default assert
 // instead of either working or falling back gracefully before the call.
-@("dependencyImage.externDDelegateReturn.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDDelegateReturn." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -1927,10 +2021,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -1939,8 +2036,8 @@ unittest {
 // §34.12): the factory returns a base `Widget` reference to a derived `Button`,
 // and the call must dispatch through the object's vtable to the override rather
 // than to the statically-resolved base method.
-@("dependencyImage.externDClassVirtualDispatch.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDClassVirtualDispatch." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2008,10 +2105,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2022,8 +2122,8 @@ unittest {
 // (interface pointer not adjusted back to the object base) returns the wrong
 // value — that itable `this`-adjustment is what distinguishes interfaces from a
 // plain class vtable.
-@("dependencyImage.externDInterfaceDispatch.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDInterfaceDispatch." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2097,10 +2197,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2108,8 +2211,8 @@ unittest {
 // `this(int)` constructor (ffi.md §34.13). The ctor computes the field rather
 // than plain field-init, so a passing read proves the native constructor body
 // ran across the boundary rather than an aggregate struct-literal fallback.
-@("dependencyImage.externDStructConstructor.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDStructConstructor." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2165,18 +2268,21 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
 // A dependency-image struct whose body-less extern(D) destructor runs at scope
 // exit (ffi.md §34.13). The destructor increments a shared native counter, read
 // back through a body-less accessor, proving `~this()` fired across the boundary.
-@("dependencyImage.externDStructDestructor.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDStructDestructor." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2242,18 +2348,21 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
 // A dependency-image struct whose body-less extern(D) postblit runs on copy
 // (ffi.md §34.13). The postblit increments a shared native counter, read back
 // through a body-less accessor, proving `this(this)` fired across the boundary.
-@("dependencyImage.externDStructPostblit.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDStructPostblit." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2319,15 +2428,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externDDelegateCallback.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDDelegateCallback." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2377,17 +2489,20 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
 // A scoped delegate is contractually consumed within this native call, so it
 // remains on the call-scoped reverse bridge (ffi.md §34.16).
-@("dependencyImage.externDScopedVoidDelegateCallback.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDScopedVoidDelegateCallback." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2439,10 +2554,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2450,8 +2568,8 @@ unittest {
 // registering FFI call, then invokes it through a later native call (ffi.md
 // §35.4). SystemLinker proves D permits this; Interpreter must keep the native
 // entry point and interpreted closure alive across both FFI calls.
-@("dependencyImage.externDDurableDelegateCallback.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDDurableDelegateCallback." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2514,10 +2632,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2525,8 +2646,8 @@ unittest {
 // The callback subtracts its arguments, so a wrong explicit-argument order would
 // return -7; a passing result proves the trampoline restores the reversed
 // extern(D) callback arguments to source order.
-@("dependencyImage.externDMultiArgDelegateCallback.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDMultiArgDelegateCallback." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2576,10 +2697,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2587,8 +2711,8 @@ unittest {
 // (ffi.md §34.13). Unlike externDStructPostblit (which only counts), this writes
 // through `this`, so the copied variable must reflect the post-call receiver
 // bytes — the BlitExp receiver writeback half of the rung.
-@("dependencyImage.externDMutatingPostblit.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDMutatingPostblit." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2646,10 +2770,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2658,8 +2785,8 @@ unittest {
 // construction), the new-expression path must route a body-less ctor through the
 // FFI bridge instead of running its (null) body, which would leave the heap
 // struct default-initialised (value == 0).
-@("dependencyImage.externDNewStructConstructor.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDNewStructConstructor." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2715,10 +2842,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2731,8 +2861,8 @@ unittest {
 // handle's sole reference lives in NO_SCAN memory (the native-layout
 // backend's raw byte frames); that is the value.md handle-table work, not a
 // boxed-interpreter defect.
-@("dependencyImage.externDClassHandleSurvivesCollection.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDClassHandleSurvivesCollection." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2801,10 +2931,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2817,8 +2950,8 @@ unittest {
 // no-available-source refusal today even though the sentinel byte would
 // round-trip. SystemLinker is the behaviour oracle; the Interpreter leg is red
 // pending the union-gate fix.
-@("dependencyImage.externCUnionOutParameter.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externCUnionOutParameter." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2882,18 +3015,21 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
 // A dynamic slice whose element is a by-value struct (ffi.md §34.3.1 item 0):
 // the slice ABI descriptor is element-agnostic, so once the element gate is
 // representability-driven the slice crosses both as an argument and a return.
-@("dependencyImage.externDSliceOfStructs.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externDSliceOfStructs." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -2967,10 +3103,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -2981,8 +3120,9 @@ unittest {
 // oracle crosses it fine (the KEPT supported-behavior leg); the Interpreter
 // refuses it honestly (unsupportedNativeTypeMessage). extern(C) keeps argument
 // ordering irrelevant.
-@("dependencyImage.externCAssocArrayRejected.Interpreter")
-@Tags("Interpreter")
+static if (is(backend == Interpreter)) {
+@("dependencyImage.externCAssocArrayRejected." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3032,20 +3172,24 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == false;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == false;
         // Honest diagnostic: names the associative array and its type spelling,
         // not missing source (ffi.md §34.3.1 item 0).
-        "associative array".should.be in interpreted[0].message;
-        "int[string]".should.be in interpreted[0].message;
+        "associative array".should.be in actual[0].message;
+        "int[string]".should.be in actual[0].message;
     }
+}
 }
 
 
-@("dependencyImage.externGsharedGlobalRead.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externGsharedGlobalRead." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3097,15 +3241,18 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
-@("dependencyImage.externGsharedGlobalWrite.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.externGsharedGlobalWrite." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3164,10 +3311,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3177,8 +3327,8 @@ unittest {
 // oracle and the Interpreter. The direct `seed` read also exercises the §35.2a
 // symbol-read path, proving the ctor's write is visible through the resolved
 // symbol.
-@("dependencyImage.moduleCtorRanAtDlopen.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.moduleCtorRanAtDlopen." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3234,10 +3384,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3248,8 +3401,8 @@ unittest {
 // `__gshared`: the §35.2a predicate matches `extern int` (extern_ set, dataseg,
 // no _init) and `dlsym` resolves the STT_TLS symbol to the interpreter thread's
 // instance, so reads and write-through both work with no extra code.
-@("dependencyImage.tlsGlobalReadWrite.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.tlsGlobalReadWrite." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3308,10 +3461,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3323,8 +3479,8 @@ unittest {
 // read-modify-write with the §35.2 write branch: `writeLocation` reads the
 // receiver from native, rebuilds it with `withStructField`, and recurses onto
 // the `VarExp`, pushing the struct bytes back to the symbol. No per-shape code.
-@("dependencyImage.structGlobalReadWrite.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.structGlobalReadWrite." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3388,10 +3544,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3402,8 +3561,8 @@ unittest {
 // `ptr`, and copies `length` elements. The image's `static this()` populates
 // the slice at dlopen (pinned in an earlier commit). Read only;
 // slice-global writeback is a later rung.
-@("dependencyImage.sliceGlobalRead.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.sliceGlobalRead." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3464,10 +3623,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3477,8 +3639,8 @@ unittest {
 // allocates a fresh element buffer, writes `{length, ptr=buffer.ptr}` into the
 // symbol's 16 bytes, and pins the buffer for the process lifetime (§5). Native
 // code then reads the interpreter-written `{length,ptr}` and elements back.
-@("dependencyImage.sliceGlobalWriteback.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.sliceGlobalWriteback." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3541,10 +3703,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3552,8 +3717,8 @@ unittest {
 // Pins that native globals of different scalar widths (64-bit int, double,
 // unsigned byte, bool) reify correctly through the data-symbol read path
 // (ffi.md §35.2).
-@("dependencyImage.scalarWidthGlobalRead.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.scalarWidthGlobalRead." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3608,10 +3773,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3621,8 +3789,8 @@ unittest {
 // assignment drives the VarExp write branch directly with a struct `Value`,
 // distinct from the field-write read-modify-write path (`config.width = 7`,
 // a `DotVarExp`) pinned by `structGlobalReadWrite`.
-@("dependencyImage.structGlobalRebindWriteback.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.structGlobalRebindWriteback." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3678,10 +3846,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3690,8 +3861,8 @@ unittest {
 // {length,ptr} descriptor), so the data-symbol path reifies the inline
 // element bytes through `unmarshalValue`'s `Tsarray` case. This is distinct
 // from the dynamic-slice descriptor case pinned by `sliceGlobalRead`.
-@("dependencyImage.staticArrayGlobalRead.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.staticArrayGlobalRead." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3743,10 +3914,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3756,8 +3930,8 @@ unittest {
 // the `string` field just as §34.11's by-value nested-slice struct crossing
 // does, but here the struct comes from the data-symbol read path. The string
 // field points at a literal in rodata that survives for the process. Read only.
-@("dependencyImage.nestedStructGlobalRead.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nestedStructGlobalRead." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3813,10 +3987,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -3828,8 +4005,8 @@ unittest {
 // the symbol name `seedBase`; a plain extern(D) global mangles the module name
 // in (`_D21dep_image_ctororder_a...` vs `..._b...`), so B's reference would not
 // resolve to A's definition. First multi-image fixture.
-@("dependencyImage.crossImageCtorOrdering.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.crossImageCtorOrdering." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3902,18 +4079,21 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imageAPath, imageBPath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imageAPath, imageBPath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
 // Pins §35.2 DT_NEEDED-driven dependency-image initialization ordering: the
 // caller only names image B. B has a dynamic-loader dependency on A, so dlopen(B)
 // must load A first, run A's module ctor, then run B's module ctor.
-@("dependencyImage.dtNeededCtorOrdering.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.dtNeededCtorOrdering." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -3992,10 +4172,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imageBPath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imageBPath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -4003,8 +4186,8 @@ unittest {
 // image B, but B depends on image A. A owns a default thread-local D global;
 // interpreted direct reads/writes and native B calls must all observe the same
 // TLS instance after dlopen(B) loads A.
-@("dependencyImage.dtNeededTlsGlobalReadWrite.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.dtNeededTlsGlobalReadWrite." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -4090,10 +4273,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imageBPath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imageBPath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -4102,8 +4288,8 @@ unittest {
 // native-pointer Value. To exercise the read without interpreted native-pointer
 // deref (out of scope, §35.2), the interpreter reads the pointer global and
 // passes it to a native callee that dereferences it.
-@("dependencyImage.pointerGlobalRead.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.pointerGlobalRead." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -4160,10 +4346,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -4176,8 +4365,8 @@ unittest {
 // "core.exception."/"object." + "Error", so the name-prefix heuristic
 // misclassifies it as Exception, and catch(Error) on the rethrown link
 // wrongly misses it.
-@("dependencyImage.nativeChainedErrorSubclass.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nativeChainedErrorSubclass." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -4250,10 +4439,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
 }
 
@@ -4261,8 +4453,8 @@ unittest {
 // nativeExceptionRoot defect): the fabricated type-name list jumps straight
 // from the thrown class to its root, omitting the intermediate base, so
 // catch(DependencyBaseException) wrongly misses a DependencyException.
-@("dependencyImage.nativeIntermediateBaseException.Interpreter")
-@Tags("Interpreter")
+@("dependencyImage.nativeIntermediateBaseException." ~ backend.stringof)
+@Tags(backend.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
@@ -4337,9 +4529,13 @@ unittest {
         oracle.length.should == 1;
         oracle[0].passed.should == true;
 
-        const interpreted = (new Interpreter([imagePath]))
-            .runTests(moduleResult.module_);
-        interpreted.length.should == 1;
-        interpreted[0].passed.should == true;
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
     }
+}
 }

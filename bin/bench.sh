@@ -22,8 +22,8 @@
 # DMD-codegen'd code, which an LDC host cannot run in-process (extern(D) ABI
 # divergence, ai/spikes/ldc-eh/FINDINGS.md), so SystemLinker hands the linked
 # .so to a small DMD-built executor (bin/bench-exec, built below) over a process
-# boundary. llvmjit's in-process JIT has no such boundary and is unavailable
-# under this build; use system-linker for native post-parse rows.
+# boundary. LLVMJit sends its objects to the same executor, which performs the
+# ORC link and calls there, so both native backends are measurable under LDC.
 # Usage: bin/bench.sh [--dub=NAME ...] [bench-flags] [fixture ...]
 set -euo pipefail
 cd "$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"

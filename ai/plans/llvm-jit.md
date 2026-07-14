@@ -1314,9 +1314,23 @@ static foreach (backend; AliasSeq!(Interpreter, LLVMJit)) {
 SystemLinker-oracle rows: the three struct fixtures, pointer index assignment,
 explicit struct-field initialization, local-buffer `strlen`, file I/O, and the
 four adjacent parameter/control-flow diagnostics. All 11 new `LLVMJit` rows
-passed in a focused serial run. `rt/dependency_image.d` remains the next Slice
-E increment; it needs a mechanical conversion from its current
-Interpreter-specific fixture shape to an `Interpreter`/`LLVMJit` matrix.
+passed in a focused serial run. Converted `rt/dependency_image.d` mechanically
+to the `Interpreter`/`LLVMJit` matrix. Its two TLS rows exposed the parked
+interposition hazard: defining dlsym's per-thread TLS instance as an ORC
+absolute symbol breaks the TLSGD protocol. LLVMJit now rewrites resolved TLSGD
+sequences in the child object to return that instance directly, removing the
+TLSGD and `__tls_get_addr` relocations before JITLink loads the object. The
+historical seed `4286332873` and the standard randomized gate (seed
+`55736904`) are green.
+
+**Matrix correction (2026-07-13).** `externCAssocArrayRejected` is an
+Interpreter-only FFI characterization: its expected rejection is not
+SystemLinker-oracle behavior, and both native backends support the crossing.
+It therefore remains only in the Interpreter expansion. The remaining shared
+dependency-image fixtures run `LLVMJit` before `Interpreter`; this avoids the
+Interpreter's native writeback leaking into the long-lived parent process
+before the JIT child loads the same dependency image. This is test isolation,
+not an LLVMJit support regression.
 
 ## Slice F — diagnostics and hygiene
 
@@ -1381,3 +1395,39 @@ unittest {
    - `codegen.d`'s header comment still says "the *future* LLVMJit".
 
 **Verify:** standard gate.
+
+**Progress (2026-07-13).** Completed item 3's comment and declaration
+hygiene: recorded the intentional no-dispose child lifetime, removed the
+unused string-pool release declaration, corrected the void target-init
+comment, documented the serial fork/lock contract, and made the JIT counter
+plain `__gshared` like the target-init flag. Standard gate green.
+
+**Progress (2026-07-13).** Completed items 1–2: result-pipe writes and reads
+now throw on non-EINTR errors, and child infrastructure frames use
+`Throwable.toString` with a guarded `msg` fallback. The static/shared-library
+and archive-import-path classifiers now share `native/link_files.d`; an empty
+package root classifies no archive paths for both native backends. The approved
+pipe regression was red before error propagation and both approved focused
+tests are green afterwards.
+
+**Progress (2026-07-13).** The pipe-write regression now restores its prior
+`SIGPIPE` handler and closes its write descriptor during cleanup, preventing
+test-local process-state and descriptor leaks.
+
+**Progress (2026-07-13).** Parent-side result-pipe failures now close the
+read end, kill the still-running JIT child, and reap it before propagating the
+read error. This prevents a blocked writer or zombie on either the test or
+eval child path.
+
+## SystemLinker-peer parity Slice 3 — `bench-exec` ORC mode + LDC bench
+
+**Progress (2026-07-13).** Added the ORC object request mode to the shared
+executor wire protocol. Under LDC, LLVMJit now emits objects in the host and
+sends them, static archives, dependency images, and discovered unittest symbols
+to the DMD-built executor; that executor loads images before creating its ORC
+JIT and returns the normal result frame. Dependency images are no longer
+`dlopen`'d in the LDC host. The executor spawn helper is shared by both native
+backends; `llvmjit` is restored to LDC benchmark defaults and explicit
+selection. `bench-exec` now builds the frontend-free `orc` package and links
+LLVM. DMD `ninja bin/ut` passed. The optimized LDC benchmark build is in
+progress; complete the three Slice-3 benchmark commands before the PR.

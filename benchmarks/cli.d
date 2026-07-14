@@ -111,12 +111,9 @@ public void run(string[] args) {
     // set both validates the selection and serves the standalone fixtures.
     auto defaultRunners = makeRunners(BackendEnv());
 
-    const usingDefaultBackends = opts.backendNames.length == 0;
-    string[] backendNames = usingDefaultBackends
+    string[] backendNames = opts.backendNames.length == 0
         ? defaultBackendNames.dup
         : opts.backendNames.dup;
-
-    backendNames = withoutUnavailableBackends(backendNames, usingDefaultBackends);
 
     foreach (name; backendNames)
         if (name !in defaultRunners)
@@ -837,36 +834,6 @@ public BenchmarkUnit prepareDubUnit(
         Result(elapsed, elapsed, 0.0, 0),
         false,
     );
-}
-
-// version(LDC): an LDC-built bench cannot run llvmjit. Its value is the
-// in-process ORC JIT, which has no .so to hand the DMD run executor and whose
-// JIT'd DMD-codegen would mismatch the LDC host's extern(D) ABI
-// (ai/spikes/ldc-eh/FINDINGS.md). system-linker stays available because it
-// produces a .so the executor can run. Drop llvmjit silently from the defaults,
-// but reject it loudly when explicitly requested so the user is not surprised.
-string[] withoutUnavailableBackends(string[] backendNames, in bool usingDefaults) {
-    version (LDC) {
-        import std.algorithm.iteration: filter;
-        import std.algorithm.searching: canFind;
-        import std.array: array;
-        import std.stdio: stderr;
-
-        if (!backendNames.canFind("llvmjit"))
-            return backendNames;
-        if (!usingDefaults)
-            throw new Exception(
-                "llvmjit is unavailable under the LDC benchmark build "
-                ~ "(its in-process JIT cannot cross the run-executor process "
-                ~ "boundary); use system-linker, or rebuild with "
-                ~ "`dub build -c benchmark -b benchmark-opt`.",
-            );
-        stderr.writeln(
-            "note: llvmjit is unavailable under the LDC build; skipping it.",
-        );
-        return backendNames.filter!(name => name != "llvmjit").array;
-    } else
-        return backendNames;
 }
 
 bool isOptimisedBuild() {
