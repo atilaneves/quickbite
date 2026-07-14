@@ -1497,7 +1497,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // Same Finding 1 bug, loop-shaped: a `foreach` body re-executes the same
 // `DeclarationExp` for `x` every iteration, so the first iteration's
 // promoted cell must not leak into the second iteration's fresh `x`.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.loopRedeclaredLocalDropsStaleScalarCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

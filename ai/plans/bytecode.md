@@ -5603,3 +5603,13 @@ or member ref returns. Verification: focused Bytecode red then green;
 `ninja bin/ut`; and `bin/ut --random` encountered an unrelated LLVMJit
 symbol-materialization failure, while the required
 `bin/ut --seed 1147723882 --quiet` replay passed.
+
+`pointer.loopRedeclaredLocalDropsStaleScalarCell` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row takes the address of a
+fresh loop-local scalar on each `foreach` iteration and reads it through that
+pointer. The focused Bytecode row passed on its first candidate run,
+confirming typed-frame local storage is fresh for each loop iteration. No
+production change was needed. This does not add loop-scoped aggregate
+lifetimes, general lvalue support, or pointer arithmetic. Verification:
+focused Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
