@@ -7323,6 +7323,15 @@ private struct Walker {
         auto sliceAlias = alias_.source in sliceAliases;
         if (sliceAlias is null || (sliceAlias.source in locals) !is null)
             writeThroughSliceAlias(alias_.source, alias_.index, value);
+        // A write through a `ref` element alias (e.g. `foreach (ref e; a)
+        // e = ...;`, lowered by dmd to `ref e = __r[__key];`) must also
+        // refresh `alias_.source`'s promoted `arrayCells` entry, the same
+        // way a direct element write (`writeIndexLocation`) and a write
+        // through a pointer (`writeThroughArrayPointer`) already do -- or an
+        // earlier-taken pointer into the same element (which consults the
+        // cell first, `runPointerExpression`) would keep reading stale
+        // bytes. A no-op when no cell was ever promoted for `alias_.source`.
+        writeThroughArrayCell(alias_.source, alias_.index, value);
         uninitializedLocals.remove(alias_.source);
     }
 

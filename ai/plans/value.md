@@ -3135,6 +3135,67 @@ expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full
 `bin/ut --random` was left to the orchestrator per the usual long-suite
 handoff.
 
+Progress 2026-07-14 (array-native storage's `ref`-element-alias gap: a write
+through `foreach (ref e; a) e = ...;` now also authors the shared
+`arrayCells` block): the four slices above closed direct-write, write-
+through-pointer, and slice-aliasing paths, but left one write path
+untouched: dmd lowers `foreach (ref e; a)` to a `ref` local bound to an
+element of a (possibly slice-lowered) array temporary, which the
+interpreter already models via `arrayElementAliases`/
+`writeThroughArrayElementAlias` (`impl.d`) -- called from `writeLocation`'s
+plain-`VarExp` arm whenever the written variable (`e`) is itself an
+`ArrayElementAlias`. That function refreshed the alias source's `locals`
+mirror and, when the source was itself slice-aliased, `sliceAliases`, but
+never consulted `arrayCells` at all, so a write through `e` never reached a
+cell an earlier-taken pointer's deref-read (`runPointerExpression`) actually
+consults. New fixture (pre-approved):
+`pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
+convention) -- `int[] a = [one(), two()]; int* p = &a[0]; foreach (ref e; a)
+e = e + ninetyNine(); assert(*p == 1 + 99);`, every value seeded from a
+runtime function call so DMD cannot fold it. Confirmed red on Interpreter
+before any production change (`1 != 100`: `p`'s cell, promoted at
+address-of time, never saw the loop's writes, which only ever updated
+`locals`) and green on SystemLinker (real aliased memory); green on both
+after.
+
+Fix: one production change in `impl.d`. `writeThroughArrayElementAlias` now
+also calls `writeThroughArrayCell(alias_.source, alias_.index, value)` --
+the same helper `writeIndexLocation`, `runIndexAssignExpression`'s plain-
+`VarExp` arm, and `writeThroughArrayPointer` already call -- right after its
+existing `locals`/`writeThroughSliceAlias` updates, keyed by the same
+`alias_.source` (the array-typed variable `e`'s `ref` initializer indexed
+into, e.g. the foreach lowering's own slice temporary) those existing
+writes already use. `writeThroughArrayCell` is already a no-op when
+`alias_.source` never had a cell promoted (a non-native-scalar-element or
+static array, a struct-field-rooted alias, etc.), so this is a pure
+addition alongside the existing `locals`/slice-alias writes, not a behavior
+change outside item 7's narrow native-scalar-dynamic-array-element gating.
+No new side table: `arrayElementAliases` and `arrayCells` are both existing
+tables, keyed by the same `VarDeclaration`.
+
+What remains: a `ref` alias to a struct field's array element or a nested-
+index alias (anything not reaching `arrayElementAliases` in the first
+place) is still untouched, matching every other `arrayCells` call site's
+existing plain-`VarExp`-only scope. Array growth (`~=`, `.length = n`) and
+non-full slice construction guards from the prior slices are unaffected.
+Cross-frame pointer aliasing (a callee writing through a caller's `&a[i]`
+pointer, or a callee taking `&a[i]` of a caller's `ref` array parameter) is
+untested by this slice -- the `child.arrayCells = arrayCells.dup` sharing
+already in place is expected to cover it for the same reason it does for
+scalars, but no fixture yet confirms it. No `interpreter.md` §9.10 shim is
+retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (363 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
+`bin/ut -s ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

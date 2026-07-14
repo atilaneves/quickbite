@@ -1742,6 +1742,40 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7 candidate slice: `foreach (ref e; a)` mutation must be
+// visible through an earlier-taken pointer into `a`. SystemLinker's `p`
+// aliases `a`'s real storage, so the loop's writes are visible through `*p`.
+// Other backends omitted per the omit-don't-pin convention (unconfirmed
+// there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                foreach (ref e; a)
+                    e = e + ninetyNine();
+                assert(*p == 1 + 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
