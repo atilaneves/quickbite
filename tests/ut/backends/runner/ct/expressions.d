@@ -1365,9 +1365,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // Same reinterpret-write, but through a pointer passed across a call: the
 // callee writes raw bits into the caller's `float` local via a `uint*`
 // parameter. The caller must observe the write after the call returns.
-// SystemLinker is the oracle; other backends omitted for the same reasons as
-// the fixture above.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+// SystemLinker is the oracle; Ctfe and LLVMJit remain omitted for the same
+// reasons as the fixture above.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -5408,3 +5408,13 @@ the existing mutable module-data segment. This does not add aggregate module
 storage, dynamic module initializers, module constructors, or general module
 lifetime semantics. Verification: focused Bytecode red then green; `ninja
 bin/ut`; and `bin/ut --random` passed (seed `3623415330`).
+
+`pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat` promoted to
+Bytecode, 2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row writes `1.0f`'s raw bits to
+a caller's `float` local through a `uint*` passed to a normal callee, then
+reads the caller's local after return. The focused Bytecode row passed on its
+first candidate run, confirming the existing addressable scalar slot crosses
+the ordinary call boundary without a production change. Ctfe and LLVMJit
+remain omitted under the existing omit-don't-pin convention. Verification:
+focused Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
