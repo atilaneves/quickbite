@@ -3571,6 +3571,104 @@ ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (review fixes: cell invalidation on fresh binding and
+array rebind): a Fable code review of the array/struct cell slices above
+found two blockers, both stale-cell correctness bugs distinct from anything
+those slices' own fixtures exercised.
+
+Finding 1: the 2026-07-13 scalar slice established that a FRESH declaration/
+parameter binding of a `VarDeclaration` must drop any stale cell inherited
+for it -- recursion reuses the same AST `VarDeclaration` at every call
+depth, a loop body re-executes the same `DeclarationExp` every iteration,
+and `child.scalarCells/arrayCells/structCells = ....dup` shares a promoted
+cell's underlying bytes into every child frame by reference -- but that
+rule (`scalarCells.remove(variable)` at the three fresh-binding sites:
+`runDeclarationExpression`, `bindFunctionParameters`, and
+`bindLazyFunctionParameter`) was applied to `scalarCells` only, never
+extended to the `arrayCells`/`structCells` maps the array and struct phases
+added afterward. Three new fixtures exposed this for real: (1a)
+`dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding`
+(`tests/ut/backends/runner/ct/arrays.d`) -- a nested `foreach` over an
+array-of-arrays, where dmd lowers the inner loop's slice temporary to a
+fresh `auto __r = row[];` every outer iteration and `promoteSliceArrayCell`
+promotes `row` itself eagerly (no address-of needed at all), so the second
+outer iteration's inner sum read back the first iteration's stale cell
+bytes -- confirmed red on Interpreter (`4 != 6`, the reviewer's own
+predicted wrong answer) and green on SystemLinker; (1b)
+`pointer.recursiveArrayDeclarationDropsStaleArrayCell`
+(`tests/ut/backends/runner/ct/expressions.d`) -- a recursive function
+re-declaring `int[] a` and taking `&a[0]` at each depth, confirmed red
+(`1001 != 1100`); (1c)
+`pointer.recursiveStructDeclarationDropsStaleStructCell` (same file) -- the
+struct sibling, a recursive function re-declaring `S s` and taking `&s.x` at
+each depth, confirmed red (`1001 != 1100`). Fixture 1c required one design
+correction found only by testing: an initial version computed `s`'s
+per-depth value with a ternary directly in the struct declaration
+(`S s = depth == 0 ? S(a) : S(b);`) and came back GREEN with no production
+change -- not because the bug was absent, but because dmd lowers a
+struct-typed ternary initializer to a default-init followed by a plain
+assignment (`s = ...;`), which routes through the EXISTING
+`writeLocation`/`writeCelledLocal` path and happens to refresh the stale
+cell as a side effect, masking exactly the gap under test. Moving the
+ternary into a plain scalar-returning helper (`valueForDepth`) so the struct
+declaration itself is a straightforward call-initializer restored the red
+result. Fix: `arrayCells.remove(variable)` added alongside the existing
+`scalarCells.remove(variable)` at all three fresh-binding sites; for
+`structCells`, a new `dropStructCell(variable)` helper (used at the same
+three sites in place of a bare `structCells.remove`) additionally walks
+`structFieldPointerVariables`/`structFieldPointerFieldIndices` (the `&s.
+field` reverse lookup) and removes every entry that pointed at `variable`,
+so a stale allocation id from a dropped cell cannot later resolve into
+whatever cell a subsequent, unrelated binding of the same `VarDeclaration`
+promotes next. All three fixtures confirmed green after, with no other
+production change.
+
+Finding 2: `writeCelledLocal`'s `arrayCells` branch treated ANY same-length
+whole-array value as an in-place byte mutation into the cell's existing
+storage -- correct for the ONE caller it was built for
+(`writeBackRefArguments`'s cross-frame `ref int[]` parameter writeback,
+where the callee's final value genuinely represents the SAME storage,
+mutated through the alias), but `writeLocation`'s plain-`VarExp` arm routes
+EVERY direct-variable write through the same helper, including a plain
+source-level `s = b;`, which REBINDS `s` to `b`'s storage rather than
+mutating whatever `s` used to alias. When `s` was a slice view sharing its
+cell with a root array `a` (`int[] s = a[];`), the buggy in-place refresh
+wrote `b`'s bytes into `a`'s own block. New fixture (confirmed red):
+`dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell`
+(`tests/ut/backends/runner/ct/arrays.d`) -- `int[] a = [one(), two()]; int[]
+s = a[]; int[] b = [eight(), nine()]; s = b; return a[0];` -- red on
+Interpreter (`8 != 1`: `a[0]` corrupted to `b`'s first element) and green on
+SystemLinker (a real rebind never touches `a`'s storage). Fix:
+`writeCelledLocal` gained an `arrayIsRefWriteback` parameter (default
+`false`); its `arrayCells` branch now only takes the same-length in-place-
+refresh path when that parameter is `true`, and drops the cell
+unconditionally otherwise (no length check -- a rebind is a rebind
+regardless of length). `writeLocation` gained a matching
+`arrayRefWriteback` parameter (default `false`, threaded through its own
+`CastExp` recursion and passed to `writeCelledLocal`), and
+`writeBackRefArguments`'s general write-back call
+(`writeLocation(argument, *value)`, the fallback reached for a bare
+`VarExp` cross-frame `ref` array argument) now passes `true` explicitly;
+every other `writeLocation` call in the codebase keeps the default `false`,
+so a plain assignment's cell handling did not change. Confirmed both the
+new fixture and the existing cross-frame `ref`-array fixture
+(`pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer`)
+are green together after the fix -- the ref-writeback path still refreshes
+in place, and a plain rebind no longer corrupts an aliased source. The
+STRUCT branch of `writeCelledLocal` was not touched: struct assignment
+genuinely copies into the receiver's storage in D, so its existing
+always-refresh-or-drop behaviour was already correct and remains unchanged.
+
+Focused runs, all green: all four new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (375 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (326 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

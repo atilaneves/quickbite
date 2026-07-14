@@ -1826,3 +1826,91 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// value.md item 7 review, finding 1: a nested `foreach` re-declares the
+// inner loop's slice temporary (dmd lowers `foreach (v; row)` to a fresh
+// `auto __r = row[];` every OUTER iteration) over the SAME `VarDeclaration`
+// at every outer pass. `promoteSliceArrayCell` promotes `row` itself
+// (the slice source) eagerly as a side effect -- no address-of needed --
+// and, without dropping that stale cell on `row`'s own fresh re-declaration
+// each outer iteration, the second outer iteration's inner loop reads back
+// the FIRST iteration's stale cell bytes instead of its own row's values.
+// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int f() {
+                int sum;
+                foreach (row; [[one(), two()], [three()]])
+                    foreach (v; row)
+                        sum += v;
+                return sum;
+            }
+
+            unittest {
+                assert(f() == 6);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, finding 2: `writeCelledLocal`'s `arrayCells`
+// branch treated ANY same-length whole-array assignment as an in-place byte
+// mutation -- correct for the ref-writeback case it was built for, but a
+// plain source-level `s = b;` REBINDS `s` to `b`'s storage; it must not
+// write `b`'s bytes into whatever `s` used to alias. Here `s` is a slice
+// view over `a`'s cell, so the buggy in-place refresh corrupted `a` itself.
+// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                int[] b = [eight(), nine()];
+                s = b;
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}

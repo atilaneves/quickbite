@@ -2225,6 +2225,31 @@ private struct Walker {
         structFieldPointerFieldIndices[id] = structFieldIndex(dot);
     }
 
+    // Drops `variable`'s `structCells` entry (if any) together with every
+    // `structFieldPointerVariables`/`structFieldPointerFieldIndices` reverse-
+    // lookup entry that pointed at it (value.md item 7 review round 2,
+    // finding 1): dropping only the forward `structCells` entry would leave
+    // a stale `&s.field` pointer's allocation id mapped to `variable`, so a
+    // later dereference through that stale id could resolve into whatever
+    // cell a subsequent, unrelated binding of the same `VarDeclaration`
+    // promotes next instead of correctly finding no cell at all. Called from
+    // every fresh-binding site alongside `scalarCells.remove`/
+    // `arrayCells.remove`. Collects matching ids before removing rather than
+    // mutating `structFieldPointerVariables` while iterating it.
+    private void dropStructCell(VarDeclaration variable) {
+        structCells.remove(variable);
+
+        size_t[] staleIds;
+        foreach (id, pointedVariable; structFieldPointerVariables)
+            if (pointedVariable is variable)
+                staleIds ~= id;
+
+        foreach (id; staleIds) {
+            structFieldPointerVariables.remove(id);
+            structFieldPointerFieldIndices.remove(id);
+        }
+    }
+
     // Reads `variable`'s current value: a promoted `scalarCells` entry (the
     // byte-level authority once `&variable` has promoted one) takes
     // priority over the boxed `locals` mirror, which in turn takes priority
@@ -2259,7 +2284,22 @@ private struct Walker {
     // parameter and the boxed `locals` mirror was correctly refreshed here.
     // Callers that write through a differently-typed pointee (a reinterpret
     // write) do not use this helper; see `writeLocation`'s `PtrExp` arm.
-    private void writeCelledLocal(VarDeclaration variable, in Value value) {
+    //
+    // `arrayIsRefWriteback` (value.md item 7 review round 2, finding 2)
+    // distinguishes the ref-writeback caller above (an aliased `ref int[]`
+    // parameter's final value genuinely representing the SAME storage,
+    // mutated in place inside the callee) from every OTHER caller of this
+    // function reached via `writeLocation`'s plain-`VarExp` arm, i.e. a
+    // plain source-level `s = b;`, which REBINDS `s` to `b`'s storage rather
+    // than mutating whatever `s` used to alias. Only the former may refresh
+    // a same-length `arrayCells` entry in place; every other array write
+    // through this helper drops the cell unconditionally, matching a rebind
+    // that cannot be represented as an in-place byte mutation.
+    private void writeCelledLocal(
+        VarDeclaration variable,
+        in Value value,
+        in bool arrayIsRefWriteback = false,
+    ) {
         import quickbite.backends.interpreter.native_scalar:
             readScalar, writeScalar;
 
@@ -2271,16 +2311,18 @@ private struct Walker {
         }
 
         if (auto cell = variable in arrayCells) {
-            // A same-length value is the in-place mutation this whole helper
-            // exists for -- refresh every element's bytes so the cell agrees
-            // with the mirror. A different length means `variable` was
-            // rebound to genuinely different storage (e.g. a `ref`
-            // parameter reassigned wholesale, not index-written); the cell
-            // can no longer faithfully represent it, so drop it rather than
-            // let a stale, wrong-length cell keep answering reads -- the
-            // same decline-rather-than-corrupt choice `promoteSliceArrayCell`
-            // already makes for a drifted source length.
-            if (value.isArray && value.length == cell.length) {
+            // A same-length value written back from a `ref` array
+            // parameter's callee-side mutation is the in-place case this
+            // branch exists for -- refresh every element's bytes so the
+            // cell agrees with the mirror. Every other write here is a
+            // REBIND (a plain `s = b;`, or a ref-writeback whose length
+            // genuinely changed): the cell can no longer faithfully
+            // represent whatever new storage `variable` now denotes, so
+            // drop it rather than let a stale cell keep answering reads --
+            // the same decline-rather-than-corrupt choice
+            // `promoteSliceArrayCell` already makes for a drifted source
+            // length.
+            if (arrayIsRefWriteback && value.isArray && value.length == cell.length) {
                 foreach (index; 0 .. value.length)
                     writeScalar(cell.elementType, cell.element(index), value[index]);
             } else {
@@ -4232,11 +4274,13 @@ private struct Walker {
             }
 
             // A fresh call binds a new stack slot for `parameter`; drop any
-            // inherited/stale `scalarCells` entry the same way a fresh
-            // `DeclarationExp` does (value.md item 7 review, finding 1) --
-            // recursion reuses the same `VarDeclaration` for a parameter at
-            // every call depth.
+            // inherited/stale `scalarCells`/`arrayCells`/`structCells` entry
+            // the same way a fresh `DeclarationExp` does (value.md item 7
+            // review round 2, finding 1) -- recursion reuses the same
+            // `VarDeclaration` for a parameter at every call depth.
             scalarCells.remove(parameter);
+            arrayCells.remove(parameter);
+            dropStructCell(parameter);
             locals[parameter] = arguments[index];
 
             // `runRefArgumentExpression` seeds a `ref` argument still bound to
@@ -4280,9 +4324,12 @@ private struct Walker {
         Value[VarDeclaration] callerLocals,
     ) {
         // Same fresh-binding rule as `bindFunctionParameters` (value.md item
-        // 7 review, finding 1): a lazy parameter is still a new stack slot
-        // for its own `VarDeclaration`, so drop any inherited/stale cell.
+        // 7 review round 2, finding 1): a lazy parameter is still a new
+        // stack slot for its own `VarDeclaration`, so drop any inherited/
+        // stale cell.
         scalarCells.remove(parameter);
+        arrayCells.remove(parameter);
+        dropStructCell(parameter);
         locals[parameter] = Value.undisplayable;
 
         if (auto variable = lazyExpressionVariable(argumentExpression)) {
@@ -4491,7 +4538,13 @@ private struct Walker {
                 if (!isWritableLocation(argument))
                     continue;
 
-                writeLocation(argument, *value);
+                // `true`: this is the cross-frame `ref` array-parameter
+                // writeback case (value.md item 7 review round 2, finding
+                // 2) -- `*value` genuinely represents the SAME storage
+                // `argument` already denotes (the callee mutated it through
+                // the aliased `ref` parameter), not a rebind, so a same-
+                // length `arrayCells` entry may be refreshed in place.
+                writeLocation(argument, *value, true);
             }
         }
     }
@@ -5078,12 +5131,20 @@ private struct Walker {
         return value;
     }
 
+    // `arrayRefWriteback` (value.md item 7 review round 2, finding 2):
+    // `writeBackRefArguments` is the only caller that sets this `true`, for
+    // the one case where a `VarExp` target's whole-array value genuinely
+    // represents the SAME storage the target already denotes (a `ref
+    // int[]` parameter's callee-mutated final value written back to its
+    // caller) rather than a plain source-level rebind (`s = b;`). See
+    // `writeCelledLocal`'s own doc comment for why the distinction matters.
     private void writeLocation(
         imported!"dmd.expression".Expression target,
         in Value value,
+        in bool arrayRefWriteback = false,
     ) {
         if (auto cast_ = target.isCastExp) {
-            writeLocation(cast_.e1, value);
+            writeLocation(cast_.e1, value, arrayRefWriteback);
             return;
         }
 
@@ -5118,7 +5179,7 @@ private struct Walker {
             // resurfaces on the next direct read even though `locals` (and
             // any pointer aliasing the cell) already moved on.
             // `writeCelledLocal` is exactly this cell-then-mirror pattern.
-            writeCelledLocal(variable, storageValue(variable.type, value));
+            writeCelledLocal(variable, storageValue(variable.type, value), arrayRefWriteback);
 
             writeThroughArrayElementAlias(variable, locals[variable]);
             writeThroughStructFieldAlias(variable, locals[variable]);
@@ -7346,16 +7407,24 @@ private struct Walker {
             return Value(false);
 
         // A fresh declaration is a new stack slot: drop any inherited/stale
-        // `scalarCells` entry for it before writing `locals` below, or a
-        // later `&variable` would resurrect a prior instance's promoted
-        // cell instead of getting a correct fresh one (value.md item 7
-        // review, finding 1). Recursion reuses the same `VarDeclaration`
-        // AST node at every call depth, and `child.scalarCells =
-        // scalarCells.dup` hands a fresh call frame the outer frame's
-        // already-promoted cell; a loop body re-executes the same
-        // `DeclarationExp` every iteration and hits the same issue without
-        // recursion at all.
+        // `scalarCells`/`arrayCells`/`structCells` entry for it before
+        // writing `locals` below, or a later `&variable` would resurrect a
+        // prior instance's promoted cell instead of getting a correct fresh
+        // one (value.md item 7 review round 2, finding 1 -- the round 1 fix
+        // only dropped `scalarCells`, missing the two cell maps the array/
+        // struct phases added since). Recursion reuses the same
+        // `VarDeclaration` AST node at every call depth, and duping each of
+        // `scalarCells`/`arrayCells`/`structCells` into a `child` `Walker`
+        // hands a fresh call frame the outer frame's already-promoted cell
+        // (sharing its underlying bytes by reference); a loop body
+        // re-executes the same `DeclarationExp` every iteration and hits the
+        // same issue without recursion at all -- including a nested
+        // `foreach`'s per-iteration slice temporary, whose source array is
+        // promoted eagerly by `promoteSliceArrayCell` with no address-of
+        // needed at all.
         scalarCells.remove(variable);
+        arrayCells.remove(variable);
+        dropStructCell(variable);
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {
             uninitializedLocals[variable] = true;

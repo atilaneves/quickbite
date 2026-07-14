@@ -2105,6 +2105,100 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7 review, finding 1, extended to arrays: the same
+// stale-cell bug `pointer.recursiveDeclarationDropsStaleScalarCell` names
+// for `scalarCells`, but for `arrayCells`. Recursion reuses the same AST
+// `VarDeclaration` for `a` at every call depth, and `child.arrayCells =
+// arrayCells.dup` hands the inner frame the outer frame's already-promoted
+// cell (shared by reference); without dropping it on `a`'s fresh
+// re-declaration at the inner depth, `&a[0]` there resurrects the outer
+// depth's stale cell instead of getting a fresh one for its own (shorter,
+// differently-valued) array. SystemLinker is the oracle; other backends
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.recursiveArrayDeclarationDropsStaleArrayCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int hundred() {
+                return 100;
+            }
+
+            int rec(int depth) {
+                int[] a = depth == 0 ? [hundred()] : [one(), two()];
+                int* p = &a[0];
+                if (depth == 0)
+                    return *p;
+                const inner = rec(depth - 1);
+                return a[0] * 1000 + inner;
+            }
+
+            unittest {
+                assert(rec(1) == 1100);
+            }
+        });
+    }
+}
+
+// Struct sibling of the fixture above: the same stale-cell bug for
+// `structCells`. Recursion reuses the same AST `VarDeclaration` for `s` at
+// every call depth, and `child.structCells = structCells.dup` hands the
+// inner frame the outer frame's already-promoted cell; without dropping it
+// on `s`'s fresh re-declaration at the inner depth, `&s.x` there resurrects
+// the outer depth's stale cell instead of getting a fresh one for its own
+// struct value. The per-depth value is computed by a helper (`valueForDepth`)
+// rather than a ternary directly in the struct initializer, since dmd lowers
+// a struct-typed ternary initializer to a default-init-then-assignment,
+// which happens to route through the existing in-place `writeCelledLocal`
+// refresh and masks this particular gap. SystemLinker is the oracle; other
+// backends omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.recursiveStructDeclarationDropsStaleStructCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int hundred() {
+                return 100;
+            }
+
+            int valueForDepth(int depth) {
+                return depth == 0 ? hundred() : one();
+            }
+
+            int rec(int depth) {
+                S s = S(valueForDepth(depth));
+                int* p = &s.x;
+                if (depth == 0)
+                    return *p;
+                const inner = rec(depth - 1);
+                return s.x * 1000 + inner;
+            }
+
+            unittest {
+                assert(rec(1) == 1100);
+            }
+        });
+    }
+}
+
 // Regression sibling of the refusal fixture above: a `new`-with-user-ctor
 // child `Walker` (both the struct and class variants in
 // `runNewStructPointerExpression`/`runNewClassExpression`) restarted
