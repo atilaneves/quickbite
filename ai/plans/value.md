@@ -3196,6 +3196,91 @@ as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
 `bin/ut -s ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (array-native storage's compound/post-increment gap: a
+write through `(*p)++`/`*p += x` on an array-element pointer now also
+authors the shared `arrayCells` block, both ways): the five slices above
+closed direct-write, write-through-pointer (`*p = x`), slice-aliasing, and
+`foreach (ref e; a)` writes, but a compound or post/pre-increment write
+through an array-element pointer took a wholly different code path that
+never touched `arrayCells` at all, on EITHER side. `(*p)++`,
+`runAddAssignExpression`'s `+=`, and the `core.internal.atomic` load/store/
+exchange/fetchAdd/fetchSub hooks all read the pointer's current target via
+`pointerTargetValue` and write the result back via `writePointerTarget`
+(`impl.d`) -- both distinct from `writeLocation`'s own `*p = x` assignment
+arm, which already called `writeThroughArrayPointer`. `pointerTargetValue`
+fell straight to `pointer.pointerTarget` (the boxed snapshot taken at
+address-of time) for any non-local, non-native pointer, never checking
+`arrayCells` the way `runPointerExpression`'s deref-read arm already did;
+`writePointerTarget`'s equivalent fallback, `writeLocation(expression,
+pointer.withPointerTarget(value))` (`expression` there being the pointer
+variable's OWN `VarExp`, e.g. `p`, not `*p`), only rewrote `p`'s own boxed
+local value with a new embedded target -- never `a`'s `locals` mirror or
+its `arrayCells` entry.
+
+New fixture (pre-approved):
+`pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+`SystemLinker` only (omitted elsewhere per the omit-don't-pin convention) --
+`int[] a = [one(), two()]; int* p = &a[0]; (*p)++; assert(a[0] == 2 && *p ==
+2);`, every value seeded from a runtime function call so DMD cannot fold it.
+Confirmed red on Interpreter before any production change (`assert(a[0] ==
+2 && (*p == 2))` failed: neither side ever moved off 1, since the increment
+only ever rewrote `p`'s own boxed value, not `a`'s storage or its cell) and
+green on SystemLinker (real aliased memory); green on both after.
+
+Fix, two production changes in `impl.d`, both reusing the existing
+`arrayCells`/`arrayPointerVariable`/`writeThroughArrayPointer` machinery --
+no new side table. (1) A new `arrayPointerCellValue(pointer, out value)`
+helper extracted from `runPointerExpression`'s array-pointer read arm
+(behaviour unchanged there, now calling the shared helper); `
+pointerTargetValue` calls it before falling back to `pointer.pointerTarget`,
+so the read side of a compound/increment/atomic op sees the same
+cell-authoritative bytes a plain `*p` deref already did. (2)
+`writePointerTarget`'s array-pointer fallback now calls
+`writeThroughArrayPointer(pointer, value)` first (returning immediately on
+success), placed right after the existing native/local-pointer checks and
+before the `AddrExp`/`CastExp`/boxed-rewrite fallback -- the same placement
+`writeLocation`'s own `*p = x` arm already uses. `writeThroughArrayPointer`
+already refreshes both `locals` and, when promoted, `arrayCells`, so this
+closes the write side the same way the four prior slices did for their own
+call sites; it is a no-op (returns `false`, unchanged behaviour) for every
+pointer `arrayPointerVariable` does not resolve (a `LocalPointer`, a native
+pointer, or a `&s.field` snapshot), so nothing outside item 7's narrow
+native-scalar-dynamic-array-element gating changes.
+
+Verified this is not a fixture-shaped patch: manually extended (in a
+scratch, uncommitted edit, reverted before this commit) to `*p += ninetyNine
+();` (`runAddAssignExpression`'s compound-assignment path, a different call
+site than post-increment but funnelled through the same two functions) --
+`assert(a[0] == 100 && *p == 100);` passed on Interpreter with no further
+production change. The `core.internal.atomic` load/store/exchange/fetchAdd/
+fetchSub hooks (`runAtomicHookCall`) funnel through the identical
+`readPointerTarget`/`writePointerTarget` pair and are expected to be fixed
+for the same reason, but have no fixture confirming it.
+
+What remains: a compound/increment write through a pointer to a struct
+field's array element, or one derived from a nested `IndexExp` (any pointer
+`arrayPointerVariable` does not resolve to a plain array-local variable),
+is untouched, matching every other `arrayCells` call site's existing
+plain-variable-only scope. Cross-frame array-pointer aliasing (item 7's
+"Migration order" bullet: a callee writing through a caller's `&a[i]`, or a
+callee taking `&a[i]` of a caller's `ref` array parameter) remains
+untested by any slice so far -- the `child.arrayCells = arrayCells.dup`
+sharing already in place is expected to cover it for the same reason it
+does for scalars, but still no fixture confirms it; it is the next
+candidate to try. Array growth (`~=`, `.length = n`) and non-full slice
+construction guards from the prior slices are unaffected. No
+`interpreter.md` §9.10 shim is retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (365 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

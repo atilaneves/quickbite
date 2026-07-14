@@ -2241,15 +2241,9 @@ private struct Walker {
             // promoted cell -- a non-scalar element type, a static array,
             // or a `&s.field` snapshot) keeps the existing boxed
             // `pointerTarget` fallback.
-            if (auto variable = arrayPointerVariable(value))
-                if (auto cell = *variable in arrayCells) {
-                    import quickbite.backends.interpreter.native_scalar: readScalar;
-
-                    return readScalar(
-                        cell.elementType,
-                        cell.element(cast(size_t) value.pointerElementOffset),
-                    );
-                }
+            Value cellValue;
+            if (arrayPointerCellValue(value, cellValue))
+                return cellValue;
 
             return value.pointerTarget;
         }
@@ -6586,12 +6580,43 @@ private struct Walker {
         return readCelledLocal(*variable);
     }
 
+    // Byte-level authority for an array-element pointer (value.md item 7):
+    // once `&a[i]` has promoted an `arrayCells` entry for the variable a
+    // non-local pointer points into, its bytes -- not a boxed snapshot --
+    // are the true value. Shared by `runPointerExpression`'s deref-read arm
+    // and `pointerTargetValue` (the compound-assignment/atomic/post-
+    // increment read path) so both agree on the same cell. Returns `false`
+    // (leaving `value` untouched) for every other array pointer -- no
+    // promoted cell, a non-scalar element type, or a static array -- which
+    // keeps the existing boxed `pointerTarget` fallback at each call site.
+    private bool arrayPointerCellValue(in Value pointer, out Value value) {
+        auto variable = arrayPointerVariable(pointer);
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in arrayCells;
+        if (cell is null)
+            return false;
+
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        value = readScalar(
+            cell.elementType,
+            cell.element(cast(size_t) pointer.pointerElementOffset),
+        );
+        return true;
+    }
+
     private Value pointerTargetValue(in Value pointer) {
         if (pointer.isLocalPointer)
             return localPointerTarget(pointer);
         if (!pointer.isPointer) {
             throw new Exception("Expected pointer.");
         }
+
+        Value cellValue;
+        if (arrayPointerCellValue(pointer, cellValue))
+            return cellValue;
 
         return pointer.pointerTarget;
     }
@@ -6620,6 +6645,16 @@ private struct Walker {
             writeCelledLocal(*variable, storageValue((*variable).type, value));
             return;
         }
+
+        // An array-element pointer (`&a[i]`): the same shared-storage
+        // helper `writeLocation`'s `*p = x` arm already calls, so a
+        // compound-assignment/atomic/post-increment write-back
+        // (this function's only callers) refreshes the same `locals`
+        // mirror and, when promoted, the same `arrayCells` entry that
+        // `arrayPointerCellValue` above reads from -- instead of the stale
+        // boxed-value rewrite the fallback below would otherwise perform.
+        if (writeThroughArrayPointer(pointer, value))
+            return;
 
         if (auto address = expression.isAddrExp) {
             writeLocation(address.e1, value);

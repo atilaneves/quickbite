@@ -1776,6 +1776,35 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7 candidate slice: a compound/post-increment write THROUGH an
+// array-element pointer (`(*p)++`) must be visible both through the pointer
+// itself and directly on the array. SystemLinker's `p` aliases `a`'s real
+// storage, so the increment is visible both ways. Other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                (*p)++;
+                assert(a[0] == 2 && *p == 2);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
