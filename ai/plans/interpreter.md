@@ -1716,8 +1716,11 @@ uniquely-identified single-value pointer — `Value.arrayPointerValue(
 [runExpression(dot)], ++allocationCount, 0)` — mirroring the existing
 `runNewScalarPointerExpression`'s `new int` pattern (impl.d) rather than
 inventing a new representation. The fresh `allocationCount` id guarantees
-`&a.field !is &b.field` for distinct receivers, matching real addresses;
-it is read-only (a value snapshot, not aliased to the field), which is
+`&a.field !is &b.field` for distinct receivers; it is read-only (a value
+snapshot of the field at the time the address was taken, not aliased to
+the field storage), so identity is stable only while the field's value
+stays unchanged — `p is &s.x` goes false again once `s.x` is written, a
+known representation-ceiling limitation deferred to value.md. This is
 sufficient here since neither this fixture nor cerealed's test writes
 through the pointer — write-through support for an arbitrary field
 address is a separate, deeper gap, not attempted.
@@ -2043,10 +2046,17 @@ entry) found three defects, fixed together:
    `bool[size_t] fieldSnapshotAllocationIds` set; `writeLocation`'s
    `PtrExp` branch throws `Unsupported interpreter assignment target.`
    when the target pointer's allocation id is a known field snapshot,
-   instead of silently rewriting it. `new Struct(...)` pointer writes
-   (rung 10) are unaffected: those go through the `DotVarExp`
-   auto-deref path, not this `PtrExp` branch, and mint ids from a
-   disjoint namespace never added to `fieldSnapshotAllocationIds`.
+   instead of silently rewriting it. `new Struct(...)`/`new Class(...)`
+   pointer writes are unaffected only once the `new`-with-user-ctor
+   child `Walker` correctly seeds and merges back `allocationCount`
+   (and `fieldAddressAllocations`/`fieldSnapshotAllocationIds`) the same
+   way every other child frame does; without that, ids minted inside
+   such a ctor can numerically collide with a live parent field-
+   snapshot id and get wrongly refused (fixed 2026-07-14, see the
+   `pointer.newCtorPointerWriteNotRefusedAfterFieldAddress` entry
+   below). There is no separate id namespace — `allocationCount` is one
+   shared counter — so collisions are avoided by propagation, not by
+   construction.
    Fixtures: `pointer.addressOfStructFieldWriteThroughUpdatesField`,
    split by backend — `SystemLinker` pins the real aliasing
    write-through, a separate `Interpreter`-only block asserts the loud
@@ -2097,6 +2107,28 @@ untested and unfixed; a future rung should extend
 `recordStructFieldAlias`/`recordSliceAlias`'s owner resolution to walk
 an arbitrary `DotVarExp`/`ThisExp` chain instead of requiring a single
 `VarExp` hop.
+
+**2026-07-14 (regression fix: `new`-ctor allocation-id collision with a
+field snapshot).** A code review found that the previous entry's two
+new `Walker` maps (`fieldAddressAllocations`/`fieldSnapshotAllocationIds`)
+exposed a pre-existing gap in the `new T(...)`-with-user-constructor
+child `Walker` sites (`runNewStructPointerExpression`,
+`runNewClassExpression`, impl.d): both restarted `allocationCount` at 0
+for the child instead of seeding it from the parent, and never merged it
+(or the two maps) back — unlike every other child-frame site
+(`runFunction`, `runMemberFunction`, `refReturningCallAddress`, and the
+other existing child sites), which all seed and merge `allocationCount`
+plus these maps. A pointer minted inside such a ctor (`q = new int;`)
+could therefore land on the same small id as an already-live parent
+field-snapshot id, so a later legitimate write through it was wrongly
+refused by `writeLocation`'s `PtrExp` branch. Fixed by seeding and
+merging `allocationCount`/`fieldAddressAllocations`/
+`fieldSnapshotAllocationIds` at both sites, matching the established
+six-site pattern exactly. Exposing fixture
+`pointer.newCtorPointerWriteNotRefusedAfterFieldAddress`
+(`tests/ut/backends/runner/ct/expressions.d`): confirmed red on
+`Interpreter` (`Unsupported interpreter assignment target.`), green on
+`SystemLinker`, before this fix.
 
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 

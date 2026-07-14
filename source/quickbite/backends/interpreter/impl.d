@@ -6347,9 +6347,15 @@ private struct Walker {
             child.result = Value(false);
             child.thisValue = structVal;
             child.hasThis = true;
+            child.fieldAddressAllocations = fieldAddressAllocations.dup;
+            child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
+            child.allocationCount = allocationCount;
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
+            allocationCount = child.allocationCount;
+            fieldAddressAllocations = child.fieldAddressAllocations;
+            fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             import quickbite.backends.interpreter.layout: structFields;
@@ -6463,6 +6469,9 @@ private struct Walker {
         child.delegates = delegates.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
+        child.allocationCount = allocationCount;
         child.thisValue = object;
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
@@ -6474,6 +6483,9 @@ private struct Walker {
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
+        allocationCount = child.allocationCount;
+        fieldAddressAllocations = child.fieldAddressAllocations;
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         return child.thisValue;
     }
 

@@ -1529,6 +1529,52 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+// Regression sibling of the refusal fixture above: a `new`-with-user-ctor
+// child `Walker` (both the struct and class variants in
+// `runNewStructPointerExpression`/`runNewClassExpression`) restarted
+// `allocationCount` at 0 instead of seeding it from the parent, and never
+// merged it (or `fieldAddressAllocations`/`fieldSnapshotAllocationIds`) back.
+// A pointer minted inside such a ctor could numerically collide with an
+// already-live field-snapshot id from an unrelated `&s.field`, so a later
+// legitimate write through it was wrongly refused as an aliasing write.
+// Ctfe/Bytecode omitted: `new`-with-user-ctor pointer indirection through a
+// class field is not exercised on those backends yet (unrelated gaps, not
+// this fix). LLVMJit omitted: allocation ids are an Interpreter-only
+// bookkeeping detail with no compiled-code analogue to pin.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.newCtorPointerWriteNotRefusedAfterFieldAddress." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct H {
+                int v;
+            }
+
+            class C {
+                int* q;
+
+                this(int x) {
+                    q = new int;
+                    *q = x;
+                }
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            unittest {
+                auto h = H(seven);
+                int* p0 = &h.v;
+                auto c = new C(0);
+                *c.q = 5;
+                assert(*c.q == 5);
+            }
+        });
+    }
+}
+
 // `new Struct(args)` for a struct with no user-defined constructor (the
 // aggregate-initialiser branch of `runNewStructPointerExpression`) returned
 // `Value.pointerValue(structVal)`, which never assigns an allocation id —
