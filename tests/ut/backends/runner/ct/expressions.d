@@ -1925,9 +1925,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `struct.pointer` test (`decOuter.inner.shouldNotEqual(outer.inner)`) hits
 // this: the decoded pointer and the original both allocate a fresh
 // `InnerStruct` via a bodyless-constructor-free `new`, and both landed on
-// allocation id 0.  Bytecode omitted: dereferencing a struct pointer (`*a`)
-// is not implemented there yet (still under active development).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+// allocation id 0.
+static foreach (backend; AliasSeq!(
+    Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit,
+)) {
     @("pointer.newStructPointersWithEqualContentAreDistinct." ~
         backend.stringof)
     @Tags(backend.stringof)

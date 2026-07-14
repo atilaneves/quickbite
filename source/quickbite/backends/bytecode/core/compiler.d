@@ -3649,6 +3649,27 @@ private struct Compiler {
     private ushort structOperandOffset(Expression expression) {
         import std.conv: text;
 
+        if (auto dereference = expression.isPtrExp) {
+            const pointer = compileExpression(dereference.e1);
+            const structSize = cast(uint) staticArraySize(expression.type);
+            if (pointer.isPointer &&
+                (structSize == 1 || structSize == 2 || structSize == 4 ||
+                    structSize == 8 || structSize == 16))
+            {
+                const offset = allocateBytes(
+                    structSize,
+                    staticArrayAlign(expression.type),
+                );
+                _code ~= Instruction(
+                    pointerLoadOp(structSize),
+                    offset,
+                    pointer.offset,
+                    compileSizeConstant(0),
+                );
+                return offset;
+            }
+        }
+
         bool resolved;
         const base = structBaseOffsetOrMaterialise(expression, resolved);
         if (resolved)

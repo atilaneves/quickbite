@@ -5580,3 +5580,14 @@ normal return. This deliberately excludes aggregate elements, unknown array
 expressions, and exception-path writeback. Verification: focused Bytecode red
 then green; passing focused five-backend matrix; `ninja bin/ut`; and
 `bin/ut --random` passed (seed `3598663860`).
+
+`pointer.newStructPointersWithEqualContentAreDistinct` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported struct value in bytecode core: *a`. A dereference of a
+pointer to a 1-, 2-, 4-, 8-, or 16-byte struct now loads its complete block
+into an inline frame slot before the existing field-wise struct equality path
+compares it. This deliberately does not support larger struct loads, struct
+pointer assignment, or general pointer-based aggregate operations.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random` plus replay with seed `2456686981` passed.
