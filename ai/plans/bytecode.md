@@ -5613,3 +5613,14 @@ confirming typed-frame local storage is fresh for each loop iteration. No
 production change was needed. This does not add loop-scoped aggregate
 lifetimes, general lvalue support, or pointer arithmetic. Verification:
 focused Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
+
+`pointer.postIncrementReadsPromotedScalarCell` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row writes a local through a
+pointer in a callee, then post-increments and reads the local in its caller.
+The focused Bytecode row passed on its first candidate run, confirming the
+typed-frame scalar slot remains authoritative for a direct post-increment
+after a cross-frame pointer write. No production change was needed. This does
+not add pointer arithmetic, aggregate pointer writes, or general lvalue
+post-increment semantics. Verification: focused Bytecode row; `ninja bin/ut`;
+and `bin/ut --random`.

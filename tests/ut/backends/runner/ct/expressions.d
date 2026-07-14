@@ -1521,7 +1521,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // `variable in locals` directly, bypassing a promoted `scalarCells` entry --
 // stale once a cross-frame pointer write (`setToFive`) refreshes only the
 // cell.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.postIncrementReadsPromotedScalarCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
