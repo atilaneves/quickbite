@@ -5239,8 +5239,30 @@ private struct Compiler {
             return null;
         auto existing = declaration in _locals;
         auto staticArray = declaration in _staticArrayLocals;
-        if (existing is null && staticArray is null)
-            return null;
+        if (existing is null && staticArray is null) {
+            auto moduleVariable = moduleScalarVariableOrNull(declaration);
+            if (moduleVariable is null || symOff.offset != 0)
+                return null;
+
+            const pointer = allocateBytes(
+                cast(uint) size_t.sizeof,
+                size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.moduleAddress,
+                pointer,
+                moduleVariable.offset,
+            );
+            auto result = new Operand;
+            *result = Operand(
+                pointer,
+                ScalarType.ulong_,
+                false,
+                true,
+                moduleVariable.type,
+            );
+            return result;
+        }
 
         const base = existing is null ? *staticArray : *existing;
         const slot = cast(ushort) (base + symOff.offset);
@@ -5290,6 +5312,27 @@ private struct Compiler {
                 return null;
             auto existing = declaration in _locals;
             if (existing is null) {
+                if (auto moduleVariable =
+                        moduleScalarVariableOrNull(declaration)) {
+                    const pointer = allocateBytes(
+                        cast(uint) size_t.sizeof,
+                        size_t.sizeof,
+                    );
+                    _code ~= Instruction(
+                        Op.moduleAddress,
+                        pointer,
+                        moduleVariable.offset,
+                    );
+                    auto result = new Operand;
+                    *result = Operand(
+                        pointer,
+                        ScalarType.ulong_,
+                        false,
+                        true,
+                        moduleVariable.type,
+                    );
+                    return result;
+                }
                 auto staticArray = declaration in _staticArrayLocals;
                 if (staticArray is null)
                     return null;
@@ -6496,7 +6539,29 @@ private struct Compiler {
         const type = scalarType(declaration.type);
         const offset = allocateModuleBytes(size(type), size(type));
         _moduleScalarVariables[declaration] = ModuleScalarVariable(offset, type);
+        initializeModuleScalar(declaration, offset, type);
         return declaration in _moduleScalarVariables;
+    }
+
+    private void initializeModuleScalar(
+        VarDeclaration declaration,
+        in ushort offset,
+        in ScalarType type,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+
+        auto initializer = declaration._init is null
+            ? null
+            : declaration._init.isExpInitializer;
+        if (initializer is null)
+            return;
+
+        auto integer = initializerExpression(initializer.exp).isIntegerExp;
+        if (integer is null)
+            return;
+
+        const bytes = nativeToLittleEndian(cast(ulong) integer.toInteger);
+        _program.moduleData[offset .. offset + size(type)] = bytes[0 .. size(type)];
     }
 
     private ushort allocateModuleBytes(in uint bytes, in uint alignmentArgument)

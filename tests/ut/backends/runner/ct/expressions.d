@@ -1600,7 +1600,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // address made every later read of `gValue` see 0 instead of 42. Only true
 // stack locals get cells; dataseg variables keep their own
 // storage/initializer/extern machinery.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.addressOfDatasegGlobalDoesNotShadowInitializer." ~
         backend.stringof)
     @Tags(backend.stringof)

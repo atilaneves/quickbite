@@ -5397,3 +5397,14 @@ already-supported four- and eight-byte integer scalars; it does not add
 pointer arithmetic, non-integer post-increment, or a general lvalue layer.
 Verification: focused Bytecode red then green; `ninja bin/ut`; and
 `bin/ut --random`.
+
+`pointer.addressOfDatasegGlobalDoesNotShadowInitializer` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported expression in bytecode core: & gValue`. The typed-frame
+core now materializes a scalar module-data address for both DMD address forms
+(`AddrExp` and `SymOffExp`), and seeds an integer scalar module initializer in
+the existing mutable module-data segment. This does not add aggregate module
+storage, dynamic module initializers, module constructors, or general module
+lifetime semantics. Verification: focused Bytecode red then green; `ninja
+bin/ut`; and `bin/ut --random` passed (seed `3623415330`).

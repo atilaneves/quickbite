@@ -343,6 +343,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Copy `c` bytes from frame offset a into the mutable module-data segment
     // at offset b. Backs writes to scalar module-level variables.
     storeModule,
+    // Write the native address of mutable module-data offset b as a raw `size_t`
+    // word into frame offset a. Backs `&moduleScalar`.
+    moduleAddress,
     // Write the absolute stack index of the current frame's base (`base`) as a
     // raw `size_t` word into frame offset a. Backs a nested struct's hidden
     // context pointer (`vthis`), which records the enclosing function's frame so

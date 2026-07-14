@@ -441,6 +441,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case moduleAddress:
+                writeRawPointer(
+                    stack,
+                    base + instruction.a,
+                    cast(size_t) (moduleData.ptr + instruction.b),
+                );
+                ++ip;
+                break;
+
             case frameBaseIndex:
                 writeScalar!size_t(stack, base + instruction.a, base);
                 ++ip;
