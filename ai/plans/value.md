@@ -2874,6 +2874,89 @@ ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`;
 ut.backends.runner.ct.pollution`. The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (array-native storage's first guest call site: shared
+element cell for `&a[i]`): item 7's "Migration order" bullet names arrays
+first; this is that guest-level call site's first slice, the array
+counterpart of the 2026-07-13 `scalarCells` work above. `impl.d`'s `Walker`
+gains `private NativeArray[VarDeclaration] arrayCells;`, next to
+`scalarCells`, an authoritative `NativeArray` cell for an address-taken
+dynamic-array local whose element type is `native_scalar.
+isNativeScalarType`. `arrayPointer` (the common path for `&a[i]`, called
+from `addressOfExpression`'s `IndexExp` arm) now calls a new
+`promoteArrayCell(source)` -- keyed by the slice-alias-resolved `source`,
+matching `allocationId(source)`'s own key, so `arrayPointerVariable`'s
+existing reverse lookup (`pointer.pointerAllocation in
+arrayAllocationVariables`) and the new cell agree on which variable owns
+the shared bytes. `promoteArrayCell` allocates the cell eagerly the first
+time a qualifying array's address is taken (skipping `isDataseg` variables,
+non-dynamic-array types, and non-native-scalar element types, mirroring
+`promoteScalarCell`'s own guards), seeding it element-by-element from the
+array's current boxed `Value` via `native_scalar.writeScalar`. Once a cell
+exists, two call sites route through it instead of leaving `locals`'
+`.dup`'d, detached elements as the only record: (1) `runPointerExpression`'s
+array-pointer deref-read arm (`*p`, when `p` is not a `LocalPointer`) now
+checks `arrayPointerVariable(value)` for a promoted `arrayCells` entry
+before falling back to the boxed `pointer.pointerTarget` snapshot taken at
+address-of time; (2) a new `writeThroughArrayCell(variable, index, value)`
+helper, called from both `runIndexAssignExpression`'s plain-`VarExp` arm
+(the actual code path for a bare `a[i] = x;` -- `runAssignExpression`
+routes an `IndexExp` LHS there directly, NOT through `writeLocation`/
+`writeIndexLocation`) and `writeIndexLocation`'s own plain-`VarExp` arm
+(reached via `writeLocation`, e.g. a compound/nested assignment target),
+`writeScalar`s the assigned value into the cell's `element(index)` bytes
+whenever a cell exists, alongside each call site's pre-existing `locals`
+mirror update. Every `Walker child` construction that already dupes
+`scalarCells` (the same seven call sites the 2026-07-13 note counted) now
+also does `child.arrayCells = arrayCells.dup;`, so a duped `NativeArray`'s
+underlying bytes are shared by reference across a nested call frame,
+mirroring `scalarCells`' own cross-frame sharing.
+
+New fixture (pre-approved):
+`pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
+convention) -- `int[] a = [one(), two()]; int* p = &a[0]; a[0] =
+ninetyNine(); assert(*p == 99);`, every value seeded from a runtime function
+call so DMD cannot fold it. SystemLinker's `p` aliases `a`'s real storage,
+so the direct write is visible through `*p`. Confirmed red on Interpreter
+before any production change (`1 != 99`: `p`'s own boxed element snapshot,
+taken at address-of time, never saw the later direct write) and green on
+SystemLinker; green on both after.
+
+What this slice does NOT do, to be precise about item 7's array-phase
+state: only a dynamic array whose element type is `native_scalar.
+isNativeScalarType` gets a cell -- a static array, a non-scalar element
+type (struct, class, nested array/slice), array growth (`~=`,
+`.length = n`), and slice construction (`a[]`) are all untouched and keep
+using the existing boxed/aliasing paths (`sliceAliases`,
+`arrayAllocationAliases`, `writeThroughArrayPointer`'s own boxed writeback,
+etc.) exactly as before. `writeIndexLocation`'s `DotVarExp` arm (a struct
+field's array element) and `runIndexAssignExpression`'s `DotVarExp`/nested-
+`IndexExp`/pointer-target arms do not consult `arrayCells` at all -- only
+the plain-`VarExp` arm in each does. The existing boxed writeback
+machinery (`arrayPointerWritebacks`, `ArrayElementAlias`,
+`writeThroughArrayPointer`'s `locals`-only rewrite for a pointer-side
+write, e.g. `*p = x` or `p[i] = x`) is completely unchanged -- this slice
+only closes the DIRECT-write-then-pointer-read direction for a plain
+scalar-element array local; a write THROUGH the pointer already reached
+`locals` via the pre-existing mechanism, and a cross-frame array `&a[i]`
+(the array counterpart of the 2026-07-13 cross-frame scalar fixture) has
+no fixture yet, though the `child.arrayCells = arrayCells.dup` sharing
+added here is expected to cover it for the same reason it did for scalars.
+No `interpreter.md` §9.10 shim is retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (360 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.arrays` (320 run, 0 failed -- the previously-known
+`sliceAssignmentWritesArrayStorage.Bytecode`/
+`staticArrayCopyRunsPostblitAndDtors.Bytecode` failures noted in the round
+above are gone, from unrelated master merges, not this slice); `bin/ut -s
+ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.structs` (281 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

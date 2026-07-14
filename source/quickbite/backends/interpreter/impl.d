@@ -87,6 +87,7 @@ private struct Walker {
     import dmd.expression: DivExp, Expression, ModExp;
     import dmd.func: FuncDeclaration;
     import dmd.statement: Statement;
+    import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
@@ -105,6 +106,19 @@ private struct Walker {
     // bytes for as long as a cell exists, so alias/child-Walker paths that
     // only know about `locals` keep seeing the true value.
     private NativeBlock[VarDeclaration] scalarCells;
+
+    // Authoritative native bytes for an address-taken dynamic array local
+    // whose element type is `native_scalar.isNativeScalarType` (value.md
+    // item 7's array guest-local slice, mirroring `scalarCells` above):
+    // populated eagerly the moment `&a[i]` is taken (see `promoteArrayCell`,
+    // called from `arrayPointer`). Once a cell exists, a direct element
+    // write (`writeIndexLocation`) and a pointer deref-read
+    // (`runPointerExpression`) both route through the same underlying
+    // `NativeArray` bytes instead of `locals`' detached, `.dup`'d elements,
+    // so a write through one is visible through the other. Every other
+    // array (non-scalar elements, static arrays, growth, slices) is
+    // untouched and keeps using the existing boxed/aliasing paths.
+    private NativeArray[VarDeclaration] arrayCells;
 
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
@@ -1766,6 +1780,7 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
+        child.arrayCells = arrayCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -1864,6 +1879,15 @@ private struct Walker {
         auto source = variable;
         if (auto alias_ = variable in sliceAliases)
             source = alias_.source;
+
+        // value.md item 7's array guest-local slice: `&a[i]` is the address-
+        // taking moment that promotes `source`'s authoritative `NativeArray`
+        // cell, the array counterpart of `promoteScalarCell` above -- keyed
+        // by `source` (not `variable`) to match `allocationId(source)`
+        // just below, so `arrayPointerVariable`'s reverse lookup (via
+        // `arrayAllocationVariables`) and this cell agree on which variable
+        // owns the shared bytes.
+        promoteArrayCell(source);
 
         const id = variable in arrayAllocationAliases;
         return Value.arrayPointerValue(
@@ -1967,6 +1991,47 @@ private struct Walker {
         auto cell = NativeBlock.allocate(typeByteSize(variable.type), NativeBlock.Scan.no);
         writeScalar(variable.type, cell.bytes, current);
         scalarCells[variable] = cell;
+    }
+
+    // Eagerly gives an address-taken dynamic-array local a `NativeArray`
+    // cell the first time `&a[i]` is taken (value.md item 7's array
+    // guest-local slice, `arrayCells`'s own promotion, mirroring
+    // `promoteScalarCell` above), seeded from the array's current boxed
+    // elements. Narrow first slice: only a dynamic array whose element type
+    // is `native_scalar.isNativeScalarType` gets a cell; a static array, a
+    // non-scalar element type (struct, class, nested array), or a dataseg
+    // variable is left untouched and keeps using the existing boxed/aliasing
+    // paths.
+    private void promoteArrayCell(VarDeclaration variable) {
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, writeScalar;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        if (variable.isDataseg)
+            return;
+
+        if (variable in arrayCells)
+            return;
+
+        if (!isDynamicArrayType(variable.type))
+            return;
+
+        auto elementType = variable.type.toBasetype.nextOf.toBasetype;
+        if (!isNativeScalarType(elementType))
+            return;
+
+        auto current = defaultValue(variable);
+        if (auto existing = variable in locals)
+            current = *existing;
+
+        if (!current.isArray)
+            return;
+
+        auto cell = NativeArray.allocate(elementType, current.length);
+        foreach (index; 0 .. current.length)
+            writeScalar(elementType, cell.element(index), current[index]);
+
+        arrayCells[variable] = cell;
     }
 
     // Reads `variable`'s current value: a promoted `scalarCells` entry (the
@@ -2099,8 +2164,29 @@ private struct Walker {
         if (value.isNativePointer)
             return loadNativePointerElement(pointer.e1.type, value, 0);
 
-        if (!value.isLocalPointer)
+        if (!value.isLocalPointer) {
+            // Byte-level authority for an array element (value.md item 7's
+            // array guest-local slice): once `&a[i]` has promoted an
+            // `arrayCells` entry for the variable this pointer points into,
+            // its bytes -- not `value`'s own boxed element snapshot taken
+            // at address-of time -- are the true value, so a direct write
+            // to the array (`writeIndexLocation`) after the pointer was
+            // taken is visible here. Every other array pointer (no
+            // promoted cell -- a non-scalar element type, a static array,
+            // or a `&s.field` snapshot) keeps the existing boxed
+            // `pointerTarget` fallback.
+            if (auto variable = arrayPointerVariable(value))
+                if (auto cell = *variable in arrayCells) {
+                    import quickbite.backends.interpreter.native_scalar: readScalar;
+
+                    return readScalar(
+                        cell.elementType,
+                        cell.element(cast(size_t) value.pointerElementOffset),
+                    );
+                }
+
             return value.pointerTarget;
+        }
 
         auto variable = value.localPointerId in localPointers;
         if (variable is null)
@@ -3481,6 +3567,7 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
+        child.arrayCells = arrayCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -3537,6 +3624,7 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
+        child.arrayCells = arrayCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -3784,6 +3872,7 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
+        child.arrayCells = arrayCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -4973,6 +5062,7 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
+        child.arrayCells = arrayCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -5060,6 +5150,7 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
+        child.arrayCells = arrayCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -5278,6 +5369,7 @@ private struct Walker {
 
         locals[variable] = current.withArrayElement(arrayIndex, value);
         writeThroughSliceAlias(variable, arrayIndex, value);
+        writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
     }
 
@@ -5401,8 +5493,28 @@ private struct Walker {
         const value = runExpression(rhs);
         locals[variable] = current.withArrayElement(arrayIndex, value);
         writeThroughSliceAlias(variable, arrayIndex, value);
+        writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    // Refreshes `variable`'s promoted `arrayCells` entry (value.md item 7's
+    // array guest-local slice), if one exists, alongside the `locals` mirror
+    // a direct element write (`a[i] = x`) already updated -- an earlier
+    // `&a[i]` pointer's deref-read (`runPointerExpression`) consults the
+    // cell, not `locals`, so a direct element write must keep the cell
+    // current or a later deref-read through that pointer would see stale
+    // bytes. A no-op when no cell was ever promoted for `variable`.
+    private void writeThroughArrayCell(
+        VarDeclaration variable,
+        in size_t index,
+        in Value value,
+    ) {
+        if (auto cell = variable in arrayCells) {
+            import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+            writeScalar(cell.elementType, cell.element(index), value);
+        }
     }
 
     private Value runAssocArraySlotAssignExpression(
@@ -6665,6 +6777,7 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
+        child.arrayCells = arrayCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;

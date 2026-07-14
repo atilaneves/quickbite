@@ -1674,6 +1674,39 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+// value.md item 7's array-native-storage guest call site: `&a[0]` takes a
+// pointer into a dynamic array local, then the array is written DIRECTLY
+// (`a[0] = ...`, not through the pointer). SystemLinker's `p` aliases `a`'s
+// real storage, so the direct write is visible through `*p`. Other backends
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                a[0] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
