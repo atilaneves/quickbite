@@ -5471,3 +5471,14 @@ Verification: focused Bytecode red then green; `ninja bin/ut`; and
 `dynamicArrayTruthinessControlsEnforceFallback.Bytecode` failure; mandated
 `bin/ut --seed 3353579115 --quiet` replay also exposed pre-existing
 SystemLinker temporary-library races.
+
+Regression fix, 2026-07-14: the existing direct SystemLinker-backed
+`dynamicArrayTruthinessControlsEnforceFallback.Bytecode` row had treated the
+first byte of a dynamic-array descriptor as its condition, so a nonempty
+array could follow a false branch. Dynamic-array conditions now read the
+descriptor length, covering `if`, `for`, `do`, ternary, `!`, and short-circuit
+logical expressions through the shared condition compiler. This does not add
+array comparisons, bounds checks, or array values beyond the existing
+descriptor support. No test body changed. Verification: focused SystemLinker
+and Bytecode rows (Bytecode red `130 != 3`, then green); `ninja bin/ut`; and
+`bin/ut --random` plus the requested seed replays.

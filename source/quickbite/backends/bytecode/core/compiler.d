@@ -474,7 +474,7 @@ private struct Compiler {
     }
 
     private void compileIfStatement(imported!"dmd.statement".IfStatement if_) {
-        const condition = compileExpression(if_.condition);
+        const condition = compileBoolCondition(if_.condition);
         const falseJump = emitJumpIfFalse(condition);
 
         compileStatement(if_.ifbody);
@@ -972,7 +972,7 @@ private struct Compiler {
         const conditionIndex = _code.length;
         const exitJump = for_.condition is null
             ? size_t.max
-            : emitJumpIfFalse(compileExpression(for_.condition));
+            : emitJumpIfFalse(compileBoolCondition(for_.condition));
 
         // Enter the loop: any `label:` immediately wrapping it (consumed here)
         // names this context for labeled `break`/`continue`.
@@ -1023,7 +1023,7 @@ private struct Compiler {
         foreach (index; _loopStack[$ - 1].continuePatches)
             patchJumpTo(index, _code.length);
 
-        const condition = compileExpression(do_.condition);
+        const condition = compileBoolCondition(do_.condition);
         _code ~= Instruction(
             Op.jumpIfTrue, condition.offset, cast(ushort) bodyIndex,
         );
@@ -5848,10 +5848,15 @@ private struct Compiler {
         return size(operand.type);
     }
 
-    // Normalise an expression to a one-byte bool condition. A pointer condition
-    // (`slot ? ...`) is non-null iff its 8-byte value is non-zero, so compare it
-    // to a zero constant rather than testing a single byte.
+    // Normalise an expression to a one-byte bool condition. Dynamic-array
+    // truthiness is its length, while a pointer condition (`slot ? ...`) is
+    // non-null iff its 8-byte value is non-zero.
     private Operand compileBoolCondition(Expression expression) {
+        if (isDynamicArrayArgument(expression)) {
+            const descriptor = dynamicArrayDescriptor(expression);
+            return Operand(sliceLengthSlot(descriptor), ScalarType.ulong_);
+        }
+
         const operand = compileExpression(expression);
         if (!operand.isPointer)
             return operand;
@@ -5882,13 +5887,13 @@ private struct Compiler {
             ));
 
         const result = allocate(ScalarType.bool_);
-        const lhs = compileExpression(logical.e1);
+        const lhs = compileBoolCondition(logical.e1);
         const shortCircuitJump = logical.op == EXP.andAnd
             ? emitJumpIfFalse(lhs)
             : emitJumpIfTrue(lhs);
 
         // The non-short-circuiting path evaluates rhs and normalises it.
-        const rhs = compileExpression(logical.e2);
+        const rhs = compileBoolCondition(logical.e2);
         _code ~= Instruction(Op.normaliseBool, result, rhs.offset);
         const endJump = emitJump;
 
@@ -5989,7 +5994,7 @@ private struct Compiler {
     // (`inner == 0 ? 1 : 0`), so a single opcode covers every case; no
     // per-type family.
     private Operand compileNotExpression(NotExp not) {
-        const source = compileExpression(not.e1);
+        const source = compileBoolCondition(not.e1);
         const offset = allocate(ScalarType.bool_);
         _code ~= Instruction(Op.notBool, offset, source.offset);
         return Operand(offset, ScalarType.bool_);
