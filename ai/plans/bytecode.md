@@ -5624,3 +5624,16 @@ after a cross-frame pointer write. No production change was needed. This does
 not add pointer arithmetic, aggregate pointer writes, or general lvalue
 post-increment semantics. Verification: focused Bytecode row; `ninja bin/ut`;
 and `bin/ut --random`.
+
+`struct.staticArrayCopyRunsPostblitAndDtors` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row copies a static array of
+structs with postblits and destructors, then verifies the corresponding
+lifetime effects. The focused Bytecode row passed on its first candidate run,
+confirming the existing aggregate copy and lifetime paths match compiled D.
+No production change was needed. This does not add dynamic-array lifetime,
+class lifetime, or general aggregate assignment semantics. Verification:
+focused Bytecode row and `ninja bin/ut` passed. `bin/ut --random` failed in
+the unrelated Interpreter `dependencyImage.externDRefReturn` row (seed
+`610107794`); its mandated replay instead exposed pre-existing SystemLinker
+temporary-library races.
