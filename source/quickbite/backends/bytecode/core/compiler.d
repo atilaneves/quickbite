@@ -295,7 +295,13 @@ private struct Compiler {
             return cast(ushort) *existing;
 
         if (_program is null)
+        {
             _program = new Program;
+            // A running machine executes this segment directly while lazy
+            // compilation can append module slots. Reserve every representable
+            // byte now so such appends cannot relocate raw module addresses.
+            _program.moduleData.reserve(ushort.max);
+        }
 
         const index = _functions.length;
         _functions ~= function_;

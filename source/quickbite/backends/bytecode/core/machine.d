@@ -32,7 +32,11 @@ package(quickbite.backends.bytecode) RunResult run(
     // intervening calls that grow the stack.
     auto stack = new ubyte[](program.functions[0].frameSize);
     stack.reserve(stackCapacity);
-    auto moduleData = program.moduleData.dup;
+    // Lazy compilation can add module slots while this machine is running, so
+    // access the program-owned segment directly. The compiler reserves its
+    // maximum addressable capacity before execution, keeping raw addresses
+    // produced by `moduleAddress` stable as the visible length grows.
+    ref moduleData = program.moduleData;
     // VM-owned writable heap blocks backing dynamic arrays. Holding the GC
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.

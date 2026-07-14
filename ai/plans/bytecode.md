@@ -5418,3 +5418,9 @@ first candidate run, confirming the existing addressable scalar slot crosses
 the ordinary call boundary without a production change. Ctfe and LLVMJit
 remain omitted under the existing omit-don't-pin convention. Verification:
 focused Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
+
+Reviewer fix, 2026-07-14: the running machine now uses the program's live
+module-data segment rather than a startup copy. The compiler reserves every
+16-bit-addressable module-data byte when it creates the program, so a lazily
+compiled callee can grow the segment without invalidating raw module addresses
+already handed to bytecode. No new language surface or tests were added.
