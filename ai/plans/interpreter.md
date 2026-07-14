@@ -2014,6 +2014,90 @@ behaviour). This exhausts the language-surface cerealed frontier opened
 by §6/§7: every remaining cerealed/Interpreter disagreement now requires
 value.md's native-layout track, not further interpreter rungs.
 
+**2026-07-14 (Fable review: field-address identity, float writeback
+compare, snapshot write refusal).** A code review of the `&s.field`
+address-of rung (this section's 2026-07-14 "address-of-struct-field
+root" entry) and the ref-argument write-back skip (this section's
+2026-07-14 "unconditional `ref`-argument write-back re-evaluation"
+entry) found three defects, fixed together:
+
+1. `addressOfExpression`'s `AddrExp(DotVarExp)` non-static-array branch
+   minted a fresh `++allocationCount` identity on *every* evaluation of
+   `&s.field`, so re-taking the same field's address gave a different
+   identity each time (`&a.value !is &a.value`), unlike real D. Fixed by
+   memoizing the allocation id per (receiver `VarDeclaration`, field
+   index) in a new `size_t[size_t][VarDeclaration]
+   fieldAddressAllocations` map, propagated across child `Walker` frames
+   the same way `arrayAllocations` already is. A receiver that cannot be
+   resolved to a variable (e.g. `&call().field`) still gets a fresh id
+   every time. Exposing fixture
+   `pointer.addressOfStructFieldIsStableAcrossReEvaluation`
+   (`tests/ut/backends/runner/ct/expressions.d`).
+
+2. Sibling defect: writing through a `&s.field` pointer silently wrote
+   into the pointer's own throwaway value snapshot instead of `s`'s
+   storage, losing the write with no diagnostic (previously this
+   refused loudly; the address-of-struct-field rung's fresh-identity
+   fix made it fall through to a silent write instead). Every id minted
+   by the `&s.field` path (memoized or fresh) is now also recorded in a
+   `bool[size_t] fieldSnapshotAllocationIds` set; `writeLocation`'s
+   `PtrExp` branch throws `Unsupported interpreter assignment target.`
+   when the target pointer's allocation id is a known field snapshot,
+   instead of silently rewriting it. `new Struct(...)` pointer writes
+   (rung 10) are unaffected: those go through the `DotVarExp`
+   auto-deref path, not this `PtrExp` branch, and mint ids from a
+   disjoint namespace never added to `fieldSnapshotAllocationIds`.
+   Fixtures: `pointer.addressOfStructFieldWriteThroughUpdatesField`,
+   split by backend — `SystemLinker` pins the real aliasing
+   write-through, a separate `Interpreter`-only block asserts the loud
+   refusal via `shouldThrowWithMessage` (both in
+   `tests/ut/backends/runner/ct/expressions.d`).
+
+3. Unrelated defect in the same review, in `writeBackRefArguments`'s
+   unchanged-parameter skip check (this section's 2026-07-14
+   "unconditional `ref`-argument write-back re-evaluation" entry): it
+   compared `Value`s with plain `==`, wrong for floating scalars two
+   ways — `-0.0 == 0.0` is `true`, so a callee that genuinely rewrites a
+   negative zero to a positive zero got that write silently dropped (a
+   real regression risk, not just a missed optimisation), and `NaN ==
+   NaN` is `false`, so an unchanged `NaN` ref argument would not be
+   skipped, re-executing a side-effecting location expression exactly
+   like the original `pointers.d(82)` bug (for the `NaN` case only).
+   Fixed with a new interpreter-local `identicalValues(a, b)`, used only
+   for this skip decision: floating scalars (`float`/`double`/`real`)
+   compare by bit pattern (`asReal is asReal`, matching D's `is`
+   semantics for floats), everything else defers to plain `==`.
+   Exposing fixture
+   `refArgument.floatWriteBackSkipComparesBitPatternNotEquality`
+   (`tests/ut/backends/runner/ct/structs.d`); `Bytecode` omitted
+   (floating-point division not implemented there yet, unrelated to
+   this fix).
+
+All three fixtures confirmed red on `Interpreter`/green on
+`SystemLinker` before the fix (reconstructed on the pre-fix parent per
+this section's 2026-07-09 handoff protocol). Re-measure: `bin/bench.sh
+-b interpreter -b system-linker --dub cerealed` is unchanged at 6
+disagreements (`encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
+`reset.d(9)`, `structs.d(22)`) — no regression, and the closed
+`pointers.d(82)` `ref`-argument rung stays closed (its fixture,
+`refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten`,
+still passes green with the new `identicalValues` compare).
+
+**Sibling gap, not fixed here (Finding 4, plan note only).** The rung-6
+`recordSliceAlias` `DotVarExp` branch (this section's
+foreach-ref-over-struct-field-array entry) resolves the field's owner
+only when the sliced aggregate's receiver (`slice.e1.isDotVarExp.e1`)
+is itself a plain `VarExp`. Two related shapes still fall through to
+`sliceAliases.remove(variable)`, silently losing element writes, same
+as the base (pre-rung) behaviour: a member function's `foreach (ref e;
+this.field)` (the receiver is a `ThisExp`, not a `VarExp`), and a
+nested-field foreach-ref such as `foreach (ref e; outer.inner.items)`
+(the receiver is itself a `DotVarExp`, not a `VarExp`). Both are
+untested and unfixed; a future rung should extend
+`recordStructFieldAlias`/`recordSliceAlias`'s owner resolution to walk
+an arbitrary `DotVarExp`/`ThisExp` chain instead of requiring a single
+`VarExp` hop.
+
 ### 9.8 Rung 8 — real file IO (`std.stdio.File` create/write/read)
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the

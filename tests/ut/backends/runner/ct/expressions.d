@@ -1438,6 +1438,97 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// Rung 7 review finding: addressOfExpression's DotVarExp branch minted a
+// fresh `++allocationCount` identity on *every* evaluation of `&s.field`, so
+// re-taking the same field's address gave a different identity each time
+// (`&a.value !is &a.value`) — real D gives the same address back. Fixed by
+// memoizing the allocation id per (receiver variable, field index). Ctfe
+// omitted: DMD CTFE genuinely refuses this construct at compile time.
+// Bytecode omitted: AddrExp of a DotVarExp is not implemented there yet.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.addressOfStructFieldIsStableAcrossReEvaluation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                auto a = Holder(seed);
+                int* p = &a.value;
+
+                assert(p is &a.value);
+                assert(*p == 7);
+            }
+        });
+    }
+}
+
+// Rung 7 review finding, sibling of the identity fix above: writing through
+// a `&s.field` pointer used to silently write into the pointer's own
+// throwaway value snapshot instead of `s`'s storage, losing the write with
+// no diagnostic. SystemLinker pins real D's actual (aliasing) write-through
+// behaviour.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                auto a = Holder(seed);
+                int* p = &a.value;
+                *p = 5;
+
+                assert(a.value == 5);
+            }
+        });
+    }
+}
+
+// The interpreter cannot yet write through an arbitrary field address (its
+// `&s.field` value is a read-only snapshot, not an alias to the field), so
+// it must refuse loudly instead of the silent wrong answer above. Same
+// fixture, pinned against the Interpreter's honest refusal.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                auto a = Holder(seed);
+                int* p = &a.value;
+                *p = 5;
+
+                assert(a.value == 5);
+            }
+        }).shouldThrowWithMessage("Unsupported interpreter assignment target.");
+    }
+}
+
 // `new Struct(args)` for a struct with no user-defined constructor (the
 // aggregate-initialiser branch of `runNewStructPointerExpression`) returned
 // `Value.pointerValue(structVal)`, which never assigns an allocation id —

@@ -1539,6 +1539,39 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+// Rung 7 review finding, sibling of the fix just above: the unchanged-
+// parameter skip check compared `Value`s with plain `==`, which is wrong for
+// floating scalars two ways. `-0.0 == 0.0` is true, so a callee that
+// genuinely rewrites a negative zero to a positive zero got its write-back
+// silently dropped (a regression, not merely a missed optimisation) — this
+// fixture pins that case. `Walker.identicalValues` (impl.d) now compares
+// floating scalars by bit pattern (D's `is` semantics), matching real D's
+// actual `-0.0`/`+0.0` distinction, and defers to `==` for everything else.
+// Bytecode omitted: floating-point division is not implemented there yet
+// (`Unsupported division in bytecode core`), unrelated to this fix.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("refArgument.floatWriteBackSkipComparesBitPatternNotEquality." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setPositiveZero(ref double x) {
+                x = 0.0;
+            }
+
+            double negativeZero() {
+                return -0.0;
+            }
+
+            unittest {
+                double d = negativeZero;
+                setPositiveZero(d);
+                assert(1.0 / d == double.infinity);
+            }
+        });
+    }
+}
+
 // cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
 // units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
 // element's fields through a hidden temporary dmd's foreach-to-for lowering

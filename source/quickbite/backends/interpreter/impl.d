@@ -114,6 +114,13 @@ private struct Walker {
     private size_t[VarDeclaration] arrayAllocationAliases;
     private VarDeclaration[size_t] arrayAllocationVariables;
     private bool[VarDeclaration] arrayPointerWritebacks;
+    // Per-(receiver variable, field index) memo for `&s.field` allocation
+    // ids (Rung 7): repeated address-of evaluations of the same field must
+    // return the same identity. Every id minted through that path (memoized
+    // or not) is also recorded in `fieldSnapshotAllocationIds` so
+    // `writeLocation`'s `PtrExp` path can refuse writing through it.
+    private size_t[size_t][VarDeclaration] fieldAddressAllocations;
+    private bool[size_t] fieldSnapshotAllocationIds;
     private size_t allocationCount;
     private size_t lastGCArrayUsedAllocation;
     private Value result;
@@ -1631,13 +1638,16 @@ private struct Walker {
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
 
-            // Any other field type: a fresh, uniquely-identified pointer
-            // snapshotting the field's current value, mirroring
-            // runNewScalarPointerExpression's single-value allocation. The
-            // fresh id guarantees `&a.field !is &b.field` for distinct
-            // receivers, matching real addresses; it does not alias writes
-            // back to the field (no write-through case needs that here).
-            return Value.arrayPointerValue([runExpression(dot)], ++allocationCount, 0);
+            // Any other field type: a pointer snapshotting the field's
+            // current value, mirroring runNewScalarPointerExpression's
+            // single-value allocation. The id is memoized per (receiver
+            // variable, field index) so re-taking the same field's address
+            // returns the same identity, matching real addresses, while
+            // distinct receivers (`&a.f` vs `&b.f`) still differ. It does not
+            // alias writes back to the field; writeLocation's PtrExp path
+            // refuses writing through a known field-snapshot id.
+            return Value.arrayPointerValue(
+                [runExpression(dot)], fieldSnapshotAllocationId(dot), 0);
         }
 
         // `&call()` of a ref-returning function: run the call and yield the
@@ -1653,6 +1663,33 @@ private struct Walker {
 
         const offset = runExpression(index.e2).asLong;
         return arrayPointer(index.e1, offset, op);
+    }
+
+    // Stable allocation id for `&s.field`, memoized per (receiver variable,
+    // field index) when the receiver resolves to a plain `VarExp`; a
+    // receiver that cannot be resolved to a variable (e.g. `&call().field`)
+    // gets a fresh id every time. Either way the id is recorded as a field
+    // snapshot so writeLocation's PtrExp path can refuse writing through it.
+    private size_t fieldSnapshotAllocationId(
+        imported!"dmd.expression".DotVarExp dot,
+    ) {
+        auto var = dot.e1.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable is null) {
+            const id = ++allocationCount;
+            fieldSnapshotAllocationIds[id] = true;
+            return id;
+        }
+
+        const fieldIndex = structFieldIndex(dot);
+        if (auto forReceiver = variable in fieldAddressAllocations)
+            if (auto id = fieldIndex in *forReceiver)
+                return *id;
+
+        const id = ++allocationCount;
+        fieldAddressAllocations[variable][fieldIndex] = id;
+        fieldSnapshotAllocationIds[id] = true;
+        return id;
     }
 
     // The address of a ref return's lvalue, evaluated in the returning
@@ -1716,6 +1753,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
@@ -3341,6 +3380,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
@@ -3394,6 +3435,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         if (receiverExpression !is null)
@@ -3469,6 +3512,8 @@ private struct Walker {
         arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
+        fieldAddressAllocations = child.fieldAddressAllocations;
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
@@ -3499,6 +3544,8 @@ private struct Walker {
         arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
+        fieldAddressAllocations = child.fieldAddressAllocations;
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -3616,6 +3663,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
         child.hasThis = true;
@@ -3626,6 +3675,8 @@ private struct Walker {
         arrayAllocations = child.arrayAllocations;
         arrayAllocationAliases = child.arrayAllocationAliases;
         arrayAllocationVariables = child.arrayAllocationVariables;
+        fieldAddressAllocations = child.fieldAddressAllocations;
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
     }
@@ -3948,8 +3999,14 @@ private struct Walker {
                 // ...)`, whose `ref` argument `*dec.value!(int*)` re-runs the
                 // decoding call itself) even though the callee only ever read
                 // it. Skip the whole write-back (and its re-evaluation) when
-                // the parameter's value is unchanged.
-                if (index < arguments.length && *value == arguments[index])
+                // the parameter's value is unchanged. Use `identicalValues`,
+                // not plain `==`, for this comparison: for floating scalars
+                // D's `==` considers `-0.0 == +0.0` and `NaN != NaN`, either
+                // of which would give the wrong skip decision here (dropping
+                // a real `+0.0` writeback, or re-executing a side-effecting
+                // argument expression because an unchanged `NaN` looks
+                // "changed").
+                if (index < arguments.length && identicalValues(*value, arguments[index]))
                     continue;
 
                 if (isDynamicArrayPointerRefArgument(argument)) {
@@ -3971,6 +4028,19 @@ private struct Walker {
                 writeLocation(argument, *value);
             }
         }
+    }
+
+    // Used only for writeBackRefArguments' unchanged-parameter skip decision.
+    // Floating scalars compare by bit pattern (D's `is` semantics for
+    // floats), not `==`: `-0.0 is not +0.0` (so a real sign-of-zero write
+    // still triggers a write-back) and `NaN is NaN` (so an unchanged NaN
+    // ref argument still gets skipped instead of re-executing its location
+    // expression). Every other kind defers to the existing `==`.
+    private bool identicalValues(in Value left, in Value right) {
+        if (left.isFloatingScalar && right.isFloatingScalar)
+            return left.asReal is right.asReal;
+
+        return left == right;
     }
 
     private void writeBackByValueClassArguments(
@@ -4653,6 +4723,13 @@ private struct Walker {
             if (writeThroughArrayPointer(pointer, value))
                 return;
 
+            // `&s.field` (addressOfExpression's DotVarExp branch) yields a
+            // read-only value snapshot, not an alias to the field: refuse
+            // loudly instead of silently rewriting the throwaway pointer
+            // variable and losing the write.
+            if (pointer.pointerAllocation in fieldSnapshotAllocationIds)
+                throw new Exception("Unsupported interpreter assignment target.");
+
             writeLocation(ptr.e1, pointer.withPointerTarget(value));
             return;
         }
@@ -4719,6 +4796,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
@@ -4803,6 +4882,8 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
