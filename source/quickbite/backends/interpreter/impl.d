@@ -3208,6 +3208,70 @@ private struct Walker {
         fieldAddressAllocations.remove(variable);
     }
 
+    // Class sibling of `dropStructCell` above (value.md item 7 class phase:
+    // the "dropClassCell (whole class phase)" gap the aggregate-composition
+    // progress notes flagged as missing): drops `variable`'s `classCells`
+    // entry (if any) together with every `classFieldPointerVariables`/
+    // `nestedClassStructFieldPointerVariables`/`classArrayFieldPointerVariables`
+    // reverse-lookup entry (and their field-index siblings) that pointed at
+    // it, for the exact same reason `dropStructCell` exists: leaving a stale
+    // forward entry behind would let a fresh re-declaration of the same
+    // `VarDeclaration` (a loop body re-executing the same `DeclarationExp`,
+    // or a recursive call re-declaring the same AST node at a new depth via
+    // `child.classCells = classCells.dup`, which shares the underlying
+    // `NativeBlock` bytes by reference) go on refreshing the OLD, now-shared
+    // cell in place (`writeCelledLocal`'s `classCells` branch) instead of
+    // getting a correctly independent one from a fresh `promoteClassCell`.
+    // Called from every fresh-binding site alongside `scalarCells.remove`/
+    // `dropArrayCell`/`dropStructCell`. Collects matching ids before
+    // removing rather than mutating the reverse-lookup maps while iterating
+    // them, mirroring `dropStructCell`'s own discipline.
+    //
+    // Also drops `variable`'s `fieldAddressAllocations` entry, same as
+    // `dropStructCell`: that forward memo is shared between the struct and
+    // class phases (`fieldSnapshotAllocationId` keys it per-`VarDeclaration`
+    // regardless of receiver kind), so every current call site already
+    // clears it via the accompanying `dropStructCell` call -- removing it
+    // again here is a harmless no-op today, kept for parity so this function
+    // stays correct on its own if a future call site ever calls it without
+    // `dropStructCell`.
+    private void dropClassCell(VarDeclaration variable) {
+        classCells.remove(variable);
+
+        size_t[] staleFieldIds;
+        foreach (id, pointedVariable; classFieldPointerVariables)
+            if (pointedVariable is variable)
+                staleFieldIds ~= id;
+
+        foreach (id; staleFieldIds) {
+            classFieldPointerVariables.remove(id);
+            classFieldPointerFieldIndices.remove(id);
+        }
+
+        size_t[] staleNestedFieldIds;
+        foreach (id, pointedVariable; nestedClassStructFieldPointerVariables)
+            if (pointedVariable is variable)
+                staleNestedFieldIds ~= id;
+
+        foreach (id; staleNestedFieldIds) {
+            nestedClassStructFieldPointerVariables.remove(id);
+            nestedClassStructFieldPointerOuterFieldIndices.remove(id);
+            nestedClassStructFieldPointerInnerFieldIndices.remove(id);
+        }
+
+        size_t[] staleArrayFieldIds;
+        foreach (id, pointedVariable; classArrayFieldPointerVariables)
+            if (pointedVariable is variable)
+                staleArrayFieldIds ~= id;
+
+        foreach (id; staleArrayFieldIds) {
+            classArrayFieldPointerVariables.remove(id);
+            classArrayFieldPointerFieldIndices.remove(id);
+        }
+
+        fieldAddressAllocations.remove(variable);
+    }
+
     // Array sibling of `dropStructCell` above (value.md item 7 final review,
     // finding 3): drops `variable`'s `arrayCells` entry together with its
     // memoized `arrayAllocations`/`arrayAllocationVariables` id, for exactly
@@ -10024,24 +10088,26 @@ private struct Walker {
             return Value(false);
 
         // A fresh declaration is a new stack slot: drop any inherited/stale
-        // `scalarCells`/`arrayCells`/`structCells` entry for it before
-        // writing `locals` below, or a later `&variable` would resurrect a
-        // prior instance's promoted cell instead of getting a correct fresh
-        // one (value.md item 7 review round 2, finding 1 -- the round 1 fix
-        // only dropped `scalarCells`, missing the two cell maps the array/
-        // struct phases added since). Recursion reuses the same
-        // `VarDeclaration` AST node at every call depth, and duping each of
-        // `scalarCells`/`arrayCells`/`structCells` into a `child` `Walker`
-        // hands a fresh call frame the outer frame's already-promoted cell
-        // (sharing its underlying bytes by reference); a loop body
-        // re-executes the same `DeclarationExp` every iteration and hits the
-        // same issue without recursion at all -- including a nested
-        // `foreach`'s per-iteration slice temporary, whose source array is
-        // promoted eagerly by `promoteSliceArrayCell` with no address-of
-        // needed at all.
+        // `scalarCells`/`arrayCells`/`structCells`/`classCells` entry for it
+        // before writing `locals` below, or a later `&variable` would
+        // resurrect a prior instance's promoted cell instead of getting a
+        // correct fresh one (value.md item 7 review round 2, finding 1 -- the
+        // round 1 fix only dropped `scalarCells`, missing the two cell maps
+        // the array/struct phases added since; the class phase's own
+        // `dropClassCell` closes the same gap for `classCells`, added later
+        // still). Recursion reuses the same `VarDeclaration` AST node at
+        // every call depth, and duping each of `scalarCells`/`arrayCells`/
+        // `structCells`/`classCells` into a `child` `Walker` hands a fresh
+        // call frame the outer frame's already-promoted cell (sharing its
+        // underlying bytes by reference); a loop body re-executes the same
+        // `DeclarationExp` every iteration and hits the same issue without
+        // recursion at all -- including a nested `foreach`'s per-iteration
+        // slice temporary, whose source array is promoted eagerly by
+        // `promoteSliceArrayCell` with no address-of needed at all.
         scalarCells.remove(variable);
         dropArrayCell(variable);
         dropStructCell(variable);
+        dropClassCell(variable);
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {
             uninitializedLocals[variable] = true;

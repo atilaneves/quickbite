@@ -6422,6 +6422,90 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    the remaining class-phase surface is cross-frame and write-through-
    pointer follow-ups plus `dropClassCell`.
 
+   Progress 2026-07-15 (class reference identity, `dropClassCell` -- the
+   whole-class-phase gap every prior class-phase note flagged as missing):
+   closes the stale-cell-on-rebind gap the struct/array phases already
+   closed via `dropStructCell`/`dropArrayCell`, but the class phase never
+   got its own version of.
+
+   Fixture `pointer.recursiveClassDeclarationDropsStaleClassCell.
+   {Ctfe,Interpreter,SystemLinker,LLVMJit}` in `tests/ut/backends/runner/
+   ct/expressions.d`, mirroring `recursiveStructDeclarationDropsStaleStructCell`
+   one receiver type over: `class C { int x; }`, a `valueForDepth` helper
+   (avoids dmd's struct-ternary blit lowering that masked the struct
+   sibling's own gap -- not applicable to classes, kept for fixture
+   parity), and `rec(depth)` that declares `C c = new C();`, sets
+   `c.x = valueForDepth(depth)`, takes `int* p = &c.x;`, returns `*p` at
+   depth 0, else recurses and returns `c.x * 1000 + inner`. RED diagnostic
+   confirmed on Interpreter before any production change: `rec(1)` returned
+   `100100`, not the expected `1100` (SystemLinker/Ctfe/LLVMJit all agreed
+   on `1100`). Root cause confirmed exactly as this task's framing
+   predicted, but the mechanics are a corruption, not a plain stale read:
+   depth 1 promotes `classCells[c]`; the depth-0 recursive call's
+   `child.classCells = classCells.dup` copies the `NativeBlock` handle
+   (its `_bytes` is a slice) into the child frame, sharing the SAME
+   underlying byte buffer; depth 0's fresh `C c = new C();` does not drop
+   that stale/shared entry (no `dropClassCell` existed), so `c.x =
+   valueForDepth(0);`'s whole-object refresh (`writeCelledLocal`'s
+   `classCells` branch) mutates the SHARED bytes in place, corrupting
+   depth 1's own cell with depth 0's value before depth 1 ever reads `c.x`
+   back. Confirms the task's own framing (a stale/incorrect cell survives
+   a rebind of the same `VarDeclaration`), one layer more indirect than a
+   simple "read returns the old value" because the struct/array phases'
+   own `dropStructCell`/`dropArrayCell` already closed the equivalent gap
+   for every other aggregate kind.
+
+   Fix, in `impl.d`: a new `dropClassCell`, the class sibling of
+   `dropStructCell` -- drops `variable`'s `classCells` entry (if any)
+   together with every stale reverse-lookup entry that pointed at it
+   across all three class-field pointer mechanisms decomposition item 4
+   built (`classFieldPointerVariables`/`...FieldIndices`,
+   `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
+   `...InnerFieldIndices`, `classArrayFieldPointerVariables`/
+   `...FieldIndices`), plus `fieldAddressAllocations` (shared with the
+   struct phase's own memo, so removing it here is a harmless no-op at
+   every current call site, kept for parity). Wired into
+   `runDeclarationExpression` alongside the existing `scalarCells.remove`/
+   `dropArrayCell`/`dropStructCell` calls -- the declaration/loop/
+   recursion fresh-binding site this task's own fixture exercises.
+
+   Deliberately NOT wired into `bindFunctionParameters`/
+   `bindLazyFunctionParameter` (the other two `dropStructCell` call
+   sites): unlike the struct/array phases, the class phase already has its
+   own more specific fresh-binding handling for parameters --
+   `registerClassArgumentAliases`/`registerClassThisAlias` run BEFORE
+   `bindFunctionParameters` and already do `child.classCells.remove(
+   parameter)` themselves before conditionally re-seeding it for
+   reference-identity aliasing (`combine(c, c)` sharing one cell). Calling
+   the new `dropClassCell` from `bindFunctionParameters` as well would run
+   AFTER that re-seeding and immediately undo it, breaking the existing
+   class-parameter-aliasing tests -- confirmed by reasoning through the
+   call order, not just asserted; left as a pre-existing, narrower
+   surface than this task's own fixture, which is declaration/loop/
+   recursion-shaped, not parameter-binding-shaped.
+
+   No §9.10 shim retired (as expected -- `writeBackByValueClassArguments`
+   protects whole-boxed-value uses, unrelated to this stale-cell-on-rebind
+   fix).
+
+   Focused suites all green: ct.expressions 547/0 (5 failing as expected,
+   pre-existing `@ShouldFail` characterizations, unchanged from before this
+   slice), ct.structs 291/0, ct.arrays 346/0, ct.exceptions 130/0,
+   ct.control_flow 336/0, interpreter 218/0, bin.repl 228/0,
+   evaluator.eval 71/0. The full `bin/ut --random` was left to the
+   orchestrator per the usual long-suite handoff. Remaining follow-up: a
+   `classCells`-reverse-lookup-map staleness check for the
+   parameter-binding path (narrower than this slice's scope, and no
+   fixture here exercises it -- `registerClassArgumentAliases` already
+   drops the forward `classCells` entry there, but not the three reverse-
+   lookup maps); cross-frame and write-through-pointer follow-ups for the
+   nested/array aggregate-composition shapes (unchanged, pre-existing);
+   shim retirement itself remains deferred until a slice addresses
+   `writeBackByValueClassArguments`'s whole-value-use coverage. With this
+   slice, every named "`dropClassCell` (whole class phase)" gap in prior
+   progress notes is now closed for the declaration/loop/recursion
+   fresh-binding path.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

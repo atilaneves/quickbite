@@ -2441,6 +2441,67 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// Class sibling of `recursiveStructDeclarationDropsStaleStructCell` above
+// (value.md item 7 class phase: `dropClassCell` gap) -- unlike the struct
+// and array phases, the class phase has NO `dropClassCell` mirroring
+// `dropStructCell`/`dropArrayCell`, so `runDeclarationExpression`'s fresh-
+// binding cleanup never drops a stale `classCells` entry inherited via
+// `child.classCells = classCells.dup`. Recursion reuses the same AST
+// `VarDeclaration` for `c` at every call depth: depth 1 promotes a
+// `classCells[c]` cell via `&c.x`, and `NativeBlock`'s `_bytes` is a slice
+// (copying the handle, not the bytes), so the child depth-0 frame's duped
+// `classCells[c]` entry shares the SAME underlying bytes as depth 1's. At
+// depth 0, `c`'s fresh `C c = new C();` does not drop that stale/shared
+// entry, so `c.x = valueForDepth(0);`'s whole-object refresh
+// (`writeCelledLocal`'s `classCells` branch, unlike the struct branch which
+// has nothing to refresh once `dropStructCell` removed it) mutates the
+// SHARED bytes in place -- corrupting depth 1's own cell with depth 0's
+// value. Depth 1's later `c.x` read (`classCellFieldValue`, authoritative
+// over the boxed `locals` mirror) then observes depth 0's value instead of
+// its own. SystemLinker (real, independent `new C()` allocations per depth)
+// returns 1100, matching the struct sibling; before any production change
+// Interpreter returned 100100 -- depth 0's own value corrupting depth 1's
+// read twice over. SystemLinker is the oracle; other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.recursiveClassDeclarationDropsStaleClassCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int hundred() {
+                return 100;
+            }
+
+            int valueForDepth(int depth) {
+                return depth == 0 ? hundred() : one();
+            }
+
+            int rec(int depth) {
+                C c = new C();
+                c.x = valueForDepth(depth);
+                int* p = &c.x;
+                if (depth == 0)
+                    return *p;
+                const inner = rec(depth - 1);
+                return c.x * 1000 + inner;
+            }
+
+            unittest {
+                assert(rec(1) == 1100);
+            }
+        });
+    }
+}
+
 // Final-review finding 3 (BLOCKER): `allocationId`/`fieldSnapshotAllocationId`
 // memoize their id per `VarDeclaration` and were never removed alongside the
 // cell drop the two fixtures above already exercise, so a pointer minted at
