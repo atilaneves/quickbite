@@ -4244,3 +4244,57 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// value.md item 7 decomposition item 4's remaining cross-frame follow-up: the
+// nested-class-struct-field sibling of `pointer.
+// classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
+// caller takes `&c.inner.x` (promoting a `classCells` entry and a
+// `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
+// `...InnerFieldIndices` reverse-lookup entry in the CALLER's own frame),
+// then passes the pointer into a callee that writes through it. The callee's
+// own child `Walker` dupes `classCells` (so the cell's bytes are shared) but,
+// before this slice, never duped the reverse-lookup maps themselves, so the
+// callee's `writeThroughNestedClassStructFieldPointer` reverse-lookup missed
+// and the write fell through to the `fieldSnapshotAllocationIds` refusal
+// check (also duped) instead of aliasing. SystemLinker is the oracle;
+// Bytecode omitted per the omit-Bytecode convention.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.nestedClassStructFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            class C {
+                Inner inner;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                C c = new C();
+                c.inner.x = one();
+                int* p = &c.inner.x;
+                put(p, ninetyNine());
+                return *p + c.inner.x;
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}

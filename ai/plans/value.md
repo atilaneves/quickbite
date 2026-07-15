@@ -6651,6 +6651,83 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    itself remains deferred until a slice addresses
    `writeBackByValueClassArguments`'s whole-value-use coverage.
 
+   Progress 2026-07-15 (nested-class-struct-field pointer cross-frame
+   follow-up): closes the other of the two deferred item-7 class-cell
+   cross-frame gaps -- `&c.inner.x` (a scalar field of a non-union struct
+   field of a plain class local) surviving a call into another function.
+   Mirrors the class-array-field pointer's own cross-frame follow-up
+   (`a6ae05f3`) exactly, combined with the struct-receiver nested-field
+   pointer's own cross-frame follow-up's unmemoized-id merge reasoning
+   (`mergeNestedStructFieldPointerVariableMaps`, since a nested `DotVarExp`
+   receiver always takes `fieldSnapshotAllocationId`'s non-`VarExp`-receiver
+   fresh-id fallback, unlike the scalar/array class-field maps).
+
+   Fixture `pointer.
+   nestedClassStructFieldWriteThroughPointerInCalleeIsVisibleToCaller.
+   {Ctfe,Interpreter,SystemLinker,LLVMJit}` in `tests/ut/backends/runner/
+   ct/expressions.d`, mirroring `pointer.
+   classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller`'s shape one
+   field-nesting level over: `struct Inner { int x; }`, `class C { Inner
+   inner; }`, `c.inner.x = one();`, `int* p = &c.inner.x;`, a `put(int* p,
+   int v) { *p = v; }` callee, `put(p, ninetyNine());`, then `return *p +
+   c.inner.x;` asserting `198`. RED confirmed on Interpreter before any
+   production change: `object.Exception: Unsupported interpreter assignment
+   target.` at the `*p = v;` line inside `put` -- the callee's own child
+   `Walker` duped `classCells` (sharing the cell's bytes) but never duped
+   `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
+   `...InnerFieldIndices`, so the callee's own
+   `writeThroughNestedClassStructFieldPointer` reverse-lookup missed and the
+   write fell through to the `fieldSnapshotAllocationIds` refusal guard.
+   Green on Ctfe, SystemLinker, and LLVMJit throughout.
+
+   Fix, all in `impl.d`: (1) a new `nestedClassStructFieldPointerWritebacks`
+   flag map, declared alongside `nestedClassStructFieldPointerVariables`/
+   `OuterFieldIndices`/`InnerFieldIndices`. (2) those four maps are now
+   duped into every child `Walker` at the same 7 sites that already dupe
+   `classFieldPointerVariables`/`FieldIndices`/`Writebacks`. (3) a new
+   `mergeNestedClassStructFieldPointerVariableMaps`, a plain union merge (no
+   `fieldAddressAllocations` conflict check, mirroring
+   `mergeNestedStructFieldPointerVariableMaps`'s own reasoning for the
+   struct-receiver sibling -- the id is never memoized per (variable, field
+   path) for this one-level-nested shape). (4)
+   `writeThroughNestedClassStructFieldPointer` now sets
+   `nestedClassStructFieldPointerWritebacks[*variable] = true`
+   unconditionally on every successful write (it already tolerated a
+   missing `current`, same pre-existing cell-then-mirror discipline as the
+   other class-field siblings before their own cross-frame follow-ups). (5)
+   a new `writeBackNestedClassStructFieldPointerTargets`, wired into
+   `writeBackFunctionState`/`writeBackMemberFunctionState` alongside the
+   existing `writeBackClassFieldPointerTargets`/
+   `writeBackClassArrayFieldPointerTargets` calls, refreshing the owning
+   frame's boxed mirror via `classValueFromCell` once control returns. (6)
+   `classValueFromCell` widened again to recurse one level into every
+   (non-union) struct-typed field via a `NativeStruct` adopted over the
+   field's own byte sub-range and `structValueFromCell`, mirroring
+   `structValueFromCell`'s own nested-field recursion from the
+   nested-struct-field follow-up.
+
+   Stale doc comments corrected in the same diff: the
+   `nestedClassStructFieldPointerVariables`/`OuterFieldIndices`/
+   `InnerFieldIndices` field declaration and
+   `writeThroughNestedClassStructFieldPointer`'s own doc comment both still
+   described the shape as same-frame-only, though this slice makes it
+   cross-frame; both now describe the actual state.
+
+   No §9.10 shim retired (as expected -- `writeBackByValueClassArguments`
+   protects whole-boxed-value uses, unrelated to this cross-frame
+   write-through-pointer addition). This closes the item-7 class-aggregate
+   cross-frame story (single-field, array-field, and nested-struct-field
+   class pointers all now cross-frame); the remaining big item-7 follow-up
+   is §9.10 `writeBackByValueClassArguments` retirement, which needs
+   whole-value class-reference handling, a separately-scoped slice.
+
+   Focused suites all green: ct.expressions 559/0 (5 failing as expected,
+   pre-existing `@ShouldFail` characterizations, unchanged from before this
+   slice), ct.structs 291/0, ct.arrays 346/0, ct.exceptions 130/0,
+   interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0. The full
+   `bin/ut --random` was left to the orchestrator per the usual long-suite
+   handoff.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
