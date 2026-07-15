@@ -1886,6 +1886,9 @@ private struct Compiler {
                 return *pointer;
             if (auto pointer = tryAddressOfLocal(address))
                 return *pointer;
+            if (auto symbol = address.e1.isSymOffExp)
+                if (auto pointer = tryAddressOfSymbol(symbol))
+                    return *pointer;
             if (auto pointer = tryAddressOfRefParameterCall(address))
                 return *pointer;
             // `&f` of a free or static nested function: the function-pointer
@@ -3076,6 +3079,7 @@ private struct Compiler {
         // `_locals`: the scalar VarExp/assignment paths must not treat its
         // inline block as a scalar slot.
         _staticArrayLocals[variable] = offset;
+        _capturedOffsets[variable] = offset;
 
         if (variable._init !is null &&
             variable._init.isVoidInitializer !is null)
@@ -5416,6 +5420,9 @@ private struct Compiler {
         auto existing = declaration in _locals;
         auto staticArray = declaration in _staticArrayLocals;
         if (existing is null && staticArray is null) {
+            if (auto pointer = tryAddressOfCaptured(
+                    declaration, symOff.type.toBasetype.nextOf))
+                return pointer;
             auto moduleVariable = moduleScalarVariableOrNull(declaration);
             if (moduleVariable is null || symOff.offset != 0)
                 return null;
@@ -5513,8 +5520,12 @@ private struct Compiler {
                     return result;
                 } else {
                     auto staticArray = declaration in _staticArrayLocals;
-                    if (staticArray is null)
-                        return null;
+                    if (staticArray is null) {
+                        return tryAddressOfCaptured(
+                            declaration,
+                            address.type.toBasetype.nextOf,
+                        );
+                    }
                     slot = *staticArray;
                     pointedType = address.type.toBasetype.nextOf;
                 }
@@ -5542,6 +5553,28 @@ private struct Compiler {
             pointedType.toBasetype.ty == TY.Tstruct
                 ? ScalarType.void_
                 : scalarType(pointedType),
+        );
+        return result;
+    }
+
+    private Operand* tryAddressOfCaptured(
+        VarDeclaration declaration,
+        Type pointedType,
+    ) {
+        auto captured = declaration in _capturedOffsets;
+        if (!_hasNestedContext || captured is null)
+            return null;
+
+        const sourceIndex = capturedFrameIndex(*captured);
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameIndexAddress, pointer, sourceIndex);
+        auto result = new Operand;
+        *result = Operand(
+            pointer,
+            ScalarType.ulong_,
+            false,
+            true,
+            scalarType(pointedType),
         );
         return result;
     }

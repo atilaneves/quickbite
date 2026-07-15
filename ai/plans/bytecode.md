@@ -6056,3 +6056,20 @@ diagnostics, or new slice-assignment element widths. The pre-edit
 and final `ninja bin/ut` passed. Final `bin/ut --random` crashed with the
 pre-existing signal 11 under seed `1452298491`; its required quiet replay
 reproduced exit code 139.
+
+`pointer.sliceArgumentEvaluatesPointerOnce` promoted to Bytecode, 2026-07-16:
+pre-approved promotion of the existing direct SystemLinker-backed fixture. The
+focused Bytecode row was red with `Unsupported expression in bytecode core: &
+first` because a nested function could not take `.ptr` of a captured static
+array. Static-array locals now retain their enclosing-frame offsets, and the
+existing nested-frame context can turn that absolute stack index into a native
+pointer without reevaluating the conditional pointer-producing call. This does
+not add captured static-array reads, writes, slices, or general closure
+lowering. The pre-edit `ninja bin/ut` baseline passed; pre-edit
+`bin/ut --random` crashed with signal 11 under seed `658929736`, and its
+required `bin/ut --seed 658929736` replay reproduced exit code 139. After the
+change, the focused Bytecode row passed.
+The final `ninja bin/ut` and focused Bytecode/SystemLinker oracle pair passed.
+The final `bin/ut --random` crashed with the pre-existing signal 11 under seed
+`2698906983`; its required `bin/ut --seed 2698906983` replay reproduced exit
+code 139.

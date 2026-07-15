@@ -1586,7 +1586,6 @@ enum pointerSliceArgumentEvaluatesPointerOnceSource = q{
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("pointer.sliceArgumentEvaluatesPointerOnce." ~ backend.stringof)

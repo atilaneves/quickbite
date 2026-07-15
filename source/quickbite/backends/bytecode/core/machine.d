@@ -501,6 +501,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case frameIndexAddress:
+                writeFrameAddress(
+                    stack,
+                    base + instruction.a,
+                    scalarValue!size_t(stack, base + instruction.b),
+                );
+                ++ip;
+                break;
+
             case signExtend1to4:
                 const ubyte[int.sizeof] signWidened = scalarBytes(
                     cast(int) scalarValue!byte(stack, base + instruction.b),
