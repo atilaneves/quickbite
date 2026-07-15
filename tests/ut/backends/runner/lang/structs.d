@@ -1454,11 +1454,7 @@ static foreach (backend; Matrix!(
 // 1] = ...`) read a stale/default-zero length and underflowed. This is
 // the write-path counterpart of the read-path fix in
 // `dynamicArray.dollarReflectsLengthAfterInPlaceGrowth` (arrays.d).
-// `Bytecode` omitted: `$` is not implemented there (`Unsupported variable
-// in bytecode core: $`), per interpreter.md §8's omit-don't-pin rule.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed, "`$` not implemented (\"Unsupported variable in bytecode core: $\")"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -5650,3 +5650,14 @@ omit-don't-pin convention (a backend that cannot run a test is left out of
 its matrix, not pinned to a known-bad result). Re-add Bytecode once the VM's
 `readHeapElement` handles static-array-of-structs postblit/dtor heap element
 copies.
+
+`struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported variable in bytecode core: $` because dynamic-array element
+assignment compiled its index without exposing the target descriptor's current
+length. The assignment path now scopes the existing active-dollar length slot
+around the index expression, matching the dynamic-array read and address paths.
+This does not add `$` outside array indices or change array-resize semantics.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random` (seed `3401576571`).

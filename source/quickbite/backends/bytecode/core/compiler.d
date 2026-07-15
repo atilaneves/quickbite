@@ -7147,7 +7147,10 @@ private struct Compiler {
             return null;
 
         const value = compileExpression(rhs);
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = sliceLengthSlot(*descriptor);
         const indexSlot = compileExpression(index.e2);
+        _activeDollarLength = savedDollarLength;
         const elementSize =
             dynamicArrayElementSize(index.e1.type, descriptor.elementType);
         _code ~= Instruction(
