@@ -2131,6 +2131,46 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Same-frame plain-variable class aliasing, struct-typed field (value.md
+// item 7's class phase, decomposition item 1's own aggregate-composition
+// follow-up, struct shape): `classCellFieldValue` -- the DIRECT (non-pointer)
+// class-field read's authoritative-cell dispatcher -- widened the scalar and
+// scalar-element-static-array field shapes so far; a struct-typed field
+// still falls back to the boxed `locals` mirror, which the OTHER alias's
+// write never touches. `c2.inner.x = 99;` already reaches the shared cell
+// (the write side's `writeClassCellScalarFields` already recurses one level
+// into a struct-typed field, value.md item 7 decomposition item 4), but
+// reading `c.inner.x` back through the ORIGINAL alias, with no `&`/pointer
+// involved, still sees the stale independent copy. Only Interpreter and
+// SystemLinker (the oracle) are pinned here per the omit-don't-pin
+// convention.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.aliasedVariableStructFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            class C {
+                Inner inner;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                C c2 = c;
+                c2.inner.x = ninetyNine();
+                assert(c.inner.x == 99);
+            }
+        });
+    }
+}
+
 // Cross-frame class reference aliasing (value.md item 7's class phase,
 // decomposition item 2): passing the SAME object as TWO different by-value
 // parameters must leave both parameters observing the SAME object, since a

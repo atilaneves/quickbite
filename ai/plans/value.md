@@ -7286,6 +7286,66 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    retirement itself remains deferred until a slice addresses
    `writeBackByValueClassArguments`'s whole-value-use coverage.
 
+   Progress 2026-07-15 (class reference identity, decomposition item 1's
+   aggregate-composition follow-up, struct shape: direct read of an
+   aliased class local's struct-typed field): closes the symmetric gap
+   this file's own prior entry named -- `classCellFieldValue`, the DIRECT
+   (non-pointer) class-field read's authoritative-cell dispatcher, had a
+   scalar branch and a scalar-element-static-array branch but no branch
+   for a (non-union) struct-typed field, so that shape still fell back to
+   the boxed `locals` mirror, which can be stale when a DIFFERENT alias
+   mutated the field's bytes in the shared `classCells` cell.
+
+   Fixture `class.aliasedVariableStructFieldWriteIsVisibleThroughOriginal.
+   {Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/
+   expressions.d`, immediately after decomposition item 1's own
+   scalar-element-static-array fixture: `struct Inner { int x; } class C {
+   Inner inner; } C c = new C(); C c2 = c; c2.inner.x = ninetyNine();
+   assert(c.inner.x == 99);`. RED confirmed on Interpreter before any
+   production change: `0 != 99` -- `c2.inner.x = 99` already reaches the
+   shared cell (the write side's `writeClassCellScalarFields` already
+   recurses one level into a struct-typed field), but reading `c.inner.x`
+   back through the ORIGINAL alias fell through `classCellFieldValue`'s
+   scalar/array-only gate to the stale independent boxed copy. Green on
+   SystemLinker throughout.
+
+   Fix, in `impl.d`'s `classCellFieldValue` only: added a struct branch
+   alongside the existing scalar and static-array branches, gated on the
+   field's type being a (non-union) `TypeStruct` and the caller's
+   already-computed boxed field value (`target.classFieldAt(fieldIndex)`)
+   actually being a struct value. Reuses the exact composition primitives
+   `writeClassCellScalarFields`'s own struct recursion and
+   `nestedClassStructFieldPointerCellValue` already use for a
+   `classCells` entry's nested struct field -- `NativeStruct.adopt(cell.
+   subRange(offset, size), nestedStructType)`, since a `classCells` entry
+   is a plain `NativeBlock` with no `NativeStruct` wrapper of its own --
+   and then this file's own struct-receiver read-back, `structValueFromCell`,
+   to overlay every one of the nested struct's own scalar/array/struct
+   fields onto the boxed field value. No new byte-reinterpretation
+   machinery.
+
+   No §9.10 shim retired: `writeBackByValueClassArguments` still protects
+   whole-boxed-value uses, untouched by this direct-read widening,
+   matching every prior aggregate-composition slice.
+
+   Focused suites all green (run together): ct.expressions, ct.structs,
+   ct.arrays, ct.exceptions, ct.control_flow, interpreter, bin.repl,
+   evaluator.eval, rt.dependency_image -- 2314 run, 0 failed, 5/5 failing
+   as expected (the same pre-existing ct.expressions failures, unchanged
+   count; ct.expressions itself grew by this slice's own 2 new backend
+   instances). The full `bin/ut --random` was left to the orchestrator per
+   the usual long-suite handoff.
+
+   Remaining follow-up: (1) a dynamic-array or class-typed class field
+   still has no widening on either the read or write side; (2) whole-value
+   cell reads (reading an entire class object's fields back from its
+   `classCells` entry in one pass, rather than one `DotVarExp` field at a
+   time) remain unaddressed, which is what would let a future slice retire
+   `writeBackByValueClassArguments`; (3) `Ctfe` is not affected by this
+   slice (class objects are heap-allocated reference types outside CTFE's
+   own reach in this codebase, matching every prior class-phase slice's
+   omission).
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

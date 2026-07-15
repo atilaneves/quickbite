@@ -7146,6 +7146,30 @@ private struct Walker {
             return true;
         }
 
+        // Aggregate composition, struct shape (value.md item 7 decomposition
+        // item 1's own follow-up, the symmetric case to the static-array
+        // branch above): a (non-union) struct-typed field. Reuses the exact
+        // composition primitive `writeClassCellScalarFields`'s own struct
+        // recursion already uses -- `NativeStruct.adopt` over the field's
+        // own byte sub-range, since a `classCells` entry has no
+        // `NativeStruct` wrapper of its own -- and then `structValueFromCell`
+        // (the struct-receiver read-back this repo already established for
+        // a plain struct local's own nested-struct fields) to overlay every
+        // one of the nested struct's own scalar/array/struct fields onto the
+        // caller's already-computed boxed field value.
+        auto nestedStructType = field.type.toBasetype.isTypeStruct;
+        if (nestedStructType !is null && nestedStructType.sym.isUnionDeclaration is null) {
+            const fieldValue = target.classFieldAt(fieldIndex);
+            if (!fieldValue.isStruct)
+                return false;
+
+            const offset = fieldByteOffset(field);
+            const size = typeByteSize(field.type);
+            auto nestedCell = NativeStruct.adopt(cell.subRange(offset, size), nestedStructType);
+            value = structValueFromCell(fieldValue, nestedCell);
+            return true;
+        }
+
         return false;
     }
 
