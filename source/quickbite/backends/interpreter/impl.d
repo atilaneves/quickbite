@@ -122,6 +122,24 @@ private struct Walker {
     // untouched and keeps using the existing boxed/aliasing paths.
     private NativeArray[VarDeclaration] arrayCells;
 
+    // Set (never cleared once true within a frame) by `writeCelledLocal`
+    // whenever it replaces `variable`'s array value wholesale rather than
+    // mutating one in place -- a plain (non-writeback) assignment, or a
+    // ref-writeback whose length changed (value.md item 7 review round 4,
+    // finding 1). The cross-frame writeback call sites
+    // (`writeBackNestedLocals`, `writeBackArrayPointerTargets`,
+    // `writeBackRefArguments`) need this to tell a genuine REBIND of a
+    // ref/captured array apart from an element-level mutation that
+    // happened to promote no `arrayCells` entry of its own (`p[0] = x;`
+    // through a `ref int[] p` that never took `&p[i]`) -- both leave
+    // `variable` absent from `arrayCells` at return, so cell presence alone
+    // cannot distinguish them. Keyed by the SAME `VarDeclaration`
+    // `writeCelledLocal` was called for: a captured/recursive variable
+    // reuses the identical AST node across frames, and a `ref` parameter's
+    // own (distinct) node is exactly what `writeBackRefArguments` resolves
+    // its writeback decision against.
+    private bool[VarDeclaration] arrayRebinds;
+
     // Authoritative native bytes for a struct local that has had one of its
     // `native_scalar.isNativeScalarType` fields address-taken (value.md item
     // 7's struct phase starts, mirroring `arrayCells` above): populated
@@ -2356,6 +2374,19 @@ private struct Walker {
     // a same-length `arrayCells` entry in place; every other array write
     // through this helper drops the cell unconditionally, matching a rebind
     // that cannot be represented as an in-place byte mutation.
+    //
+    // Review round 4, finding 1: a cross-frame writeback caller's `true`
+    // does NOT always mean "genuinely the same storage" -- the callee may
+    // have REBOUND the ref/captured array to a brand-new same-length array
+    // (`p = [x, y];`) rather than mutated it in place, and an in-place
+    // refresh would then overwrite the bytes a separate, still-live alias
+    // (e.g. a pre-existing slice view of the OLD storage) legitimately
+    // keeps pointing at. `writeBackNestedLocals`, `writeBackArrayPointerTargets`,
+    // and `writeBackRefArguments` no longer pass a hardcoded `true`: each
+    // computes it via `arrayWritebackIsMutation`, which reads the callee's
+    // own `arrayRebinds` marker (set by THIS function, below) to tell a
+    // genuine mutation apart from a rebind before deciding whether the
+    // parent's own cell may be refreshed in place or must be dropped.
     private void writeCelledLocal(
         VarDeclaration variable,
         in Value value,
@@ -2397,7 +2428,19 @@ private struct Walker {
                 // array's own next address-of promotes, instead of
                 // correctly declining to its own frozen snapshot.
                 dropArrayCell(variable);
+                if (value.isArray)
+                    arrayRebinds[variable] = true;
             }
+        } else if (!arrayIsRefWriteback && value.isArray) {
+            // No cell existed for `variable` at all, but this is still a
+            // plain (non-writeback) whole-array assignment -- e.g. a `ref
+            // int[] p` parameter rebound (`p = [x, y];`) without ever having
+            // `&p[i]` taken, so `promoteArrayCell` never ran for it. Mark the
+            // rebind anyway: `writeBackRefArguments` resolves its writeback
+            // decision against `p`'s own `arrayRebinds` entry, and cell
+            // presence alone cannot tell this apart from an element-level
+            // mutation that similarly never promoted a cell (`p[0] = x;`).
+            arrayRebinds[variable] = true;
         }
 
         // Same in-place-mutation refresh, for a struct local's `structCells`
@@ -4216,6 +4259,28 @@ private struct Walker {
             }
     }
 
+    // Cross-frame writeback discriminator (value.md item 7 review round 4,
+    // finding 1): whether `childVariable`'s final value in `child` still
+    // represents an in-place MUTATION of storage `this` frame's own
+    // `arrayCells` entry may safely be refreshed with, or a REBIND the
+    // callee performed instead. `arrayRebinds` is set by `writeCelledLocal`
+    // the moment it replaces a whole array value rather than mutating one in
+    // place (see that field's own doc comment) -- an absent entry means
+    // every write `child` made to `childVariable` was a same-storage
+    // mutation (or `childVariable` was never written at all), so the
+    // parent's own cell may be refreshed in place; a present entry means
+    // `child` rebound it to different storage at some point, so the
+    // parent's own cell must be DROPPED instead, matching a same-frame
+    // `s = b;` rebind's existing decline-rather-than-corrupt choice. Reading
+    // `child`'s own map (not `this`'s) is what makes this cross-frame: the
+    // rebind, if any, happened inside `child`'s execution, not this frame's.
+    private bool arrayWritebackIsMutation(
+        VarDeclaration childVariable,
+        ref Walker child,
+    ) {
+        return (childVariable in child.arrayRebinds) is null;
+    }
+
     // Re-review BLOCKER (2026-07-14, cross-frame cell staleness):
     // `runIndexExpression`'s cell arm makes a promoted `arrayCells` entry
     // READ-AUTHORITATIVE over the boxed `locals` mirror, but this used to
@@ -4232,6 +4297,14 @@ private struct Walker {
     // through to the same plain `locals[variable] = value;` as before), and
     // unchanged for a scalar/struct variable (`writeCelledLocal`'s own
     // pre-existing scalarCells/structCells branches, not gated on this).
+    //
+    // Review round 4, finding 1: whether the callee's write was a genuine
+    // in-place mutation or a REBIND is no longer assumed unconditionally --
+    // `arrayWritebackIsMutation` answers it per variable, from `child`'s own
+    // `arrayRebinds` marker, so a nested function that REPLACES a captured
+    // array with a new same-length one (`a = [x, y];`) drops the parent's
+    // cell instead of corrupting it, while a nested function that MUTATES a
+    // captured array's elements still refreshes the parent's cell in place.
     private void writeBackNestedLocals(
         imported!"dmd.func".FuncDeclaration function_,
         ref Walker child,
@@ -4242,7 +4315,11 @@ private struct Walker {
 
         foreach (variable, value; child.locals)
             if (variable in locals)
-                writeCelledLocal(variable, value, /* arrayIsRefWriteback */ true);
+                writeCelledLocal(
+                    variable,
+                    value,
+                    /* arrayIsRefWriteback */ arrayWritebackIsMutation(variable, child),
+                );
     }
 
     private void writeBackGlobals(ref Walker child) {
@@ -4304,6 +4381,12 @@ private struct Walker {
     // recursiveArrayParameterElementWriteIsVisibleThroughCallerCell`), so
     // only that case reconciles the cell; every other variable keeps the
     // pre-existing plain mirror copy.
+    //
+    // Review round 4, finding 1: as in `writeBackNestedLocals`,
+    // `arrayWritebackIsMutation` -- not a hardcoded `true` -- decides
+    // whether the recursive callee's write reconciles the caller's cell in
+    // place (a genuine element mutation) or drops it (the callee rebound
+    // the shared parameter to a new same-length array).
     private void writeBackArrayPointerTargets(ref Walker child) {
         foreach (_, variable; child.arrayAllocationVariables) {
             if ((variable in locals) is null)
@@ -4318,7 +4401,11 @@ private struct Walker {
                 continue;
 
             if (isParameterVariable(variable))
-                writeCelledLocal(variable, *value, /* arrayIsRefWriteback */ true);
+                writeCelledLocal(
+                    variable,
+                    *value,
+                    /* arrayIsRefWriteback */ arrayWritebackIsMutation(variable, child),
+                );
             else
                 locals[variable] = *value;
         }
@@ -4826,13 +4913,20 @@ private struct Walker {
                 if (!isWritableLocation(argument))
                     continue;
 
-                // `true`: this is the cross-frame `ref` array-parameter
-                // writeback case (value.md item 7 review round 2, finding
-                // 2) -- `*value` genuinely represents the SAME storage
-                // `argument` already denotes (the callee mutated it through
-                // the aliased `ref` parameter), not a rebind, so a same-
-                // length `arrayCells` entry may be refreshed in place.
-                writeLocation(argument, *value, true);
+                // This is the cross-frame `ref` array-parameter writeback
+                // case (value.md item 7 review round 2, finding 2): `*value`
+                // MAY genuinely represent the SAME storage `argument`
+                // already denotes (the callee mutated it through the
+                // aliased `ref` parameter), in which case a same-length
+                // `arrayCells` entry may be refreshed in place -- but the
+                // callee may instead have REBOUND `parameter` to a brand-new
+                // same-length array (`p = [x, y];`), which must NOT be
+                // refreshed in place or it corrupts the bytes a separate,
+                // still-live alias (e.g. a pre-existing slice view) keeps
+                // pointing at the OLD storage (review round 4, finding 1).
+                // `arrayWritebackIsMutation` tells the two apart from
+                // `child`'s own `arrayRebinds` marker for `parameter`.
+                writeLocation(argument, *value, arrayWritebackIsMutation(parameter, child));
             }
         }
     }
@@ -5420,12 +5514,16 @@ private struct Walker {
     }
 
     // `arrayRefWriteback` (value.md item 7 review round 2, finding 2):
-    // `writeBackRefArguments` is the only caller that sets this `true`, for
-    // the one case where a `VarExp` target's whole-array value genuinely
-    // represents the SAME storage the target already denotes (a `ref
-    // int[]` parameter's callee-mutated final value written back to its
-    // caller) rather than a plain source-level rebind (`s = b;`). See
-    // `writeCelledLocal`'s own doc comment for why the distinction matters.
+    // `writeBackRefArguments` is the only caller that ever passes `true`,
+    // for a `VarExp` target's whole-array value written back from a `ref
+    // int[]` parameter's callee-side final value, as opposed to a plain
+    // source-level rebind (`s = b;`), which always passes the default
+    // `false`. `true` here does NOT by itself mean "genuinely the same
+    // storage, mutated in place" -- the callee may instead have REBOUND the
+    // parameter (review round 4, finding 1), so `writeBackRefArguments`
+    // computes this per call via `arrayWritebackIsMutation` rather than
+    // hardcoding `true`. See `writeCelledLocal`'s own doc comment for why
+    // the distinction matters and how it is resolved.
     private void writeLocation(
         imported!"dmd.expression".Expression target,
         in Value value,

@@ -4502,6 +4502,86 @@ as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
 `bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was
 left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-15 (re-review fix: cross-frame whole-array rebind drops
+the parent cell instead of corrupting a slice view): round 4's BLOCKER
+finding 1 on the previous note's fix: `writeBackRefArguments` and
+`writeBackNestedLocals` route a cross-frame array writeback through
+`writeCelledLocal(..., arrayIsRefWriteback: true)`, whose same-length arm
+refreshes the parent's promoted `arrayCells` entry bytes IN PLACE. That is
+correct when the callee MUTATED elements of shared storage, but wrong when
+the callee REBOUND its `ref int[]` parameter (or a captured array) to a
+NEW same-length array: the in-place refresh then overwrites the OLD
+storage's bytes, corrupting any separate, still-live alias of that OLD
+storage (e.g. a slice view taken before the call) even though real D gives
+the rebound variable entirely fresh storage and leaves the earlier view
+untouched. Two new fixtures (pre-approved, runtime-seeded), Interpreter/
+SystemLinker only: `pointer.refParameterRebindDoesNotCorruptPreexisting
+SliceView` (confirmed red on Interpreter, `7 != 1`, green on SystemLinker,
+before any production change) and `pointer.nestedFunctionArrayRebindDoes
+NotCorruptPreexistingSliceView`, which asserts `a[0] * 10 + s[0]` rather
+than either value alone -- checking only one side passes "by accident"
+depending on `locals` associative-array iteration order in
+`writeBackNestedLocals`'s own walk (the parent's rebound `a` and the
+untouched `s` are both written back through that same walk, so whichever
+is processed last currently wins the shared block's bytes); combining both
+into one result exposed the corruption regardless of that order (confirmed
+red, `77 != 71`, on the exact build these fixtures landed against).
+
+Fix: a new per-frame `arrayRebinds` marker, set by `writeCelledLocal`
+itself the moment it replaces a variable's array value wholesale (a plain,
+non-writeback assignment, or a ref-writeback whose length changed) rather
+than mutating one in place -- covering both the case where a promoted
+`arrayCells` entry existed and was dropped, and the case where none existed
+at all (a `ref int[]` parameter rebound without ever having its own address
+taken, which promotes no cell of its own, so cell presence alone cannot
+tell a rebind apart from an element-level mutation that similarly promoted
+none). A new `arrayWritebackIsMutation(childVariable, child)` helper reads
+the CHILD's own `arrayRebinds` entry for `childVariable` (absent means
+every write the child made was a same-storage mutation, present means it
+rebound at some point) and is now what `writeBackNestedLocals`,
+`writeBackArrayPointerTargets`, and `writeBackRefArguments` pass to
+`writeCelledLocal` instead of a hardcoded `true`: a genuine mutation still
+refreshes the parent's cell in place (unchanged from the previous note's
+fix), a rebind now drops it instead of corrupting it. Because the
+propagating `writeCelledLocal` call itself marks `arrayRebinds` on ITS OWN
+frame when it drops, the marker also cascades correctly through multiple
+levels of nesting without any extra bookkeeping. The two overclaiming
+comments this finding was reported against (`writeBackRefArguments`'s
+"genuinely represents the SAME storage ... not a rebind" and
+`writeLocation`'s matching claim about `arrayRefWriteback`) are corrected
+to state the rebind case is now handled, rather than asserted away.
+
+Reconciled with the existing `pointer.nestedFunctionArrayRebindIsVisible
+ThroughParentCell` fixture (a nested rebind observed through the PARENT's
+OWN `a`, not a separate view): dropping the parent's cell on rebind still
+answers `a[0]` correctly, because `runIndexExpression`'s cell-priority read
+falls through to the boxed `locals` mirror once no cell exists, and that
+mirror is unconditionally refreshed with the rebound value at the end of
+`writeCelledLocal` regardless of which branch ran. So `a` itself sees the
+fresh `[7, 8, 9]` (via the mirror, cell gone) while a separate `s = a[];`
+taken before the call keeps reading its own, still-present cell over the
+untouched OLD block -- both verified together in the new fixture above.
+Also verified unaffected: `pointer.recursiveArrayParameterElementWriteIs
+VisibleThroughCallerCell`, `pointer.nestedFunctionArrayAppendGrowsArray
+VisibleThroughParentCell`, `pointer.arrayElementWrittenThroughRefParameter
+PointerVisibleToEarlierCallerPointer`, and the foreach-ref/post-increment
+pointer fixtures -- none of these ever reach a plain whole-array
+`writeCelledLocal` call for the aliased variable, so `arrayRebinds` is
+never set for it and the existing in-place-refresh behaviour is untouched.
+
+Focused runs, all green: both new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+the full set of previously-landed cross-frame array-cell fixtures named
+above; `bin/ut -s ut.backends.runner.ct.expressions` (429 run, 0 failed,
+5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (335
+run, 0 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed).
+`bin/ut -s ut.backends.runner.ct.structs` still exits 139 in isolation on
+this branch (the pre-existing Bytecode teardown segfault noted in the
+previous session's handoff, unrelated to this change) -- every named test
+case inside it ran and none failed before that teardown crash. The full
+`bin/ut --random` was left to the orchestrator per the usual long-suite
+handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

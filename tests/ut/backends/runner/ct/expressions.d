@@ -3361,3 +3361,110 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// Cross-frame sibling of the same-frame `s = b;` rebind fixture (value.md
+// item 7 review round 2, finding 2): a `ref int[]` parameter REBOUND to a
+// new same-length array inside the callee must give the caller's own
+// variable fresh storage WITHOUT corrupting a pre-existing slice VIEW of
+// the caller's OLD storage. `writeBackRefArguments` routes the parameter's
+// final value through `writeCelledLocal(..., arrayIsRefWriteback: true)`,
+// whose same-length arm refreshes the caller's cell bytes IN PLACE -- correct
+// for a genuine element mutation flowing through shared storage, but wrong
+// here: `s`'s own `arrayCells` entry shares the SAME `NativeArray` block as
+// `a`'s (via `promoteSliceArrayCell`), so the in-place refresh overwrites
+// `s`'s view with the REBOUND array's bytes even though real D gives `a`
+// entirely new storage and leaves `s`'s old view untouched. SystemLinker is
+// the oracle.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.refParameterRebindDoesNotCorruptPreexistingSliceView." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            void g(ref int[] p) {
+                p = [seven(), eight()];
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                g(a);
+                return s[0];
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}
+
+// Nested-capture twin of the fixture above: a nested function rebinding a
+// CAPTURED array to a new same-length array must not corrupt a pre-existing
+// slice view of the captured array's OLD storage, via
+// `writeBackNestedLocals`'s own use of the same `writeCelledLocal(...,
+// arrayIsRefWriteback: true)` reconciliation. SystemLinker is the oracle.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.nestedFunctionArrayRebindDoesNotCorruptPreexistingSliceView." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                void g() {
+                    a = [seven(), eight()];
+                }
+                g();
+                // Both must hold at once: `a` sees the REBIND (fresh
+                // storage), `s` keeps its pre-existing view of the OLD
+                // storage untouched. Checking only one of the two would pass
+                // "by accident" depending on `locals` AA iteration order (the
+                // parent's own `a` and the untouched `s` are BOTH written
+                // back through the same `child.locals` walk in
+                // `writeBackNestedLocals`, so whichever is processed last
+                // currently wins the shared block's bytes) -- combining both
+                // into one result makes the corruption observable regardless
+                // of that order.
+                return a[0] * 10 + s[0];
+            }
+
+            unittest {
+                assert(f() == 71);
+            }
+        });
+    }
+}
