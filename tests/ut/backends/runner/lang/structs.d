@@ -1622,6 +1622,38 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Repeated forwarding of the same ref-foreach element must preserve its
+// identity across every ref parameter. Each mutation therefore reaches the
+// same array element instead of competing through independent snapshots.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("struct.foreachRefRepeatedArgumentPreservesAlias." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Item {
+                int x;
+                int y;
+            }
+
+            void mutate(ref Item first, ref Item second) {
+                first.x = 1;
+                second.y = 2;
+            }
+
+            unittest {
+                Item[] items;
+                items.length = 1;
+
+                foreach (ref item; items)
+                    mutate(item, item);
+
+                assert(items[0].x == 1);
+                assert(items[0].y == 2);
+            }
+        });
+    }
+}
+
 // cerealed's decode of an enum-typed struct field (structs.d's `EnumStruct`
 // and `MqttFixedHeader` tests) writes the decoded byte through the field
 // without going through an enum-typed literal `IntegerExp`, so `Walker.

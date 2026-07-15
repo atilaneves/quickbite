@@ -9113,6 +9113,18 @@ private struct Compiler {
 
         const pointerOffset = _locals[declaration];
         const valueSize = cast(ushort) staticArraySize(argument.type);
+        foreach (writeBack; writeBacks)
+            if (writeBack.pointerOffset == pointerOffset &&
+                writeBack.valueSize == valueSize) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
+
         const valueOffset = allocateBytes(valueSize, valueSize);
         _code ~= Instruction(
             pointerLoadOp(valueSize),

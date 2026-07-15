@@ -5759,3 +5759,20 @@ Verification: focused SystemLinker oracle green and Bytecode red; focused
 Bytecode/SystemLinker regression green; and both prior member ref-return
 Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
 `2831149159`, 3391 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 3, repeated ref-foreach argument alias, 2026-07-15: forwarding
+one ref-foreach struct local to two `ref` parameters materialized independent
+caller temporaries, so their post-call pointer stores competed and the final
+store erased the first parameter's field mutation. The approved direct
+SystemLinker/Bytecode regression
+`struct.foreachRefRepeatedArgumentPreservesAlias` proved compiled D preserves
+both writes to the shared array element; Bytecode was red with `0 != 1`.
+Repeated forwarding of the same struct-pointer local now reuses one caller
+temporary, and the machine keeps callee parameter slots that name the same
+caller storage coherent between instructions. Distinct caller offsets remain
+separate. This does not add ref-foreach over static arrays, general aggregate
+lvalues, or structs beyond the existing pointer load/store widths.
+Verification: focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; seven relevant Bytecode ref and
+ref-foreach rows green; `ninja bin/ut`; and `bin/ut --random` (seed
+`1286042481`, 3393 tests, 0 failed, 6/6 failing as expected).
