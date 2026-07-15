@@ -3143,7 +3143,7 @@ static foreach (backend; Matrix!()) {
 // a struct, so a later deref-read through `p`
 // (`structFieldPointerCellValue`) sees the new value rather than a stale
 // cell.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -6586,6 +6586,23 @@ private struct Compiler {
         if (slot is null && _hasNestedContext && declaration !is null)
             if (auto captured = declaration in _capturedOffsets)
                 return compileCapturedAssign(declaration, *captured, assign);
+        if (declaration !is null)
+            if (auto destination = declaration in _structLocals) {
+                bool resolved;
+                const source = structBaseOffsetOrMaterialise(
+                    assign.e2,
+                    resolved,
+                );
+                if (resolved) {
+                    _code ~= Instruction(
+                        Op.copy,
+                        destination.offset,
+                        source,
+                        cast(ushort) staticArraySize(declaration.type),
+                    );
+                    return Operand(destination.offset, ScalarType.void_);
+                }
+            }
         if (slot !is null)
             if (auto element = declaration in _refLocalPointers)
                 return storeThroughPointer(

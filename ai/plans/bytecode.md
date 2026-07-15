@@ -5878,3 +5878,17 @@ aliases to heap struct fields, pointer-receiver fields, or broader ref-lvalue
 forms. Verification: focused Bytecode red then green, final `ninja bin/ut`,
 and `bin/ut --random` (seed `310765499`, 3402 tests, 0 failed, 6/6 failing as
 expected).
+
+`pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row was red with
+`Unsupported assignment in bytecode core: s = S(eight(), nine())`. Assignment
+to an existing struct local now materialises a supported struct-valued right
+hand side and copies the complete native-layout block into the local's existing
+frame storage, so an earlier pointer to one of its fields observes the new
+bytes. This does not add captured-struct assignment, assignment through struct
+pointers or ref-returning lvalues, or postblit/opAssign semantics. Verification:
+passing baseline `ninja bin/ut` and `bin/ut --random` (seed `392088283`),
+focused Bytecode red then green, final `ninja bin/ut`, and
+`bin/ut --random` (seed `3662766452`, 3403 tests, 0 failed, 6/6 failing as
+expected).
