@@ -6649,7 +6649,111 @@ private struct Compiler {
         if (function_.vthis is null || call.e1.isDotVarExp is null)
             return null;
 
-        auto returned = finalReturnExpression(function_.fbody);
+        if (auto result = tryConditionalMemberRefCallAssign(
+                call, function_, rhs,
+            ))
+            return result;
+
+        auto returned = provenFinalReturnExpression(function_.fbody);
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            returned = dereference.e1;
+        auto destination = memberReturnDestination(call, function_, returned);
+        if (destination is null)
+            return null;
+
+        compileCall(call);
+        const value = compileExpression(rhs);
+        const scalar = memberReturnScalar(returned);
+        if (value.type != scalar)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        _code ~= Instruction(
+            Op.copy,
+            *destination,
+            value.offset,
+            cast(ushort) size(scalar),
+        );
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    private Operand* tryConditionalMemberRefCallAssign(
+        CallExp call,
+        FuncDeclaration function_,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        auto statement = function_.fbody;
+        while (statement !is null) {
+            if (auto scope_ = statement.isScopeStatement) {
+                statement = scope_.statement;
+                continue;
+            }
+            auto wrapper = statement.isCompoundStatement;
+            if (wrapper !is null && wrapper.statements !is null &&
+                wrapper.statements.length == 1 &&
+                ((*wrapper.statements)[0].isScopeStatement !is null ||
+                    (*wrapper.statements)[0].isCompoundStatement !is null)) {
+                statement = (*wrapper.statements)[0];
+                continue;
+            }
+            break;
+        }
+        auto body = statement.isCompoundStatement;
+        if (body is null || body.statements is null ||
+            body.statements.length != 2)
+            return null;
+
+        auto conditional = (*body.statements)[0].isIfStatement;
+        if (conditional is null || conditional.elsebody !is null)
+            return null;
+        auto conditionVariable = conditional.condition.isVarExp;
+        auto conditionIndex = conditionVariable is null
+            ? null
+            : parameterIndex(
+                function_, conditionVariable.var.isVarDeclaration,
+            );
+        auto whenTrue = singleReturnExpression(conditional.ifbody);
+        auto whenFalse = singleReturnExpression((*body.statements)[1]);
+        if (conditionIndex is null || *conditionIndex >= call.arguments.length)
+            return null;
+
+        auto condition = (*call.arguments)[*conditionIndex].isIntegerExp;
+        if (condition is null)
+            return null;
+        auto selected = condition.toInteger == 0 ? whenFalse : whenTrue;
+        auto destination = memberReturnDestination(call, function_, selected);
+        if (destination is null)
+            return null;
+
+        compileCall(call);
+        const value = compileExpression(rhs);
+        const scalar = memberReturnScalar(selected);
+        if (value.type != scalar)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        _code ~= Instruction(
+            Op.copy, *destination, value.offset, cast(ushort) size(scalar),
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    private ushort* memberReturnDestination(
+        CallExp call,
+        FuncDeclaration function_,
+        Expression returned,
+    ) {
         if (auto dereference = returned is null ? null : returned.isPtrExp)
             returned = dereference.e1;
         auto variable = returned is null ? null : returned.isVarExp;
@@ -6660,43 +6764,35 @@ private struct Compiler {
         if (field is null || !field.isField)
             return null;
 
-        ushort destination;
+        auto result = new ushort;
         if (dot is null || dot.e1.isThisExp !is null ||
             dot.e1.isSuperExp !is null) {
-            destination = cast(ushort)
+            *result = cast(ushort)
                 (methodReceiverOffset(call) + field.offset);
-        } else {
-            auto base = dot.e1.isVarExp;
-            auto parameter = base is null
-                ? null
-                : base.var.isVarDeclaration;
-            auto index = parameter is null || !parameter.isReference
-                ? null
-                : parameterIndex(function_, parameter);
-            if (index is null || *index >= call.arguments.length)
-                return null;
-            destination = cast(ushort)
-                (referenceOffset((*call.arguments)[*index]) + field.offset);
+            return result;
         }
 
-        compileCall(call);
-        const value = compileExpression(rhs);
-        const scalar = scalarType(field.type);
-        if (value.type != scalar)
-            throw new Exception(text(
-                "Unsupported assignment in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        _code ~= Instruction(
-            Op.copy,
-            destination,
-            value.offset,
-            cast(ushort) size(scalar),
-        );
-        auto result = new Operand;
-        *result = Operand(value.offset, scalar);
+        auto base = dot.e1.isVarExp;
+        auto parameter = base is null ? null : base.var.isVarDeclaration;
+        auto index = parameter is null || !parameter.isReference
+            ? null
+            : parameterIndex(function_, parameter);
+        if (index is null || *index >= call.arguments.length)
+            return null;
+        *result = cast(ushort)
+            (referenceOffset((*call.arguments)[*index]) + field.offset);
         return result;
+    }
+
+    private ScalarType memberReturnScalar(Expression returned) {
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            returned = dereference.e1;
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto dot = returned is null ? null : returned.isDotVarExp;
+        auto field = variable !is null
+            ? variable.var.isVarDeclaration
+            : dot is null ? null : dot.var.isVarDeclaration;
+        return scalarType(field.type);
     }
 
     private Operand* tryConditionalRefParameterCallAssign(
@@ -8830,17 +8926,23 @@ private struct Compiler {
         return null;
     }
 
-    private Expression finalReturnExpression(Statement statement) {
+    private Expression provenFinalReturnExpression(Statement statement) {
         if (statement is null)
             return null;
 
         if (auto scope_ = statement.isScopeStatement)
-            return finalReturnExpression(scope_.statement);
+            return provenFinalReturnExpression(scope_.statement);
 
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements is null || compound.statements.length == 0)
                 return null;
-            return finalReturnExpression(
+            foreach (preceding; (*compound.statements)[
+                    0 .. compound.statements.length - 1
+                ])
+                if (preceding !is null && preceding.isExpStatement is null &&
+                    preceding.isDtorExpStatement is null)
+                    return null;
+            return provenFinalReturnExpression(
                 (*compound.statements)[compound.statements.length - 1],
             );
         }

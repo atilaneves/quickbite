@@ -5741,3 +5741,21 @@ lowering. Verification: focused SystemLinker oracle green and Bytecode red;
 focused Bytecode/SystemLinker regression green; the prior member ref-return
 Bytecode row green; `ninja bin/ut`; and `bin/ut --random` (seed `233816370`,
 3389 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 2, conditional member ref return, 2026-07-15: the specialized
+member ref-return assignment path trusted the textually final return even when
+an earlier conditional return selected a different field. The approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToConditionalMemberRefReturn` proved compiled D writes
+`other.value` for `receiver.slot(true, other) = 42`; Bytecode was red with
+`42 != 0` because it wrote `receiver.value`. The specialized path now
+recognizes the exact `if (parameter) return field; return field;` shape when
+the caller condition is a literal, executes the callee, and writes through the
+selected return base. Its ordinary final-return path now accepts only
+expression-statement prefixes, so unproved control flow declines instead of
+silently selecting the final return. This does not add runtime conditions,
+`else` returns, nested conditionals, loops, or general lvalue-return lowering.
+Verification: focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and both prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`2831149159`, 3391 tests, 0 failed, 6/6 failing as expected).
