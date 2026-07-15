@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.imports;
+module ut.backends.runner.lang.imports;
 
 
 import ut.backends;

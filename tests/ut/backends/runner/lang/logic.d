@@ -1,10 +1,10 @@
-module ut.backends.runner.ct.logic;
+module ut.backends.runner.lang.logic;
 
 
 import ut.backends;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("assertNonzeroIntCondition." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -20,7 +20,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("assertNonzeroIntConditionFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -36,7 +36,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("assertNonzeroIntConditionFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -52,7 +52,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -72,7 +72,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndCallFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -92,7 +92,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndCall." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -112,7 +112,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -126,7 +126,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndShortCircuitFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -140,7 +140,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndCallShortCircuit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -161,7 +161,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -207,7 +207,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
 
 // Compiled `assert(0)` in a non-unittest function raises the plain _d_assert
 // message "Assertion failure"; "`assert(0)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (Ctfe, Interpreter, IR)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin above (Ctfe, Interpreter, IR)"),
+)) {
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -228,7 +231,7 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrBoolResult." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -240,7 +243,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -252,7 +255,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -269,7 +272,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -283,7 +286,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -297,7 +300,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -311,7 +314,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrShortCircuit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -325,7 +328,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrShortCircuitFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -339,7 +342,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOrShortCircuitFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -353,7 +356,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalOr." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -367,7 +370,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndComparisonOperands." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -383,7 +386,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndComparisonOperandsFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -399,7 +402,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndComparisonOperandsFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -415,7 +418,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalAndShortCircuit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -429,7 +432,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
 
     @("logicalAndFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -444,7 +447,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
 
     @("logicalAndFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -459,7 +462,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
 
     @("logicalAnd." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -474,7 +477,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -490,7 +493,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
 
     @("logicalNotCallFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -507,7 +510,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
 
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -521,7 +524,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
 
     @("logicalNotFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -535,7 +538,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
 
     @("logicalNotCall." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -552,7 +555,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
 
     @("logicalNot." ~ backend.stringof)
     @Tags(backend.stringof)

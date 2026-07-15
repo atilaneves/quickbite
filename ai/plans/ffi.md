@@ -274,7 +274,8 @@ after CIF preparation; unsupported layouts are refused before the call.
 
 The historical Interpreter phases—scalar calls, pointers, allocation, native
 memory, descriptor-driven aggregates, and dependency images—are complete.
-`rt/cstdlib.d` and `rt/dependency_image.d` hold their oracle fixtures.
+`sys/cstdlib.d` and `backends/ffi/dependency_image.d` hold their oracle
+fixtures.
 
 ## 34. Supported bridge surface
 

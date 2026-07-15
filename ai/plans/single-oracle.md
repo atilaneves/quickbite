@@ -83,3 +83,31 @@ Each moved block keeps `SystemLinker` and whatever other backends already
 pass it; `Ctfe` joins only where it agrees, with divergences characterized
 per the layout rules above. Test moves and matrix changes still go through
 the normal approval gate (AGENTS.md).
+
+## 2026-07-15: test layout superseded by the environment criterion
+
+The "expressible as compile-time-checkable behaviour" wording in the
+`ct/`/`rt/` section above is superseded. The directory criterion is now
+*what the behaviour needs from the host*, not whether `Ctfe` can execute
+it — CTFE-expressibility is a per-backend matrix capability, not a
+directory boundary. `lang/` (renamed from `ct/`) holds the hermetic
+language surface (no host libc/OS); `sys/` (renamed from `rt/`) holds
+behaviour that needs the host environment.
+
+The backend list for a `lang/`/`sys/` fixture is now `Matrix!(...)`
+(`tests/ut/backends/package.d`): `lang/` blocks use `Matrix!()` (=
+`LangBackends`) by default; `sys/` blocks have no automatic default and
+instead omit `Ctfe` explicitly since host-env behaviour isn't
+CTFE-evaluable, with `SysBackends` naming the resulting set. Either way,
+mature backends opt out via `Omit!(B, Because.…, "note")` (`inexpressible`,
+`diverges`, `refusal` — each requiring a non-empty note — or the
+promotion-backlog `unconfirmed`, the only reason with an optional note).
+Promoting a backend means deleting its `Omit!(B, Because.unconfirmed)`.
+
+The divergence-pin pattern from the section above is unchanged: a
+`Because.diverges` omission on `B` is only legal alongside a sibling,
+hand-written `AliasSeq!(B)` block in the same file pinning `B`'s actual
+behaviour, with a comment naming the divergence. Hand-written `AliasSeq!`
+stays reserved for exactly these characterization pins — it never carries
+a `SystemLinker`-oracle expectation, and `Matrix!` always contains
+`SystemLinker`.

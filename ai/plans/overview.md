@@ -78,7 +78,8 @@ Live plans:
   fix for multi-`--dub`, bench-scoped GC lever.
 - `llvm-jit.md` — mostly an outcome log (backend live; full matrix +
   LDC bench parity done, parity slices 1–4 complete). The
-  `rt/dependency_image.d` `--random` RTLD_GLOBAL-collision flake is fixed
+  `backends/ffi/dependency_image.d` `--random` RTLD_GLOBAL-collision flake is
+  fixed
   (per-backend unique module names). Open: two upstream JITLink minimal
   repros (duplicate-`UND`; hidden-weak `DW.ref.*`), both worked around in
   `orc/elf.d`, neither filed.

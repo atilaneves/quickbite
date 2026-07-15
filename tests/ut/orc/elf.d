@@ -1,4 +1,4 @@
-module ut.backends.runner.rt.elf;
+module ut.orc.elf;
 
 
 import orc.elf:
