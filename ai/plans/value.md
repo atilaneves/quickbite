@@ -6902,6 +6902,107 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    unaffected). The full `bin/ut --random` was left to the orchestrator
    per the usual long-suite handoff.
 
+   Progress 2026-07-15 (non-scalar union member: a struct-typed union
+   field write-through-write another member is visible, via the same
+   `NativeStruct` composition already landed for structs): the prior
+   two union slices (above) deliberately left a union with a NON-
+   scalar member (a struct/static-array field sharing the same bytes)
+   entirely on the boxed path -- `promoteStructCell`'s guard still
+   declines cell PROMOTION for it, and `withUnionFieldWrite`'s sibling
+   overlay only handled `native_scalar.isNativeScalarType` fields on
+   both the written and sibling sides. Probed whether that gap is a
+   real `SystemLinker` divergence with `struct P { int a; int b; }
+   union U { P p; long l; }`, writing the SCALAR member (`u.l = bits`,
+   a runtime-computed `long` from two mutable `int` locals, per
+   `ai/mistakes.md`) and reading the STRUCT member's overlapping fields
+   (`u.p.a`/`u.p.b`). RED confirmed on Interpreter before any
+   production change: `object.Exception: assert(u.p.a == low &&
+   (u.p.b == high))` failed -- `withUnionFieldWrite`'s sibling loop
+   skipped `p` outright (`!isNativeScalarType(sibling.type)`), leaving
+   `u.p`'s boxed value exactly as `U`'s independent-per-field default
+   left it, never overlaid from `u.l`'s just-written bytes. Green on
+   `SystemLinker` throughout. Also manually verified (transient probe
+   fixture, run then discarded, not part of this commit) that the
+   REVERSE direction -- writing `u.p.a`/`u.p.b` then reading `u.l` --
+   hit a second, related gap: `withUnionFieldWrite`'s OWN early return
+   (`!isNativeScalarType(fields[fieldIndex].type)`) skipped the entire
+   overlay whenever the WRITTEN field itself was non-scalar, so even
+   `l`'s native-scalar slot was left stale. Both directions are fixed by
+   the same change below.
+
+   This turned out to be surgical: `withUnionFieldWrite` already ran a
+   transient (never persisted, never touching `structCells`) byte
+   buffer to overlay scalar siblings; extending the WRITTEN side and
+   the SIBLING side to also handle a (non-union) struct-typed field
+   needed no new machinery, only reusing `promoteStructCell`'s own
+   struct-cell composition: `NativeStruct.allocate(unionType)` in
+   place of the bare `ubyte[]` scratch buffer (so `NativeStruct.
+   field`/`structField` do the offset arithmetic instead of
+   re-deriving it), `writeStructCellScalarFields` to seed a
+   struct-typed WRITTEN field's own scalar sub-fields into the cell's
+   shared bytes (the same recursive seed `promoteStructCell` itself
+   uses), and `structValueFromCell` to re-derive a struct-typed
+   SIBLING field's boxed value back out of those bytes (the same
+   read-side mirror `structCells`' cross-frame write-back paths
+   already use). A union member that is a dynamic array, class, static
+   array, or nested union is still left on its own prior boxed value
+   on both sides, matching `writeStructCellScalarFields`'s identical
+   scope -- not this slice's target and not surgical to add here (no
+   existing `writeStructCellScalarFields`/`structValueFromCell`
+   counterpart handles those field kinds at all yet).
+
+   Deliberately NOT touched: `promoteStructCell`'s guard itself, still
+   declining cell PROMOTION (the `&u.<field>` address-taken/pointer
+   path) for any union with a non-scalar member -- this slice's fix is
+   entirely inside `withUnionFieldWrite`'s transient, address-free
+   overlay, which never creates or consults a `structCells` entry, so
+   the guard's own scope (and the pointer/cross-frame aliasing map it
+   protects) is unaffected by this change, exactly as the prior union
+   slices' own guard-preserving discipline.
+
+   Fix, in `impl.d`'s `withUnionFieldWrite` only: replaced the bare
+   `ubyte[]` scratch buffer with `NativeStruct.allocate(unionType)`;
+   the written-field branch now checks EITHER `isNativeScalarType` (as
+   before, `writeScalar` into `cell.field(fieldIndex)`) OR "a
+   `TypeStruct` whose `sym.isUnionDeclaration` is null" (new,
+   `writeStructCellScalarFields` into `cell.structField(fieldIndex)`);
+   declines (returns `updated` unchanged) only when NEITHER holds. The
+   sibling loop mirrors this: `isNativeScalarType` overlays via
+   `readScalar(cell.field(siblingIndex))` as before; a (non-union)
+   struct-typed sibling now overlays via `structValueFromCell(
+   updated.structFieldAt(siblingIndex), cell.structField(siblingIndex))`;
+   anything else is skipped exactly as before.
+
+   New fixture `union.writeThroughScalarMemberIsVisibleThroughStructMember.
+   {Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/structs.d`,
+   immediately after the prior union fixtures. Scoped to the
+   `Interpreter`/`SystemLinker` oracle pair only, matching the existing
+   union fixtures' scope.
+
+   No §9.10 shim retired -- unrelated to this union-write overlay
+   widening.
+
+   Remaining follow-up, unchanged from the prior slices and value.md's
+   own task brief: (1) an untouched union's default-init still diverges
+   from `SystemLinker`'s first-member-wins zero-init (independent
+   per-field `defaultValue`, `structDefaultValue` lives in the
+   frontend-shared `values.d`); (2) a union member that is a dynamic
+   array, class, or static array (as opposed to a plain non-union
+   struct, now handled) still has no write-through overlay on either
+   side, matching the identical gap in `writeStructCellScalarFields`/
+   `structValueFromCell` for those field kinds; (3) cell PROMOTION
+   (`&u.<field>`) for a union with a non-scalar member is still
+   declined entirely by `promoteStructCell`'s guard -- this slice only
+   widened the address-free, non-persisted overlay path.
+
+   Focused suites all green: ct.expressions 559/0 (5 failing as
+   expected, unchanged), ct.structs 297/0 (295 + this slice's 2 new
+   backend instances), ct.arrays 346/0, ct.exceptions 130/0, interpreter
+   218/0, bin.repl 228/0, evaluator.eval 71/0; also ran rt.cstdlib 89/0
+   and rt.dependency_image 119/0 (pre-existing union FFI fixtures,
+   unaffected). The full `bin/ut --random` was left to the orchestrator
+   per the usual long-suite handoff.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

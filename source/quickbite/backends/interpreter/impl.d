@@ -8337,42 +8337,80 @@ private struct Walker {
     // `u.i = x;` write left every sibling member's own slot untouched,
     // diverging from `SystemLinker`'s overlapping-bytes behaviour (writing
     // `u.i` must be visible, reinterpreted, through `u.f`). This overlays
-    // every OTHER native-scalar sibling field by reinterpreting the
-    // just-written value's own bytes as that field's type, using the same
-    // `writeScalar`/`readScalar` byte-level machinery `NativeStruct` cells
-    // already use elsewhere -- a transient byte buffer, not a persisted
-    // cell, so `promoteStructCell`'s own guard (and its pointer/cross-frame
-    // aliasing machinery) is untouched by this. A non-scalar sibling field
-    // (aggregate/array/class) is left on its own prior boxed value,
-    // matching `writeStructCellScalarFields`'s identical scalar-only scope
-    // -- value.md item 7 still names a union member that is itself an
-    // aggregate as an open case.
+    // every OTHER sibling field by reinterpreting the just-written value's
+    // own bytes as that field's type, using a transient `NativeStruct`
+    // (never stored in `structCells` -- allocated and discarded within this
+    // call), so `promoteStructCell`'s own guard (and its pointer/cross-frame
+    // aliasing machinery) is untouched by this. A native-scalar written/
+    // sibling field routes through `native_scalar.writeScalar`/`readScalar`
+    // directly on the cell's own field bytes. Widened (value.md item 7,
+    // 2026-07-15, non-scalar union member follow-up) to also handle a
+    // written/sibling field that is itself a (non-union) struct, via the
+    // SAME composition machinery `promoteStructCell`'s scalar-only cells
+    // already use: `writeStructCellScalarFields` to seed the struct-typed
+    // field's own scalar sub-fields into the transient cell's shared bytes,
+    // and `structValueFromCell` to re-derive a struct-typed sibling's boxed
+    // value back out of those same bytes. A union member that is a dynamic
+    // array, class, static array, or nested union is still left on its own
+    // prior boxed value on both sides (written and sibling) -- matching
+    // `writeStructCellScalarFields`'s identical scope; `promoteStructCell`'s
+    // guard is unchanged and still declines cell PROMOTION (the
+    // address-taken/pointer path) for a union with any such member.
     private Value withUnionFieldWrite(
         in Value receiver,
         imported!"dmd.mtype".TypeStruct unionType,
         in size_t fieldIndex,
         in Value value,
     ) {
-        import quickbite.backends.interpreter.layout: structFields, typeByteSize;
+        import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar, writeScalar;
 
         auto updated = receiver.withStructField(fieldIndex, value);
 
         auto fields = structFields(unionType);
-        if (fieldIndex >= fields.length || !isNativeScalarType(fields[fieldIndex].type))
+        if (fieldIndex >= fields.length)
             return updated;
 
-        auto bytes = new ubyte[](typeByteSize(unionType));
-        writeScalar(fields[fieldIndex].type,
-            bytes[0 .. typeByteSize(fields[fieldIndex].type)], value);
+        auto writtenType = fields[fieldIndex].type;
+        const writtenScalar = isNativeScalarType(writtenType);
+        auto writtenStructType = writtenType.toBasetype.isTypeStruct;
+        const writtenStruct = writtenStructType !is null
+            && writtenStructType.sym.isUnionDeclaration is null;
+
+        if (!writtenScalar && !writtenStruct)
+            return updated;
+
+        auto cell = NativeStruct.allocate(unionType);
+
+        if (writtenScalar) {
+            writeScalar(writtenType, cell.field(fieldIndex), value);
+        } else {
+            auto writtenCell = cell.structField(fieldIndex);
+            writeStructCellScalarFields(writtenCell, value);
+        }
 
         foreach (siblingIndex, sibling; fields) {
-            if (siblingIndex == fieldIndex || !isNativeScalarType(sibling.type))
+            if (siblingIndex == fieldIndex)
                 continue;
 
+            if (isNativeScalarType(sibling.type)) {
+                updated = updated.withStructField(siblingIndex,
+                    readScalar(sibling.type, cell.field(siblingIndex)));
+                continue;
+            }
+
+            auto siblingStructType = sibling.type.toBasetype.isTypeStruct;
+            if (siblingStructType is null || siblingStructType.sym.isUnionDeclaration !is null)
+                continue;
+
+            auto siblingCurrent = updated.structFieldAt(siblingIndex);
+            if (!siblingCurrent.isStruct)
+                continue;
+
+            auto siblingCell = cell.structField(siblingIndex);
             updated = updated.withStructField(siblingIndex,
-                readScalar(sibling.type, bytes[0 .. typeByteSize(sibling.type)]));
+                structValueFromCell(siblingCurrent, siblingCell));
         }
 
         return updated;
