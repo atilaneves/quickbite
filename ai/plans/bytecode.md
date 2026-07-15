@@ -5841,3 +5841,16 @@ passing baseline `ninja bin/ut` and `bin/ut --random` (seed `4251602219`),
 focused Bytecode red then green, passing focused five-backend matrix,
 `ninja bin/ut`, and final `bin/ut --random` (seed `3366125856`, 3399 tests,
 0 failed, 6/6 failing as expected).
+
+`pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf` promoted
+to Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a scalar write through a slice parameter
+refreshes the caller's address-promoted dynamic-array cell before a subsequent
+direct element read. No production change was needed. This does not add slice
+parameter rebinding, slice-fill assignment through parameters, or broader
+cross-frame cell reconciliation. Verification: passing baseline
+`ninja bin/ut` and `bin/ut --random` (seed `1075057334`), then the focused
+Bytecode row passed after promotion. Final verification: `ninja bin/ut` and
+`bin/ut --random` (seed `2098875150`, 3400 tests, 0 failed, 6/6 failing as
+expected).

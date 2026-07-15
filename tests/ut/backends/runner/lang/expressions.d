@@ -3008,7 +3008,7 @@ static foreach (backend; Matrix!()) {
 // mirror and so kept answering with the stale, pre-write value.
 // SystemLinker is the oracle; other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
