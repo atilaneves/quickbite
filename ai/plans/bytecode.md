@@ -5951,3 +5951,16 @@ No production change was needed. This does not add writes through pointers,
 cross-frame array pointer aliases, or broader array-cell reconciliation.
 Verification: focused Bytecode row, `ninja bin/ut`, and `bin/ut --random`
 (seed `803268194`).
+
+`pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell`
+promoted to Bytecode, 2026-07-15: pre-approved promotion of the existing
+direct SystemLinker-backed fixture. The focused Bytecode row passed on its
+first candidate run, confirming that a pointer escaping from a recursive
+child frame continues to name the child's dynamic-array allocation rather
+than resolving through the parent's same-declaration cell. No production
+change was needed. This does not add writes through escaped pointers,
+cross-frame array rebinding, or broader allocation-identity reconciliation.
+Verification: passing baseline `ninja bin/ut` and `bin/ut --random` (seed
+`3491366481`), then the focused Bytecode row and final `ninja bin/ut` passed
+after promotion. Final `bin/ut --random` passed with seed `2435388898` (3409
+tests, 0 failed, 6/6 failing as expected).

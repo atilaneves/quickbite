@@ -3388,7 +3388,7 @@ static foreach (backend; Matrix!()) {
 // instead of 11 (`leak(0)`'s inner `a`, the value the escaped pointer
 // actually names). SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
