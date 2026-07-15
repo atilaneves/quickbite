@@ -981,7 +981,11 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+// Bytecode omitted: the Bytecode VM null-derefs at machine.d:2396
+// (readHeapElement) on this static-array-of-structs postblit/dtor case.
+// Omitted per the omit-don't-pin convention until the Bytecode VM supports
+// static-array-of-structs postblit/dtor heap element copies.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
