@@ -5854,3 +5854,15 @@ cross-frame cell reconciliation. Verification: passing baseline
 Bytecode row passed after promotion. Final verification: `ninja bin/ut` and
 `bin/ut --random` (seed `2098875150`, 3400 tests, 0 failed, 6/6 failing as
 expected).
+
+`pointer.structFieldPointerCompoundIncrementWritesThroughCell` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that compound increment through a pointer to a
+struct field writes the updated scalar through the field's promoted native
+cell. No production change was needed. This does not add compound assignment
+for wider field types, nested struct fields, or broader struct-cell
+reconciliation. Verification: passing baseline `ninja bin/ut` and
+`bin/ut --random` (seed `3963106144`), then the focused Bytecode row and final
+`ninja bin/ut` passed after promotion. Final `bin/ut --random` passed with seed
+`2838625850` (3401 tests, 0 failed, 6/6 failing as expected).

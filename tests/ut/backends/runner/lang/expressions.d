@@ -3053,7 +3053,7 @@ static foreach (backend; Matrix!()) {
 // `*p` re-read the stale cell instead of the freshly-incremented value.
 // SystemLinker is the oracle; other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldPointerCompoundIncrementWritesThroughCell." ~
         backend.stringof)
     @Tags(backend.stringof)
