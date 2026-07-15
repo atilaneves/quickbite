@@ -2095,6 +2095,42 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Same-frame plain-variable class aliasing, non-scalar field (value.md item
+// 7's class phase, decomposition item 1's own aggregate-composition
+// follow-up): `classCellFieldValue` -- the DIRECT (non-pointer) class-field
+// read's authoritative-cell dispatcher -- only consults the shared
+// `classCells` cell for a `native_scalar.isNativeScalarType` field; a
+// scalar-element static-array field still falls back to the boxed `locals`
+// mirror, which the OTHER alias's write never touches. `c2.arr[0] = 99;`
+// already reaches the shared cell (the write side's `writeClassCellScalarFields`
+// widens every scalar-element static-array field, value.md item 7
+// decomposition item 4), but reading `c.arr[0]` back through the ORIGINAL
+// alias, with no `&`/pointer involved, still sees the stale independent copy.
+// Only Interpreter and SystemLinker (the oracle) are pinned here per the
+// omit-don't-pin convention.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.aliasedVariableArrayFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[2] arr;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                C c2 = c;
+                c2.arr[0] = ninetyNine();
+                assert(c.arr[0] == 99);
+            }
+        });
+    }
+}
+
 // Cross-frame class reference aliasing (value.md item 7's class phase,
 // decomposition item 2): passing the SAME object as TWO different by-value
 // parameters must leave both parameters observing the SAME object, since a

@@ -7032,7 +7032,7 @@ private struct Walker {
                 // to the existing boxed read for every other receiver (no
                 // cell at all, the common unaliased/unpromoted case).
                 Value cellValue;
-                if (classCellFieldValue(dot.e1, fieldIndex, cellValue))
+                if (classCellFieldValue(dot.e1, fieldIndex, target, cellValue))
                     return cellValue;
 
                 return target.classFieldAt(fieldIndex);
@@ -7071,17 +7071,29 @@ private struct Walker {
     // serves pointer DEREF reads): `receiverExpression` must resolve to a
     // `classCells` key via `classCellKeyVariable` above (a bare `VarExp`, or
     // a bare `ThisExp` resolving to `currentFunction.vthis`), and
-    // `fieldIndex` must be a `native_scalar.isNativeScalarType` field, or
-    // this returns `false` and leaves `value` untouched -- every one of
-    // those keeps the caller's existing boxed fallback unchanged.
+    // `fieldIndex` must be either a `native_scalar.isNativeScalarType` field
+    // or (value.md item 7 decomposition item 1's own aggregate-composition
+    // follow-up) a scalar-element static-array field, or this returns
+    // `false` and leaves `value` untouched -- every one of those keeps the
+    // caller's existing boxed fallback unchanged. `target` is the caller's
+    // already-computed boxed receiver value (`runDotVarExpression`'s own
+    // `target`), consulted ONLY as the array-field widening's starting
+    // shape (`.isArray`/`.length`) -- every element is then overwritten from
+    // the shared cell's bytes, exactly as `classArrayFieldPointerCellValue`
+    // already does for the pointer-deref read side and
+    // `writeClassCellScalarFields` already does for the write side that
+    // keeps this cell current.
     private bool classCellFieldValue(
         imported!"dmd.expression".Expression receiverExpression,
         in size_t fieldIndex,
+        in Value target,
         out Value value,
     ) {
-        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.layout:
+            classFields, fieldByteOffset, staticArrayLength, typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
 
         auto variable = classCellKeyVariable(receiverExpression);
         if (variable is null)
@@ -7100,13 +7112,41 @@ private struct Walker {
             return false;
 
         auto field = fields[fieldIndex];
-        if (!isNativeScalarType(field.type))
-            return false;
 
-        const offset = fieldByteOffset(field);
-        const size = typeByteSize(field.type);
-        value = readScalar(field.type, cell.bytes[offset .. offset + size]);
-        return true;
+        if (isNativeScalarType(field.type)) {
+            const offset = fieldByteOffset(field);
+            const size = typeByteSize(field.type);
+            value = readScalar(field.type, cell.bytes[offset .. offset + size]);
+            return true;
+        }
+
+        if (isStaticArrayType(field.type)) {
+            auto elementType = field.type.toBasetype.nextOf.toBasetype;
+            if (!isNativeScalarType(elementType))
+                return false;
+
+            const fieldValue = target.classFieldAt(fieldIndex);
+            if (!fieldValue.isArray)
+                return false;
+
+            const offset = fieldByteOffset(field);
+            const size = typeByteSize(field.type);
+            auto arrayCell = NativeArray.adopt(
+                cell.subRange(offset, size),
+                elementType,
+                staticArrayLength(field.type.toBasetype.isTypeSArray),
+            );
+            Value result = fieldValue;
+            foreach (elementIndex; 0 .. fieldValue.length)
+                result = result.withArrayElement(
+                    elementIndex,
+                    readScalar(elementType, arrayCell.element(elementIndex)),
+                );
+            value = result;
+            return true;
+        }
+
+        return false;
     }
 
     private Value runClassInfoExpression(

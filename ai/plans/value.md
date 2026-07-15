@@ -7224,6 +7224,68 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    non-scalar member is still declined entirely by `promoteStructCell`'s
    guard.
 
+   Progress 2026-07-15 (class reference identity, decomposition item 1's
+   aggregate-composition follow-up: direct read of an aliased class local's
+   scalar-element static-array field): closes the specific gap the recon note
+   named -- `classCellFieldValue`, the DIRECT (non-pointer) class-field read's
+   authoritative-cell dispatcher, consulted the shared `classCells` cell ONLY
+   for a `native_scalar.isNativeScalarType` field; a static-array field (or a
+   struct-typed field) still fell back to the boxed `locals` mirror, which can
+   be stale when a DIFFERENT alias mutated that field's bytes in the shared
+   cell. Took the smallest of the two named candidates: a static-array field
+   (a struct-typed field is left for a follow-up slice).
+
+   Fixture `class.aliasedVariableArrayFieldWriteIsVisibleThroughOriginal.
+   {Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/expressions.d`,
+   immediately after decomposition item 1's own scalar-field fixture: `class
+   C { int[2] arr; } C c = new C(); C c2 = c; c2.arr[0] = ninetyNine();
+   assert(c.arr[0] == 99);`. RED confirmed on Interpreter before any
+   production change: `0 != 99` -- `c2.arr[0] = 99` already reaches the
+   shared cell (the write side's `writeClassCellScalarFields` already widens
+   every scalar-element static-array field, decomposition item 4, landed
+   earlier), but reading `c.arr[0]` back through the ORIGINAL alias fell
+   through `classCellFieldValue`'s scalar-only gate to the stale independent
+   boxed copy. Green on SystemLinker throughout.
+
+   Fix, in `impl.d`'s `classCellFieldValue` only: added an `isStaticArrayType`
+   branch alongside the existing scalar branch, gated (like every prior
+   aggregate-composition slice) on the array's own element type being
+   `native_scalar.isNativeScalarType`. Reuses the exact composition primitive
+   `classArrayFieldPointerCellValue` (pointer-deref read side) and
+   `writeClassCellScalarFields` (write side) already use:
+   `NativeArray.adopt(cell.subRange(offset, size), elementType,
+   staticArrayLength(...))`, then `readScalar` each element back via
+   `withArrayElement` -- no new byte-reinterpretation machinery. The
+   function's signature grew a `target` parameter (the caller's own
+   already-computed boxed receiver `Value`, `runDotVarExpression`'s `target`)
+   so the array branch has a starting shape (`.isArray`/`.length`) to
+   overwrite element-by-element, mirroring `structValueFromCell`'s identical
+   use of its own `current` parameter for the analogous struct-cell case; the
+   scalar branch's own behaviour and the caller's post-`false` boxed fallback
+   (`target.classFieldAt(fieldIndex)`) are both unchanged.
+
+   No §9.10 shim retired: `writeBackByValueClassArguments` still protects
+   whole-boxed-value uses, untouched by this direct-read widening, matching
+   every prior aggregate-composition slice. This narrows the recon's own
+   decomposition item 1 gap by one shape (scalar-element static-array field);
+   the struct-typed-field shape the recon also named is left for a follow-up
+   slice, together with a dynamic-array or class-typed field (neither of
+   which any class-phase slice has widened on either the read or write side
+   yet).
+
+   Focused suites all green: ct.expressions 563/0 (5 failing as expected,
+   unchanged), ct.structs 301/0, ct.arrays 346/0, ct.exceptions 130/0,
+   ct.control_flow 336/0, interpreter 218/0, bin.repl 228/0, evaluator.eval
+   71/0, rt.dependency_image 119/0. The full `bin/ut --random` was left to
+   the orchestrator per the usual long-suite handoff.
+
+   Remaining follow-up: (1) a struct-typed class field, read through an
+   aliased class local, is still unwidened in `classCellFieldValue` -- the
+   other shape the recon named; (2) a dynamic-array or class-typed class
+   field has no widening on either the read or write side; (3) shim
+   retirement itself remains deferred until a slice addresses
+   `writeBackByValueClassArguments`'s whole-value-use coverage.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
