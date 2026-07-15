@@ -3330,9 +3330,8 @@ static foreach (backend; Matrix!()) {
 // here deterministically reallocates in real D -- `p`, taken before the
 // append, no longer aliases `a`'s post-append storage at all, and keeps
 // reading its own pre-append snapshot even after a write through `q`.
-// SystemLinker is the oracle for this exact value; other backends omitted
-// per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// SystemLinker is the oracle for this exact value.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue." ~
         backend.stringof)
     @Tags(backend.stringof)

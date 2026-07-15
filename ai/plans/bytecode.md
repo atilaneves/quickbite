@@ -5928,3 +5928,16 @@ broader stale-allocation reconciliation. Verification: passing baseline
 `ninja bin/ut` and `bin/ut --random` (seed `2492861490`), focused Bytecode row,
 final `ninja bin/ut`, and `bin/ut --random` passed (seed `843184053`, 3406
 tests, 0 failed, 6/6 failing as expected).
+
+`pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a pointer into an array's pre-append allocation
+retains its original value after a reallocating append, a new pointer into the
+post-append allocation, and a write through that new pointer. No production
+change was needed. This does not add append capacity guarantees, writes through
+the retained pointer, or broader stale-allocation reconciliation.
+Verification: passing baseline `ninja bin/ut` and `bin/ut --random` (seed
+`1860012521`), focused Bytecode row, final `ninja bin/ut`, and
+`bin/ut --random` (seed `3092187886`, 3407 tests, 0 failed, 6/6 failing as
+expected).
