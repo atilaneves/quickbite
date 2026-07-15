@@ -6302,6 +6302,126 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    retirement itself remains deferred until a slice addresses
    `writeBackByValueClassArguments`'s whole-value-use coverage.
 
+   Progress 2026-07-15 (class reference identity, decomposition item 4 --
+   aggregate composition, class field that is a static array): closes the
+   other aggregate-composition shape the nested-class-struct-field slices'
+   own notes named as untouched -- `&c.arr[i]` where `arr` is a
+   scalar-element static-array field of a plain class local `c`, the
+   class-receiver sibling of the struct-static-array-field follow-up.
+
+   Fixture `pointer.classStaticArrayFieldElementWrittenDirectlyIsVisibleThrough
+   EarlierPointer.{Ctfe,Interpreter,SystemLinker,LLVMJit}` in `tests/ut/
+   backends/runner/ct/expressions.d`: `class C { int[3] arr; }`, `C c = new
+   C(); c.arr[0] = one(); int* p = &c.arr[0]; c.arr[0] = ninetyNine();
+   assert(*p == 99);` (every value seeded from a runtime function call),
+   mirroring `pointer.structStaticArrayFieldElementWrittenDirectlyIsVisible
+   ThroughEarlierPointer`'s own shape one receiver type over. RED diagnostic
+   confirmed on Interpreter before any production change -- and it was NOT
+   the expected aliasing snapshot mismatch: `c.arr[0] = one();`, a plain
+   direct write with no pointer involved yet, itself threw `object.
+   Exception: Unsupported interpreter field access.` This was a bigger,
+   pre-existing gap than the task's own framing assumed -- a class-typed
+   static-array-field element write was entirely unsupported, not merely
+   missing pointer-aliasing. Root cause: both `writeIndexLocation` (the
+   compound-assignment/atomic/post-increment path) and
+   `runIndexAssignExpression` (the plain `=` path, the one this fixture's
+   `c.arr[0] = one();` actually takes) resolve a `DotVarExp` receiver's
+   field index unconditionally via `structFieldIndex`, which requires
+   `receiverStructType` and throws for a class receiver -- neither function
+   had a class-receiver branch at all, unlike `writeLocation`'s own
+   `DotVarExp` arm, which already dispatches on `receiver.isClassObject`.
+   After adding that class branch to both (mirroring `writeLocation`'s own
+   dispatch, using `classFieldIndex`/`classFieldAt`/`withClassField` instead
+   of the struct-only accessors, and routing the whole rewritten class
+   object back through the SAME `writeLocation(dot.e1, ...)` call the struct
+   branch already uses, so `writeCelledLocal`'s existing class-cell refresh
+   applies unchanged), the RED became the actually-intended aliasing
+   mismatch: `1 != 99`. Green on SystemLinker and Ctfe throughout.
+
+   Fix, all in `impl.d`: (1) `writeIndexLocation`'s and
+   `runIndexAssignExpression`'s `DotVarExp` branches each gained a
+   class-receiver arm (checked via the static `receiverClassType`), closing
+   the direct-write gap described above -- a prerequisite this task's own
+   red fixture exposed but that item 4's earlier slices, which only ever
+   exercised scalar and nested-struct fields (never an array-typed field on
+   a class), never had reason to hit. (2) A new
+   `promoteClassArrayFieldCell`, the class-receiver sibling of
+   `promoteStructArrayFieldCell` -- detects a static-array field of scalar
+   element type on a plain class-typed `VarExp` receiver, promotes (or
+   reuses) the receiver's `classCells` entry via the existing
+   `promoteClassCell`, and records `id` -- the SAME id `arrayPointer`'s
+   `DotVarExp` branch already mints via `fieldSnapshotAllocationId` -- in a
+   new (receiver, field index) reverse-lookup pair,
+   `classArrayFieldPointerVariables`/`classArrayFieldPointerFieldIndices`,
+   called from `arrayPointer`'s `DotVarExp` branch alongside the existing
+   `promoteStructArrayFieldCell` call. (3) `writeClassCellScalarFields` --
+   previously scalar-and-nested-struct-fields only -- now also widens every
+   scalar-element static-array field: since a `classCells` entry is a plain
+   `NativeBlock` with no `NativeStruct` wrapper of its own (unlike a
+   `structCells` entry, whose `NativeStruct.arrayField` handles this
+   directly), the array view is built via `NativeArray.adopt(cell.subRange(
+   offset, size), elementType, staticArrayLength(arrayType))` -- the same
+   composition primitive `NativeStruct.arrayField` uses internally -- then
+   every element is written with `writeScalar`, mirroring
+   `writeStructCellScalarFields`'s own static-array-field widening. This is
+   what keeps the cell's array bytes current on every whole-object refresh
+   (`promoteClassCell`'s initial seed and `writeCelledLocal`'s
+   refresh-on-every-write), so the direct write `c.arr[0] = ninetyNine()`
+   (which rewrites the WHOLE class object via `writeLocation`'s `DotVarExp`
+   arm/`runIndexAssignExpression`'s new class branch, same as any other
+   class field write) actually reaches the promoted cell's array bytes. (4)
+   A new `classArrayFieldPointerCellValue`, the class-receiver sibling of
+   `structArrayFieldPointerCellValue`, wired into `pointerTargetValue` and
+   `runPointerExpression`'s deref-read arm alongside the existing six
+   pointer-cell checks -- resolves the reverse lookup, adopts the same
+   `NativeArray` view over the field's byte sub-range, and reads the
+   element at the pointer's own element offset through it.
+
+   Reused the struct phase's own composition primitive exactly as directed:
+   `NativeArray.adopt` is the SAME primitive `NativeStruct.arrayField`
+   already uses internally; no new `NativeArray`/`NativeBlock` method was
+   added.
+
+   No §9.10 shim retired (as expected -- `writeBackByValueClassArguments`
+   protects whole-boxed-value uses, untouched by this array-field-
+   composition read authority, same as every prior class-phase slice).
+   Scope kept deliberately narrow, matching every prior class-phase slice's
+   own bounded first cut: (a) same-frame only --
+   `classArrayFieldPointerVariables`/`...FieldIndices` are NOT duplicated
+   into child-frame walkers, so this pointer does not yet survive being
+   passed into another function call, unlike `structArrayFieldPointerVariables`,
+   which already gained that cross-frame dup in an earlier struct-phase
+   slice; (b) read-only -- a `writeThroughClassArrayFieldPointer` was
+   drafted (mirroring `writeThroughStructArrayFieldPointer`/
+   `writeThroughClassFieldPointer`'s cell-then-mirror discipline) and wired
+   into `writeLocation`'s `PtrExp` arm and `writePointerTarget`, but then
+   deliberately REVERTED before this commit: no fixture in this task's own
+   scope drives that direction (the struct-array-field slice's own
+   write-through-pointer code path is exercised only by its CROSS-FRAME
+   fixture, `pointer.structArrayFieldWriteThroughPointerInCalleeIsVisibleTo
+   Caller`, which this same-frame-only slice has no equivalent of yet), so
+   landing it here would be untested production code -- a genuine
+   write-through-pointer follow-up remains open, to land alongside its own
+   red fixture; (c) `dropClassCell` (stale-cell cleanup on recursive
+   redeclaration) remains unimplemented for the whole class phase, a
+   pre-existing gap this slice did not introduce and did not need to close.
+
+   Focused suites all green: ct.expressions 543/0 (5 failing as expected,
+   pre-existing `@ShouldFail` characterizations, unchanged from before this
+   slice), ct.structs 291/0, ct.arrays 346/0, ct.exceptions 130/0,
+   interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0. The full
+   `bin/ut --random` was left to the orchestrator per the usual long-suite
+   handoff. Remaining follow-up: write-through-pointer support for this
+   shape (drafted and reverted, see above); cross-frame support (this
+   pointer passed into another function call); `dropClassCell` remains
+   unimplemented for the whole class phase; shim retirement itself remains
+   deferred until a slice addresses `writeBackByValueClassArguments`'s
+   whole-value-use coverage. With decomposition item 4's two named
+   aggregate-composition shapes (nested class-struct field, class
+   static-array field) now both covered for the read/direct-write direction,
+   the remaining class-phase surface is cross-frame and write-through-
+   pointer follow-ups plus `dropClassCell`.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

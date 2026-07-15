@@ -3789,6 +3789,47 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// Class sibling of the struct-static-array-field fixture above (value.md
+// item 7 decomposition item 4, aggregate composition): `&c.arr[i]` where
+// `arr` is a scalar-element static-array field of a plain class local `c`.
+// `arrayPointer`'s `array.isDotVarExp` branch only calls
+// `promoteStructArrayFieldCell`, which requires `variable.type.toBasetype.
+// isTypeStruct` (a no-op for a class receiver), so no cell backs this
+// pointer and a direct element write (`c.arr[0] = ...`) after the pointer
+// was taken stays invisible through it -- the same snapshot gap the
+// struct-static-array-field slice closed for a struct receiver. SystemLinker's
+// `p` aliases `c`'s real storage, so the direct write is visible through
+// `*p`. Other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr[0] = one();
+                int* p = &c.arr[0];
+                c.arr[0] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
 // value.md item 7's nested-struct-field follow-up (the smaller of the two
 // deferred candidates named in the struct-static-array-field progress
 // note): `&s.inner.x` where `inner` is a (non-union) struct field of a
