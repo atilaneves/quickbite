@@ -1778,7 +1778,7 @@ static foreach (backend; Matrix!()) {
 // `p`/`q` both alias `a`'s real storage, so a write through `p` is visible
 // through `q`. Other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer." ~
         backend.stringof)
     @Tags(backend.stringof)

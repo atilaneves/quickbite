@@ -6073,3 +6073,18 @@ The final `ninja bin/ut` and focused Bytecode/SystemLinker oracle pair passed.
 The final `bin/ut --random` crashed with the pre-existing signal 11 under seed
 `2698906983`; its required `bin/ut --seed 2698906983` replay reproduced exit
 code 139.
+
+`pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer`
+promoted to Bytecode, 2026-07-16: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that two independently taken pointers into the same
+dynamic-array element share the native backing storage and observe a write
+through either pointer. No production change was needed. This does not add
+pointer writes across frames, writes through slice aliases, or broader
+pointer-cell reconciliation. The pre-edit `ninja bin/ut` baseline passed;
+pre-edit `bin/ut --random` crashed with the pre-existing signal 11 under seed
+`3739913997`, and its required `bin/ut --seed 3739913997` replay reproduced
+exit code 139. After promotion, the focused Bytecode row and `ninja bin/ut`
+passed. The final `bin/ut --random` crashed with the pre-existing signal 11
+under seed `420341370`; its required `bin/ut --seed 420341370` replay
+reproduced exit code 139.
