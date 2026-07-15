@@ -1843,9 +1843,9 @@ static foreach (backend; Matrix!()) {
 // value.md item 7 candidate slice: a compound/post-increment write THROUGH an
 // array-element pointer (`(*p)++`) must be visible both through the pointer
 // itself and directly on the array. SystemLinker's `p` aliases `a`'s real
-// storage, so the increment is visible both ways. Other backends omitted per
-// the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// storage, so the increment is visible both ways. The mature backend matrix
+// now confirms the same aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -6103,3 +6103,18 @@ exit code 139. After promotion, the focused Bytecode row and `ninja bin/ut`
 passed. The final `bin/ut --random` crashed with the pre-existing signal 11
 under seed `420341370`; its required `bin/ut --seed 420341370` replay
 reproduced exit code 139.
+
+`pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly` promoted
+to Bytecode, 2026-07-16: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that post-increment through a dynamic-array element
+pointer updates the native backing storage observed directly through the
+array. No production change was needed. This does not add pointer arithmetic,
+cross-frame pointer mutation, or broader pointer-cell reconciliation. The
+pre-edit `ninja bin/ut` baseline passed; pre-edit `bin/ut --random` crashed
+with the pre-existing signal 11 under seed `619424365`, and its required
+`bin/ut --seed 619424365` replay reproduced the crash. After promotion, the
+focused Bytecode row and final `ninja bin/ut` passed. The final
+`bin/ut --random` crashed with the pre-existing signal 11 under seed
+`2768092839`; its required `bin/ut --seed 2768092839` replay reproduced the
+crash.
