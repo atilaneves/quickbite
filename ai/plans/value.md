@@ -6805,6 +6805,103 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    change. The full `bin/ut --random` was left to the orchestrator per the
    usual long-suite handoff.
 
+   Progress 2026-07-15 (address-taken scalar-only union field: `&u.i`
+   promotes a native cell, `u.f = x` reaches it through the SAME
+   machinery already landed for structs and classes): the previous
+   union slice (above) deliberately left the address-taken case exactly
+   as `promoteStructCell`'s guard had it -- boxed only -- since
+   value.md's task brief names it as the still-open case. Probed
+   whether that guard leaves a real `SystemLinker` divergence for
+   `union U { int i; float f; } U u; int* p = &u.i; u.f = <bits>;
+   assert(*p == <reinterpreted bits>);` (a runtime-seeded float local
+   assigned to `u.f`, per `ai/mistakes.md`, not a literal). RED
+   confirmed on Interpreter before any production change: `*p` reads
+   the stale field-snapshot value taken at `&u.i` time (`0`, `int.init`)
+   because `promoteStructFieldCell`'s call into `promoteStructCell`
+   no-ops for a union receiver, so neither a `structCells` entry nor a
+   `structFieldPointerVariables` reverse-lookup entry is ever created --
+   `object.Exception: 0 != 1065353216`. Green on `SystemLinker`
+   throughout.
+
+   Read why the guard exists (2026-07-14, Finding 6, and `withUnion
+   FieldWrite`'s own comment): `writeStructCellScalarFields` seeds/
+   refreshes a cell by writing EVERY field's boxed value to its own
+   (declaration-order) byte range with no union-vs-struct branch: for a
+   union, every native-scalar field shares the SAME offset (`NativeStruct.
+   allocate` sizes/offsets a union correctly already, reading DMD's own
+   `VarDeclaration.offset` via `layout.fieldByteOffset` -- confirmed by
+   inspection, no change needed there), so the LAST field written in
+   declaration order always wins, silently discarding an earlier
+   sibling's bytes. That clobber is only a BUG when the fields' boxed
+   values disagree about the underlying bits. Traced both places a
+   union's cell bytes actually get (re)seeded once a cell exists: (1)
+   `withUnionFieldWrite` (2026-07-15, prior slice) always re-derives
+   every OTHER native-scalar sibling from the SAME just-written value's
+   own bytes before `writeLocation`/`writeCelledLocal` reaches
+   `writeStructCellScalarFields` -- so by the time the overlay runs,
+   every field already agrees bit-for-bit, and the declaration-order
+   overwrite is provably a no-op (same bytes, written twice); (2) the
+   very first seed, from an untouched union's boxed default value,
+   where fields genuinely disagree (`int.init == 0`,
+   `float.init == NaN`, computed independently) -- but this is the
+   SAME already-tracked, deliberately-deferred divergence the prior
+   slice's "second divergence" paragraph names (`structDefaultValue`
+   zero-initializes each field independently instead of copying the
+   first declared member's bits across the whole block), not a new bug
+   this slice introduces, and no existing or new test reads an
+   untouched union field through a promoted cell (this slice's fixture
+   writes `u.f` before ever reading `*p`), so it cannot regress
+   anything today.
+
+   Fix, in `impl.d`'s `promoteStructCell`: replaced the blanket "decline
+   every union" guard with a narrower one -- decline only when the union
+   has at least one member that is NOT `native_scalar.isNativeScalarType`
+   (an aggregate/array/class member sharing the same bytes, where
+   `writeStructCellScalarFields`'s recursion into that member's own
+   sub-fields has no such consistency guarantee, still correctly left as
+   an open follow-up per the prior slice). A scalar-only union now gets a
+   `structCells` entry exactly like a plain struct, and every downstream
+   consumer already handled it correctly with NO further changes needed,
+   by design of the earlier struct-phase slices: `NativeStruct.allocate`
+   (correct overlapping offsets from DMD), `writeStructCellScalarFields`/
+   `structValueFromCell` (already field-index-generic, no struct-specific
+   assumption), `structFieldPointerCellValue` (reads the field-index's own
+   byte range, reinterpreted as the POINTEE's type), and `withUnionField
+   Write`'s caller chain (`writeLocation` -> `writeCelledLocal`, which
+   already refreshes a `structCells` entry from any struct-typed value it
+   is given). Confirmed the OTHER two `promoteStructCell` call sites
+   (`promoteStructArrayFieldCell`, `promoteNestedStructFieldCell`) can
+   never reach a scalar-only union in the first place -- both require the
+   ADDRESSED field itself to be a static array or a (non-union) struct,
+   which by definition means the union has a non-scalar member, so the
+   guard's new all-scalar check already declines for them; no separate
+   exclusion needed at those call sites.
+
+   New fixture `union.addressTakenFieldSeesWriteThroughSiblingMember.
+   {Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/structs.d`,
+   immediately after the prior slice's union fixture. Scoped to the
+   `Interpreter`/`SystemLinker` oracle pair only, matching this slice's
+   brief.
+
+   No §9.10 shim retired -- unrelated to this promotion-guard relaxation.
+
+   Remaining follow-up, unchanged from the prior slice's "second
+   divergence" paragraph and value.md's own task brief: (1) an untouched
+   union's default-init still diverges from `SystemLinker`'s first-
+   member-wins zero-init (independent per-field `defaultValue`,
+   `structDefaultValue` lives in the frontend-shared `values.d`); (2) a
+   union member that is itself an aggregate (nested struct/array/class)
+   still declines cell promotion entirely, matching
+   `writeStructCellScalarFields`'s identical scalar-only scope.
+
+   Focused suites all green: ct.expressions 559/0 (5 failing as
+   expected, unchanged), ct.structs 295/0 (293 + this slice's 2 new
+   backend instances), ct.arrays 346/0, ct.exceptions 130/0, interpreter
+   218/0, bin.repl 228/0, evaluator.eval 71/0; also ran rt.cstdlib 89/0
+   and rt.dependency_image 119/0 (pre-existing union FFI fixtures,
+   unaffected). The full `bin/ut --random` was left to the orchestrator
+   per the usual long-suite handoff.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

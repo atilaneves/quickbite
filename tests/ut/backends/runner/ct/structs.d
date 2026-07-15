@@ -1830,3 +1830,25 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("union.addressTakenFieldSeesWriteThroughSiblingMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int i;
+                float f;
+            }
+
+            unittest {
+                U u;
+                int* p = &u.i;
+                float value = 1.0f;
+                u.f = value;
+                assert(*p == 1065353216);
+            }
+        });
+    }
+}

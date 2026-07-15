@@ -2523,11 +2523,34 @@ private struct Walker {
         // a cell here too; `writeStructCellScalarFields` seeds every field
         // at its own (overlapping, offset-0-for-a-plain-union) byte range
         // with no union-vs-struct branch, so a second field's seed would
-        // clobber the first's bytes. Leave a union local on the existing
-        // boxed path entirely -- matching the plan's "union fields untouched"
-        // note, true by construction now.
-        if (structType.sym.isUnionDeclaration !is null)
-            return;
+        // clobber the first's bytes IF the two fields' boxed values ever
+        // disagree about the underlying bits. Address-taken scalar-only
+        // union slice (value.md item 7, 2026-07-15): when EVERY member is
+        // `native_scalar.isNativeScalarType`, that clobber is harmless --
+        // the only two ways this cell's bytes are ever (re)seeded are
+        // `withUnionFieldWrite` (which re-derives every OTHER native-scalar
+        // sibling from the SAME just-written bytes, so all fields already
+        // agree bit-for-bit before the overlay runs) and this very seed from
+        // the current boxed value (whose members may still individually
+        // disagree right after an untouched union's own default-init -- a
+        // separate, already-tracked divergence from `SystemLinker`'s
+        // first-member-wins zero-init, unrelated to and not worsened by cell
+        // promotion, since no existing test reads an untouched union field
+        // through a promoted cell). A union with any NON-native-scalar
+        // member (a nested aggregate, array, or class field sharing the same
+        // bytes) keeps declining exactly as before: `writeStructCellScalarFields`
+        // would recurse into that member's own sub-fields at the same
+        // overlapping offset with no such consistency guarantee, corrupting
+        // `&u.<scalarField>`'s later deref -- an open follow-up, not this
+        // slice's scope.
+        if (structType.sym.isUnionDeclaration !is null) {
+            import quickbite.backends.interpreter.layout: structFields;
+            import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+            foreach (field; structFields(structType))
+                if (!isNativeScalarType(field.type))
+                    return;
+        }
 
         auto current = defaultValue(variable);
         if (auto existing = variable in locals)
