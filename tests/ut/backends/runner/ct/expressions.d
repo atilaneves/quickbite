@@ -3548,3 +3548,45 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// value.md item 7's nested-struct-field follow-up (the smaller of the two
+// deferred candidates named in the struct-static-array-field progress
+// note): `&s.inner.x` where `inner` is a (non-union) struct field of a
+// plain struct local and `x` is a scalar field of `inner`.
+// `addressOfExpression`'s `DotVarExp` branch resolves `fieldSnapshotAllocationId`/
+// `promoteStructFieldCell` only for a `dot.e1.isVarExp` receiver; here
+// `dot.e1` (`s.inner`) is itself a `DotVarExp`, so neither ever registers a
+// reverse lookup for the minted id, and `writeLocation`'s `PtrExp` arm falls
+// through to its "every other `&s.field` snapshot" guard and throws
+// "Unsupported interpreter assignment target." SystemLinker's `p` aliases
+// `s`'s real storage, so the write through `*p` is visible via `s.inner.x`.
+// Other backends omitted per the omit-don't-pin convention (unconfirmed
+// there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.addressOfNestedStructFieldWriteThroughUpdatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                S s = S(Inner(seed()));
+                int* p = &s.inner.x;
+                *p = 5;
+
+                assert(s.inner.x == 5);
+            }
+        });
+    }
+}

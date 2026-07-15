@@ -4772,6 +4772,100 @@ expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
 -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-15 (nested-struct-field follow-up: `&s.inner.x` gets a
+one-level (receiver, field-path) reverse lookup): the other deferred
+candidate the struct-static-array-field note above left open --
+`&s.inner.x` where `inner` is a (non-union) struct field of a plain struct
+local and `x` is a scalar field of `inner`. One new fixture,
+`pointer.addressOfNestedStructFieldWriteThroughUpdatesField`
+(`Ctfe`/`Interpreter`/`SystemLinker`/`LLVMJit`, omit-Bytecode convention):
+`struct Inner { int x; } struct S { Inner inner; } S s = S(Inner(seed()));
+int* p = &s.inner.x; *p = 5; assert(s.inner.x == 5);`. This fixture writes
+THROUGH the pointer (the direction the plan note's own quoted diagnostic
+names), unlike the sibling array-field fixture's write-directly/read-
+through-pointer direction. Confirmed red on Interpreter before any
+production change: `object.Exception: Unsupported interpreter assignment
+target.`, thrown from `writeLocation`'s `PtrExp` arm's "every OTHER
+`&s.field` snapshot" guard, exactly as the prior note predicted. Confirmed
+green on Ctfe, SystemLinker, and LLVMJit throughout.
+
+Fix, in `impl.d`: a new (receiver variable, outer field index, inner field
+index) reverse-lookup triple, `nestedStructFieldPointerVariables`/
+`nestedStructFieldPointerOuterFieldIndices`/
+`nestedStructFieldPointerInnerFieldIndices` -- the one-level-nested sibling
+of `structFieldPointerVariables`/`structFieldPointerFieldIndices`, needed
+because the cell view is `NativeStruct.structField(outerIndex).
+field(innerIndex)` -- a nested `NativeStruct` sharing the parent's block,
+via the composition accessor the plan's struct phase already built -- not
+the single top-level field range the existing pair resolves to.
+`addressOfExpression`'s `DotVarExp` branch now also calls
+`promoteNestedStructFieldCell(dot, id)` alongside the existing
+`promoteStructFieldCell(dot, id)` call, reusing the SAME id
+`fieldSnapshotAllocationId(dot)` already mints -- both calls are no-ops for
+shapes outside their own narrow scope, exactly as `arrayPointer`'s
+`DotVarExp` branch already combines `promoteStructArrayFieldCell` with the
+same memoized id for `&s.arr[i]`. `promoteNestedStructFieldCell` detects
+the one-level-nested shape directly (`dot.e1.isDotVarExp` whose OWN `e1` is
+the root `VarExp`) rather than by extending `fieldSnapshotAllocationId`
+itself; the id `addressOfExpression`'s caller passes in is therefore NOT
+memoized per (receiver, field path) for this shape -- unlike the single-
+level case, every `&s.inner.x` evaluation mints a fresh id via
+`fieldSnapshotAllocationId`'s existing non-`VarExp`-receiver fallback (since
+`dot.e1` is itself a `DotVarExp`, not a plain `VarExp`) -- a real, narrower
+gap than the single-level mechanism's own identity stability, left for the
+full field-PATH generalization (repeated `&s.inner.x == &s.inner.x` pointer
+identity is not proven equal by this slice, though each individual pointer
+still correctly aliases the cell). `writeStructCellScalarFields` is widened
+to recurse one level into every (non-union) struct-typed field via
+`NativeStruct.structField`'s shared-block view -- the same "seed/refresh
+every scalar field's bytes on every whole-struct cell refresh" discipline
+already applied to static-array fields, applied one level down; the
+recursion itself is not depth-limited even though the read/write-through
+pointer machinery below only resolves one level. Two new functions,
+`nestedStructFieldPointerCellValue` (wired into `pointerTargetValue` and
+`runPointerExpression`'s deref-read arm, alongside the existing three
+pointer-cell checks) and `writeThroughNestedStructFieldPointer` (wired into
+`writeLocation`'s `PtrExp` arm and `writePointerTarget`, alongside the
+existing two write-through checks), mirror the sibling pairs' read/write
+dispatch exactly. `dropStructCell` also clears stale
+`nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
+`...InnerFieldIndices` entries for a fresh redeclaration, mirroring its
+existing scalar-field and array-field cleanups.
+
+Scoped narrower than even the struct-static-array-field mechanism, in the
+same same-frame-only respect: `nestedStructFieldPointerVariables` and its
+two index maps are NOT duplicated into child-frame walkers, so a
+`&s.inner.x` pointer does not yet survive being passed into another
+function call -- `writeThroughNestedStructFieldPointer` declines (returns
+`false`) rather than silently losing the write when the receiver isn't in
+the current frame's `locals`. The fixture above never calls into another
+function after taking `&s.inner.x`, so this gap is untested, not closed.
+Deeper nesting (`&s.a.b.c`, two or more levels) is also out of this slice's
+scope -- `promoteNestedStructFieldCell` only recognises exactly one level
+(`dot.e1.isDotVarExp` whose own `e1` is the root `VarExp`); a chain three
+levels deep falls through unchanged to the generic snapshot path and keeps
+throwing "Unsupported interpreter assignment target." for a write through
+the pointer, exactly as before this slice. This is now the last narrow
+item.7-struct-cell gap named in the array-of-struct/struct-static-array-
+field notes above: the true general "(receiver, field-PATH) resolved by
+walking an arbitrary-depth `DotVarExp` chain to its root `VarExp`" model
+those notes called for remains a follow-up if a deeper-nesting or pointer-
+identity fixture is ever proposed.
+
+No `interpreter.md` §9.10 shim is retired by this slice, matching both
+prior notes above: it widens which struct fields a `structCells` entry
+backs and can be written through by pointer, it does not touch any of the
+shim inventory's own named functions.
+
+Focused runs, all green: the new fixture (all four backends); `bin/ut -s
+ut.backends.runner.ct.expressions` (501 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (291 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing as
+expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
+-s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

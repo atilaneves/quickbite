@@ -193,6 +193,32 @@ private struct Walker {
     private VarDeclaration[size_t] structArrayFieldPointerVariables;
     private size_t[size_t] structArrayFieldPointerFieldIndices;
 
+    // Reverse lookup from a promoted `&s.inner.x` pointer's allocation id back
+    // to which struct variable and (outer, inner) field-index pair share the
+    // SAME `structCells` entry's bytes -- value.md item 7's nested-struct-
+    // field follow-up (the smaller of the two candidates the struct-static-
+    // array-field progress note deferred), one level of struct-field
+    // nesting only: `inner` must itself be a (non-union) struct field of a
+    // plain struct local, and `x` a scalar field of `inner`. The cell view
+    // is `NativeStruct.structField(outerIndex).field(innerIndex)` -- a
+    // nested `NativeStruct` sharing the parent's block -- rather than the
+    // single top-level field range `structFieldPointerVariables` resolves
+    // to. Populated by `promoteNestedStructFieldCell`, called from
+    // `addressOfExpression`'s `DotVarExp` branch alongside
+    // `promoteStructFieldCell` (mirroring how `arrayPointer`'s `DotVarExp`
+    // branch already combines `promoteStructArrayFieldCell` with the same
+    // memoized id). Narrower than `structFieldPointerVariables` in two
+    // respects: the id is NOT memoized per (receiver, field path) -- a
+    // `dot.e1` that is itself a `DotVarExp` always takes
+    // `fieldSnapshotAllocationId`'s non-`VarExp`-receiver fresh-id fallback,
+    // a real gap left for the full field-PATH generalization -- and, same as
+    // `structArrayFieldPointerVariables`, these maps are not duplicated into
+    // child-frame walkers, so a `&s.inner.x` pointer does not yet survive a
+    // call into another function.
+    private VarDeclaration[size_t] nestedStructFieldPointerVariables;
+    private size_t[size_t] nestedStructFieldPointerOuterFieldIndices;
+    private size_t[size_t] nestedStructFieldPointerInnerFieldIndices;
+
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
     private size_t nextLocalPointerId;
@@ -1766,8 +1792,17 @@ private struct Walker {
             // through THIS pointer's deref-read
             // (`structFieldPointerCellValue`) -- closing the reverse-
             // propagation gap the array phase already closed for `&a[i]`.
+            // value.md item 7's nested-struct-field follow-up: `&s.inner.x`
+            // shares the SAME id above (`dot.e1.isVarExp` is null for it, so
+            // `fieldSnapshotAllocationId` already took its non-`VarExp`-
+            // receiver fresh-id fallback), but `promoteStructFieldCell`
+            // itself no-ops for it (same reason). `promoteNestedStructFieldCell`
+            // recognises the one-level-nested shape on its own and registers
+            // this id in its own reverse lookup when it applies; a no-op
+            // otherwise.
             const id = fieldSnapshotAllocationId(dot);
             promoteStructFieldCell(dot, id);
+            promoteNestedStructFieldCell(dot, id);
             return Value.arrayPointerValue([runExpression(dot)], id, 0);
         }
 
@@ -2271,16 +2306,25 @@ private struct Walker {
     // struct-static-array-field follow-up -- every static-array field whose
     // OWN element type is `native_scalar.isNativeScalarType`, via
     // `NativeStruct.arrayField`'s `NativeArray` view over the same block.
-    // Every other non-scalar field (nested struct, dynamic array/slice,
-    // class) is left untouched, matching this narrow slice's scope -- only
-    // an address-taken scalar field or scalar-element static-array field is
-    // ever read back through a `structCells` entry, so leaving another
-    // field's bytes stale here is harmless. Called both at cell-creation
-    // time (`promoteStructCell`) and on every subsequent whole-struct
-    // refresh (`writeCelledLocal`), so a direct `s.arr[i] = x` write after
-    // `&s.arr[j]` promoted the cell reaches this same refresh, keeping the
-    // array-field cell current for a later deref-read
-    // (`structArrayFieldPointerCellValue`).
+    // Also -- the nested-struct-field follow-up -- recurses one level into
+    // every (non-union) struct-typed field via `NativeStruct.structField`'s
+    // shared-block view, so a nested field's OWN scalar sub-fields get the
+    // same seed/refresh treatment, applied recursively (the recursion itself
+    // is not depth-limited, even though the address-of/pointer-deref
+    // machinery that reads it back currently only resolves one level of
+    // nesting -- see the `nestedStructFieldPointerVariables` field
+    // declaration comment). Every other non-scalar field (dynamic
+    // array/slice, class, or a union at any level) is left untouched,
+    // matching this narrow slice's scope -- only an address-taken scalar
+    // field, scalar-element static-array field, or (one level deep) nested
+    // scalar field is ever read back through a `structCells` entry, so
+    // leaving another field's bytes stale here is harmless. Called both at
+    // cell-creation time (`promoteStructCell`) and on every subsequent
+    // whole-struct refresh (`writeCelledLocal`), so a direct `s.arr[i] = x`
+    // or `s.inner.x = y` write after `&s.arr[j]`/`&s.inner.x` promoted the
+    // cell reaches this same refresh, keeping the field cell current for a
+    // later deref-read (`structArrayFieldPointerCellValue`/
+    // `nestedStructFieldPointerCellValue`).
     private void writeStructCellScalarFields(ref NativeStruct cell, in Value structValue) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
@@ -2294,20 +2338,31 @@ private struct Walker {
                 continue;
             }
 
-            if (!isStaticArrayType(fieldType))
+            if (isStaticArrayType(fieldType)) {
+                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
+                if (!isNativeScalarType(elementType))
+                    continue;
+
+                const fieldValue = structValue.structFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = cell.arrayField(index);
+                foreach (elementIndex; 0 .. fieldValue.length)
+                    writeScalar(elementType, arrayCell.element(elementIndex), fieldValue[elementIndex]);
+                continue;
+            }
+
+            auto nestedStructType = fieldType.toBasetype.isTypeStruct;
+            if (nestedStructType is null || nestedStructType.sym.isUnionDeclaration !is null)
                 continue;
 
-            auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-            if (!isNativeScalarType(elementType))
+            const nestedValue = structValue.structFieldAt(index);
+            if (!nestedValue.isStruct)
                 continue;
 
-            const fieldValue = structValue.structFieldAt(index);
-            if (!fieldValue.isArray)
-                continue;
-
-            auto arrayCell = cell.arrayField(index);
-            foreach (elementIndex; 0 .. fieldValue.length)
-                writeScalar(elementType, arrayCell.element(elementIndex), fieldValue[elementIndex]);
+            auto nestedCell = cell.structField(index);
+            writeStructCellScalarFields(nestedCell, nestedValue);
         }
     }
 
@@ -2387,6 +2442,61 @@ private struct Walker {
         structArrayFieldPointerFieldIndices[id] = structFieldIndex(dot);
     }
 
+    // One level of struct-field nesting (value.md item 7's nested-struct-
+    // field follow-up, the smaller of the two candidates the struct-static-
+    // array-field progress note deferred): `&s.inner.x` where `inner` is a
+    // (non-union) struct field of a plain struct local `s` and `x` is a
+    // scalar field of `inner`. `dot` is the INNER `DotVarExp` (`s.inner.x`,
+    // for the field `x`); its own `dot.e1` is the OUTER `DotVarExp`
+    // (`s.inner`, for the field `inner`), detected here directly rather than
+    // by a new memoized-id path -- `id` is the SAME id
+    // `addressOfExpression`'s caller already minted via
+    // `fieldSnapshotAllocationId` (unmemoized for this shape; see the field
+    // declarations' own comment above). Gives the receiver a `structCells`
+    // entry (`promoteStructCell`, same as `promoteStructFieldCell`/
+    // `promoteStructArrayFieldCell`) and records `id` in the
+    // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
+    // `...InnerFieldIndices` reverse lookup, so a later deref-read/write-
+    // through this id's pointer (`nestedStructFieldPointerCellValue`/
+    // `writeThroughNestedStructFieldPointer`) can find the same cell and
+    // field path. A no-op (no cell, no reverse-lookup entry) for anything
+    // outside this narrow shape: `dot.e1` not itself a `DotVarExp`, that
+    // `DotVarExp`'s own receiver not a plain `VarExp`, the outer field not a
+    // (non-union) struct, the inner field not `native_scalar.
+    // isNativeScalarType`, or a receiver whose boxed value isn't a struct --
+    // every one of those leaves `promoteStructCell` itself a no-op (or is
+    // never reached), so there is no cell here to point at.
+    private void promoteNestedStructFieldCell(
+        imported!"dmd.expression".DotVarExp dot,
+        in size_t id,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        auto innerDot = dot.e1.isDotVarExp;
+        if (innerDot is null)
+            return;
+
+        auto var = innerDot.e1.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable is null)
+            return;
+
+        auto outerStructType = innerDot.type.toBasetype.isTypeStruct;
+        if (outerStructType is null || outerStructType.sym.isUnionDeclaration !is null)
+            return;
+
+        if (!isNativeScalarType(dot.type))
+            return;
+
+        promoteStructCell(variable);
+        if ((variable in structCells) is null)
+            return;
+
+        nestedStructFieldPointerVariables[id] = variable;
+        nestedStructFieldPointerOuterFieldIndices[id] = structFieldIndex(innerDot);
+        nestedStructFieldPointerInnerFieldIndices[id] = structFieldIndex(dot);
+    }
+
     // Drops `variable`'s `structCells` entry (if any) together with every
     // `structFieldPointerVariables`/`structFieldPointerFieldIndices` reverse-
     // lookup entry that pointed at it (value.md item 7 review round 2,
@@ -2438,6 +2548,20 @@ private struct Walker {
         foreach (id; staleArrayFieldIds) {
             structArrayFieldPointerVariables.remove(id);
             structArrayFieldPointerFieldIndices.remove(id);
+        }
+
+        // Same stale-id cleanup for the nested-struct-field reverse lookup
+        // (value.md item 7's nested-struct-field follow-up), for the same
+        // reason as the two cleanups above.
+        size_t[] staleNestedFieldIds;
+        foreach (id, pointedVariable; nestedStructFieldPointerVariables)
+            if (pointedVariable is variable)
+                staleNestedFieldIds ~= id;
+
+        foreach (id; staleNestedFieldIds) {
+            nestedStructFieldPointerVariables.remove(id);
+            nestedStructFieldPointerOuterFieldIndices.remove(id);
+            nestedStructFieldPointerInnerFieldIndices.remove(id);
         }
 
         fieldAddressAllocations.remove(variable);
@@ -2720,6 +2844,14 @@ private struct Walker {
             // `&s.arr[i]` has promoted a `structCells` entry, mirroring the
             // two checks above for the scalar-field and plain-array cases.
             if (structArrayFieldPointerCellValue(value, cellValue))
+                return cellValue;
+
+            // Byte-level authority for a nested-struct-field pointer
+            // (value.md item 7's nested-struct-field follow-up): once
+            // `&s.inner.x` has promoted a `structCells` entry, mirroring the
+            // three checks above for the array-element, scalar-field, and
+            // static-array-field cases.
+            if (nestedStructFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
             return value.pointerTarget;
@@ -5846,6 +5978,14 @@ private struct Walker {
             if (writeThroughStructArrayFieldPointer(pointer, value))
                 return;
 
+            // `&s.inner.x` of a nested (one level) scalar field on a plain
+            // struct LOCAL promoted a `structCells` entry at address-of time
+            // (value.md item 7's nested-struct-field follow-up): write
+            // through it exactly like SystemLinker's real aliasing, instead
+            // of refusing below.
+            if (writeThroughNestedStructFieldPointer(pointer, value))
+                return;
+
             // Every OTHER `&s.field` (addressOfExpression's DotVarExp
             // branch) yields a read-only value snapshot, not an alias to
             // the field: refuse loudly instead of silently rewriting the
@@ -6282,6 +6422,52 @@ private struct Walker {
 
         const updatedField = current.structFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
         locals[*variable] = current.withStructField(*fieldIndex, updatedField);
+        uninitializedLocals.remove(*variable);
+        return true;
+    }
+
+    // Nested-struct-field sibling of `writeThroughStructFieldPointer` above
+    // (value.md item 7's nested-struct-field follow-up): once `&s.inner.x`
+    // has promoted a `structCells` entry, `*p = value` writes `value`'s
+    // bytes into the cell's nested `NativeStruct.structField(outerIndex)`
+    // view at the inner field index, and re-derives the boxed `locals`
+    // mirror from the (already-updated) whole struct, mirroring
+    // `writeThroughStructFieldPointer`/`writeThroughStructArrayFieldPointer`'s
+    // cell-then-mirror discipline. Same-frame only, per the field
+    // declarations' doc comment above: `nestedStructFieldPointerVariables`
+    // is never duplicated into a child walker, so a cross-frame write here
+    // declines below via `current is null` rather than silently losing the
+    // write.
+    private bool writeThroughNestedStructFieldPointer(in Value pointer, in Value value) {
+        auto variable = pointer.pointerAllocation in nestedStructFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in structCells;
+        if (cell is null)
+            return false;
+
+        auto outerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerOuterFieldIndices;
+        if (outerFieldIndex is null)
+            return false;
+
+        auto innerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerInnerFieldIndices;
+        if (innerFieldIndex is null)
+            return false;
+
+        auto current = *variable in locals;
+        if (current is null || !current.isStruct)
+            return false;
+
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+        auto nestedCell = cell.structField(*outerFieldIndex);
+        writeScalar(nestedCell.fieldDeclaration(*innerFieldIndex).type,
+            nestedCell.field(*innerFieldIndex), value);
+
+        const updatedInner = current.structFieldAt(*outerFieldIndex)
+            .withStructField(*innerFieldIndex, value);
+        locals[*variable] = current.withStructField(*outerFieldIndex, updatedInner);
         uninitializedLocals.remove(*variable);
         return true;
     }
@@ -7683,6 +7869,46 @@ private struct Walker {
         return true;
     }
 
+    // Nested-struct-field sibling of `structFieldPointerCellValue`/
+    // `structArrayFieldPointerCellValue` above (value.md item 7's nested-
+    // struct-field follow-up): once `&s.inner.x` has promoted a
+    // `structCells` entry, the cell's nested `NativeStruct.
+    // structField(outerIndex)` view -- not the boxed snapshot
+    // `addressOfExpression` took at address-of time -- is the true value at
+    // the inner field index. Returns `false` (leaving `value` untouched) for
+    // every other pointer -- no promoted cell, or a pointer that was never a
+    // nested-struct-field address at all -- which keeps the existing boxed
+    // `pointerTarget` fallback at each call site.
+    private bool nestedStructFieldPointerCellValue(in Value pointer, out Value value) {
+        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+            return false;
+
+        auto variable = pointer.pointerAllocation in nestedStructFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in structCells;
+        if (cell is null)
+            return false;
+
+        auto outerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerOuterFieldIndices;
+        if (outerFieldIndex is null)
+            return false;
+
+        auto innerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerInnerFieldIndices;
+        if (innerFieldIndex is null)
+            return false;
+
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        auto nestedCell = cell.structField(*outerFieldIndex);
+        value = readScalar(
+            nestedCell.fieldDeclaration(*innerFieldIndex).type,
+            nestedCell.field(*innerFieldIndex),
+        );
+        return true;
+    }
+
     private Value pointerTargetValue(in Value pointer) {
         if (pointer.isLocalPointer)
             return localPointerTarget(pointer);
@@ -7696,6 +7922,8 @@ private struct Walker {
         if (structFieldPointerCellValue(pointer, cellValue))
             return cellValue;
         if (structArrayFieldPointerCellValue(pointer, cellValue))
+            return cellValue;
+        if (nestedStructFieldPointerCellValue(pointer, cellValue))
             return cellValue;
 
         return pointer.pointerTarget;
@@ -7750,6 +7978,12 @@ private struct Walker {
         // sibling of the check above (value.md item 7's struct-static-
         // array-field follow-up), same reasoning.
         if (writeThroughStructArrayFieldPointer(pointer, value))
+            return;
+
+        // A nested-struct-field pointer (`&s.inner.x`): the one-level-nested
+        // sibling of the two checks above (value.md item 7's nested-struct-
+        // field follow-up), same reasoning.
+        if (writeThroughNestedStructFieldPointer(pointer, value))
             return;
 
         if (auto address = expression.isAddrExp) {
