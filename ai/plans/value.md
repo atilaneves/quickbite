@@ -5023,6 +5023,87 @@ expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
 -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-15 (nested-struct-field cross-frame follow-up: `&s.inner.x`
+write-through survives a call into another function): the last named
+item-7 struct-cell gap the struct-static-array-field cross-frame note above
+left open. One new fixture,
+`pointer.nestedStructFieldWriteThroughPointerInCalleeIsVisibleToCaller`
+(`Ctfe`/`Interpreter`/`SystemLinker`/`LLVMJit`, omit-Bytecode convention),
+the nested-field sibling of `pointer.
+structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller`: `struct
+Inner { int x; } struct S { Inner inner; } S s = S(Inner(one())); int* p =
+&s.inner.x; put(p, ninetyNine());` (`put` writes `*p = v;`) `return *p +
+s.inner.x;`, asserting `198`. Confirmed red on Interpreter before any
+production change: `object.Exception: Unsupported interpreter assignment
+target.`, thrown from `writeLocation`'s `PtrExp` arm falling through
+`writeThroughNestedStructFieldPointer` (its reverse-lookup maps, un-duped
+into the callee's child `Walker`, missed) to the `fieldSnapshotAllocationIds`
+refusal guard -- exactly the diagnostic both prior cross-frame notes
+predicted for this sibling. Confirmed green on Ctfe, SystemLinker, and
+LLVMJit throughout.
+
+Fix, in `impl.d`, mirroring the struct-array-field cross-frame mechanism
+exactly (no new plumbing shape invented): (1) `nestedStructFieldPointer
+Variables`/`...OuterFieldIndices`/`...InnerFieldIndices` are now duped into
+every child `Walker` at the same 7 dup call sites used for
+`structArrayFieldPointerVariables`. (2) A new
+`mergeNestedStructFieldPointerVariableMaps`, the nested-field sibling of
+`mergeStructArrayFieldPointerVariableMaps` -- but simpler, since an id in
+this map is NEVER memoized through `fieldAddressAllocations` (a
+one-level-nested `DotVarExp`'s own `dot.e1` is itself a `DotVarExp`, so
+`fieldSnapshotAllocationId` always takes its non-`VarExp`-receiver fresh-id
+fallback): every id already names exactly one (variable, outer, inner)
+triple, so the merge is a plain union with no (variable, field index)
+conflict guard to write. (3) A new `nestedStructFieldPointerWritebacks` flag
+map, duped at the same 7 sites and merged the same way in
+`writeBackFunctionState`/`writeBackMemberFunctionState`. (4)
+`writeThroughNestedStructFieldPointer` no longer requires `current !is null`
+(the receiver present in THIS frame's `locals`) to proceed -- it now writes
+into the shared `structCells` entry unconditionally (given a cell and
+reverse-lookup hit), updates the boxed `locals` mirror only when `current`
+is present, and always flags `nestedStructFieldPointerWritebacks[*variable]`,
+mirroring `writeThroughStructArrayFieldPointer`'s own `current`-optional
+discipline. (5) A new `writeBackNestedStructFieldPointerTargets`, the
+nested-field sibling of `writeBackStructArrayFieldPointerTargets`, wired
+into both call sites right after its array-field sibling. (6)
+`structValueFromCell` (until now overlaying scalar fields and
+scalar-element static-array fields only) is widened to also recurse one
+level into every (non-union) struct-typed field via
+`NativeStruct.structField`, mirroring `writeStructCellScalarFields`'s own
+nested-field recursion -- the read-side counterpart needed so the
+writeback above can re-derive the OWNING frame's nested field, not just its
+top-level scalar/array fields.
+
+No `interpreter.md` §9.10 shim is retired by this slice, matching every
+prior note in this log: it widens which struct-cell writes survive a call
+into another function, it does not touch any of the shim inventory's own
+named functions.
+
+Remaining open items: `nestedStructFieldPointerVariables`'s own
+pointer-identity memoization gap is unchanged by this slice -- repeated
+`&s.inner.x` evaluations still do not share an id, since `dot.e1` being
+itself a `DotVarExp` always takes `fieldSnapshotAllocationId`'s fresh-id
+fallback (each pointer still correctly aliases the cell; only identity
+comparison between two separately-taken `&s.inner.x` pointers is unproven).
+Deeper nesting (2+ levels, in any of the struct-field, array-element, or
+static-array-element shapes) remains out of scope everywhere, as does the
+full field-PATH generalization the nested-struct-field follow-up's own note
+named. With this slice, every item-7 struct-cell cross-frame gap the
+struct-static-array-field and array-of-static-array notes named is closed;
+the largest remaining item-7 gap is CLASSES, entirely untouched by the
+struct/array cell machinery above -- class objects stay third in the
+migration order per the representation-change design sketch's own
+"Migration order" bullet.
+
+Focused runs, all green: the new fixture (all four backends); `bin/ut -s
+ut.backends.runner.ct.expressions` (513 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (291 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing as
+expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
+-s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
