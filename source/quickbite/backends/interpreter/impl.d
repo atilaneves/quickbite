@@ -289,6 +289,36 @@ private struct Walker {
     // that actually owns `variable`.
     private bool[VarDeclaration] classFieldPointerWritebacks;
 
+    // Reverse lookup from a promoted `&c.inner.x` pointer's allocation id
+    // back to which class variable and (outer, inner) field-index pair share
+    // the SAME `classCells` entry's bytes -- value.md item 7 decomposition
+    // item 4 (aggregate composition), the class-receiver sibling of
+    // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
+    // `...InnerFieldIndices` above, one level of struct-field nesting only:
+    // `inner` must itself be a (non-union) struct field of a plain class
+    // local, and `x` a scalar field of `inner`. The cell view is a
+    // `NativeStruct` adopted over `classCells[variable].subRange(outerOffset,
+    // outerSize)` at the inner field index -- the same composition accessor
+    // (`NativeStruct.adopt`/`NativeStruct.field`) the struct phase's own
+    // nested-field slice already uses, just built from a plain `NativeBlock`
+    // instead of a `NativeStruct` (a `classCells` entry has no `NativeStruct`
+    // wrapper of its own -- see `classCells`'s own comment above). Populated
+    // by `promoteNestedClassStructFieldCell`, called from
+    // `addressOfExpression`'s `DotVarExp` branch alongside
+    // `promoteClassFieldCell`, mirroring how that branch already combines
+    // `promoteStructFieldCell`/`promoteNestedStructFieldCell`. Same-frame
+    // only, matching this narrow first slice: not yet duplicated into
+    // child-frame walkers, so this pointer does not yet survive being passed
+    // into another function call (a remaining follow-up, mirroring the
+    // struct/class phases' own incremental cross-frame history). Read-only
+    // in this slice: writing THROUGH this pointer (`*p = v`) is untouched
+    // and still refused by `writeLocation`'s `PtrExp` arm's existing
+    // `fieldSnapshotAllocationIds` guard, exactly as for a fresh pointer
+    // shape with no dedicated write-through helper yet.
+    private VarDeclaration[size_t] nestedClassStructFieldPointerVariables;
+    private size_t[size_t] nestedClassStructFieldPointerOuterFieldIndices;
+    private size_t[size_t] nestedClassStructFieldPointerInnerFieldIndices;
+
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
     private size_t nextLocalPointerId;
@@ -1875,10 +1905,17 @@ private struct Walker {
             // receiver a `classCells` entry when `dot`'s receiver is a plain
             // class-typed local (a no-op for a struct receiver, exactly as
             // `promoteStructFieldCell` no-ops for a class receiver).
+            // value.md item 7 decomposition item 4 (aggregate composition):
+            // `promoteNestedClassStructFieldCell` is the class-receiver
+            // sibling of `promoteNestedStructFieldCell` -- `&c.inner.x` where
+            // `inner` is a struct field of class-typed local `c` (a no-op for
+            // a struct receiver, mirroring `promoteClassFieldCell`'s own
+            // no-op for that shape).
             const id = fieldSnapshotAllocationId(dot);
             promoteStructFieldCell(dot, id);
             promoteNestedStructFieldCell(dot, id);
             promoteClassFieldCell(dot, id);
+            promoteNestedClassStructFieldCell(dot, id);
             return Value.arrayPointerValue([runExpression(dot)], id, 0);
         }
 
@@ -2773,12 +2810,36 @@ private struct Walker {
             isNativeScalarType, writeScalar;
 
         foreach (index, field; classFields(class_)) {
-            if (!isNativeScalarType(field.type))
+            if (isNativeScalarType(field.type)) {
+                const offset = fieldByteOffset(field);
+                const size = typeByteSize(field.type);
+                writeScalar(field.type, cell.bytes[offset .. offset + size], classValue.classFieldAt(index));
+                continue;
+            }
+
+            // Aggregate composition (value.md item 7 decomposition item 4):
+            // a (non-union) struct-typed field recurses one level, mirroring
+            // `writeStructCellScalarFields`'s own nested-struct-field
+            // recursion. Unlike that function's `cell` (already a
+            // `NativeStruct`), `cell` here is a plain `NativeBlock` -- a
+            // `classCells` entry has no `NativeStruct` wrapper of its own
+            // (see `classCells`'s own field comment) -- so the nested view is
+            // built directly via `NativeStruct.adopt` over the field's own
+            // byte sub-range, the same composition accessor
+            // `NativeStruct.structField` uses internally for a struct
+            // receiver.
+            auto nestedStructType = field.type.toBasetype.isTypeStruct;
+            if (nestedStructType is null || nestedStructType.sym.isUnionDeclaration !is null)
+                continue;
+
+            const nestedValue = classValue.classFieldAt(index);
+            if (!nestedValue.isStruct)
                 continue;
 
             const offset = fieldByteOffset(field);
             const size = typeByteSize(field.type);
-            writeScalar(field.type, cell.bytes[offset .. offset + size], classValue.classFieldAt(index));
+            auto nestedCell = NativeStruct.adopt(cell.subRange(offset, size), nestedStructType);
+            writeStructCellScalarFields(nestedCell, nestedValue);
         }
     }
 
@@ -2816,6 +2877,61 @@ private struct Walker {
 
         classFieldPointerVariables[id] = variable;
         classFieldPointerFieldIndices[id] = classFieldIndex(dot);
+    }
+
+    // Class-receiver sibling of `promoteNestedStructFieldCell` (value.md item
+    // 7 decomposition item 4, aggregate composition): `&c.inner.x` where
+    // `inner` is a (non-union) struct field of a plain class local `c` and
+    // `x` is a scalar field of `inner`. `dot` is the INNER `DotVarExp`
+    // (`c.inner.x`, for field `x`); its own `dot.e1` is the OUTER
+    // `DotVarExp` (`c.inner`, for field `inner`), whose OWN `e1` must be the
+    // root `VarExp` (`c`). Gives the receiver a `classCells` entry
+    // (`promoteClassCell`, same as `promoteClassFieldCell`) and records `id`
+    // -- the SAME id `addressOfExpression`'s caller already minted via
+    // `fieldSnapshotAllocationId` -- in the
+    // `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
+    // `...InnerFieldIndices` reverse lookup, so a later deref-read through
+    // this id's pointer (`nestedClassStructFieldPointerCellValue`) can find
+    // the same cell and field path. A no-op (no cell, no reverse-lookup
+    // entry) for anything outside this narrow shape: `dot.e1` not itself a
+    // `DotVarExp`, that `DotVarExp`'s own receiver not a plain `VarExp`, the
+    // receiver not class-typed, the outer field not a (non-union) struct,
+    // the inner field not `native_scalar.isNativeScalarType`, or a receiver
+    // whose boxed value isn't a class object -- every one of those leaves
+    // `promoteClassCell` itself a no-op (or is never reached), so there is
+    // no cell here to point at.
+    private void promoteNestedClassStructFieldCell(
+        imported!"dmd.expression".DotVarExp dot,
+        in size_t id,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        auto innerDot = dot.e1.isDotVarExp;
+        if (innerDot is null)
+            return;
+
+        auto var = innerDot.e1.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable is null)
+            return;
+
+        if (variable.type.toBasetype.isTypeClass is null)
+            return;
+
+        auto outerStructType = innerDot.type.toBasetype.isTypeStruct;
+        if (outerStructType is null || outerStructType.sym.isUnionDeclaration !is null)
+            return;
+
+        if (!isNativeScalarType(dot.type))
+            return;
+
+        promoteClassCell(variable);
+        if ((variable in classCells) is null)
+            return;
+
+        nestedClassStructFieldPointerVariables[id] = variable;
+        nestedClassStructFieldPointerOuterFieldIndices[id] = classFieldIndex(innerDot);
+        nestedClassStructFieldPointerInnerFieldIndices[id] = structFieldIndex(dot);
     }
 
     // Array-typed-field sibling of `promoteStructFieldCell` above (value.md
@@ -3290,6 +3406,14 @@ private struct Walker {
             // `classCells` entry, mirroring `structFieldPointerCellValue`
             // above for the struct case.
             if (classFieldPointerCellValue(value, cellValue))
+                return cellValue;
+
+            // Byte-level authority for a nested-class-struct-field pointer
+            // (value.md item 7 decomposition item 4, aggregate composition):
+            // once `&c.inner.x` has promoted a `classCells` entry, mirroring
+            // `nestedStructFieldPointerCellValue` above for the struct-
+            // receiver case.
+            if (nestedClassStructFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
             return value.pointerTarget;
@@ -9002,6 +9126,57 @@ private struct Walker {
         return true;
     }
 
+    // Class-receiver sibling of `nestedStructFieldPointerCellValue` above
+    // (value.md item 7 decomposition item 4, aggregate composition): once
+    // `&c.inner.x` has promoted a `classCells` entry, the cell's nested
+    // `NativeStruct` view -- adopted over the outer field's own byte
+    // sub-range, since a `classCells` entry is a plain `NativeBlock` rather
+    // than a `NativeStruct` (see `classCells`'s own field comment) -- is the
+    // true value at the inner field index, not the boxed snapshot
+    // `addressOfExpression` took at address-of time. Returns `false`
+    // (leaving `value` untouched) for every other pointer -- no promoted
+    // cell, or a pointer that was never a nested-class-struct-field address
+    // at all -- which keeps the existing boxed `pointerTarget` fallback at
+    // each call site.
+    private bool nestedClassStructFieldPointerCellValue(in Value pointer, out Value value) {
+        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+            return false;
+
+        auto variable = pointer.pointerAllocation in nestedClassStructFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in classCells;
+        if (cell is null)
+            return false;
+
+        auto outerFieldIndex = pointer.pointerAllocation in nestedClassStructFieldPointerOuterFieldIndices;
+        if (outerFieldIndex is null)
+            return false;
+
+        auto innerFieldIndex = pointer.pointerAllocation in nestedClassStructFieldPointerInnerFieldIndices;
+        if (innerFieldIndex is null)
+            return false;
+
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        auto classType = (*variable).type.toBasetype.isTypeClass;
+        auto outerField = classFields(classType.sym)[*outerFieldIndex];
+        auto structType = outerField.type.toBasetype.isTypeStruct;
+        if (structType is null)
+            return false;
+
+        const offset = fieldByteOffset(outerField);
+        const size = typeByteSize(outerField.type);
+        auto nestedCell = NativeStruct.adopt(cell.subRange(offset, size), structType);
+        value = readScalar(
+            nestedCell.fieldDeclaration(*innerFieldIndex).type,
+            nestedCell.field(*innerFieldIndex),
+        );
+        return true;
+    }
+
     private Value pointerTargetValue(in Value pointer) {
         if (pointer.isLocalPointer)
             return localPointerTarget(pointer);
@@ -9019,6 +9194,8 @@ private struct Walker {
         if (nestedStructFieldPointerCellValue(pointer, cellValue))
             return cellValue;
         if (classFieldPointerCellValue(pointer, cellValue))
+            return cellValue;
+        if (nestedClassStructFieldPointerCellValue(pointer, cellValue))
             return cellValue;
 
         return pointer.pointerTarget;

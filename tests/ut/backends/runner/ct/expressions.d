@@ -3972,3 +3972,50 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// value.md item 7 decomposition item 4 (aggregate composition): the class
+// sibling of `pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer`
+// one level deeper, mirroring `pointer.
+// addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but with a
+// class RECEIVER instead of a struct one -- `inner` is a (non-union) struct
+// FIELD of class `C`, and `x` is a scalar field of `inner`. Other backends
+// omitted per the omit-don't-pin convention, matching the other class
+// fixtures' own backend set.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+                int y;
+            }
+
+            class C {
+                Inner inner;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.inner.x = one();
+                c.inner.y = two();
+                int* p = &c.inner.x;
+                c.inner.x = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}

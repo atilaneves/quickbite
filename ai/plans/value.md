@@ -6116,6 +6116,117 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    until a slice addresses `writeBackByValueClassArguments`'s
    whole-value-use coverage, not just scalar-field reads/writes.
 
+   Progress 2026-07-15 (class reference identity, decomposition item 4 --
+   aggregate composition, class field that is itself a struct): the
+   smallest real divergence in item 4's own scope -- a class field that is
+   a STRUCT (as opposed to a scalar), reached one level deeper than every
+   prior class-phase slice. `&c.inner.x` where `inner` is a (non-union)
+   struct field of class `c` and `x` is a scalar field of `inner` mirrors
+   the struct phase's own nested-struct-field slice
+   (`promoteNestedStructFieldCell`/`nestedStructFieldPointerCellValue`)
+   one receiver type over. Fixture `pointer.
+   nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer.
+   {Ctfe,Interpreter,SystemLinker,LLVMJit}` in `tests/ut/backends/runner/
+   ct/expressions.d`: `struct Inner { int x; int y; } class C { Inner
+   inner; }`, `C c = new C(); c.inner.x = one(); c.inner.y = two(); int*
+   p = &c.inner.x; c.inner.x = ninetyNine(); assert(*p == 99);` (every
+   value seeded from a runtime function call) -- the direct-write/read-
+   through-pointer direction, matching `pointer.
+   classFieldWrittenDirectlyIsVisibleThroughEarlierPointer`'s own
+   direction rather than `addressOfNestedStructFieldWriteThroughUpdatesField`'s
+   write-through-pointer one. RED diagnostic confirmed on Interpreter
+   before any production change: `1 != 99` (`*p` returned the frozen
+   address-of-time snapshot instead of the post-write value). Green on
+   SystemLinker and Ctfe throughout.
+
+   Root cause: `&c.inner.x`'s `dot.e1` (`c.inner`) is itself a
+   `DotVarExp`, not a bare `VarExp`, so `promoteClassFieldCell` (which
+   requires `dot.e1.isVarExp`) no-opped -- no `classCells` entry was ever
+   promoted for `c`, so the pointer carried only its frozen boxed
+   snapshot with no reverse-lookup entry to alias through.
+
+   Fix, all in `impl.d`: (1) a new `promoteNestedClassStructFieldCell`,
+   the class-receiver sibling of `promoteNestedStructFieldCell` --
+   detects the one-level-nested shape (`dot.e1.isDotVarExp` whose own
+   `e1` is the root `VarExp`, itself class-typed, whose own field is a
+   non-union struct, whose own scalar field `x` is the target), promotes
+   (or reuses) the receiver's `classCells` entry via the existing
+   `promoteClassCell`, and records `id` -- the SAME id
+   `addressOfExpression`'s caller already mints via
+   `fieldSnapshotAllocationId` -- in a new (receiver, outer field index,
+   inner field index) reverse-lookup triple,
+   `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
+   `...InnerFieldIndices`, called from `addressOfExpression`'s
+   `DotVarExp` branch alongside the four existing promotion calls. (2)
+   `writeClassCellScalarFields` -- previously scalar-fields-only, unlike
+   its struct sibling `writeStructCellScalarFields`, which already
+   recurses into nested struct fields -- now recurses one level into
+   every (non-union) struct-typed field too: since a `classCells` entry
+   is a plain `NativeBlock` with no `NativeStruct` wrapper of its own
+   (unlike a `structCells` entry), the nested view is built directly via
+   `NativeStruct.adopt(cell.subRange(offset, size), nestedStructType)`
+   -- the same composition accessor `NativeStruct.structField` uses
+   internally for a struct receiver -- then recurses into the existing
+   `writeStructCellScalarFields`. This is what keeps the cell's nested
+   bytes current on every whole-object refresh (`promoteClassCell`'s
+   initial seed and `writeCelledLocal`'s refresh-on-every-write), so the
+   direct write `c.inner.x = ninetyNine()` (which rewrites the WHOLE
+   class object via `writeLocation`'s `DotVarExp` arm, same as any other
+   class field write) actually reaches the promoted cell's nested bytes.
+   (3) A new `nestedClassStructFieldPointerCellValue`, the class-receiver
+   sibling of `nestedStructFieldPointerCellValue`, wired into
+   `pointerTargetValue` and `runPointerExpression`'s deref-read arm
+   alongside the existing five pointer-cell checks -- resolves the same
+   reverse lookup, adopts the same `NativeStruct` view over the outer
+   field's byte sub-range (via `classFields`/`fieldByteOffset`/
+   `typeByteSize`, the same facts `classFieldPointerCellValue` already
+   reads), and reads the inner field's scalar bytes through it.
+
+   Reused the struct phase's own composition accessors exactly as
+   directed: `NativeStruct.adopt`/`.structField`/`.field` are the SAME
+   accessors the struct-receiver nested-field slice already built; no
+   new `NativeStruct`/`NativeBlock` method was added.
+
+   No §9.10 shim retired (as expected -- `writeBackByValueClassArguments`
+   protects whole-boxed-value uses, untouched by this scalar/struct-
+   field-composition read authority, same as every prior class-phase
+   slice). Scope kept deliberately narrow, matching every prior class-
+   phase slice's own bounded first-cut: (a) same-frame only --
+   `nestedClassStructFieldPointerVariables` and its two index maps are
+   NOT duplicated into child-frame walkers, so this pointer does not yet
+   survive being passed into another function call, unlike the single-
+   level `classFieldPointerVariables`, which already gained that
+   cross-frame dup in an earlier slice; (b) read-only -- writing THROUGH
+   this pointer (`*p = v`) is untouched and still refused by
+   `writeLocation`'s `PtrExp` arm's existing `fieldSnapshotAllocationIds`
+   guard, mirroring how the struct phase's OWN nested-field mechanism
+   first shipped write-through-only and grew a cross-frame/direct-write
+   follow-up later; (c) a class field that is a static array
+   (`class C { int[3] arr; }`) is untouched -- a real, separate
+   divergence (the array-typed-field sibling this note leaves for a
+   follow-up, mirroring `promoteStructArrayFieldCell`'s own role next to
+   `promoteNestedStructFieldCell`); (d) no `dropClassCell` exists yet at
+   all (unlike `dropStructCell`), so a recursively-redeclared class local
+   does not yet drop a stale `classCells`/reverse-lookup entry -- a
+   pre-existing gap this slice did not introduce and did not need to
+   close, since no fixture here exercises recursion.
+
+   Focused suites all green: ct.expressions 535/0 (5 failing as
+   expected), ct.structs 291/0, ct.exceptions 130/0, ct.cerealed 164/0 (1
+   failing as expected), ct.diagnostics 177/0, ct.pollution 3/0,
+   ct.arrays 346/0, interpreter 218/0, bin.repl 228/0, evaluator.eval
+   71/0 (all "failing as expected" counts are pre-existing `@ShouldFail`
+   characterizations, untouched). The full `bin/ut --random` was left to
+   the orchestrator per the usual long-suite handoff. Remaining
+   follow-up: a class field that is a static array (the other aggregate-
+   composition shape item 4 named); cross-frame and write-through-pointer
+   follow-ups for this nested shape, mirroring the struct phase's own
+   incremental history; `dropClassCell` (stale-cell cleanup on
+   recursive redeclaration) remains unimplemented for the whole class
+   phase, not just this slice; shim retirement itself remains deferred
+   until a slice addresses `writeBackByValueClassArguments`'s
+   whole-value-use coverage.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
