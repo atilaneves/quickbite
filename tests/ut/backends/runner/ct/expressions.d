@@ -4018,6 +4018,45 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// value.md item 7's pointer-identity memoization follow-up, the nested-field
+// sibling of `pointer.addressOfStructFieldIsStableAcrossReEvaluation` above:
+// `fieldSnapshotAllocationId` only memoizes an id per (receiver variable,
+// field index) when `dot.e1` resolves directly to a `VarExp` -- for
+// `&s.inner.x`, `dot.e1` is itself a `DotVarExp` (`s.inner`), so the
+// function always took its non-`VarExp`-receiver fresh-id fallback
+// (`++allocationCount` every evaluation), a real, previously-documented and
+// deferred gap ("the full field-PATH generalization"). SystemLinker is the
+// oracle; Ctfe/Bytecode/LLVMJit omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.addressOfNestedStructFieldIsStableAcrossReEvaluation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                S s = S(Inner(seed()));
+                int* p = &s.inner.x;
+
+                assert(p is &s.inner.x);
+                assert(*p == 7);
+            }
+        });
+    }
+}
+
 // value.md item 7's array-of-static-array follow-up (the smallest remaining
 // candidate the nested-struct-field progress note above left open):
 // `&a[i]` on a dynamic array whose element type is itself a scalar-element
@@ -4298,3 +4337,4 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+

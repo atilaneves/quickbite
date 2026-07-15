@@ -7003,6 +7003,83 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    unaffected). The full `bin/ut --random` was left to the orchestrator
    per the usual long-suite handoff.
 
+   Progress 2026-07-15 (pointer-identity memoization: `&s.inner.x`/
+   `&c.inner.x` now stable across re-evaluation): closes the "full
+   field-PATH generalization" gap several prior notes above named and
+   deferred -- `fieldSnapshotAllocationId` only memoized an id per
+   (receiver variable, field index) when `dot.e1` resolved directly to a
+   `VarExp`; a one-level-nested receiver (`dot.e1` itself a `DotVarExp`)
+   always took the non-`VarExp` fresh-id fallback, so `&s.inner.x` minted
+   a brand-new identity on every evaluation, unlike real D's stable
+   address. Checked first whether `fieldAddressAllocations` already
+   covered this (per this slice's own brief): it does for the DIRECT
+   field case (`&s.x`, `&c.x`) and for `&a[i]` (`arrayAllocations`, keyed
+   by variable with the element offset carried separately in the pointer
+   `Value`) -- both already pointer-equal across re-evaluation, confirmed
+   with transient scratch probes (discarded, not part of this commit)
+   before writing the real fixture. Only the nested-field shape diverged.
+
+   Fixture `pointer.addressOfNestedStructFieldIsStableAcrossReEvaluation.
+   {Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/
+   expressions.d`, the nested sibling of the existing `pointer.
+   addressOfStructFieldIsStableAcrossReEvaluation`: `struct Inner { int x;
+   } struct S { Inner inner; } S s = S(Inner(seed())); int* p =
+   &s.inner.x; assert(p is &s.inner.x);`. RED confirmed on Interpreter
+   before any production change: `const(Pointer)([7], 1, 0) !is
+   const(Pointer)([7], 3, 0)` -- two different allocation ids for the
+   same field. Green on SystemLinker throughout.
+
+   Fix, in `impl.d`'s `fieldSnapshotAllocationId` only: added a branch
+   that recognises the one-level-nested shape (`dot.e1.isDotVarExp` whose
+   own `e1` resolves to a plain `VarExp`) and memoizes its id per (root
+   variable, outer field index, inner field index) in a new map,
+   `nestedFieldAddressAllocations` -- the nested sibling of
+   `fieldAddressAllocations`, shared between a struct and a class root
+   variable the same way that map already is (a variable's static type
+   never changes, so the two outer-field-index spaces never collide).
+   The outer index dispatches on `receiverClassType(innerDot.e1)` exactly
+   like the existing direct-field dispatch, so the SAME branch closes the
+   gap for both `&s.inner.x` and `&c.inner.x` -- manually verified the
+   class-nested shape too (transient probe, run then discarded, not part
+   of this commit): `struct Inner { int x; } class C { Inner inner; }`,
+   `&c.inner.x is &c.inner.x`, RED before the fix (fresh ids), green
+   after, on Interpreter, matching SystemLinker throughout. `dropStructCell`/
+   `dropClassCell` both also now clear `nestedFieldAddressAllocations
+   [variable]` on a fresh rebind, mirroring their existing
+   `fieldAddressAllocations.remove(variable)` call, so a loop or
+   recursion re-declaring the same struct/class local still mints a
+   genuinely fresh id after the rebind rather than reusing the stale one.
+
+   Deliberately narrower than `fieldAddressAllocations` in one respect,
+   by choice, not oversight: `nestedFieldAddressAllocations` is NOT
+   duplicated into child-frame walkers and never merged back after a call
+   returns, so it only memoizes within a single `Walker` frame. Chosen
+   because no fixture (old or new) exercises comparing a nested-field
+   pointer minted in one frame against one minted in a different frame
+   for the same (variable, outer, inner) triple -- unlike the direct-field
+   case's own recursion-rebind fixtures (Finding 3/4 above), which drove
+   the cross-frame dup+merge treatment `fieldAddressAllocations` already
+   has. Extending that same cross-frame treatment here would additionally
+   require adding a conflict-guard to the existing `mergeNestedStruct
+   FieldPointerVariableMaps`/`mergeNestedClassStructFieldPointerVariable
+   Maps` (both currently a plain union merge, correct only because ids
+   were never memoized -- their own doc comments say so) -- a second,
+   compounding change with no fixture to drive or verify it. Left as a
+   named follow-up rather than attempted speculatively.
+
+   No `interpreter.md` §9.10 shim is retired by this slice: it only
+   changes which allocation id a nested-field address-of returns, not any
+   shim's own execution path.
+
+   Focused suites all green: ct.expressions 561/0 (5 failing as expected,
+   unchanged), ct.structs 297/0, ct.arrays 346/0, ct.exceptions 130/0,
+   ct.control_flow 336/0, interpreter 218/0, bin.repl 228/0, evaluator.eval
+   71/0. The full `bin/ut --random` was left to the orchestrator per the
+   usual long-suite handoff. Remaining follow-up: cross-frame identity for
+   `&s.inner.x`/`&c.inner.x` (comparing ids minted in different frames for
+   the same nested field) is unproven, as is deeper nesting (2+ levels, in
+   any shape) and full field-PATH generalization beyond one level.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

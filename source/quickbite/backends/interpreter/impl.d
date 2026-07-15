@@ -399,6 +399,28 @@ private struct Walker {
     // or not) is also recorded in `fieldSnapshotAllocationIds` so
     // `writeLocation`'s `PtrExp` path can refuse writing through it.
     private size_t[size_t][VarDeclaration] fieldAddressAllocations;
+    // Per-(root variable, outer field index, inner field index) memo for
+    // `&s.inner.x`/`&c.inner.x` allocation ids -- the one-level-nested
+    // sibling of `fieldAddressAllocations` above (value.md item 7's
+    // pointer-identity memoization follow-up): repeated address-of
+    // evaluations of the same nested field, WITHIN THE SAME WALKER FRAME,
+    // return the same identity. Unlike `fieldAddressAllocations`, this map
+    // is deliberately NOT duplicated into child-frame walkers (every
+    // function-call site that spawns a `Walker child` leaves it at its
+    // default-init empty state) and never merged back after a call
+    // returns -- a genuinely narrower scope than the direct-field memo,
+    // chosen because no fixture (old or new) exercises cross-frame nested-
+    // field pointer-identity comparison, unlike the direct-field case's own
+    // recursion-rebind fixtures. A `&s.inner.x` taken inside a callee still
+    // gets its own internally-consistent id (repeated evaluations within
+    // that SAME callee invocation compare equal), and a caller's own id is
+    // never disturbed by an unrelated call in between; only comparing an id
+    // minted in one frame against one minted in a DIFFERENT frame for the
+    // exact same (variable, outer, inner) triple -- e.g. across a recursive
+    // rebind, mirroring `fieldAddressAllocations`' own Finding-3 history --
+    // is unproven and left as a follow-up if such a fixture is ever
+    // proposed.
+    private size_t[size_t][size_t][VarDeclaration] nestedFieldAddressAllocations;
     private bool[size_t] fieldSnapshotAllocationIds;
     private size_t allocationCount;
     private size_t lastGCArrayUsedAllocation;
@@ -1988,10 +2010,16 @@ private struct Walker {
     }
 
     // Stable allocation id for `&s.field`, memoized per (receiver variable,
-    // field index) when the receiver resolves to a plain `VarExp`; a
-    // receiver that cannot be resolved to a variable (e.g. `&call().field`)
-    // gets a fresh id every time. Either way the id is recorded as a field
-    // snapshot so writeLocation's PtrExp path can refuse writing through it.
+    // field index) when the receiver resolves to a plain `VarExp`. A
+    // one-level-nested receiver (`&s.inner.x`/`&c.inner.x`, `dot.e1` itself a
+    // `DotVarExp` whose own `e1` resolves to a plain `VarExp`) is memoized
+    // too, per (root variable, outer field index, inner field index) via
+    // `nestedFieldAddressAllocations` (value.md item 7's pointer-identity
+    // memoization follow-up) -- see that field's own comment for this
+    // memo's narrower, same-frame-only scope. Any other receiver shape
+    // (e.g. `&call().field`, or two or more levels of nesting) gets a fresh
+    // id every time. Either way the id is recorded as a field snapshot so
+    // writeLocation's PtrExp path can refuse writing through it.
     // A class-typed receiver's field index comes from `classFieldIndex`, not
     // `structFieldIndex` (value.md item 7's class phase starts): the latter
     // resolves the receiver's type via `receiverStructType`, which returns
@@ -2000,27 +2028,61 @@ private struct Walker {
     // any class-cell machinery could even run. `variable`'s static type
     // never changes, so dispatching once here on the receiver's own type is
     // safe -- the two field-index spaces never collide in
-    // `fieldAddressAllocations[variable]`, which is keyed per-variable.
+    // `fieldAddressAllocations[variable]`, which is keyed per-variable (and,
+    // for the nested case, `nestedFieldAddressAllocations[rootVariable]`).
     private size_t fieldSnapshotAllocationId(
         imported!"dmd.expression".DotVarExp dot,
     ) {
         auto var = dot.e1.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
-        if (variable is null) {
+        if (variable !is null) {
+            const fieldIndex = receiverClassType(dot.e1) !is null
+                ? classFieldIndex(dot)
+                : structFieldIndex(dot);
+            if (auto forReceiver = variable in fieldAddressAllocations)
+                if (auto id = fieldIndex in *forReceiver)
+                    return *id;
+
             const id = ++allocationCount;
+            fieldAddressAllocations[variable][fieldIndex] = id;
             fieldSnapshotAllocationIds[id] = true;
             return id;
         }
 
-        const fieldIndex = receiverClassType(dot.e1) !is null
-            ? classFieldIndex(dot)
-            : structFieldIndex(dot);
-        if (auto forReceiver = variable in fieldAddressAllocations)
-            if (auto id = fieldIndex in *forReceiver)
-                return *id;
+        // One-level-nested receiver (`&s.inner.x`/`&c.inner.x`): `dot.e1` is
+        // itself a `DotVarExp` (`s.inner`/`c.inner`) whose own `e1` resolves
+        // to a plain local. Memoized per (root variable, outer field index,
+        // inner field index) via `nestedFieldAddressAllocations` -- the
+        // nested-field sibling of `fieldAddressAllocations` above, closing
+        // the "full field-PATH generalization" gap those maps' own doc
+        // comments named: repeated `&s.inner.x` evaluations now return the
+        // same identity, matching real addresses, exactly as the direct-field
+        // case already does. Shared between a struct and a class root
+        // variable the same way `fieldAddressAllocations` is (a variable's
+        // static type never changes, so the two outer-field-index spaces
+        // never collide).
+        if (auto innerDot = dot.e1.isDotVarExp) {
+            auto rootVar = innerDot.e1.isVarExp;
+            auto rootVariable = rootVar is null ? null : rootVar.var.isVarDeclaration;
+            if (rootVariable !is null) {
+                const outerIndex = receiverClassType(innerDot.e1) !is null
+                    ? classFieldIndex(innerDot)
+                    : structFieldIndex(innerDot);
+                const innerIndex = structFieldIndex(dot);
+
+                if (auto forOuter = rootVariable in nestedFieldAddressAllocations)
+                    if (auto forInner = outerIndex in *forOuter)
+                        if (auto id = innerIndex in *forInner)
+                            return *id;
+
+                const id = ++allocationCount;
+                nestedFieldAddressAllocations[rootVariable][outerIndex][innerIndex] = id;
+                fieldSnapshotAllocationIds[id] = true;
+                return id;
+            }
+        }
 
         const id = ++allocationCount;
-        fieldAddressAllocations[variable][fieldIndex] = id;
         fieldSnapshotAllocationIds[id] = true;
         return id;
     }
@@ -3226,6 +3288,10 @@ private struct Walker {
     // recursive call that re-declares `variable`) still resolves -- via
     // `structFieldPointerVariables`, re-populated under the SAME id -- into
     // whatever cell THIS binding promotes, instead of correctly declining.
+    // Also drops `variable`'s `nestedFieldAddressAllocations` entry (value.md
+    // item 7's pointer-identity memoization follow-up), the nested-field
+    // sibling of the `fieldAddressAllocations` drop above, for the identical
+    // reason.
     private void dropStructCell(VarDeclaration variable) {
         structCells.remove(variable);
 
@@ -3270,6 +3336,7 @@ private struct Walker {
         }
 
         fieldAddressAllocations.remove(variable);
+        nestedFieldAddressAllocations.remove(variable);
     }
 
     // Class sibling of `dropStructCell` above (value.md item 7 class phase:
@@ -3298,7 +3365,8 @@ private struct Walker {
     // clears it via the accompanying `dropStructCell` call -- removing it
     // again here is a harmless no-op today, kept for parity so this function
     // stays correct on its own if a future call site ever calls it without
-    // `dropStructCell`.
+    // `dropStructCell`. Same reasoning for the `nestedFieldAddressAllocations`
+    // drop below.
     private void dropClassCell(VarDeclaration variable) {
         classCells.remove(variable);
 
@@ -3334,6 +3402,7 @@ private struct Walker {
         }
 
         fieldAddressAllocations.remove(variable);
+        nestedFieldAddressAllocations.remove(variable);
     }
 
     // Array sibling of `dropStructCell` above (value.md item 7 final review,
