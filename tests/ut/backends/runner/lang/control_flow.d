@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.control_flow;
+module ut.backends.runner.lang.control_flow;
 
 
 import ut.backends;

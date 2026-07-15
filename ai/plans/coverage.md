@@ -190,7 +190,7 @@ The loop:
 2. Extract its testable normative claims — statements of the form
    "X evaluates to / converts to / is an error" about computation,
    verified against the `SystemLinker` oracle. Claims that need the
-   runtime environment (libc/OS) belong in `rt/`; record any that no
+   runtime environment (libc/OS) belong in `sys/`; record any that no
    current backend can yet run in the checklist as deferred.
 3. For each claim, grep the corpus (`tests/ut/backends/runner/`) for
    an existing test. Misses become proposed fixtures (approval gate,
@@ -232,7 +232,7 @@ or mutation work flags as thin (e.g. `arrayop`, `switch`, `bitops`,
 
 ### Where tests go
 
-| Feature area | File (under `tests/ut/backends/runner/ct/`) |
+| Feature area | File (under `tests/ut/backends/runner/lang/`) |
 |---|---|
 | switch / loops / foreach / goto | `control_flow.d` |
 | structs, operator overloading | `structs.d` |
@@ -243,7 +243,7 @@ or mutation work flags as thin (e.g. `arrayop`, `switch`, `bitops`,
 | math intrinsics | `math.d` |
 | boolean / short-circuit logic | `logic.d` |
 | assert/diagnostic messages | `diagnostics.d` |
-| needs the runtime environment (libc/OS) | `../rt/` (today only `cstdlib`) |
+| needs the runtime environment (libc/OS) | `../sys/` (today only `cstdlib`) |
 | struct/null value round-trip | REPL driver, `tests/ut/bin/repl.d` |
 
 The fixture helper is `runBackendSourceFixtureTests!backend(q{...})`

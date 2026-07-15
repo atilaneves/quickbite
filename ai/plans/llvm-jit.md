@@ -3,7 +3,7 @@
 ## Current state / next action
 
 The backend works and is promoted alongside `SystemLinker` across the whole
-`SystemLinker`-oracle matrix, including `ct/archive.d` archive-backed imports.
+`SystemLinker`-oracle matrix, including `lang/archive.d` archive-backed imports.
 Archive link files are split by shape: shared images are still `dlopen`'d into
 the process, while static archives are attached to the ORC object layer with
 `LLVMOrcCreateStaticLibrarySearchGeneratorForPath` and lazily searched for
@@ -50,7 +50,7 @@ pipeline can give, the answer is a new backend (e.g. LLVM JIT in the
 is not touched except to extract the shared codegen path; its loader is
 permanent.
 
-POC success criterion: an `rt/` fixture that **passes** and one whose
+POC success criterion: an `sys/` fixture that **passes** and one whose
 `assert` **fails with the SystemLinker-matching message** both run
 through `LLVMJit`, and the per-test latency is measurably below
 SystemLinker's. The eval/`Value` path is out of scope (slice-4 territory,
@@ -278,19 +278,19 @@ correct sum — allocation and a mid-test collection both behave.
 test modules via `import ut.backends;`, no change needed in
 `tests/ut/backends/package.d`). It is promoted alongside `SystemLinker` (its
 single behaviour oracle) — pre-approved per `AGENTS.md` — in the
-`@Tags(backend.stringof)` `rt/` block carrying it, so `LLVMJit` is opt-out-able
+`@Tags(backend.stringof)` `sys/` block carrying it, so `LLVMJit` is opt-out-able
 exactly like `SystemLinker`.
 
-The original four promotion targets (`rt/{control_flow,exceptions,expressions,
+The original four promotion targets (`sys/{control_flow,exceptions,expressions,
 logic}.d`) no longer exist: master's single-oracle migration
-(`ai/plans/single-oracle.md`) moved every language-surface `rt/` module into
-`ct/`, redefining `rt/` as behaviour that needs the runtime environment.
-`LLVMJit` is an `rt/` backend (oracle = `SystemLinker`) and must not appear in
-`ct/` blocks (**superseded in Step 4 — this was over-conservative; `LLVMJit`
-belongs in `ct/` wherever `SystemLinker` does**), so after the merge it is
-promoted into the only surviving `rt/` SystemLinker-oracle block:
+(`ai/plans/single-oracle.md`) moved every language-surface `sys/` module into
+`lang/`, redefining `sys/` as behaviour that needs the runtime environment.
+`LLVMJit` is an `sys/` backend (oracle = `SystemLinker`) and must not appear in
+`lang/` blocks (**superseded in Step 4 — this was over-conservative; `LLVMJit`
+belongs in `lang/` wherever `SystemLinker` does**), so after the merge it is
+promoted into the only surviving `sys/` SystemLinker-oracle block:
 
-- `tests/ut/backends/runner/rt/cstdlib.d` — the `malloc.` block (a real
+- `tests/ut/backends/runner/sys/cstdlib.d` — the `malloc.` block (a real
   runtime libc `malloc` call through the in-process JIT).
 
 The Step 1 gate proofs in `tests/ut/backends/runner/rt/llvm_jit.d`
@@ -320,8 +320,8 @@ stable. Per-run SystemLinker timings swing up to ~50% under `powersave`
 absolute numbers are noisy, not the speedup.
 
 Fixtures: (0) passing `twice()` int assert (the Step 1 passing fixture);
-(1) `cast(float)` precision (`rt/expressions.d`); (2) delegate `funcptr`
-(`rt/expressions.d`); (3) a GC-allocating fixture (`int[] ~= …` 1000×, read
+(1) `cast(float)` precision (`sys/expressions.d`); (2) delegate `funcptr`
+(`sys/expressions.d`); (3) a GC-allocating fixture (`int[] ~= …` 1000×, read
 back) — the deferred GC probe.
 
 Median per-test latency (two runs; governor `powersave`, LLVM 22):
@@ -361,19 +361,19 @@ expected failures), `tests/example.d`, `bin/bench`, `bin/qb`, and the other
 ("Promoting an already-existing backend-matrix test to another backend is
 pre-approved when the test is backed by that oracle"). `LLVMJit` reuses
 `SystemLinker`'s object production verbatim and differs only in the load step,
-so in principle it should pass everything `SystemLinker` passes. The `ct/`/`rt/`
+so in principle it should pass everything `SystemLinker` passes. The `lang/`/`sys/`
 split is by *what the behaviour needs*, not by backend — `SystemLinker` (also a
-native runtime backend) appears throughout `ct/`, so `LLVMJit` belongs there
-too; the earlier "LLVMJit must not appear in `ct/` blocks" note from Step 2 was
+native runtime backend) appears throughout `lang/`, so `LLVMJit` belongs there
+too; the earlier "LLVMJit must not appear in `lang/` blocks" note from Step 2 was
 over-conservative and is superseded here.
 
 **Outcome.** The cumulative-segfault blocker is **fixed** (see "The fork fix"
 below): `LLVMJit` is now promoted alongside `SystemLinker` in every
-SystemLinker-oracle matrix block across `ct/{arrays,cerealed,control_flow,
+SystemLinker-oracle matrix block across `lang/{arrays,cerealed,control_flow,
 diagnostics,exceptions,expressions,integrals,logic,math,pollution,structs}.d`
 and `results.d` — including the `AliasSeq!(SystemLinker)`-only characterization
 blocks, whose assertion/diagnostic text `LLVMJit` reproduces byte-for-byte. Two
-sets are *not* promoted: `ct/archive.d` (structurally unsupported, below) and
+sets are *not* promoted: `lang/archive.d` (structurally unsupported, below) and
 **5 array fixtures** that hit a second, distinct backend defect (the duplicate-
 undefined-symbol issue, below). Result: `bin/ut @LLVMJit` is 395/0; the full
 `bin/ut` is 2021/0 and **stable** across `--random` (5 runs) and both historical
@@ -426,11 +426,11 @@ Five array fixtures crash their JIT child even after the fork fix, due to a
 previously masked by the cumulative segfault). They are excluded from `LLVMJit`
 (each block carries a one-line comment pointing here):
 
-- `ct/arrays.d`: `dynamicArray.lengthAssignmentResizesArray`,
+- `lang/arrays.d`: `dynamicArray.lengthAssignmentResizesArray`,
   `dynamicArray.nestedSliceAppendKeepsOriginalArrayTail`,
   `dynamicArray.jaggedRowsKeepIndependentLengths`
-- `ct/cerealed.d`: `projects.cerealed.protocolUnitLengthFieldRoundTrip`
-- `ct/control_flow.d`: `foreach.reverseIntArrayVisitsBackToFront`
+- `lang/cerealed.d`: `projects.cerealed.protocolUnitLengthFieldRoundTrip`
+- `lang/control_flow.d`: `foreach.reverseIntArrayVisitsBackToFront`
 
 **Root cause** (gdb on the built binary + `readelf`/`objdump` of the emitted
 objects): under accumulated process-global DMD state, dmd emits the rod object
@@ -612,8 +612,8 @@ not one in two ways:
    clause is intentionally not met". Since `bin/bench.sh` builds the host
    with LDC (commit `84650dbe`), the standard benchmark path cannot measure
    the backend whose whole point is latency.
-2. **Two `rt/` matrix gaps.** ✅ RESOLVED by slice 1: `malloc.pointerRoundTrip`
-   (`rt/cstdlib.d`) and the inline-asm rejection pin (`rt/inline_asm.d`) both
+2. **Two `sys/` matrix gaps.** ✅ RESOLVED by slice 1: `malloc.pointerRoundTrip`
+   (`sys/cstdlib.d`) and the inline-asm rejection pin (`rt/inline_asm.d`) both
    run `LLVMJit` now. (Broader matrix gaps found later are slice E of the
    critique execution plan.)
 
@@ -655,7 +655,7 @@ automatically once the runner is constructed.
 
 ### Slice 1: `bin/ut` matrix parity (pre-approved promotions) ✅ DONE
 
-Both promotions are in the tree: `malloc.pointerRoundTrip` (`rt/cstdlib.d`)
+Both promotions are in the tree: `malloc.pointerRoundTrip` (`sys/cstdlib.d`)
 runs `AliasSeq!(Interpreter, SystemLinker, LLVMJit)` and the inline-asm
 rejection pin (`rt/inline_asm.d`) runs `AliasSeq!(SystemLinker, LLVMJit)`
 with the shared-codegen comment.
@@ -818,7 +818,7 @@ both worked around in `orc/elf.d` and neither yet filed.
 
 ## Success criteria
 
-- Every `SystemLinker`-oracle matrix block in `ct/` and `rt/` includes
+- Every `SystemLinker`-oracle matrix block in `lang/` and `sys/` includes
   `LLVMJit`.
 - LDC bench: `llvmjit` in the default backend set, `-b llvmjit` accepted,
   timed rows with green self-check in both corpus and `--dub` modes.
@@ -968,7 +968,7 @@ unittest {
   host also exports the symbol; under archive-vs-host version skew the
   backends could diverge. The oracle pin below is **added now** (it asserts
   backend agreement, not a winner, so it is evidence-gathering rather than a
-  behaviour change — scaffolding per `ct/archive.d`'s archive/dep-image build
+  behaviour change — scaffolding per `lang/archive.d`'s archive/dep-image build
   pattern). **STOP if it is red**: that means the backends already disagree
   and this watch item graduates to a defect needing its own design.
 
@@ -1328,18 +1328,18 @@ link never goes through.
 **Work** (all oracle-backed, pre-approved per `AGENTS.md`):
 
 1. Add `LLVMJit` to the uncommented SystemLinker-bearing blocks:
-   `ct/structs.d` (`tupleofForeachRefReadsAndWritesFields`,
+   `lang/structs.d` (`tupleofForeachRefReadsAndWritesFields`,
    `templatedConstructorPreservesDynamicArrayField`,
-   `voidInitialisedFieldSliceAssignment`), `ct/arrays.d`
-   (`pointer.indexAssignmentWritesArrayStorage`), `ct/expressions.d`
-   (`struct.defaultInitPreservesExplicitFieldInitializers`), `rt/cstdlib.d`
-   (`strlen.localBuffer`), `rt/file.d` (the whole
+   `voidInitialisedFieldSliceAssignment`), `lang/arrays.d`
+   (`pointer.indexAssignmentWritesArrayStorage`), `lang/expressions.d`
+   (`struct.defaultInitPreservesExplicitFieldInitializers`), `sys/cstdlib.d`
+   (`strlen.localBuffer`), `sys/file.d` (the whole
    `AliasSeq!(Interpreter, SystemLinker)` block), and the four consecutive
-   "Oops" diagnostic blocks in `ct/diagnostics.d` that omit it while the
+   "Oops" diagnostic blocks in `lang/diagnostics.d` that omit it while the
    adjacent `refParameterOops` block includes it:
 
 ```d
-// ct/diagnostics.d — match the adjacent refParameterOops block:
+// lang/diagnostics.d — match the adjacent refParameterOops block:
 static foreach (backend; AliasSeq!(
     Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker, LLVMJit,
 )) {
@@ -1358,7 +1358,7 @@ static foreach (backend; AliasSeq!(Interpreter, LLVMJit)) {
    failing fixture and the message diff against the oracle before attempting
    a fix; do not exclude-and-comment to get green without approval. Any block
    that turns out to be *deliberately* excluded gets a one-line comment
-   pointing here (`ct/math.d`'s pow block shows the convention).
+   pointing here (`lang/math.d`'s pow block shows the convention).
 
 **Verify:** standard gate.
 

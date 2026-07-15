@@ -115,7 +115,7 @@ levers exist (verified empirically):
 
   ```sh
   bin/ut "ut.backends.evaluator.eval.literal.SystemLinker" \
-         "ut.backends.runner.rt.concurrency.concurrency.thisTid.SystemLinker"
+         "ut.backends.runner.sys.concurrency.concurrency.thisTid.SystemLinker"
   ```
 
 - `tests/ut/bin/repl.d` tests (the `map!`/`filter!`/`iota` REPL evals)
@@ -144,7 +144,7 @@ comes from.
 
 Per AGENTS.md, a test design goes to the user for approval before any
 fix. Shape it from rung 0's diagnosed escape, in the mould of
-`tests/ut/backends/runner/ct/pollution.d` (the existing
+`tests/ut/backends/runner/lang/pollution.d` (the existing
 stale-parse-ordering regression test): parse a snippet crafted to
 produce the escaping shape, then compile a second fixture whose link
 must not adopt it — asserted either end-to-end (the link succeeds and

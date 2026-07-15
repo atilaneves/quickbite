@@ -45,9 +45,8 @@ Stop and wait for approval before adding or modifying any test. `SystemLinker`
 (compiled D) is the single behaviour oracle for every backend except `Ctfe`
 (`ai/plans/single-oracle.md`). Promoting an already-existing backend-matrix
 test to another backend is pre-approved when the test is backed by that oracle.
-`lang/` (currently `ct/` — rename pending in a later step of this reorg) holds
-the hermetic language surface: behaviour that needs nothing from the host.
-`sys/` (currently `rt/`) holds behaviour that needs the runtime environment
+`lang/` holds the hermetic language surface: behaviour that needs nothing from
+the host. `sys/` holds behaviour that needs the runtime environment
 (libc/OS — today `cstdlib`, `file`, `random`, `concurrency`). The directory
 criterion is what the behaviour *needs from the host*, never whether `Ctfe`
 can execute it: CTFE-expressibility is a per-backend capability that belongs

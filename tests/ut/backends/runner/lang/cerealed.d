@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.cerealed;
+module ut.backends.runner.lang.cerealed;
 
 
 import ut.backends;

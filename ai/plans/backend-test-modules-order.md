@@ -68,18 +68,18 @@ needs the normal test-approval stop.
 | Order | Difficulty | Module |
 | ---: | ---: | --- |
 | 1 | 3.0 | `tests/ut/backends/evaluator/eval.d` |
-| 2 | 3.5 | `tests/ut/backends/runner/rt/cstdlib.d` |
-| 3 | 4.0 | `tests/ut/backends/runner/ct/integrals.d` |
-| 4 | 5.0 | `tests/ut/backends/runner/ct/logic.d` |
+| 2 | 3.5 | `tests/ut/backends/runner/sys/cstdlib.d` |
+| 3 | 4.0 | `tests/ut/backends/runner/lang/integrals.d` |
+| 4 | 5.0 | `tests/ut/backends/runner/lang/logic.d` |
 | 5 | 5.5 | `tests/ut/backends/runner/results.d` |
-| 6 | 6.5 | `tests/ut/backends/runner/ct/diagnostics.d` |
-| 7 | 7.0 | `tests/ut/backends/runner/ct/math.d` |
-| 8 | 8.0 | `tests/ut/backends/runner/ct/arrays.d` |
-| 9 | 8.5 | `tests/ut/backends/runner/ct/structs.d` |
-| 10 | 9.0 | `tests/ut/backends/runner/ct/control_flow.d` |
-| 11 | 9.5 | `tests/ut/backends/runner/ct/exceptions.d` |
-| 12 | 10.0 | `tests/ut/backends/runner/ct/expressions.d` |
-| 13 | 10.0 | `tests/ut/backends/runner/ct/cerealed.d` |
+| 6 | 6.5 | `tests/ut/backends/runner/lang/diagnostics.d` |
+| 7 | 7.0 | `tests/ut/backends/runner/lang/math.d` |
+| 8 | 8.0 | `tests/ut/backends/runner/lang/arrays.d` |
+| 9 | 8.5 | `tests/ut/backends/runner/lang/structs.d` |
+| 10 | 9.0 | `tests/ut/backends/runner/lang/control_flow.d` |
+| 11 | 9.5 | `tests/ut/backends/runner/lang/exceptions.d` |
+| 12 | 10.0 | `tests/ut/backends/runner/lang/expressions.d` |
+| 13 | 10.0 | `tests/ut/backends/runner/lang/cerealed.d` |
 | 14 | 10.5 | `tests/ut/bin/repl.d` |
 
 Re-graded 2026-06-15 against the current checkout. The order still holds, and
@@ -208,7 +208,7 @@ shared `Value` struct — `value.md` remaining-work item 3.)
 
 ## Staleness note (2026-07-06)
 
-Three `ct/` modules postdate the last grading and are absent from the table:
+Three `lang/` modules postdate the last grading and are absent from the table:
 `archive.d` (static-archive linking; infrastructure more than language
 surface), `pollution.d` (module-isolation/scapegoat-root pollution;
 infrastructure), and `imports.d` (import resolution). Grade or explicitly

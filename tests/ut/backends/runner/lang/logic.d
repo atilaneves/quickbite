@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.logic;
+module ut.backends.runner.lang.logic;
 
 
 import ut.backends;

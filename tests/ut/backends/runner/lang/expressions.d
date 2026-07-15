@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.expressions;
+module ut.backends.runner.lang.expressions;
 
 
 import ut.backends;

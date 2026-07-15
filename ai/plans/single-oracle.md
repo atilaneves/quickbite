@@ -90,11 +90,9 @@ The "expressible as compile-time-checkable behaviour" wording in the
 `ct/`/`rt/` section above is superseded. The directory criterion is now
 *what the behaviour needs from the host*, not whether `Ctfe` can execute
 it — CTFE-expressibility is a per-backend matrix capability, not a
-directory boundary. `lang/` (renaming `ct/`) holds the hermetic language
-surface (no host libc/OS); `sys/` (renaming `rt/`) holds behaviour that
-needs the host environment. The rename itself lands as a later step of
-`test-taxonomy-reorg-20260715`; this section documents the criterion that
-motivates it.
+directory boundary. `lang/` (renamed from `ct/`) holds the hermetic
+language surface (no host libc/OS); `sys/` (renamed from `rt/`) holds
+behaviour that needs the host environment.
 
 The backend list for a `lang/`/`sys/` fixture is now `Matrix!(...)`
 (`tests/ut/backends/package.d`): `LangBackends`/`SysBackends` by default,

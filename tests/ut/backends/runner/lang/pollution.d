@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.pollution;
+module ut.backends.runner.lang.pollution;
 
 
 import ut.backends;

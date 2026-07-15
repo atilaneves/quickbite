@@ -128,7 +128,7 @@ exactly them.
   apply to the slice-4 eval path, where cell N+1 depends on process
   state mutated by cell N: it is runner-path hardening only.
 - **FFI-bridge design tests** (added after the slice-3 enumeration):
-  rt/cstdlib.d's `noSource`/bridge blocks encode interpreter-backend
+  sys/cstdlib.d's `noSource`/bridge blocks encode interpreter-backend
   expectations; compiled code would pass those fixtures, so SystemLinker
   variants belong with any future FFI-bridge work, not the matrix sweep.
 
@@ -186,7 +186,7 @@ export (`||`/`&&` asserts, explicit-message asserts, plain
 
 Another exposing case from the coverage stream (2026-06-12):
 `evaluatesRuntimePowFloatInputs` in
-`tests/ut/backends/runner/ct/math.d` — `std.math` `pow!(float, float)`
+`tests/ut/backends/runner/lang/math.d` — `std.math` `pow!(float, float)`
 is not exported by libphobos2.so, so the fixture links solo but fails
 under the full suite once an earlier test owns the instance. The block
 omits `SystemLinker` until instance ownership is solved; re-add it
@@ -755,7 +755,7 @@ Slices 2 and 3 are designed to run as **concurrent agent sessions**:
   and `dmd-backend-slice3-expectations`.
 - Their file sets are disjoint by the slice-3 rule (slice 2 owns
   system_linker.d, compiler.d, tests/ut/backends/package.d,
-  benchmarks/cli.d; slice 3 owns tests/ut/backends/runner/ct/*), so
+  benchmarks/cli.d; slice 3 owns tests/ut/backends/runner/lang/*), so
   merges are trivial. If slice 3 lands new matrix blocks first, slice 2
   rebases and gets a stronger gate for free.
 - The slice-2 spike is throwaway: keep it in an untracked scratch dir
@@ -950,7 +950,7 @@ bin/ut @SystemLinker                # just the native-backend matrix
 - `source/quickbite/frontend/compiler.d` — parse cache, `initializeDmdState`,
   `allInst=true` at :178
 - `source/quickbite/frontend/util.d` — index-based unittest walk
-- `tests/ut/backends/runner/ct/pollution.d` — the lesson-13 exposing
+- `tests/ut/backends/runner/lang/pollution.d` — the lesson-13 exposing
   test (graduated spike scenario)
 - `source/quickbite/backends/evaluator.d` — the live Evaluator interface
   (slice 4)
