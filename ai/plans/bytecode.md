@@ -5692,3 +5692,11 @@ replaying seed `1923927317` reproduced the recorded signal 11 only after the
 promoted row and multiple subsequent
 struct matrices; a focused sequence from that row through the crash-boundary
 matrix passed, so no causal link to commit `1ae75308` was established.
+
+`pointer.refTernaryReturnLowersToAddressOfCall` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row passed on
+the rebased upstream at `dd977275`, confirming the existing ref-return call
+and conditional-pointer paths already preserve the selected caller lvalue.
+No production change was needed. This does not add assignment through a
+ternary ref return, member ref returns, or broader ref-return lowering.

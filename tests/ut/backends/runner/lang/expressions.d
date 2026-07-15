@@ -2041,7 +2041,7 @@ static foreach (backend; Matrix!()) {
 // A ref-returning ternary lowers to `*(cond ? &a : &fallback(b))`, so even
 // reading the call as an rvalue evaluates AddrExp(CallExp).  phobos'
 // `theAllocator` (`!p.isNull() ? p : setupThreadAllocator()`) is this shape.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.refTernaryReturnLowersToAddressOfCall." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
