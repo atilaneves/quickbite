@@ -5964,3 +5964,17 @@ Verification: passing baseline `ninja bin/ut` and `bin/ut --random` (seed
 `3491366481`), then the focused Bytecode row and final `ninja bin/ut` passed
 after promotion. Final `bin/ut --random` passed with seed `2435388898` (3409
 tests, 0 failed, 6/6 failing as expected).
+
+`pointer.nestedFunctionArrayRebindIsVisibleThroughParentCell` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row first crashed because a
+direct nested-function call left its hidden caller-frame context zero, then
+returned the stale value because rebinding its loaded captured-array descriptor
+did not write that descriptor back. Direct nested calls now receive the current
+frame context, and captured dynamic-array descriptors store back through that
+context after mutation. This does not add nested-function append, slice-view
+preservation, or broader captured-cell reconciliation. Verification: passing
+baseline `ninja bin/ut` and `bin/ut --random` (seed `1306247939`), focused
+Bytecode red then green, and final `ninja bin/ut`.
+Final `bin/ut --random` passed with seed `383017829` (3410 tests, 0 failed,
+6/6 failing as expected).

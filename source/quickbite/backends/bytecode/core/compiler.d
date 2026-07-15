@@ -2297,6 +2297,9 @@ private struct Compiler {
                                 offset,
                                 dynamicArrayElementType(declaration.type),
                             );
+                            result.writeBackThroughFrame = true;
+                            result.frameIndexOffset =
+                                capturedFrameIndex(*captured);
                             return result;
                         }
 
@@ -7318,6 +7321,14 @@ private struct Compiler {
     private void writeBackDynamicArrayDescriptor(
         in DynamicArrayLocal descriptor,
     ) {
+        if (descriptor.writeBackThroughFrame)
+            _code ~= Instruction(
+                Op.frameStore,
+                descriptor.offset,
+                descriptor.frameIndexOffset,
+                cast(ushort) sliceDescriptorSize,
+            );
+
         if (!descriptor.writeBackThroughPointer)
             return;
 
@@ -8306,6 +8317,14 @@ private struct Compiler {
                 classReceiver.offset,
                 cast(ushort) size_t.sizeof,
             );
+        }
+
+        if (layout.hasNestedContext) {
+            const context = cast(ushort)
+                (argumentArea + layout.nestedContextOffset);
+            _code ~= Instruction(Op.frameBaseIndex, context);
+            const one = compileSizeConstant(1);
+            _code ~= Instruction(Op.addInt8, context, context, one);
         }
 
         size_t nextArgumentIndex;
@@ -11179,6 +11198,8 @@ private struct DynamicArrayLocal {
     bool elementIsArray;
     bool writeBackThroughPointer;
     ushort pointerOffset;
+    bool writeBackThroughFrame;
+    ushort frameIndexOffset;
     bool isStaticArrayView;
     ushort staticArrayOffset;
 }

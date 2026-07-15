@@ -3427,7 +3427,7 @@ static foreach (backend; Matrix!()) {
 // parent's stale cell kept answering `a[0]` with the pre-call value even
 // though the boxed mirror was correctly refreshed. SystemLinker is the
 // oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.nestedFunctionArrayRebindIsVisibleThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
