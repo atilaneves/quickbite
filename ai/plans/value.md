@@ -7550,6 +7550,95 @@ the first-member side, matching the scalar sibling scope
 cell PROMOTION (`&u.<field>`) for a union with a non-scalar member is
 still declined entirely by `promoteStructCell`'s guard, unchanged.
 
+Progress 2026-07-16 (array-element/nested-field composition: `&a[i].inner.x`
+now gets a native cell): probed the untried COMPOSITION the array-element
+(`ec5c794a`) and nested-struct-field (`39881488`) slices each left named --
+a nested struct field OF an array-of-struct element -- against the
+`Interpreter`/`SystemLinker` oracle pair. Confirmed a real divergence: RED
+on `Interpreter`, green on `SystemLinker`.
+
+Fixture `pointer.
+arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer.
+{Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/expressions.d`,
+immediately after `pointer.
+structArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer`: `struct
+Inner { int x; } struct S { Inner inner; } S[] a = [S(Inner(one()))]; int*
+p = &a[0].inner.x; a[0].inner.x = ninetyNine(); assert(*p == 99);`. RED
+confirmed on `Interpreter` before any production change: `1 != 99` (the
+frozen pre-write snapshot `addressOfExpression` took at address-of time,
+not an exception -- the pointer's deref-read always missed every cell-value
+check and fell to `pointer.pointerTarget`). Green on `SystemLinker`
+throughout. `Ctfe`/`Bytecode`/`LLVMJit` omitted per the omit-don't-pin
+convention (unconfirmed there).
+
+Root cause: `addressOfExpression`'s `DotVarExp` branch only called
+`promoteNestedStructFieldCell`, which requires the nested field's own
+receiver (`innerDot.e1`) to be a plain `VarExp` -- for `&a[0].inner.x`,
+`innerDot.e1` is an `IndexExp` (`a[0]`), so that function (and
+`promoteStructFieldCell`) both no-op, no cell ever backed this pointer.
+
+This composition turned out to be surgical, not a new mechanism, because
+the byte-layout composition was already built: `NativeArray.structElement`
+returns a `NativeStruct` view, and `NativeStruct.structField` composes on
+top of it -- the exact chain `promoteArrayCell`'s own struct-element seeding
+and `writeStructCellScalarFields`'s nested-field recursion already rely on
+internally. Confirmed separately that the WRITE side already worked before
+this slice: `a[0].inner.x = 99` bottoms out in `writeIndexLocation`'s plain
+`VarExp` branch (`index.e1` is `a`, a bare local, not a `DotVarExp`), which
+already calls `writeThroughArrayCell` unconditionally whenever `variable`
+has a cell -- so once a cell exists, direct writes already keep it current;
+only the DEREF-READ side needed new glue.
+
+Fix, in `impl.d`: a new `promoteArrayNestedStructFieldCell(dot, id)`, the
+array-element sibling of `promoteNestedStructFieldCell`, detects the
+`a[i].inner.x` shape directly (mirroring that function's own direct-shape
+detection, not a new memoized-path key -- this receiver shape already takes
+`fieldSnapshotAllocationId`'s final fresh-id fallback, same pre-existing gap
+as the non-array nested-field case), calls the EXISTING `promoteArrayCell`
+to give the array variable its cell, and records `id` in four new reverse-
+lookup maps (`arrayNestedStructFieldPointerVariables`/`...ElementIndices`/
+`...OuterFieldIndices`/`...InnerFieldIndices`) -- one more map than the
+non-array case, for the array index. A new `arrayNestedStructFieldPointer
+CellValue`, the array-element sibling of `nestedStructFieldPointerCellValue`,
+reads `cell.structElement(elementIndex).structField(outerIndex).
+field(innerIndex)` -- composing the two pre-existing accessors -- and is
+wired into both existing pointer-deref dispatch chains (`runPointerExpression`
+and `pointerTargetValue`) right after `nestedStructFieldPointerCellValue`.
+No change to `promoteArrayCell`, `writeStructCellScalarFields`,
+`writeThroughArrayCell`, or any existing map/function -- purely additive.
+
+No `interpreter.md` §9.10 shim retired -- unrelated to this composition
+slice.
+
+Scope, matching every prior FIRST slice in this same map family's own
+history (`nestedStructFieldPointerVariables`'s cross-frame duping/merge/
+writeback machinery was added in a LATER, separate commit, not its first):
+same-frame only. No duping into child `Walker`s, no cross-frame writeback,
+and no write-through-pointer direction (`*p = v` writing back into
+`a[i].inner.x`) -- all left as follow-ups, not this slice's scope. No
+cleanup of the new maps was added to `dropArrayCell` (the array-cell
+sibling of `dropStructCell`'s stale-id cleanup) either; a stale pointer
+surviving a recursive re-binding of the same array variable is an
+unaddressed, untested gap here, matching `dropStructCell`'s own history of
+that cleanup arriving in a later review round rather than the first slice.
+
+Focused suites all green (run together): ct.expressions 569/0 (5 failing
+as expected, unchanged, plus this slice's own 2 new backend instances),
+ct.structs 305/0, ct.arrays 346/0, ct.exceptions 130/0, interpreter 218/0,
+bin.repl 228/0, evaluator.eval 71/0 -- 1867 run, 0 failed, 5/5 failing as
+expected. The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.
+
+Remaining follow-up: (1) cross-frame propagation of this slice's own four
+maps (passing `&a[i].inner.x` into another function); (2) the
+write-through-pointer direction (`*p = v` writing back into
+`a[0].inner.x`); (3) pointer-identity memoization (repeated `&a[i].inner.x`
+evaluations do not share an id), unchanged, pre-existing gap shared with the
+non-array nested-field case; (4) `dropArrayCell`'s stale-id cleanup for
+this slice's own four maps; (5) deeper nesting (2+ levels) or a class
+receiver/class-typed inner field composed with an array element, all out of
+this narrow slice's scope.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

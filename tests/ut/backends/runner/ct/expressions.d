@@ -3886,6 +3886,48 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// value.md item 7's array-element/nested-field composition follow-up:
+// composing the two slices above -- a nested struct field OF an
+// array-of-struct element, `&a[i].inner.x`. `addressOfExpression`'s
+// `DotVarExp` branch only called `promoteNestedStructFieldCell`, which
+// requires the nested field's own receiver (`innerDot.e1`) to be a plain
+// `VarExp`; here it is an `IndexExp` (`a[0]`), so no cell ever backed this
+// pointer and it stayed on the boxed snapshot taken at address-of time.
+// Before any production change, Interpreter returned 1 (the pre-write
+// snapshot) instead of 99. SystemLinker is the oracle. Ctfe/Bytecode/LLVMJit
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S[] a = [S(Inner(one()))];
+                int* p = &a[0].inner.x;
+                a[0].inner.x = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
 // value.md item 7's struct-static-array-field follow-up (the smaller of the
 // two deferred candidates named in the array-of-struct progress note):
 // `&s.arr[i]` where `arr` is a static-array field of a plain struct local.
