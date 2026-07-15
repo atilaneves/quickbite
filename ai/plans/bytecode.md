@@ -6182,3 +6182,21 @@ struct promotion. After promotion, the focused Bytecode row and
 `ninja bin/ut` passed. The final `bin/ut --random` crashed with the
 pre-existing signal 11 under seed `1989571982`; its required
 `bin/ut --seed 1989571982 --quiet` replay reproduced exit code 139.
+
+`pointer.recursiveStructDeclarationDropsStaleStructCell` promoted to
+Bytecode, 2026-07-16: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that recursive calls using the same struct-local
+declaration retain distinct native frame storage after an earlier field
+address promotion. No production change was needed. This does not add heap
+structs, escaped recursive-frame pointers, or broader aggregate-cell
+reconciliation. The adjacent recursive-array candidate was attempted first
+and left unpromoted because it exposes the unrelated unsupported ternary
+dynamic-array initializer. Before promotion, `ninja bin/ut` passed;
+`bin/ut --random` crashed with the pre-existing signal 11 under seed
+`58839055`, and its required `bin/ut --seed 58839055 --quiet` replay
+reproduced exit code 139. After promotion, the focused Bytecode row and
+focused five-backend matrix passed, as did final `ninja bin/ut`. The final
+`bin/ut --random` crashed with the pre-existing signal 11 under seed
+`4180859583`; its required `bin/ut --seed 4180859583 --quiet` replay
+reproduced exit code 139.

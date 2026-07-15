@@ -2236,9 +2236,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // rather than a ternary directly in the struct initializer, since dmd lowers
 // a struct-typed ternary initializer to a default-init-then-assignment,
 // which happens to route through the existing in-place `writeCelledLocal`
-// refresh and masks this particular gap. SystemLinker is the oracle; other
-// backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// refresh and masks this particular gap. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveStructDeclarationDropsStaleStructCell." ~
         backend.stringof)
     @Tags(backend.stringof)
