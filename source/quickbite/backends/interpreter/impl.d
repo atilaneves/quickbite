@@ -403,23 +403,19 @@ private struct Walker {
     // `&s.inner.x`/`&c.inner.x` allocation ids -- the one-level-nested
     // sibling of `fieldAddressAllocations` above (value.md item 7's
     // pointer-identity memoization follow-up): repeated address-of
-    // evaluations of the same nested field, WITHIN THE SAME WALKER FRAME,
-    // return the same identity. Unlike `fieldAddressAllocations`, this map
-    // is deliberately NOT duplicated into child-frame walkers (every
-    // function-call site that spawns a `Walker child` leaves it at its
-    // default-init empty state) and never merged back after a call
-    // returns -- a genuinely narrower scope than the direct-field memo,
-    // chosen because no fixture (old or new) exercises cross-frame nested-
-    // field pointer-identity comparison, unlike the direct-field case's own
-    // recursion-rebind fixtures. A `&s.inner.x` taken inside a callee still
-    // gets its own internally-consistent id (repeated evaluations within
-    // that SAME callee invocation compare equal), and a caller's own id is
-    // never disturbed by an unrelated call in between; only comparing an id
-    // minted in one frame against one minted in a DIFFERENT frame for the
-    // exact same (variable, outer, inner) triple -- e.g. across a recursive
-    // rebind, mirroring `fieldAddressAllocations`' own Finding-3 history --
-    // is unproven and left as a follow-up if such a fixture is ever
-    // proposed.
+    // evaluations of the same nested field return the same identity.
+    // Cross-frame follow-up (2026-07-16): now duplicated into every
+    // child-frame `Walker` and merged back (`mergeNestedFieldAddressAllocations`)
+    // exactly like `fieldAddressAllocations`, closing the gap this comment
+    // used to name -- a nested function closing over a shared enclosing
+    // struct/class local now sees (and, if it mints one first, hands back)
+    // the SAME memoized id for `&s.inner.x`/`&c.inner.x` as the enclosing
+    // frame, matching real D's shared stack storage. `dropStructCell`/
+    // `dropClassCell` still clear this map's per-variable entry on a fresh
+    // rebind (unchanged), so a loop or recursion re-declaring the same
+    // struct/class local still mints a genuinely fresh id after the rebind
+    // rather than reusing the stale one -- see the recursion-rebind fixtures
+    // this reasoning mirrors for `fieldAddressAllocations` itself.
     private size_t[size_t][size_t][VarDeclaration] nestedFieldAddressAllocations;
     private bool[size_t] fieldSnapshotAllocationIds;
     private size_t allocationCount;
@@ -2015,8 +2011,8 @@ private struct Walker {
     // `DotVarExp` whose own `e1` resolves to a plain `VarExp`) is memoized
     // too, per (root variable, outer field index, inner field index) via
     // `nestedFieldAddressAllocations` (value.md item 7's pointer-identity
-    // memoization follow-up) -- see that field's own comment for this
-    // memo's narrower, same-frame-only scope. Any other receiver shape
+    // memoization follow-up, cross-frame since 2026-07-16 -- see that
+    // field's own comment). Any other receiver shape
     // (e.g. `&call().field`, or two or more levels of nesting) gets a fresh
     // id every time. Either way the id is recorded as a field snapshot so
     // writeLocation's PtrExp path can refuse writing through it.
@@ -2181,6 +2177,7 @@ private struct Walker {
             nestedStructFieldPointerInnerFieldIndices.dup;
         child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
         child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -5155,6 +5152,7 @@ private struct Walker {
             nestedStructFieldPointerInnerFieldIndices.dup;
         child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
         child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -5243,6 +5241,7 @@ private struct Walker {
             nestedStructFieldPointerInnerFieldIndices.dup;
         child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
         child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -5321,6 +5320,7 @@ private struct Walker {
         arrayAllocationAliases = child.arrayAllocationAliases;
         mergeArrayAllocationMaps(child);
         mergeFieldAddressAllocations(child);
+        mergeNestedFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         mergeStructFieldPointerVariableMaps(child);
@@ -5371,6 +5371,7 @@ private struct Walker {
         arrayAllocationAliases = child.arrayAllocationAliases;
         mergeArrayAllocationMaps(child);
         mergeFieldAddressAllocations(child);
+        mergeNestedFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         mergeStructFieldPointerVariableMaps(child);
@@ -5507,23 +5508,30 @@ private struct Walker {
 
     // Nested-struct-field sibling of `mergeStructArrayFieldPointerVariableMaps`
     // above (value.md item 7's nested-struct-field cross-frame follow-up,
-    // 2026-07-15). Unlike the scalar- and array-field maps, an id in this map
-    // is NEVER memoized through `fieldAddressAllocations`: `dot.e1` for a
-    // one-level-nested `DotVarExp` is itself a `DotVarExp`, so
-    // `fieldSnapshotAllocationId` always takes its non-`VarExp`-receiver
-    // fresh-id fallback (see the field declarations' own comment above), so
-    // every id already names exactly one (variable, outer index, inner
-    // index) triple and a plain union merge is safe -- there is no
-    // (variable, field index) conflict to guard against the way the sibling
-    // merges do.
+    // 2026-07-15). Re-review follow-up (2026-07-16, cross-frame nested-field
+    // pointer-identity): an id in this map IS now memoized, through
+    // `nestedFieldAddressAllocations` -- once that map started getting duped
+    // into every child `Walker` (mirroring `fieldAddressAllocations`), a
+    // (root variable, outer field index, inner field index) triple can
+    // collide the same way a (variable, field index) pair can for the
+    // sibling merges, so this merge needs the identical symmetric guard:
+    // skipped only when this frame's OWN `nestedFieldAddressAllocations`
+    // forward map already binds the SAME triple to a DIFFERENT id.
     private void mergeNestedStructFieldPointerVariableMaps(ref Walker child) {
         foreach (id, variable; child.nestedStructFieldPointerVariables) {
+            auto outerFieldIndex = id in child.nestedStructFieldPointerOuterFieldIndices;
+            auto innerFieldIndex = id in child.nestedStructFieldPointerInnerFieldIndices;
+            if (outerFieldIndex !is null && innerFieldIndex !is null)
+                if (auto forOuter = variable in nestedFieldAddressAllocations)
+                    if (auto forInner = *outerFieldIndex in *forOuter)
+                        if (auto ownId = *innerFieldIndex in *forInner)
+                            if (*ownId != id)
+                                continue;
+
             nestedStructFieldPointerVariables[id] = variable;
-
-            if (auto outerFieldIndex = id in child.nestedStructFieldPointerOuterFieldIndices)
+            if (outerFieldIndex !is null)
                 nestedStructFieldPointerOuterFieldIndices[id] = *outerFieldIndex;
-
-            if (auto innerFieldIndex = id in child.nestedStructFieldPointerInnerFieldIndices)
+            if (innerFieldIndex !is null)
                 nestedStructFieldPointerInnerFieldIndices[id] = *innerFieldIndex;
         }
     }
@@ -5553,24 +5561,29 @@ private struct Walker {
 
     // Nested-class-struct-field sibling of `mergeNestedStructFieldPointerVariableMaps`
     // above (value.md item 7 decomposition item 4's remaining cross-frame
-    // follow-up, 2026-07-15): `&c.inner.x` shares the same unmemoized-id
-    // reasoning the struct-receiver sibling's own comment gives -- `dot.e1`
-    // for the outer `c.inner` `DotVarExp` is itself a `DotVarExp`, so
-    // `fieldSnapshotAllocationId` always takes its non-`VarExp`-receiver
-    // fresh-id fallback, so every id already names exactly one (variable,
-    // outer index, inner index) triple and a plain union merge is safe --
-    // there is no (variable, field index) conflict to guard against the way
-    // the scalar- and array-field class maps do.
+    // follow-up, 2026-07-15). Re-review follow-up (2026-07-16, cross-frame
+    // nested-field pointer-identity): `&c.inner.x` shares the SAME
+    // `nestedFieldAddressAllocations` memo the struct-receiver sibling's own
+    // comment now describes -- the map is shared between a struct and a
+    // class root variable (`fieldSnapshotAllocationId`'s own dispatch), so
+    // this merge needs the identical symmetric guard, keyed the same way.
     private void mergeNestedClassStructFieldPointerVariableMaps(ref Walker child) {
         foreach (id, variable; child.nestedClassStructFieldPointerVariables) {
+            auto outerFieldIndex =
+                id in child.nestedClassStructFieldPointerOuterFieldIndices;
+            auto innerFieldIndex =
+                id in child.nestedClassStructFieldPointerInnerFieldIndices;
+            if (outerFieldIndex !is null && innerFieldIndex !is null)
+                if (auto forOuter = variable in nestedFieldAddressAllocations)
+                    if (auto forInner = *outerFieldIndex in *forOuter)
+                        if (auto ownId = *innerFieldIndex in *forInner)
+                            if (*ownId != id)
+                                continue;
+
             nestedClassStructFieldPointerVariables[id] = variable;
-
-            if (auto outerFieldIndex =
-                id in child.nestedClassStructFieldPointerOuterFieldIndices)
+            if (outerFieldIndex !is null)
                 nestedClassStructFieldPointerOuterFieldIndices[id] = *outerFieldIndex;
-
-            if (auto innerFieldIndex =
-                id in child.nestedClassStructFieldPointerInnerFieldIndices)
+            if (innerFieldIndex !is null)
                 nestedClassStructFieldPointerInnerFieldIndices[id] = *innerFieldIndex;
         }
     }
@@ -5613,6 +5626,35 @@ private struct Walker {
 
                 fieldAddressAllocations[variable][fieldIndex] = id;
             }
+    }
+
+    // `nestedFieldAddressAllocations`' own forward-map merge (value.md item
+    // 7's cross-frame nested-field pointer-identity follow-up), the
+    // one-level-nested sibling of `mergeFieldAddressAllocations` above with
+    // the identical "this frame's own entry wins" rule, one key level
+    // deeper: a (root variable, outer field index, inner field index) triple
+    // this frame already has an id for keeps it; only a triple this frame
+    // has never seen adopts the callee's. Needed now that
+    // `nestedFieldAddressAllocations` is duped into every child `Walker`
+    // (the same 8 sites `fieldAddressAllocations` is duped at), so a nested
+    // function that FIRST takes `&s.inner.x` (this frame never having seen
+    // that triple before) hands its freshly-minted id back up to the
+    // enclosing frame, exactly mirroring how a nested function first taking
+    // a shared enclosing local's direct-field address already works via
+    // `mergeFieldAddressAllocations`.
+    private void mergeNestedFieldAddressAllocations(ref Walker child) {
+        foreach (rootVariable, outerIds; child.nestedFieldAddressAllocations)
+            foreach (outerIndex, innerIds; outerIds)
+                foreach (innerIndex, id; innerIds) {
+                    auto existingOuter = rootVariable in nestedFieldAddressAllocations;
+                    if (existingOuter !is null) {
+                        auto existingInner = outerIndex in *existingOuter;
+                        if (existingInner !is null && (innerIndex in *existingInner) !is null)
+                            continue;
+                    }
+
+                    nestedFieldAddressAllocations[rootVariable][outerIndex][innerIndex] = id;
+                }
     }
 
     // Cross-frame writeback discriminator (value.md item 7 review round 4,
@@ -6190,6 +6232,7 @@ private struct Walker {
             nestedStructFieldPointerInnerFieldIndices.dup;
         child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
         child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.allocationCount = allocationCount;
         child.thisValue = receiver;
@@ -6201,6 +6244,7 @@ private struct Walker {
         arrayAllocationAliases = child.arrayAllocationAliases;
         mergeArrayAllocationMaps(child);
         mergeFieldAddressAllocations(child);
+        mergeNestedFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -7666,6 +7710,7 @@ private struct Walker {
             nestedStructFieldPointerInnerFieldIndices.dup;
         child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
         child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -7784,6 +7829,7 @@ private struct Walker {
             nestedStructFieldPointerInnerFieldIndices.dup;
         child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
         child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -10471,6 +10517,7 @@ private struct Walker {
             child.thisValue = structVal;
             child.hasThis = true;
             child.fieldAddressAllocations = fieldAddressAllocations.dup;
+            child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
             child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
             child.allocationCount = allocationCount;
             child.bindFunctionParameters(new_.member, arguments);
@@ -10478,6 +10525,7 @@ private struct Walker {
             structVal = child.thisValue;
             allocationCount = child.allocationCount;
             mergeFieldAddressAllocations(child);
+            mergeNestedFieldAddressAllocations(child);
             fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
@@ -10612,6 +10660,7 @@ private struct Walker {
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.fieldAddressAllocations = fieldAddressAllocations.dup;
+        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.structFieldPointerVariables = structFieldPointerVariables.dup;
         child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
@@ -10640,6 +10689,7 @@ private struct Walker {
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
         mergeFieldAddressAllocations(child);
+        mergeNestedFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         return child.thisValue;
     }

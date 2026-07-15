@@ -4133,6 +4133,55 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// value.md item 7's cross-frame pointer-identity follow-up (54d0bb99's own
+// deferred gap): `nestedFieldAddressAllocations` memoizes `&s.inner.x`'s
+// allocation id only within the SAME `Walker` frame -- a nested function
+// closing over `s` (the identical `VarDeclaration`, no rebind at all) runs
+// in its own child frame, and since that memo map was never duped into a
+// child frame, re-taking `&s.inner.x` from inside the nested function
+// minted a brand-new id instead of returning the outer frame's own
+// memoized one. Real D shares the exact same stack storage between an
+// outer function and a nested function closing over its locals, so the two
+// addresses must compare equal. SystemLinker is the oracle; Ctfe/Bytecode/
+// LLVMJit omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.addressOfNestedStructFieldIsStableAcrossNestedFunctionCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            bool sameAddressAcrossNestedCall() {
+                S s = S(Inner(seed()));
+                int* p = &s.inner.x;
+                int* q;
+
+                void capture() {
+                    q = &s.inner.x;
+                }
+
+                capture();
+                return p is q;
+            }
+
+            unittest {
+                assert(sameAddressAcrossNestedCall());
+            }
+        });
+    }
+}
+
 // value.md item 7's array-of-static-array follow-up (the smallest remaining
 // candidate the nested-struct-field progress note above left open):
 // `&a[i]` on a dynamic array whose element type is itself a scalar-element

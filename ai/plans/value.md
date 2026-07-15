@@ -7346,6 +7346,103 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    own reach in this codebase, matching every prior class-phase slice's
    omission).
 
+Progress 2026-07-15 (cross-frame nested-field pointer-identity follow-up:
+`&s.inner.x`/`&c.inner.x` now stable across a nested-function-closure
+call, not just within one `Walker` frame): closes the gap `54d0bb99`'s own
+progress note (immediately above the class-phase entries in this log)
+explicitly deferred -- `nestedFieldAddressAllocations` memoized an id per
+(root variable, outer field index, inner field index) but was deliberately
+NOT duplicated into child-frame walkers nor merged back after a call
+returns, so any frame OTHER than the one that first evaluated `&s.inner.x`
+saw an empty map and always minted a fresh id, even when no rebind of the
+receiver had happened at all.
+
+Found a real, cleanly reachable divergence via a nested function closing
+over an enclosing struct local (no rebind, no recursion needed): a nested
+function shares its enclosing frame's stack storage in real D, so
+`&s.inner.x` taken from inside a nested function that merely reads the
+SAME, never-rebound `s` must compare equal to the enclosing frame's own
+`&s.inner.x` -- but since `nestedFieldAddressAllocations` was per-frame
+only, the nested function's own (empty) copy always minted a new id.
+
+Fixture `pointer.addressOfNestedStructFieldIsStableAcrossNestedFunctionCall.
+{Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/expressions.d`,
+immediately after `pointer.addressOfNestedStructFieldIsStableAcrossReEvaluation`
+(the same-frame sibling `54d0bb99` added): `struct Inner { int x; } struct
+S { Inner inner; } S s = S(Inner(seed())); int* p = &s.inner.x; int* q; void
+capture() { q = &s.inner.x; } capture(); return p is q;`, asserted true.
+RED confirmed on Interpreter before any production change: `false != true`
+-- `capture()`'s own frame minted a fresh id for `q` instead of reusing
+`p`'s. Green on SystemLinker throughout. `Ctfe`/`Bytecode`/`LLVMJit`
+omitted, matching the same-frame sibling's own omit-don't-pin convention
+(unconfirmed there).
+
+Fix, in `impl.d`, mirroring `fieldAddressAllocations`'s own cross-frame
+treatment exactly (no new plumbing shape invented): (1)
+`nestedFieldAddressAllocations` is now duplicated (`.dup`) into every
+child `Walker` at the same 8 call sites `fieldAddressAllocations` already
+is. (2) A new `mergeNestedFieldAddressAllocations`, the nested-field
+sibling of the existing `mergeFieldAddressAllocations`, with the identical
+"this frame's own entry wins" rule one key level deeper (root variable,
+outer index, inner index); called at the same 5 sites
+`mergeFieldAddressAllocations` already is. (3) The reverse-lookup merges,
+`mergeNestedStructFieldPointerVariableMaps`/
+`mergeNestedClassStructFieldPointerVariableMaps`, gained the identical
+symmetric conflict-guard `mergeStructFieldPointerVariableMaps`/
+`mergeClassFieldPointerVariableMaps` already have against
+`fieldAddressAllocations` -- now checking `nestedFieldAddressAllocations`
+instead, since an id in these reverse maps is no longer guaranteed
+unique-per-triple the moment the forward memo is duped and can be
+independently re-merged. Verified this guard does not fire for any
+existing green fixture (it is symmetric hardening the same way the
+scalar-field guard's own comment already documents -- no fixture directly
+exercises the conflict branch). `dropStructCell`/`dropClassCell` already
+cleared `nestedFieldAddressAllocations[variable]` on a fresh rebind
+(`54d0bb99`) and already cleared the matching reverse-map entries (an
+earlier slice), so a loop or recursion re-declaring the same struct/class
+local still mints a genuinely fresh id after the rebind rather than
+resurrecting the stale one -- traced this explicitly against the existing
+`pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue`-
+style recursion-rebind shape for the nested-field case (not committed as a
+separate fixture: dropStructCell's existing per-variable-key removal of
+the WHOLE `nestedFieldAddressAllocations[variable]` submap already covers
+it, and no new production branch was needed to make that shape work).
+
+Updated the three stale doc comments this change falsifies: the
+`nestedFieldAddressAllocations` field's own comment (used to say
+"deliberately NOT duplicated ... never merged back"),
+`fieldSnapshotAllocationId`'s reference to that field's "narrower,
+same-frame-only scope", and the two reverse-map merge functions' own
+"unmemoized-id, plain union merge is safe" comments.
+
+No `interpreter.md` §9.10 shim retired -- unrelated to this pointer-
+identity cross-frame widening, matching `54d0bb99`'s own note.
+
+Focused suites all green: ct.expressions 567/0 (5 failing as expected,
+unchanged; grew by this slice's own 2 new backend instances), ct.structs
+301/0, ct.arrays 346/0, ct.exceptions 130/0, ct.control_flow 336/0,
+interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0. The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
+Remaining follow-up: (1) a `ref` struct/class parameter is bound in this
+interpreter as a boxed VALUE COPY plus an end-of-call write-back
+(`writeBackRefArguments`), not live shared storage during the call itself
+-- so `&s.inner.x` taken from INSIDE a function receiving `s` by `ref`
+still mints an entirely independent id (keyed off the callee's own
+parameter `VarDeclaration`, disjoint from the caller's local's
+`VarDeclaration`) and would NOT compare equal to the caller's own
+`&s.inner.x`, a real divergence from SystemLinker's true address aliasing.
+This is a pre-existing gap in how `ref` parameters are modeled generally
+(the identical divergence already exists for the DIRECT-field case,
+`fieldAddressAllocations`, not something this slice's map introduced or
+widened), well beyond a "dup + conflict-guard" surgical fix -- modeling
+`ref`-parameter identity would need the callee's parameter to alias the
+caller's own cell/id rather than binding a fresh copy, a materially larger
+change left out of scope here. (2) Two-or-more-level field nesting (e.g.
+`&s.a.b.c`) still has no memoization at all (falls to the fresh-id
+fallback), unchanged from `54d0bb99`'s own "full field-PATH
+generalization" gap.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
