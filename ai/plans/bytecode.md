@@ -5776,3 +5776,23 @@ Verification: focused SystemLinker oracle green and Bytecode red; focused
 Bytecode/SystemLinker regression green; seven relevant Bytecode ref and
 ref-foreach rows green; `ninja bin/ut`; and `bin/ut --random` (seed
 `1286042481`, 3393 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 4, member ref-return receiver evaluation, 2026-07-15: the
+specialized member ref-return assignment path evaluated a nontrivial receiver
+once while reconstructing the returned field destination and again while
+emitting the method call's hidden `this` argument. The reviewer's comma
+expression fixture was invalid compiled D, so the approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnEvaluatesReceiverOnce` uses a
+ref-returning receiver helper with the same observable evaluation count.
+SystemLinker evaluated the receiver helper once; Bytecode was red with
+`2 != 1`. The specialized path now passes its already-evaluated receiver into
+call emission. A receiver returned directly from one of its helper call's
+`ref` parameters executes that helper once and reuses the original caller
+slot, preserving both receiver identity and the outer method's writeback.
+This does not add conditional receiver ref returns, non-parameter receiver ref
+returns, class receivers, or general ref-return lowering. Verification:
+focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and the three prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`1377337795`, 3395 tests, 0 failed, 6/6 failing as expected).

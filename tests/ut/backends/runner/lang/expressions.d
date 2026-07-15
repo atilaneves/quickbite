@@ -2714,6 +2714,38 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToMemberRefReturnEvaluatesReceiverOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot() {
+                    return value;
+                }
+            }
+
+            ref Counter receiver(ref Counter counter, ref int evaluations) {
+                ++evaluations;
+                return counter;
+            }
+
+            unittest {
+                Counter counter;
+                int evaluations;
+
+                receiver(counter, evaluations).slot() = 42;
+
+                assert(evaluations == 1);
+                assert(counter.value == 42);
+            }
+        });
+    }
+}
+
 // `new S` of a struct with a dynamic-array field passes the field's `null`
 // default initialiser as a positional argument; the interpreter must store it
 // as an empty array so a null array's `.length` is 0 (compiled D:

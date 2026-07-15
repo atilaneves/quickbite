@@ -3652,8 +3652,11 @@ private struct Compiler {
     private ushort methodReceiverOffset(CallExp call) {
         import std.conv: text;
 
-        if (auto dot = call.e1.isDotVarExp)
+        if (auto dot = call.e1.isDotVarExp) {
+            if (auto receiver = refParameterCallReceiverOffset(dot.e1))
+                return *receiver;
             return structOperandOffset(dot.e1);
+        }
 
         // An IIFE `(() => this.field)()`: the callee is the lambda directly (a
         // FuncExp), and its hidden `this` block is the enclosing method's own
@@ -3665,6 +3668,40 @@ private struct Compiler {
             "Unsupported method receiver in bytecode core: ",
             expressionChars(call),
         ));
+    }
+
+    // A struct receiver returned by `ref` from one of the receiver call's own
+    // `ref` parameters aliases that caller lvalue. Execute the receiver call
+    // once for its body effects, then reuse the original caller slot as the
+    // outer method's hidden `this` block and assignment destination.
+    private ushort* refParameterCallReceiverOffset(Expression expression) {
+        if (auto dereference = expression.isPtrExp)
+            expression = dereference.e1;
+        if (auto address = expression.isAddrExp)
+            expression = address.e1;
+        auto call = expression.isCallExp;
+        auto function_ = call is null ? null : callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef || call.arguments is null)
+            return null;
+
+        auto returned = provenFinalReturnExpression(function_.fbody);
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            returned = dereference.e1;
+        if (auto address = returned is null ? null : returned.isAddrExp)
+            returned = address.e1;
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        auto index = parameter is null || !parameter.isReference
+            ? null
+            : parameterIndex(function_, parameter);
+        if (index is null || *index >= call.arguments.length)
+            return null;
+
+        compileCall(call);
+        auto result = new ushort;
+        *result = referenceOffset((*call.arguments)[*index]);
+        return result;
     }
 
     private Operand classMethodReceiver(CallExp call) {
@@ -6657,11 +6694,17 @@ private struct Compiler {
         auto returned = provenFinalReturnExpression(function_.fbody);
         if (auto dereference = returned is null ? null : returned.isPtrExp)
             returned = dereference.e1;
-        auto destination = memberReturnDestination(call, function_, returned);
+        ushort* evaluatedReceiver;
+        auto destination = memberReturnDestination(
+            call,
+            function_,
+            returned,
+            evaluatedReceiver,
+        );
         if (destination is null)
             return null;
 
-        compileCall(call);
+        compileCall(call, evaluatedReceiver);
         const value = compileExpression(rhs);
         const scalar = memberReturnScalar(returned);
         if (value.type != scalar)
@@ -6727,11 +6770,17 @@ private struct Compiler {
         if (condition is null)
             return null;
         auto selected = condition.toInteger == 0 ? whenFalse : whenTrue;
-        auto destination = memberReturnDestination(call, function_, selected);
+        ushort* evaluatedReceiver;
+        auto destination = memberReturnDestination(
+            call,
+            function_,
+            selected,
+            evaluatedReceiver,
+        );
         if (destination is null)
             return null;
 
-        compileCall(call);
+        compileCall(call, evaluatedReceiver);
         const value = compileExpression(rhs);
         const scalar = memberReturnScalar(selected);
         if (value.type != scalar)
@@ -6753,6 +6802,7 @@ private struct Compiler {
         CallExp call,
         FuncDeclaration function_,
         Expression returned,
+        out ushort* evaluatedReceiver,
     ) {
         if (auto dereference = returned is null ? null : returned.isPtrExp)
             returned = dereference.e1;
@@ -6767,8 +6817,10 @@ private struct Compiler {
         auto result = new ushort;
         if (dot is null || dot.e1.isThisExp !is null ||
             dot.e1.isSuperExp !is null) {
+            evaluatedReceiver = new ushort;
+            *evaluatedReceiver = methodReceiverOffset(call);
             *result = cast(ushort)
-                (methodReceiverOffset(call) + field.offset);
+                (*evaluatedReceiver + field.offset);
             return result;
         }
 
@@ -8065,7 +8117,10 @@ private struct Compiler {
         return Operand(offset, target);
     }
 
-    private Operand compileCall(CallExp call) {
+    private Operand compileCall(
+        CallExp call,
+        const ushort* evaluatedMethodReceiver = null,
+    ) {
         import dmd.astenums: TY;
         import std.conv: text;
 
@@ -8179,7 +8234,9 @@ private struct Compiler {
         // area: store the receiver's frame offset there, which the machine
         // dereferences on entry and writes back on return.
         if (layout.hasThis) {
-            const receiver = methodReceiverOffset(call);
+            const receiver = evaluatedMethodReceiver is null
+                ? methodReceiverOffset(call)
+                : *evaluatedMethodReceiver;
             _code ~= Instruction(
                 Op.loadConstant,
                 cast(ushort) (argumentArea + layout.thisOffset),
