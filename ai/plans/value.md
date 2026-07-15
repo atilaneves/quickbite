@@ -7498,6 +7498,58 @@ the prior slice's own follow-up; (2) default-init
 sibling; (3) cell PROMOTION (`&u.<field>`) for a union with a non-scalar
 member is still declined entirely by `promoteStructCell`'s guard.
 
+Progress 2026-07-16 (union default-init, aggregate-first-member follow-up:
+an untouched sibling now reads through a STRUCT first member's default
+bytes, not just a scalar one): probed the gap this file's own note (2)
+above flagged -- `struct P { float x; } union U { P p; int i; } U u;
+assert(u.i == 0x7FC00000);` -- against the `Interpreter`/`SystemLinker`
+oracle pair. Confirmed a real divergence: RED on `Interpreter`, green on
+`SystemLinker`. `unionSiblingDefaultFieldValue` required BOTH the first
+member and the target sibling to be `native_scalar.isNativeScalarType`, so
+a struct first member (`P p`) declined entirely and `u.i` fell back to
+`int.init` (`0`) instead of reinterpreting `P.init`'s NaN bits
+(`0x7FC00000`).
+
+Fixture `union.untouchedSiblingDefaultsFromStructFirstMemberBits.
+{Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/structs.d`,
+appended after the existing union fixtures. RED confirmed on `Interpreter`
+before any production change: `0 != 2143289344`. Green on `SystemLinker`
+throughout. `Ctfe` omitted (omit-don't-pin): re-probed rather than assumed
+-- real DMD's own CTFE engine throws the identical `reinterpretation
+through overlapped field 'i' is not allowed in CTFE` diagnostic as the
+scalar-first-member sibling fixture.
+
+Fix, in `impl.d`'s `unionSiblingDefaultFieldValue` only: the first-member
+gate now accepts EITHER `isNativeScalarType` (unchanged) OR a plain
+(non-union) struct type; the sibling itself is still required to be
+`isNativeScalarType` (scalar leaves only, no widening on that side). When
+the first member is a struct, reuses `withUnionFieldWrite`'s own
+`writeStructCellScalarFields` idiom exactly -- `cell.structField(0)` seeds
+the transient `NativeStruct`'s shared bytes from the first member's
+already-resolved struct value (`fieldsSoFar[0]`), recursing through nested
+scalar/scalar-element-array/struct sub-fields exactly as that helper
+already does -- before `readScalar` reads the sibling back out of the same
+overlapping bytes. No new byte-reinterpretation machinery.
+
+No `interpreter.md` §9.10 shim retired -- unrelated to this default-init
+widening.
+
+Focused suites all green: ct.expressions 567/0 (5 failing as expected,
+unchanged), ct.structs 305/0 (303 + this slice's own 2 new backend
+instances), ct.arrays 346/0, ct.exceptions 130/0, ct.math 265/0,
+interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0,
+rt.dependency_image 119/0, rt.cstdlib 89/0. The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff.
+
+Remaining follow-up: (1) a static-array or class first member still falls
+back to independent `defaultValue` for its siblings, unchanged; (2) an
+aggregate (struct/array/class) SIBLING being read through a scalar or
+struct first member is likewise still unwidened -- this slice only widened
+the first-member side, matching the scalar sibling scope
+`withUnionFieldWrite`'s WRITTEN-struct branch already established; (3)
+cell PROMOTION (`&u.<field>`) for a union with a non-scalar member is
+still declined entirely by `promoteStructCell`'s guard, unchanged.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

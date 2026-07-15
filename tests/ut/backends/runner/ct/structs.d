@@ -1961,3 +1961,37 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// The aggregate-first-member counterpart of
+// `union.untouchedSiblingDefaultsFromFirstMemberBits`: `379ef066`'s own
+// follow-up flagged that when the FIRST declared member is itself an
+// aggregate (here a struct with one scalar field), an untouched sibling
+// still fell back to its own independent `defaultValue` instead of
+// reinterpreting the first member's default bytes. `P`'s single field
+// `x`'s default is NaN (`0x7FC00000`), so `u.i` must read that same bit
+// pattern. `Ctfe` is omitted (omit-don't-pin, `ai/mistakes.md`): real
+// DMD's own CTFE engine refuses this exact read with the same
+// `reinterpretation through overlapped field 'i' is not allowed in CTFE`
+// diagnostic as the scalar-first-member sibling fixture.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("union.untouchedSiblingDefaultsFromStructFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                float x;
+            }
+
+            union U {
+                P p;
+                int i;
+            }
+
+            unittest {
+                U u;
+                assert(u.i == 0x7FC00000);
+            }
+        });
+    }
+}
