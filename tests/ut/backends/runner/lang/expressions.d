@@ -3194,7 +3194,7 @@ static foreach (backend; Matrix!()) {
 // unrelated `s.x` field to still read `1`: the array-field write must skip
 // the cell write entirely and leave the boxed mirror path (unaffected by
 // this finding) as the sole record for a non-scalar aliased field.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell." ~
         backend.stringof)
     @Tags(backend.stringof)

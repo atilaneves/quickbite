@@ -5892,3 +5892,14 @@ passing baseline `ninja bin/ut` and `bin/ut --random` (seed `392088283`),
 focused Bytecode red then green, final `ninja bin/ut`, and
 `bin/ut --random` (seed `3662766452`, 3403 tests, 0 failed, 6/6 failing as
 expected).
+
+`pointer.structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell` promoted
+to Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that rebinding a `ref` local to a non-scalar struct
+field leaves an address-promoted scalar sibling cell undisturbed. No production
+change was needed. This does not add native-cell representation for dynamic
+array fields, ref aliases to heap struct fields, or broader non-scalar struct
+field reconciliation. Verification: focused Bytecode row, `ninja bin/ut`, and
+`bin/ut --random` (seed `3663640261`, 3404 tests, 0 failed, 6/6 failing as
+expected).
