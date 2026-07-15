@@ -6589,6 +6589,14 @@ private struct Compiler {
             return null;
 
         auto returned = singleReturnExpression(function_.fbody);
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            if (auto conditional = dereference.e1.isCondExp)
+                return tryConditionalRefParameterCallAssign(
+                    call,
+                    function_,
+                    conditional,
+                    rhs,
+                );
         auto variable = returned is null ? null : returned.isVarExp;
         auto parameter = variable is null ? null : variable.var.isVarDeclaration;
         if (parameter is null || !parameter.isReference)
@@ -6623,6 +6631,96 @@ private struct Compiler {
         auto result = new Operand;
         *result = Operand(value.offset, scalar);
         return result;
+    }
+
+    private Operand* tryConditionalRefParameterCallAssign(
+        CallExp call,
+        FuncDeclaration function_,
+        CondExp conditional,
+        Expression rhs,
+    ) {
+        auto conditionParameter = conditional.econd.isVarExp;
+        auto conditionIndex = conditionParameter is null
+            ? null
+            : parameterIndex(function_, conditionParameter.var.isVarDeclaration);
+        auto trueIndex = refReturnParameterIndex(function_, conditional.e1);
+        auto falseIndex = refReturnParameterIndex(function_, conditional.e2);
+        if (conditionIndex is null || trueIndex is null || falseIndex is null ||
+            *conditionIndex >= call.arguments.length ||
+            *trueIndex >= call.arguments.length ||
+            *falseIndex >= call.arguments.length ||
+            (*call.arguments)[*conditionIndex].isIntegerExp is null)
+            return null;
+
+        compileCall(call);
+        const condition = compileBoolCondition((*call.arguments)[*conditionIndex]);
+        const value = compileExpression(rhs);
+        const scalar = scalarType(conditional.type.nextOf);
+        if (value.type != scalar)
+            return null;
+
+        const falseJump = emitJumpIfFalse(condition);
+        _code ~= Instruction(
+            Op.copy,
+            referenceOffset((*call.arguments)[*trueIndex]),
+            value.offset,
+            cast(ushort) size(scalar),
+        );
+        const endJump = emitJump;
+        patchJump(falseJump);
+        _code ~= Instruction(
+            Op.copy,
+            referenceOffset((*call.arguments)[*falseIndex]),
+            value.offset,
+            cast(ushort) size(scalar),
+        );
+        patchJump(endJump);
+
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    private size_t* refReturnParameterIndex(
+        FuncDeclaration function_,
+        Expression expression,
+    ) {
+        if (auto address = expression.isAddrExp)
+            expression = address.e1;
+        if (auto variable = expression.isVarExp)
+            return parameterIndex(function_, variable.var.isVarDeclaration);
+        if (auto call = expression.isCallExp) {
+            auto called = callFunction(call);
+            auto returned = called is null
+                ? null
+                : singleReturnExpression(called.fbody);
+            auto variable = returned is null ? null : returned.isVarExp;
+            auto returnedParameter = variable is null
+                ? null
+                : parameterIndex(called, variable.var.isVarDeclaration);
+            if (returnedParameter !is null && call.arguments !is null &&
+                *returnedParameter < call.arguments.length)
+                return refReturnParameterIndex(
+                    function_,
+                    (*call.arguments)[*returnedParameter],
+                );
+        }
+        return null;
+    }
+
+    private size_t* parameterIndex(
+        FuncDeclaration function_,
+        VarDeclaration parameter,
+    ) {
+        if (parameter is null)
+            return null;
+        foreach (index; 0 .. function_.parameters.length)
+            if ((*function_.parameters)[index] is parameter) {
+                auto result = new size_t;
+                *result = index;
+                return result;
+            }
+        return null;
     }
 
     // `&refReturning(ref value)` must execute the callee, then point at the

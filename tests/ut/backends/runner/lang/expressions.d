@@ -2608,7 +2608,7 @@ static foreach (backend; Matrix!()) {
 // A ref-returning ternary as assignment target: the return lowers to
 // `*(cond ? &a : &fallback(b))`, so the write must land on whichever branch
 // actually ran — phobos' `theAllocator = x` family is this shape.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("refCall.assignmentToRefTernaryReturnWritesChosenBranch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

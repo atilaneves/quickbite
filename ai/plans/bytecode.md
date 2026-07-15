@@ -5700,3 +5700,16 @@ the rebased upstream at `dd977275`, confirming the existing ref-return call
 and conditional-pointer paths already preserve the selected caller lvalue.
 No production change was needed. This does not add assignment through a
 ternary ref return, member ref returns, or broader ref-return lowering.
+
+`refCall.assignmentToRefTernaryReturnWritesChosenBranch` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported assignment in bytecode core: pick(false, x, y) = 42`.
+Assignment through a ref-returning call now recognizes the lowered single
+ternary return, traces each branch through a direct ref parameter or a simple
+ref-forwarding call, executes the callee, and writes the result to the caller
+slot selected by the fixture's literal condition. This does not add runtime
+conditions, member or global ref returns, nested conditionals, or general
+lvalue-return lowering. Verification: focused Bytecode red then green; passing
+focused five-backend matrix; `ninja bin/ut`; and `bin/ut --random` (seed
+`2550343385`).
