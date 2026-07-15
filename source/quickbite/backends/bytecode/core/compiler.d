@@ -164,6 +164,13 @@ private struct Compiler {
     private ResultType _currentReturnType; // result type of the function whose
                                            // body is currently being compiled
 
+    private static struct DynamicArrayRefWriteBack {
+        ushort valueOffset;
+        ushort descriptorOffset;
+        ushort indexOffset;
+        ushort elementSize;
+    }
+
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
         // compiled callee is an ordinary function.
@@ -295,7 +302,13 @@ private struct Compiler {
             return cast(ushort) *existing;
 
         if (_program is null)
+        {
             _program = new Program;
+            // A running machine executes this segment directly while lazy
+            // compilation can append module slots. Reserve every representable
+            // byte now so such appends cannot relocate raw module addresses.
+            _program.moduleData.reserve(ushort.max);
+        }
 
         const index = _functions.length;
         _functions ~= function_;
@@ -468,7 +481,7 @@ private struct Compiler {
     }
 
     private void compileIfStatement(imported!"dmd.statement".IfStatement if_) {
-        const condition = compileExpression(if_.condition);
+        const condition = compileBoolCondition(if_.condition);
         const falseJump = emitJumpIfFalse(condition);
 
         compileStatement(if_.ifbody);
@@ -966,7 +979,7 @@ private struct Compiler {
         const conditionIndex = _code.length;
         const exitJump = for_.condition is null
             ? size_t.max
-            : emitJumpIfFalse(compileExpression(for_.condition));
+            : emitJumpIfFalse(compileBoolCondition(for_.condition));
 
         // Enter the loop: any `label:` immediately wrapping it (consumed here)
         // names this context for labeled `break`/`continue`.
@@ -1017,7 +1030,7 @@ private struct Compiler {
         foreach (index; _loopStack[$ - 1].continuePatches)
             patchJumpTo(index, _code.length);
 
-        const condition = compileExpression(do_.condition);
+        const condition = compileBoolCondition(do_.condition);
         _code ~= Instruction(
             Op.jumpIfTrue, condition.offset, cast(ushort) bodyIndex,
         );
@@ -1859,6 +1872,8 @@ private struct Compiler {
                 return *pointer;
             if (auto pointer = tryAddressOfLocal(address))
                 return *pointer;
+            if (auto pointer = tryAddressOfRefParameterCall(address))
+                return *pointer;
             // `&f` of a free or static nested function: the function-pointer
             // value is the callee's VM function index in a size_t slot.
             if (auto variable = address.e1.isVarExp)
@@ -2186,7 +2201,13 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
 
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = sliceLengthSlot(DynamicArrayLocal(
+            descriptorOffset,
+            elementType,
+        ));
         const indexSlot = compileExpression(indexExpr);
+        _activeDollarLength = savedDollarLength;
         const elementSize = resultType.toBasetype.ty == TY.Tstruct
             ? cast(uint) staticArraySize(resultType)
             : size(elementType);
@@ -3630,6 +3651,27 @@ private struct Compiler {
     private ushort structOperandOffset(Expression expression) {
         import std.conv: text;
 
+        if (auto dereference = expression.isPtrExp) {
+            const pointer = compileExpression(dereference.e1);
+            const structSize = cast(uint) staticArraySize(expression.type);
+            if (pointer.isPointer &&
+                (structSize == 1 || structSize == 2 || structSize == 4 ||
+                    structSize == 8 || structSize == 16))
+            {
+                const offset = allocateBytes(
+                    structSize,
+                    staticArrayAlign(expression.type),
+                );
+                _code ~= Instruction(
+                    pointerLoadOp(structSize),
+                    offset,
+                    pointer.offset,
+                    compileSizeConstant(0),
+                );
+                return offset;
+            }
+        }
+
         bool resolved;
         const base = structBaseOffsetOrMaterialise(expression, resolved);
         if (resolved)
@@ -4795,7 +4837,17 @@ private struct Compiler {
             return;
         }
 
-        const descriptor = dynamicArrayDescriptor(slice.e1);
+        DynamicArrayLocal descriptor;
+        if (isStringType(slice.e1.type)) {
+            const string_ = compileExpression(slice.e1);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.stringSliceToArray, offset, string_.offset,
+            );
+            descriptor = DynamicArrayLocal(offset, ScalarType.char_);
+        } else {
+            descriptor = dynamicArrayDescriptor(slice.e1);
+        }
 
         // Materialise lo and hi into adjacent size_t slots; the opcode reads
         // the pair from the single `bounds` offset.
@@ -5193,7 +5245,10 @@ private struct Compiler {
             return result;
         }
 
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = sliceLengthSlot(*descriptor);
         const indexSlot = compileExpression(index.e2);
+        _activeDollarLength = savedDollarLength;
         auto result = new Operand;
         *result = pointerToElement(
             descriptor.offset, descriptor.elementType, indexSlot.offset,
@@ -5239,8 +5294,30 @@ private struct Compiler {
             return null;
         auto existing = declaration in _locals;
         auto staticArray = declaration in _staticArrayLocals;
-        if (existing is null && staticArray is null)
-            return null;
+        if (existing is null && staticArray is null) {
+            auto moduleVariable = moduleScalarVariableOrNull(declaration);
+            if (moduleVariable is null || symOff.offset != 0)
+                return null;
+
+            const pointer = allocateBytes(
+                cast(uint) size_t.sizeof,
+                size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.moduleAddress,
+                pointer,
+                moduleVariable.offset,
+            );
+            auto result = new Operand;
+            *result = Operand(
+                pointer,
+                ScalarType.ulong_,
+                false,
+                true,
+                moduleVariable.type,
+            );
+            return result;
+        }
 
         const base = existing is null ? *staticArray : *existing;
         const slot = cast(ushort) (base + symOff.offset);
@@ -5290,6 +5367,27 @@ private struct Compiler {
                 return null;
             auto existing = declaration in _locals;
             if (existing is null) {
+                if (auto moduleVariable =
+                        moduleScalarVariableOrNull(declaration)) {
+                    const pointer = allocateBytes(
+                        cast(uint) size_t.sizeof,
+                        size_t.sizeof,
+                    );
+                    _code ~= Instruction(
+                        Op.moduleAddress,
+                        pointer,
+                        moduleVariable.offset,
+                    );
+                    auto result = new Operand;
+                    *result = Operand(
+                        pointer,
+                        ScalarType.ulong_,
+                        false,
+                        true,
+                        moduleVariable.type,
+                    );
+                    return result;
+                }
                 auto staticArray = declaration in _staticArrayLocals;
                 if (staticArray is null)
                     return null;
@@ -5580,6 +5678,9 @@ private struct Compiler {
 
         const lhs = compileExpression(divide.e1);
         const rhs = compileExpression(divide.e2);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.divDouble, lhs, rhs, ScalarType.double_);
+
         return compileIntBinaryResult(
             divide,
             lhs,
@@ -5780,10 +5881,15 @@ private struct Compiler {
         return size(operand.type);
     }
 
-    // Normalise an expression to a one-byte bool condition. A pointer condition
-    // (`slot ? ...`) is non-null iff its 8-byte value is non-zero, so compare it
-    // to a zero constant rather than testing a single byte.
+    // Normalise an expression to a one-byte bool condition. Dynamic-array
+    // truthiness is its length, while a pointer condition (`slot ? ...`) is
+    // non-null iff its 8-byte value is non-zero.
     private Operand compileBoolCondition(Expression expression) {
+        if (isDynamicArrayArgument(expression)) {
+            const descriptor = dynamicArrayDescriptor(expression);
+            return Operand(sliceLengthSlot(descriptor), ScalarType.ulong_);
+        }
+
         const operand = compileExpression(expression);
         if (!operand.isPointer)
             return operand;
@@ -5814,13 +5920,13 @@ private struct Compiler {
             ));
 
         const result = allocate(ScalarType.bool_);
-        const lhs = compileExpression(logical.e1);
+        const lhs = compileBoolCondition(logical.e1);
         const shortCircuitJump = logical.op == EXP.andAnd
             ? emitJumpIfFalse(lhs)
             : emitJumpIfTrue(lhs);
 
         // The non-short-circuiting path evaluates rhs and normalises it.
-        const rhs = compileExpression(logical.e2);
+        const rhs = compileBoolCondition(logical.e2);
         _code ~= Instruction(Op.normaliseBool, result, rhs.offset);
         const endJump = emitJump;
 
@@ -5921,7 +6027,7 @@ private struct Compiler {
     // (`inner == 0 ? 1 : 0`), so a single opcode covers every case; no
     // per-type family.
     private Operand compileNotExpression(NotExp not) {
-        const source = compileExpression(not.e1);
+        const source = compileBoolCondition(not.e1);
         const offset = allocate(ScalarType.bool_);
         _code ~= Instruction(Op.notBool, offset, source.offset);
         return Operand(offset, ScalarType.bool_);
@@ -6239,6 +6345,13 @@ private struct Compiler {
         if (auto registryAssign = tryStaticDelegateAssocArrayAssign(assign))
             return *registryAssign;
 
+        // `ref T f(ref T value) { return value; }` used as an assignment
+        // target: execute the callee first, then write through the original
+        // argument slot rather than its copied callee-frame parameter.
+        if (auto call = assign.e1.isCallExp)
+            if (auto result = tryRefParameterCallAssign(call, assign.e2))
+                return *result;
+
         // `arr.length = n`: resize the array in place, preserving existing
         // elements and zero-filling growth. Detected by the ArrayLengthExp
         // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
@@ -6410,6 +6523,90 @@ private struct Compiler {
         return Operand(*slot, type);
     }
 
+    private Operand* tryRefParameterCallAssign(
+        CallExp call,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        auto function_ = callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef || call.arguments is null)
+            return null;
+
+        auto returned = singleReturnExpression(function_.fbody);
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        if (parameter is null || !parameter.isReference)
+            return null;
+
+        auto parameterIndex = function_.parameters.length;
+        foreach (index; 0 .. function_.parameters.length)
+            if ((*function_.parameters)[index] is parameter) {
+                parameterIndex = index;
+                break;
+            }
+        if (parameterIndex >= call.arguments.length)
+            return null;
+
+        // Preserve ordinary call execution, including side effects and the
+        // existing ref-parameter writeback, before storing through its caller
+        // lvalue.
+        compileCall(call);
+
+        const destination = referenceOffset((*call.arguments)[parameterIndex]);
+        const value = compileExpression(rhs);
+        const scalar = scalarType(parameter.type);
+        if (value.type != scalar)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        _code ~= Instruction(
+            Op.copy, destination, value.offset, cast(ushort) size(scalar),
+        );
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    // `&refReturning(ref value)` must execute the callee, then point at the
+    // caller lvalue the returned ref aliases. This narrow form handles a
+    // direct return of one ref parameter.
+    private Operand* tryAddressOfRefParameterCall(AddrExp address) {
+        auto call = address.e1.isCallExp;
+        auto function_ = call is null ? null : callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef || call.arguments is null)
+            return null;
+
+        auto returned = singleReturnExpression(function_.fbody);
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        if (parameter is null || !parameter.isReference)
+            return null;
+
+        auto parameterIndex = function_.parameters.length;
+        foreach (index; 0 .. function_.parameters.length)
+            if ((*function_.parameters)[index] is parameter) {
+                parameterIndex = index;
+                break;
+            }
+        if (parameterIndex >= call.arguments.length)
+            return null;
+
+        compileCall(call);
+        const slot = referenceOffset((*call.arguments)[parameterIndex]);
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameAddress, pointer, slot);
+        auto result = new Operand;
+        *result = Operand(
+            pointer, ScalarType.ulong_, false, true, scalarType(parameter.type),
+        );
+        return result;
+    }
+
     private Operand* tryStaticDelegateAssocArrayAssign(AssignExp assign) {
         auto declaration =
             staticDelegateAssocArrayAssignDeclaration(assign.e1);
@@ -6494,9 +6691,44 @@ private struct Compiler {
             return existing;
 
         const type = scalarType(declaration.type);
+        const initializer = moduleScalarInitializerBytes(declaration, type);
         const offset = allocateModuleBytes(size(type), size(type));
         _moduleScalarVariables[declaration] = ModuleScalarVariable(offset, type);
+        _program.moduleData[offset .. offset + initializer.length] = initializer[];
         return declaration in _moduleScalarVariables;
+    }
+
+    private ubyte[] moduleScalarInitializerBytes(
+        VarDeclaration declaration,
+        in ScalarType type,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+        import std.conv: text;
+
+        auto initializer = declaration._init is null
+            ? null
+            : declaration._init.isExpInitializer;
+        if (initializer is null)
+            return null;
+
+        auto expression = initializerExpression(initializer.exp);
+        if (auto integer = expression.isIntegerExp) {
+            const bytes = nativeToLittleEndian(cast(ulong) integer.toInteger);
+            return bytes[0 .. size(type)].dup;
+        }
+
+        if (auto real_ = expression.isRealExp) {
+            if (type == ScalarType.real_)
+                return realBytes(real_).dup;
+
+            const bytes = nativeToLittleEndian(floatBits(real_, type));
+            return bytes[0 .. size(type)].dup;
+        }
+
+        throw new Exception(text(
+            "Unsupported module scalar initializer in bytecode core: ",
+            declarationChars(declaration),
+        ));
     }
 
     private ushort allocateModuleBytes(in uint bytes, in uint alignmentArgument)
@@ -7031,6 +7263,9 @@ private struct Compiler {
     private StaticArrayElement* tryStaticArrayElement(
         IndexExp index,
     ) {
+        if (index.e2.isIntegerExp is null)
+            return null;
+
         if (!indexesStaticArray(index.e1))
             return null;
 
@@ -7289,6 +7524,8 @@ private struct Compiler {
     // The inline frame offset of a static-array local denoted by an
     // expression (through any casts), or null if it is not one.
     private ushort* staticArrayOffsetOf(Expression expression) {
+        import dmd.astenums: TY;
+
         if (auto cast_ = expression.isCastExp)
             return staticArrayOffsetOf(cast_.e1);
 
@@ -7299,6 +7536,11 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _staticArrayLocals)
                     return existing;
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                if (field.type.toBasetype.ty == TY.Tsarray)
+                    return &field.offset;
 
         return null;
     }
@@ -7657,11 +7899,19 @@ private struct Compiler {
                     nextArgumentIndex = 1;
                 }
 
+        DynamicArrayRefWriteBack[] dynamicArrayRefWriteBacks;
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
                     (argumentArea +
                         layout.offsets[nextArgumentIndex + argumentIndex]);
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitDynamicArrayRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        dynamicArrayRefWriteBacks,
+                    ))
+                        continue;
                 emitCallArgument(
                     slot,
                     layout.isReference[nextArgumentIndex + argumentIndex],
@@ -7689,6 +7939,13 @@ private struct Compiler {
             );
         } else
             _code ~= Instruction(Op.call, index, argumentArea, destination);
+        foreach (writeBack; dynamicArrayRefWriteBacks)
+            _code ~= Instruction(
+                indexStoreOp(writeBack.elementSize),
+                writeBack.valueOffset,
+                writeBack.descriptorOffset,
+                writeBack.indexOffset,
+            );
         if (isPointerType(call.type))
             return Operand(
                 destination, ScalarType.ulong_, false, true,
@@ -8438,6 +8695,52 @@ private struct Compiler {
         );
     }
 
+    // A scalar dynamic-array element has no caller-frame offset for the
+    // ordinary ref-parameter machinery to pass. Copy it to a call-local slot,
+    // let the callee's existing ref writeback update that slot, then store it
+    // back to the same already-evaluated element after the call returns.
+    private bool emitDynamicArrayRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref DynamicArrayRefWriteBack[] writeBacks,
+    ) {
+        auto index = argument.isIndexExp;
+        if (index is null)
+            return false;
+
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        if (descriptor is null || descriptor.elementType == ScalarType.void_)
+            return false;
+
+        const elementSize = dynamicArrayElementSize(
+            index.e1.type, descriptor.elementType,
+        );
+        if (elementSize > ulong.sizeof)
+            return false;
+
+        const indexOffset = compileExpression(index.e2).offset;
+        const valueOffset = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize),
+            valueOffset,
+            descriptor.offset,
+            indexOffset,
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= DynamicArrayRefWriteBack(
+            valueOffset,
+            descriptor.offset,
+            indexOffset,
+            cast(ushort) elementSize,
+        );
+        return true;
+    }
+
     // Emit a throw of the plain "Range violation" message and yield a null
     // pointer operand, so the `m[k]` lowering's `(_d_arraybounds(...), null)`
     // false branch type-checks (the throw aborts before the null is used).
@@ -8795,6 +9098,8 @@ private struct Compiler {
                     return *existing;
                 if (auto existing = declaration in _dynamicArrayLocals)
                     return existing.offset;
+                if (auto existing = declaration in _staticArrayLocals)
+                    return *existing;
             }
 
         if (auto structOffset = structBaseOffsetOrNull(argument))
@@ -9926,16 +10231,21 @@ private struct Compiler {
                 continue;
             }
 
-            // A by-value static-array parameter is an inline block in the
-            // argument area, tracked like a static-array local so indexing and
-            // block-copy paths resolve against its base offset.
+            // A static-array parameter is an inline block in the argument area,
+            // tracked like a static-array local so indexing and block-copy paths
+            // resolve against its base offset. A `ref` parameter receives the
+            // caller slot offset and writes the completed block back on return.
             if (parameter.type.toBasetype.ty == TY.Tsarray) {
                 const arrayAlign = staticArrayAlign(parameter.type);
                 const arrayBytes = cast(uint) staticArraySize(parameter.type);
                 layout.blockSize =
                     (layout.blockSize + arrayAlign - 1) & ~(arrayAlign - 1);
                 layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= false;
+                layout.isReference ~= parameter.isReference;
+                if (parameter.isReference)
+                    layout.refParameters ~= RefParameter(
+                        cast(ushort) layout.blockSize, arrayBytes,
+                    );
                 layout.blockSize += arrayBytes;
                 continue;
             }
