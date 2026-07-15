@@ -1994,7 +1994,6 @@ static foreach (backend; Matrix!(
 // the oracle; other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell." ~
         backend.stringof)

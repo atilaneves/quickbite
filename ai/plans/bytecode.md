@@ -6029,3 +6029,14 @@ randomized suite. For this promotion, the focused Bytecode row passed, as did
 `ninja bin/ut`; `bin/ut --random` again ended with signal 11 under seed
 `95235460`, and the required quiet replay of that seed reproduced exit code
 139.
+
+`dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that whole-array scalar slice fill updates the
+native backing storage observed through a prior full-slice promotion. No
+production change was needed. This does not add scalar fills for other element
+widths, static-array slice fills, or broader stale-cell reconciliation.
+Verification: focused Bytecode row and `ninja bin/ut` passed after promotion.
+The final `bin/ut --random` ended with the pre-existing signal-11 suite crash
+under seed `1305901141`; the required quiet replay reproduced exit code 139.
