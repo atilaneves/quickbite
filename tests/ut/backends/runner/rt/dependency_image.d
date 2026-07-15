@@ -5,6 +5,30 @@ import ut.backends;
 import dmd.dmodule: Module;
 
 
+// Give each (fixture, backend) a globally-unique dependency-image module name.
+// Every fixture builds its own `.so` and loads it `dlopen(RTLD_GLOBAL)`; the
+// image's native writeback is not unloaded, so it leaks into the long-lived
+// `bin/ut` parent. Because the `LLVMJit` and `Interpreter` variants of one
+// fixture share a module + symbol names, under `--random` ordering a leaked,
+// already-mutated image from one variant shadows the other's fresh image
+// (RTLD_GLOBAL first-loaded wins), so the fixture reads a stale global and its
+// initial-value assert fails. Suffixing the module name with `backend.stringof`
+// makes every unittest's D-mangled symbol unique, so no leak can collide.
+//
+// This is generic identifier rewriting: `base` is any identifier (a module
+// name, or an `extern(C)` symbol) rewritten everywhere it appears in `source`
+// (declaration, imports, references). Module renaming covers all D-mangled
+// symbols; `extern(C)` symbols are unmangled, so the two `extern(C)`
+// ctor-ordering globals (`seedBase`, `dtNeededSeed`) are suffixed with a second
+// call to keep their variants isolated. The remaining shared-named `extern(C)`
+// *functions* are stateless and identical across variants, so they cannot
+// carry stale state and are left alone.
+private string uniqueDepModule(string source, string base, string suffix) {
+    import std.string: replace;
+    return source.replace(base, base ~ "_" ~ suffix);
+}
+
+
 private auto runDependencyImage(alias backend)(
     const string[] linkFiles,
     const string[] importPaths,
@@ -28,18 +52,19 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_fixture.d");
+        const depPath =
+            buildPath(importPath, "dep_image_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_fixture;
 
             int dependencyAdd(int value) {
                 return value + 17;
             }
-        });
+        }.uniqueDepModule("dep_image_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_fixture",
+            "dep_image_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -47,7 +72,7 @@ unittest {
             module dep_image_fixture;
 
             int dependencyAdd(int value);
-        });
+        }.uniqueDepModule("dep_image_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -57,7 +82,7 @@ unittest {
                     int value = 25;
                     assert(dependencyAdd(value) == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -87,18 +112,18 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_order_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_order_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_order_fixture;
 
             int dependencySub(int a, int b) {
                 return a - b;
             }
-        });
+        }.uniqueDepModule("dep_image_order_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_order_fixture",
+            "dep_image_order_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -106,7 +131,7 @@ unittest {
             module dep_image_order_fixture;
 
             int dependencySub(int a, int b);
-        });
+        }.uniqueDepModule("dep_image_order_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -117,7 +142,7 @@ unittest {
                     int right = 3;
                     assert(dependencySub(left, right) == 7);
                 }
-            },
+            }.uniqueDepModule("dep_image_order_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -146,18 +171,18 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_string_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_string_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_string_fixture;
 
             int dependencyStringScore(string value) {
                 return cast(int) value.length * 10 + value[0];
             }
-        });
+        }.uniqueDepModule("dep_image_string_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_string_fixture",
+            "dep_image_string_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -165,7 +190,7 @@ unittest {
             module dep_image_string_fixture;
 
             int dependencyStringScore(string value);
-        });
+        }.uniqueDepModule("dep_image_string_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -175,7 +200,7 @@ unittest {
                     string value = "abc";
                     assert(dependencyStringScore(value) == 127);
                 }
-            },
+            }.uniqueDepModule("dep_image_string_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -206,7 +231,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_string_return_fixture.d",
+            "dep_image_string_return_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_string_return_fixture;
@@ -214,11 +239,11 @@ unittest {
             string dependencyGreeting() {
                 return "quickbite";
             }
-        });
+        }.uniqueDepModule("dep_image_string_return_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_string_return_fixture",
+            "dep_image_string_return_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -226,7 +251,7 @@ unittest {
             module dep_image_string_return_fixture;
 
             string dependencyGreeting();
-        });
+        }.uniqueDepModule("dep_image_string_return_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -236,7 +261,7 @@ unittest {
                     string value = dependencyGreeting();
                     assert(value == "quickbite");
                 }
-            },
+            }.uniqueDepModule("dep_image_string_return_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -266,7 +291,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_ref_return_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_ref_return_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_ref_return_fixture;
 
@@ -275,11 +300,11 @@ unittest {
             ref int dependencySlot() {
                 return stored;
             }
-        });
+        }.uniqueDepModule("dep_image_ref_return_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_ref_return_fixture",
+            "dep_image_ref_return_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -287,7 +312,7 @@ unittest {
             module dep_image_ref_return_fixture;
 
             ref int dependencySlot();
-        });
+        }.uniqueDepModule("dep_image_ref_return_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -299,7 +324,7 @@ unittest {
                     dependencySlot = 42;
                     assert(dependencySlot == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_ref_return_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -329,7 +354,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_typed_slice_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_typed_slice_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_typed_slice_fixture;
 
@@ -343,11 +368,11 @@ unittest {
             const(int)[] dependencyTriple(int value) {
                 return [value, value * 2, value * 3];
             }
-        });
+        }.uniqueDepModule("dep_image_typed_slice_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_typed_slice_fixture",
+            "dep_image_typed_slice_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -356,7 +381,7 @@ unittest {
 
             long dependencySum(const(long)[] values);
             const(int)[] dependencyTriple(int value);
-        });
+        }.uniqueDepModule("dep_image_typed_slice_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -372,7 +397,7 @@ unittest {
                     assert(result[1] == 8);
                     assert(result[2] == 12);
                 }
-            },
+            }.uniqueDepModule("dep_image_typed_slice_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -402,7 +427,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_stack_spill_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_stack_spill_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_stack_spill_fixture;
 
@@ -425,11 +450,11 @@ unittest {
                     seventh * 10 +
                     eighth;
             }
-        });
+        }.uniqueDepModule("dep_image_stack_spill_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_stack_spill_fixture",
+            "dep_image_stack_spill_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -446,7 +471,7 @@ unittest {
                 int seventh,
                 int eighth,
             );
-        });
+        }.uniqueDepModule("dep_image_stack_spill_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -472,7 +497,7 @@ unittest {
                         eighth,
                     ) == 12345678);
                 }
-            },
+            }.uniqueDepModule("dep_image_stack_spill_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -502,7 +527,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_member_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_member_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_member_fixture;
 
@@ -513,11 +538,11 @@ unittest {
                     return value + 17;
                 }
             }
-        });
+        }.uniqueDepModule("dep_image_member_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_member_fixture",
+            "dep_image_member_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -528,7 +553,7 @@ unittest {
                 int value;
                 int read() const;
             }
-        });
+        }.uniqueDepModule("dep_image_member_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -538,7 +563,7 @@ unittest {
                     Counter counter = Counter(25);
                     assert(counter.read == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_member_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -568,7 +593,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_member_args_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_member_args_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_member_args_fixture;
 
@@ -579,11 +604,11 @@ unittest {
                     return value + addend - subtrahend;
                 }
             }
-        });
+        }.uniqueDepModule("dep_image_member_args_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_member_args_fixture",
+            "dep_image_member_args_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -594,7 +619,7 @@ unittest {
                 int value;
                 int addSub(int addend, int subtrahend) const;
             }
-        });
+        }.uniqueDepModule("dep_image_member_args_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -606,7 +631,7 @@ unittest {
                     int subtrahend = 3;
                     assert(counter.addSub(addend, subtrahend) == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_member_args_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -641,7 +666,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_struct_return_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_struct_return_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_struct_return_fixture;
 
@@ -655,11 +680,11 @@ unittest {
             Quad dependencyQuad(int first, int second) {
                 return Quad(first, second, first - second, first * second);
             }
-        });
+        }.uniqueDepModule("dep_image_struct_return_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_struct_return_fixture",
+            "dep_image_struct_return_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -668,7 +693,7 @@ unittest {
 
             struct Quad { long a; long b; long c; long d; }
             Quad dependencyQuad(int first, int second);
-        });
+        }.uniqueDepModule("dep_image_struct_return_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -683,7 +708,7 @@ unittest {
                     assert(q.c == 5);
                     assert(q.d == 36);
                 }
-            },
+            }.uniqueDepModule("dep_image_struct_return_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -713,18 +738,18 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_exception_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_exception_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_exception_fixture;
 
             void dependencyThrow() {
                 throw new Exception("dependency failed");
             }
-        });
+        }.uniqueDepModule("dep_image_exception_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_exception_fixture",
+            "dep_image_exception_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -732,7 +757,7 @@ unittest {
             module dep_image_exception_fixture;
 
             void dependencyThrow();
-        });
+        }.uniqueDepModule("dep_image_exception_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -746,7 +771,7 @@ unittest {
                         assert(caught.msg == "dependency failed");
                     }
                 }
-            },
+            }.uniqueDepModule("dep_image_exception_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -778,7 +803,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_custom_exception_fixture.d",
+            "dep_image_custom_exception_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_custom_exception_fixture;
@@ -792,11 +817,11 @@ unittest {
             void dependencyThrowCustom() {
                 throw new DependencyException("dependency failed");
             }
-        });
+        }.uniqueDepModule("dep_image_custom_exception_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_custom_exception_fixture",
+            "dep_image_custom_exception_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -808,7 +833,7 @@ unittest {
             }
 
             void dependencyThrowCustom();
-        });
+        }.uniqueDepModule("dep_image_custom_exception_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -822,7 +847,7 @@ unittest {
                         assert(caught.msg == "dependency failed");
                     }
                 }
-            },
+            }.uniqueDepModule("dep_image_custom_exception_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -854,7 +879,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_custom_exception_field_fixture.d",
+            "dep_image_custom_exception_field_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_custom_exception_field_fixture;
@@ -871,11 +896,11 @@ unittest {
             void dependencyThrowCustomField() {
                 throw new DependencyException("dependency failed", 73);
             }
-        });
+        }.uniqueDepModule("dep_image_custom_exception_field_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_custom_exception_field_fixture",
+            "dep_image_custom_exception_field_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -888,7 +913,7 @@ unittest {
             }
 
             void dependencyThrowCustomField();
-        });
+        }.uniqueDepModule("dep_image_custom_exception_field_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -903,7 +928,7 @@ unittest {
                         assert(caught.code == 73);
                     }
                 }
-            },
+            }.uniqueDepModule("dep_image_custom_exception_field_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -935,7 +960,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_custom_exception_base_catch_fixture.d",
+            "dep_image_custom_exception_base_catch_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_custom_exception_base_catch_fixture;
@@ -952,11 +977,11 @@ unittest {
             void dependencyThrowCustomField() {
                 throw new DependencyException("dependency failed", 73);
             }
-        });
+        }.uniqueDepModule("dep_image_custom_exception_base_catch_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_custom_exception_base_catch_fixture",
+            "dep_image_custom_exception_base_catch_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -969,7 +994,7 @@ unittest {
             }
 
             void dependencyThrowCustomField();
-        });
+        }.uniqueDepModule("dep_image_custom_exception_base_catch_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -988,7 +1013,7 @@ unittest {
                         assert(dependency.code == 73);
                     }
                 }
-            },
+            }.uniqueDepModule("dep_image_custom_exception_base_catch_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1020,7 +1045,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_custom_exception_helper_catch_fixture.d",
+            "dep_image_custom_exception_helper_catch_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_custom_exception_helper_catch_fixture;
@@ -1044,11 +1069,11 @@ unittest {
                 dependencyFinalized = 0;
                 throw new DependencyException("dependency failed", 73);
             }
-        });
+        }.uniqueDepModule("dep_image_custom_exception_helper_catch_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_custom_exception_helper_catch_fixture",
+            "dep_image_custom_exception_helper_catch_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1063,7 +1088,7 @@ unittest {
             extern __gshared int dependencyFinalized;
 
             void dependencyThrowCustomField();
-        });
+        }.uniqueDepModule("dep_image_custom_exception_helper_catch_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1087,7 +1112,7 @@ unittest {
                         assert(dependency.code == 73);
                     }
                 }
-            },
+            }.uniqueDepModule("dep_image_custom_exception_helper_catch_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1119,7 +1144,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_chained_exception_fixture.d",
+            "dep_image_chained_exception_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_chained_exception_fixture;
@@ -1130,11 +1155,11 @@ unittest {
                 outer.next = inner;
                 throw outer;
             }
-        });
+        }.uniqueDepModule("dep_image_chained_exception_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_chained_exception_fixture",
+            "dep_image_chained_exception_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1142,7 +1167,7 @@ unittest {
             module dep_image_chained_exception_fixture;
 
             void dependencyThrowChained();
-        });
+        }.uniqueDepModule("dep_image_chained_exception_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1157,7 +1182,7 @@ unittest {
                         assert(caught.next.msg == "inner failure");
                     }
                 }
-            },
+            }.uniqueDepModule("dep_image_chained_exception_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1187,7 +1212,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_variadic_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_variadic_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_variadic_fixture;
 
@@ -1202,11 +1227,11 @@ unittest {
                 va_end(args);
                 return result;
             }
-        });
+        }.uniqueDepModule("dep_image_variadic_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_variadic_fixture",
+            "dep_image_variadic_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1214,7 +1239,7 @@ unittest {
             module dep_image_variadic_fixture;
 
             extern(C) int dependencyCombine(int count, ...);
-        });
+        }.uniqueDepModule("dep_image_variadic_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1229,7 +1254,7 @@ unittest {
                         dependencyCombine(count, first, second, third) == 123,
                     );
                 }
-            },
+            }.uniqueDepModule("dep_image_variadic_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1265,7 +1290,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_variadic_promotion_fixture.d",
+            "dep_image_variadic_promotion_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_variadic_promotion_fixture;
@@ -1280,11 +1305,11 @@ unittest {
                 va_end(args);
                 return number * 100 + cast(int) (fraction * 10.0);
             }
-        });
+        }.uniqueDepModule("dep_image_variadic_promotion_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_variadic_promotion_fixture",
+            "dep_image_variadic_promotion_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1292,7 +1317,7 @@ unittest {
             module dep_image_variadic_promotion_fixture;
 
             extern(C) int dependencyPromote(int count, ...);
-        });
+        }.uniqueDepModule("dep_image_variadic_promotion_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1303,7 +1328,7 @@ unittest {
                     float fraction = 2.5;
                     assert(dependencyPromote(2, letter, fraction) == 9725);
                 }
-            },
+            }.uniqueDepModule("dep_image_variadic_promotion_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1333,7 +1358,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_cpp_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_cpp_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_cpp_fixture;
 
@@ -1348,11 +1373,11 @@ unittest {
                     return value * 100 + x * 10 + y;
                 }
             }
-        });
+        }.uniqueDepModule("dep_image_cpp_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_cpp_fixture",
+            "dep_image_cpp_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1365,7 +1390,7 @@ unittest {
                 int value;
                 int combine(int x, int y);
             }
-        });
+        }.uniqueDepModule("dep_image_cpp_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1381,7 +1406,7 @@ unittest {
                     int y = 3;
                     assert(counter.combine(x, y) == 723);
                 }
-            },
+            }.uniqueDepModule("dep_image_cpp_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1411,7 +1436,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_mutating_member_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_mutating_member_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_mutating_member_fixture;
 
@@ -1422,11 +1447,11 @@ unittest {
                     value += by;
                 }
             }
-        });
+        }.uniqueDepModule("dep_image_mutating_member_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_mutating_member_fixture",
+            "dep_image_mutating_member_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1437,7 +1462,7 @@ unittest {
                 int value;
                 void bump(int by);
             }
-        });
+        }.uniqueDepModule("dep_image_mutating_member_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1449,7 +1474,7 @@ unittest {
                     counter.bump(by);
                     assert(counter.value == 30);
                 }
-            },
+            }.uniqueDepModule("dep_image_mutating_member_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1479,7 +1504,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_mutable_slice_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_mutable_slice_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_mutable_slice_fixture;
 
@@ -1487,11 +1512,11 @@ unittest {
                 foreach (ref x; xs)
                     x = value;
             }
-        });
+        }.uniqueDepModule("dep_image_mutable_slice_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_mutable_slice_fixture",
+            "dep_image_mutable_slice_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1499,7 +1524,7 @@ unittest {
             module dep_image_mutable_slice_fixture;
 
             void dependencyFill(int[] xs, int value);
-        });
+        }.uniqueDepModule("dep_image_mutable_slice_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1513,7 +1538,7 @@ unittest {
                     assert(xs[1] == 9);
                     assert(xs[2] == 9);
                 }
-            },
+            }.uniqueDepModule("dep_image_mutable_slice_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1547,7 +1572,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_nested_slice_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_nested_slice_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_nested_slice_fixture;
 
@@ -1563,11 +1588,11 @@ unittest {
             Tagged dependencyTag(int id) {
                 return Tagged("abcd", id);
             }
-        });
+        }.uniqueDepModule("dep_image_nested_slice_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_nested_slice_fixture",
+            "dep_image_nested_slice_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1577,7 +1602,7 @@ unittest {
             struct Tagged { string name; int id; }
             int dependencyScore(Tagged tagged);
             Tagged dependencyTag(int id);
-        });
+        }.uniqueDepModule("dep_image_nested_slice_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1592,7 +1617,7 @@ unittest {
                     assert(made.name == "abcd");
                     assert(made.id == 9);
                 }
-            },
+            }.uniqueDepModule("dep_image_nested_slice_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1625,7 +1650,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_static_array_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_static_array_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_static_array_fixture;
 
@@ -1638,11 +1663,11 @@ unittest {
                 return fixed.values[0] + fixed.values[1] + fixed.values[2]
                     + fixed.values[3] + fixed.tag;
             }
-        });
+        }.uniqueDepModule("dep_image_static_array_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_static_array_fixture",
+            "dep_image_static_array_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1654,7 +1679,7 @@ unittest {
                 int tag;
             }
             int dependencyFixedSum(Fixed fixed);
-        });
+        }.uniqueDepModule("dep_image_static_array_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1665,7 +1690,7 @@ unittest {
                     Fixed fixed = Fixed([base, base + 1, base + 2, base + 3], 100);
                     assert(dependencyFixedSum(fixed) == 146);
                 }
-            },
+            }.uniqueDepModule("dep_image_static_array_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1695,18 +1720,18 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_out_param_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_out_param_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_out_param_fixture;
 
             extern(C) void dependencyDouble(int* result, int value) {
                 *result = value * 2;
             }
-        });
+        }.uniqueDepModule("dep_image_out_param_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_out_param_fixture",
+            "dep_image_out_param_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1714,7 +1739,7 @@ unittest {
             module dep_image_out_param_fixture;
 
             extern(C) void dependencyDouble(int* result, int value);
-        });
+        }.uniqueDepModule("dep_image_out_param_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1726,7 +1751,7 @@ unittest {
                     dependencyDouble(&result, value);
                     assert(result == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_out_param_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1762,7 +1787,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_inout_param_fixture.d",
+            "dep_image_inout_param_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_inout_param_fixture;
@@ -1770,11 +1795,11 @@ unittest {
             extern(C) void dependencyBump(int* value) {
                 *value += 1;
             }
-        });
+        }.uniqueDepModule("dep_image_inout_param_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_inout_param_fixture",
+            "dep_image_inout_param_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1782,7 +1807,7 @@ unittest {
             module dep_image_inout_param_fixture;
 
             extern(C) void dependencyBump(int* value);
-        });
+        }.uniqueDepModule("dep_image_inout_param_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1793,7 +1818,7 @@ unittest {
                     dependencyBump(&value);
                     assert(value == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_inout_param_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1828,7 +1853,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_ptr_ptr_in_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_ptr_ptr_in_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_ptr_ptr_in_fixture;
 
@@ -1843,11 +1868,11 @@ unittest {
                     return -1;
                 return cast(int) strlen(*words);
             }
-        });
+        }.uniqueDepModule("dep_image_ptr_ptr_in_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_ptr_ptr_in_fixture",
+            "dep_image_ptr_ptr_in_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1856,7 +1881,7 @@ unittest {
 
             extern(C) const(char)* dependencyWord();
             extern(C) int dependencyFirstLength(const(char)** words);
-        });
+        }.uniqueDepModule("dep_image_ptr_ptr_in_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1866,7 +1891,7 @@ unittest {
                     const(char)* word = dependencyWord();
                     assert(dependencyFirstLength(&word) == 5);
                 }
-            },
+            }.uniqueDepModule("dep_image_ptr_ptr_in_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1901,7 +1926,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_union_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_union_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_union_fixture;
 
@@ -1915,11 +1940,11 @@ unittest {
                 result.number = 42;
                 return result;
             }
-        });
+        }.uniqueDepModule("dep_image_union_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_union_fixture",
+            "dep_image_union_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -1932,7 +1957,7 @@ unittest {
             }
 
             extern(C) Overlay dependencyOverlay();
-        });
+        }.uniqueDepModule("dep_image_union_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -1942,7 +1967,7 @@ unittest {
                     Overlay overlay = dependencyOverlay();
                     assert(overlay.number == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_union_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -1980,7 +2005,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_delegate_return_fixture.d",
+            "dep_image_delegate_return_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_delegate_return_fixture;
@@ -1988,11 +2013,11 @@ unittest {
             int delegate() dependencyMakeAdder(int base) {
                 return () => base + 1;
             }
-        });
+        }.uniqueDepModule("dep_image_delegate_return_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_delegate_return_fixture",
+            "dep_image_delegate_return_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2000,7 +2025,7 @@ unittest {
             module dep_image_delegate_return_fixture;
 
             int delegate() dependencyMakeAdder(int base);
-        });
+        }.uniqueDepModule("dep_image_delegate_return_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2010,7 +2035,7 @@ unittest {
                     int delegate() adder = dependencyMakeAdder(41);
                     assert(adder() == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_delegate_return_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2045,7 +2070,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_widget_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_widget_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_widget_fixture;
 
@@ -2064,11 +2089,11 @@ unittest {
             Widget makeButton() {
                 return new Button();
             }
-        });
+        }.uniqueDepModule("dep_image_widget_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_widget_fixture",
+            "dep_image_widget_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2084,7 +2109,7 @@ unittest {
             }
 
             Widget makeButton();
-        });
+        }.uniqueDepModule("dep_image_widget_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2094,7 +2119,7 @@ unittest {
                     Widget w = makeButton();
                     assert(w.draw() == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_widget_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2131,7 +2156,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_interface_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_interface_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_interface_fixture;
 
@@ -2154,11 +2179,11 @@ unittest {
             Drawable makeButton() {
                 return new Button(40);
             }
-        });
+        }.uniqueDepModule("dep_image_interface_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_interface_fixture",
+            "dep_image_interface_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2176,7 +2201,7 @@ unittest {
             }
 
             Drawable makeButton();
-        });
+        }.uniqueDepModule("dep_image_interface_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2186,7 +2211,7 @@ unittest {
                     Drawable d = makeButton();
                     assert(d.draw() == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_interface_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2220,7 +2245,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_ctor_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_ctor_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_ctor_fixture;
 
@@ -2231,11 +2256,11 @@ unittest {
                     value = seed + 17;
                 }
             }
-        });
+        }.uniqueDepModule("dep_image_ctor_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_ctor_fixture",
+            "dep_image_ctor_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2246,7 +2271,7 @@ unittest {
                 int value;
                 this(int seed);
             }
-        });
+        }.uniqueDepModule("dep_image_ctor_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2257,7 +2282,7 @@ unittest {
                     Tracked tracked = Tracked(seed);
                     assert(tracked.value == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_ctor_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2290,7 +2315,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_dtor_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_dtor_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_dtor_fixture;
 
@@ -2307,11 +2332,11 @@ unittest {
             int dtorCalls() {
                 return dtorCount;
             }
-        });
+        }.uniqueDepModule("dep_image_dtor_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_dtor_fixture",
+            "dep_image_dtor_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2324,7 +2349,7 @@ unittest {
             }
 
             int dtorCalls();
-        });
+        }.uniqueDepModule("dep_image_dtor_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2337,7 +2362,7 @@ unittest {
                     }
                     assert(dtorCalls() == 1);
                 }
-            },
+            }.uniqueDepModule("dep_image_dtor_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2370,7 +2395,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_postblit_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_postblit_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_postblit_fixture;
 
@@ -2387,11 +2412,11 @@ unittest {
             int postblitCalls() {
                 return postblitCount;
             }
-        });
+        }.uniqueDepModule("dep_image_postblit_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_postblit_fixture",
+            "dep_image_postblit_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2404,7 +2429,7 @@ unittest {
             }
 
             int postblitCalls();
-        });
+        }.uniqueDepModule("dep_image_postblit_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2417,7 +2442,7 @@ unittest {
                     assert(copy.value == 9);
                     assert(postblitCalls() == 1);
                 }
-            },
+            }.uniqueDepModule("dep_image_postblit_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2447,18 +2472,18 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_callback_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_callback_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_callback_fixture;
 
             int dependencyApply(int x, int delegate(int) callback) {
                 return callback(x);
             }
-        });
+        }.uniqueDepModule("dep_image_callback_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_callback_fixture",
+            "dep_image_callback_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2466,7 +2491,7 @@ unittest {
             module dep_image_callback_fixture;
 
             int dependencyApply(int x, int delegate(int) callback);
-        });
+        }.uniqueDepModule("dep_image_callback_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2478,7 +2503,7 @@ unittest {
                     int delegate(int) callback = (int n) => n + base;
                     assert(dependencyApply(x, callback) == 105);
                 }
-            },
+            }.uniqueDepModule("dep_image_callback_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2510,18 +2535,18 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_scoped_void_callback_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_scoped_void_callback_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_scoped_void_callback_fixture;
 
             void dependencyVisit(int value, scope void delegate(int) callback) {
                 callback(value);
             }
-        });
+        }.uniqueDepModule("dep_image_scoped_void_callback_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_scoped_void_callback_fixture",
+            "dep_image_scoped_void_callback_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2529,7 +2554,7 @@ unittest {
             module dep_image_scoped_void_callback_fixture;
 
             void dependencyVisit(int value, scope void delegate(int) callback);
-        });
+        }.uniqueDepModule("dep_image_scoped_void_callback_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2543,7 +2568,7 @@ unittest {
                     dependencyVisit(value, callback);
                     assert(seen == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_scoped_void_callback_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2577,7 +2602,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_durable_callback_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_durable_callback_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_durable_callback_fixture;
 
@@ -2592,11 +2617,11 @@ unittest {
                     return storedCallback(value);
                 }
             }
-        });
+        }.uniqueDepModule("dep_image_durable_callback_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_durable_callback_fixture",
+            "dep_image_durable_callback_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2607,7 +2632,7 @@ unittest {
                 void registerCallback(int delegate(int) callback);
                 int invokeRegisteredCallback(int value);
             }
-        });
+        }.uniqueDepModule("dep_image_durable_callback_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2621,7 +2646,7 @@ unittest {
                     registerCallback(callback);
                     assert(invokeRegisteredCallback(value) == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_durable_callback_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2655,18 +2680,18 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_callback2_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_callback2_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_callback2_fixture;
 
             int dependencyApply2(int x, int y, int delegate(int, int) callback) {
                 return callback(x, y);
             }
-        });
+        }.uniqueDepModule("dep_image_callback2_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_callback2_fixture",
+            "dep_image_callback2_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2674,7 +2699,7 @@ unittest {
             module dep_image_callback2_fixture;
 
             int dependencyApply2(int x, int y, int delegate(int, int) callback);
-        });
+        }.uniqueDepModule("dep_image_callback2_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2686,7 +2711,7 @@ unittest {
                     int delegate(int, int) callback = (int a, int b) => a - b;
                     assert(dependencyApply2(x, y, callback) == 7);
                 }
-            },
+            }.uniqueDepModule("dep_image_callback2_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2720,7 +2745,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_mut_postblit_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_mut_postblit_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_mut_postblit_fixture;
 
@@ -2731,11 +2756,11 @@ unittest {
                     value += 1;
                 }
             }
-        });
+        }.uniqueDepModule("dep_image_mut_postblit_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_mut_postblit_fixture",
+            "dep_image_mut_postblit_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2746,7 +2771,7 @@ unittest {
                 int value;
                 this(this);
             }
-        });
+        }.uniqueDepModule("dep_image_mut_postblit_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2759,7 +2784,7 @@ unittest {
                     assert(copy.value == 10);
                     assert(original.value == 9);
                 }
-            },
+            }.uniqueDepModule("dep_image_mut_postblit_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2794,7 +2819,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_new_struct_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_new_struct_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_new_struct_fixture;
 
@@ -2805,11 +2830,11 @@ unittest {
                     value = seed + 17;
                 }
             }
-        });
+        }.uniqueDepModule("dep_image_new_struct_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_new_struct_fixture",
+            "dep_image_new_struct_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2820,7 +2845,7 @@ unittest {
                 int value;
                 this(int seed);
             }
-        });
+        }.uniqueDepModule("dep_image_new_struct_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2831,7 +2856,7 @@ unittest {
                     Tracked* tracked = new Tracked(seed);
                     assert(tracked.value == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_new_struct_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2870,7 +2895,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_gc_root_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_gc_root_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_gc_root_fixture;
 
@@ -2895,11 +2920,11 @@ unittest {
                 import core.memory: GC;
                 return GC.addrOf(cast(void*) o) !is null;
             }
-        });
+        }.uniqueDepModule("dep_image_gc_root_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_gc_root_fixture",
+            "dep_image_gc_root_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2909,7 +2934,7 @@ unittest {
             Object makeThing();
             void collectNow();
             bool isLive(Object o);
-        });
+        }.uniqueDepModule("dep_image_gc_root_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -2920,7 +2945,7 @@ unittest {
                     collectNow;
                     assert(isLive(thing));
                 }
-            },
+            }.uniqueDepModule("dep_image_gc_root_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -2959,7 +2984,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_union_out_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_union_out_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_union_out_fixture;
 
@@ -2975,11 +3000,11 @@ unittest {
             extern(C) int dependencyReadHandle(Handle* h) {
                 return h.bytes[0];
             }
-        });
+        }.uniqueDepModule("dep_image_union_out_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_union_out_fixture",
+            "dep_image_union_out_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -2993,7 +3018,7 @@ unittest {
 
             extern(C) void dependencyInitHandle(Handle* h);
             extern(C) int dependencyReadHandle(Handle* h);
-        });
+        }.uniqueDepModule("dep_image_union_out_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3004,7 +3029,7 @@ unittest {
                     dependencyInitHandle(&handle);
                     assert(dependencyReadHandle(&handle) == 7);
                 }
-            },
+            }.uniqueDepModule("dep_image_union_out_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3038,7 +3063,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_slice_of_structs_fixture.d");
+            buildPath(importPath, "dep_image_slice_of_structs_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_slice_of_structs_fixture;
 
@@ -3057,11 +3082,11 @@ unittest {
             const(Point)[] dependencyMakePoints(int seed) {
                 return [Point(seed, seed + 1), Point(seed + 2, seed + 3)];
             }
-        });
+        }.uniqueDepModule("dep_image_slice_of_structs_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_slice_of_structs_fixture",
+            "dep_image_slice_of_structs_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3075,7 +3100,7 @@ unittest {
 
             long dependencyPointSum(const(Point)[] points);
             const(Point)[] dependencyMakePoints(int seed);
-        });
+        }.uniqueDepModule("dep_image_slice_of_structs_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3092,7 +3117,7 @@ unittest {
                     assert(made[0].x == 5);
                     assert(made[1].y == 8);
                 }
-            },
+            }.uniqueDepModule("dep_image_slice_of_structs_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3130,18 +3155,18 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_assoc_array_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_assoc_array_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_assoc_array_fixture;
 
             extern(C) int dependencyCountEntries(int[string] table) {
                 return cast(int) table.length;
             }
-        });
+        }.uniqueDepModule("dep_image_assoc_array_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_assoc_array_fixture",
+            "dep_image_assoc_array_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3149,7 +3174,7 @@ unittest {
             module dep_image_assoc_array_fixture;
 
             extern(C) int dependencyCountEntries(int[string] table);
-        });
+        }.uniqueDepModule("dep_image_assoc_array_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3161,7 +3186,7 @@ unittest {
                     table["b"] = 2;
                     assert(dependencyCountEntries(table) == 2);
                 }
-            },
+            }.uniqueDepModule("dep_image_assoc_array_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3197,7 +3222,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_gshared_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_gshared_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_gshared_fixture;
 
@@ -3206,11 +3231,11 @@ unittest {
             void bump() {
                 dependencyCounter += 1;
             }
-        });
+        }.uniqueDepModule("dep_image_gshared_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_gshared_fixture",
+            "dep_image_gshared_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3219,7 +3244,7 @@ unittest {
 
             extern __gshared int dependencyCounter;
             void bump();
-        });
+        }.uniqueDepModule("dep_image_gshared_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3230,7 +3255,7 @@ unittest {
                     bump;
                     assert(dependencyCounter == 2);
                 }
-            },
+            }.uniqueDepModule("dep_image_gshared_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3261,7 +3286,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_gshared_write_fixture.d");
+            buildPath(importPath, "dep_image_gshared_write_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_gshared_write_fixture;
 
@@ -3274,11 +3299,11 @@ unittest {
             int readCounter() {
                 return dependencyCounter;
             }
-        });
+        }.uniqueDepModule("dep_image_gshared_write_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_gshared_write_fixture",
+            "dep_image_gshared_write_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3288,7 +3313,7 @@ unittest {
             extern __gshared int dependencyCounter;
             void bump();
             int readCounter();
-        });
+        }.uniqueDepModule("dep_image_gshared_write_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3300,7 +3325,7 @@ unittest {
                     bump;
                     assert(dependencyCounter == 6);
                 }
-            },
+            }.uniqueDepModule("dep_image_gshared_write_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3337,7 +3362,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_modulector_fixture.d");
+            buildPath(importPath, "dep_image_modulector_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_modulector_fixture;
 
@@ -3350,11 +3375,11 @@ unittest {
             int readSeed() {
                 return seed;
             }
-        });
+        }.uniqueDepModule("dep_image_modulector_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_modulector_fixture",
+            "dep_image_modulector_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3363,7 +3388,7 @@ unittest {
 
             extern __gshared int seed;
             int readSeed();
-        });
+        }.uniqueDepModule("dep_image_modulector_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3373,7 +3398,7 @@ unittest {
                     assert(readSeed == 42);
                     assert(seed == 42);
                 }
-            },
+            }.uniqueDepModule("dep_image_modulector_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3410,7 +3435,7 @@ unittest {
     const sandbox = immutable Sandbox();
     with(sandbox) {
         const importPath = "imports";
-        const depPath = buildPath(importPath, "dep_image_tls_fixture.d");
+        const depPath = buildPath(importPath, "dep_image_tls_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_tls_fixture;
 
@@ -3423,11 +3448,11 @@ unittest {
             int readTls() {
                 return tlsCounter;
             }
-        });
+        }.uniqueDepModule("dep_image_tls_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_tls_fixture",
+            "dep_image_tls_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3437,7 +3462,7 @@ unittest {
             extern int tlsCounter;
             void bumpTls();
             int readTls();
-        });
+        }.uniqueDepModule("dep_image_tls_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3450,7 +3475,7 @@ unittest {
                     bumpTls;
                     assert(tlsCounter == 6);
                 }
-            },
+            }.uniqueDepModule("dep_image_tls_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3489,7 +3514,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_struct_global_fixture.d");
+            buildPath(importPath, "dep_image_struct_global_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_struct_global_fixture;
 
@@ -3502,11 +3527,11 @@ unittest {
             }
 
             int configWidth() { return config.width; }
-        });
+        }.uniqueDepModule("dep_image_struct_global_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_struct_global_fixture",
+            "dep_image_struct_global_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3517,7 +3542,7 @@ unittest {
             extern __gshared Config config;
             void setConfig(int w, int h);
             int configWidth();
-        });
+        }.uniqueDepModule("dep_image_struct_global_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3533,7 +3558,7 @@ unittest {
                     assert(configWidth == 7);
                     assert(config.height == 4);
                 }
-            },
+            }.uniqueDepModule("dep_image_struct_global_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3571,7 +3596,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_slice_global_fixture.d");
+            buildPath(importPath, "dep_image_slice_global_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_slice_global_fixture;
 
@@ -3586,11 +3611,11 @@ unittest {
                 foreach (n; numbers) s += n;
                 return s;
             }
-        });
+        }.uniqueDepModule("dep_image_slice_global_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_slice_global_fixture",
+            "dep_image_slice_global_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3599,7 +3624,7 @@ unittest {
 
             extern __gshared int[] numbers;
             int total();
-        });
+        }.uniqueDepModule("dep_image_slice_global_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3612,7 +3637,7 @@ unittest {
                     assert(numbers[1] == 20);
                     assert(numbers[2] == 30);
                 }
-            },
+            }.uniqueDepModule("dep_image_slice_global_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3649,7 +3674,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_slice_write_fixture.d");
+            buildPath(importPath, "dep_image_slice_write_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_slice_write_fixture;
 
@@ -3664,11 +3689,11 @@ unittest {
             size_t payloadLength() {
                 return payload.length;
             }
-        });
+        }.uniqueDepModule("dep_image_slice_write_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_slice_write_fixture",
+            "dep_image_slice_write_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3678,7 +3703,7 @@ unittest {
             extern __gshared int[] payload;
             int sumPayload();
             size_t payloadLength();
-        });
+        }.uniqueDepModule("dep_image_slice_write_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3692,7 +3717,7 @@ unittest {
                     assert(payloadLength() == 1);
                     assert(sumPayload() == 100);
                 }
-            },
+            }.uniqueDepModule("dep_image_slice_write_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3727,7 +3752,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_scalar_width_fixture.d");
+            buildPath(importPath, "dep_image_scalar_width_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_scalar_width_fixture;
 
@@ -3735,11 +3760,11 @@ unittest {
             __gshared double ratio       = 1.5;
             __gshared ubyte  flagByte    = 200;
             __gshared bool   enabledFlag = true;
-        });
+        }.uniqueDepModule("dep_image_scalar_width_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_scalar_width_fixture",
+            "dep_image_scalar_width_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3750,7 +3775,7 @@ unittest {
             extern __gshared double ratio;
             extern __gshared ubyte  flagByte;
             extern __gshared bool   enabledFlag;
-        });
+        }.uniqueDepModule("dep_image_scalar_width_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3762,7 +3787,7 @@ unittest {
                     assert(flagByte == 200);           // unsigned byte
                     assert(enabledFlag == true);       // bool
                 }
-            },
+            }.uniqueDepModule("dep_image_scalar_width_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3799,7 +3824,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_struct_rebind_fixture.d");
+            buildPath(importPath, "dep_image_struct_rebind_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_struct_rebind_fixture;
 
@@ -3808,11 +3833,11 @@ unittest {
 
             int pointX() { return origin.x; }
             int pointY() { return origin.y; }
-        });
+        }.uniqueDepModule("dep_image_struct_rebind_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_struct_rebind_fixture",
+            "dep_image_struct_rebind_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3823,7 +3848,7 @@ unittest {
             extern __gshared Point origin;
             int pointX();
             int pointY();
-        });
+        }.uniqueDepModule("dep_image_struct_rebind_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3835,7 +3860,7 @@ unittest {
                     assert(pointX() == 9);  // native sees the rebind
                     assert(pointY() == 8);
                 }
-            },
+            }.uniqueDepModule("dep_image_struct_rebind_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3871,18 +3896,18 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_static_array_global_fixture.d");
+            buildPath(importPath, "dep_image_static_array_global_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_static_array_global_fixture;
 
             __gshared int[4] grid = [11, 22, 33, 44];
 
             int gridAt(int i) { return grid[i]; }
-        });
+        }.uniqueDepModule("dep_image_static_array_global_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_static_array_global_fixture",
+            "dep_image_static_array_global_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3891,7 +3916,7 @@ unittest {
 
             extern __gshared int[4] grid;
             int gridAt(int i);
-        });
+        }.uniqueDepModule("dep_image_static_array_global_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3903,7 +3928,7 @@ unittest {
                     assert(grid[3] == 44);
                     assert(gridAt(2) == 33);   // native reads its static-array global
                 }
-            },
+            }.uniqueDepModule("dep_image_static_array_global_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -3940,7 +3965,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_nested_struct_global_fixture.d");
+            buildPath(importPath, "dep_image_nested_struct_global_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_nested_struct_global_fixture;
 
@@ -3948,11 +3973,11 @@ unittest {
             __gshared Named entry = Named("hello", 7);
 
             size_t labelLength() { return entry.label.length; }
-        });
+        }.uniqueDepModule("dep_image_nested_struct_global_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_nested_struct_global_fixture",
+            "dep_image_nested_struct_global_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -3962,7 +3987,7 @@ unittest {
             struct Named { string label; int id; }
             extern __gshared Named entry;
             size_t labelLength();
-        });
+        }.uniqueDepModule("dep_image_nested_struct_global_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -3976,7 +4001,7 @@ unittest {
                     assert(labelLength() == 5);      // native reads its own
                                                      // nested global
                 }
-            },
+            }.uniqueDepModule("dep_image_nested_struct_global_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -4016,7 +4041,7 @@ unittest {
         const importPath = "imports";
 
         const depAPath =
-            buildPath(importPath, "dep_image_ctororder_a.d");
+            buildPath(importPath, "dep_image_ctororder_a_" ~ backend.stringof ~ ".d");
         writeFile(depAPath, q{
             module dep_image_ctororder_a;
 
@@ -4025,15 +4050,16 @@ unittest {
             static this() {
                 seedBase = 10;
             }
-        });
+        }.uniqueDepModule("dep_image_ctororder_a", backend.stringof)
+         .uniqueDepModule("seedBase", backend.stringof));
         const imageAPath = buildSharedLibrary(
             sandbox,
-            "dep_image_ctororder_a",
+            "dep_image_ctororder_a_" ~ backend.stringof,
             [depAPath],
         );
 
         const depBPath =
-            buildPath(importPath, "dep_image_ctororder_b.d");
+            buildPath(importPath, "dep_image_ctororder_b_" ~ backend.stringof ~ ".d");
         writeFile(depBPath, q{
             module dep_image_ctororder_b;
 
@@ -4047,10 +4073,11 @@ unittest {
             int readDerived() {
                 return seedDerived;
             }
-        });
+        }.uniqueDepModule("dep_image_ctororder_b", backend.stringof)
+         .uniqueDepModule("seedBase", backend.stringof));
         const imageBPath = buildSharedLibrary(
             sandbox,
-            "dep_image_ctororder_b",
+            "dep_image_ctororder_b_" ~ backend.stringof,
             [depBPath],
         );
 
@@ -4058,7 +4085,7 @@ unittest {
             module dep_image_ctororder_b;
 
             int readDerived();
-        });
+        }.uniqueDepModule("dep_image_ctororder_b", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -4068,7 +4095,7 @@ unittest {
                     assert(readDerived() == 15);  // B's ctor ran after A's:
                                                   // 10 + 5
                 }
-            },
+            }.uniqueDepModule("dep_image_ctororder_b", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -4103,7 +4130,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
 
-        const depAPath = buildPath(importPath, "dep_image_dtneeded_a.d");
+        const depAPath = buildPath(importPath, "dep_image_dtneeded_a_" ~ backend.stringof ~ ".d");
         writeFile(depAPath, q{
             module dep_image_dtneeded_a;
 
@@ -4112,14 +4139,15 @@ unittest {
             static this() {
                 dtNeededSeed = 20;
             }
-        });
+        }.uniqueDepModule("dep_image_dtneeded_a", backend.stringof)
+         .uniqueDepModule("dtNeededSeed", backend.stringof));
         const imageAPath = buildSharedLibrary(
             sandbox,
-            "dep_image_dtneeded_a",
+            "dep_image_dtneeded_a_" ~ backend.stringof,
             [depAPath],
         );
 
-        const depBPath = buildPath(importPath, "dep_image_dtneeded_b.d");
+        const depBPath = buildPath(importPath, "dep_image_dtneeded_b_" ~ backend.stringof ~ ".d");
         writeFile(depBPath, q{
             module dep_image_dtneeded_b;
 
@@ -4133,10 +4161,11 @@ unittest {
             int readDerived() {
                 return derived;
             }
-        });
+        }.uniqueDepModule("dep_image_dtneeded_b", backend.stringof)
+         .uniqueDepModule("dtNeededSeed", backend.stringof));
 
         const imageBPath =
-            inSandboxPath("libdep_image_dtneeded_b.so");
+            inSandboxPath("libdep_image_dtneeded_b_" ~ backend.stringof ~ ".so");
         const buildB = execute([
             "dmd",
             "-shared",
@@ -4152,7 +4181,7 @@ unittest {
             module dep_image_dtneeded_b;
 
             int readDerived();
-        });
+        }.uniqueDepModule("dep_image_dtneeded_b", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -4161,7 +4190,7 @@ unittest {
                 unittest {
                     assert(readDerived() == 24);
                 }
-            },
+            }.uniqueDepModule("dep_image_dtneeded_b", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -4197,19 +4226,19 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
 
-        const depAPath = buildPath(importPath, "dep_image_dtneeded_tls_a.d");
+        const depAPath = buildPath(importPath, "dep_image_dtneeded_tls_a_" ~ backend.stringof ~ ".d");
         writeFile(depAPath, q{
             module dep_image_dtneeded_tls_a;
 
             int dtNeededTlsCounter = 30;
-        });
+        }.uniqueDepModule("dep_image_dtneeded_tls_a", backend.stringof));
         const imageAPath = buildSharedLibrary(
             sandbox,
-            "dep_image_dtneeded_tls_a",
+            "dep_image_dtneeded_tls_a_" ~ backend.stringof,
             [depAPath],
         );
 
-        const depBPath = buildPath(importPath, "dep_image_dtneeded_tls_b.d");
+        const depBPath = buildPath(importPath, "dep_image_dtneeded_tls_b_" ~ backend.stringof ~ ".d");
         writeFile(depBPath, q{
             module dep_image_dtneeded_tls_b;
 
@@ -4222,9 +4251,9 @@ unittest {
             void bumpTlsFromB() {
                 dtNeededTlsCounter += 2;
             }
-        });
+        }.uniqueDepModule("dep_image_dtneeded_tls_b", backend.stringof).uniqueDepModule("dep_image_dtneeded_tls_a", backend.stringof));
 
-        const imageBPath = inSandboxPath("libdep_image_dtneeded_tls_b.so");
+        const imageBPath = inSandboxPath("libdep_image_dtneeded_tls_b_" ~ backend.stringof ~ ".so");
         const buildB = execute([
             "dmd",
             "-shared",
@@ -4241,13 +4270,13 @@ unittest {
             module dep_image_dtneeded_tls_a;
 
             extern int dtNeededTlsCounter;
-        });
+        }.uniqueDepModule("dep_image_dtneeded_tls_a", backend.stringof));
         writeFile(depBPath, q{
             module dep_image_dtneeded_tls_b;
 
             int readTlsFromB();
             void bumpTlsFromB();
-        });
+        }.uniqueDepModule("dep_image_dtneeded_tls_b", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -4262,7 +4291,7 @@ unittest {
                     bumpTlsFromB;
                     assert(dtNeededTlsCounter == 9);
                 }
-            },
+            }.uniqueDepModule("dep_image_dtneeded_tls_a", backend.stringof).uniqueDepModule("dep_image_dtneeded_tls_b", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -4298,7 +4327,7 @@ unittest {
     with(sandbox) {
         const importPath = "imports";
         const depPath =
-            buildPath(importPath, "dep_image_pointer_global_fixture.d");
+            buildPath(importPath, "dep_image_pointer_global_fixture_" ~ backend.stringof ~ ".d");
         writeFile(depPath, q{
             module dep_image_pointer_global_fixture;
 
@@ -4306,11 +4335,11 @@ unittest {
             __gshared int* anchorPtr = &anchor;
 
             int derefArg(int* p) { return *p; }
-        });
+        }.uniqueDepModule("dep_image_pointer_global_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_pointer_global_fixture",
+            "dep_image_pointer_global_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -4320,7 +4349,7 @@ unittest {
             extern __gshared int anchor;
             extern __gshared int* anchorPtr;
             int derefArg(int* p);
-        });
+        }.uniqueDepModule("dep_image_pointer_global_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -4335,7 +4364,7 @@ unittest {
                                                          // it to native which
                                                          // derefs it
                 }
-            },
+            }.uniqueDepModule("dep_image_pointer_global_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -4376,7 +4405,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_chained_error_fixture.d",
+            "dep_image_chained_error_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_chained_error_fixture;
@@ -4393,11 +4422,11 @@ unittest {
                 outer.next = inner;
                 throw outer;
             }
-        });
+        }.uniqueDepModule("dep_image_chained_error_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_chained_error_fixture",
+            "dep_image_chained_error_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -4409,7 +4438,7 @@ unittest {
             }
 
             void dependencyThrowChainedError();
-        });
+        }.uniqueDepModule("dep_image_chained_error_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -4428,7 +4457,7 @@ unittest {
                         }
                     }
                 }
-            },
+            }.uniqueDepModule("dep_image_chained_error_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 
@@ -4464,7 +4493,7 @@ unittest {
         const importPath = "imports";
         const depPath = buildPath(
             importPath,
-            "dep_image_intermediate_exception_fixture.d",
+            "dep_image_intermediate_exception_fixture_" ~ backend.stringof ~ ".d",
         );
         writeFile(depPath, q{
             module dep_image_intermediate_exception_fixture;
@@ -4484,11 +4513,11 @@ unittest {
             void dependencyThrowIntermediate() {
                 throw new DependencyException("dependency failed");
             }
-        });
+        }.uniqueDepModule("dep_image_intermediate_exception_fixture", backend.stringof));
 
         const imagePath = buildSharedLibrary(
             sandbox,
-            "dep_image_intermediate_exception_fixture",
+            "dep_image_intermediate_exception_fixture_" ~ backend.stringof,
             [depPath],
         );
 
@@ -4504,7 +4533,7 @@ unittest {
             }
 
             void dependencyThrowIntermediate();
-        });
+        }.uniqueDepModule("dep_image_intermediate_exception_fixture", backend.stringof));
 
         auto moduleResult = parseSnippetWithCheckActionContext(
             q{
@@ -4518,7 +4547,7 @@ unittest {
                         assert(caught.msg == "dependency failed");
                     }
                 }
-            },
+            }.uniqueDepModule("dep_image_intermediate_exception_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 

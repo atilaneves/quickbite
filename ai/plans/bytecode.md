@@ -5397,3 +5397,243 @@ already-supported four- and eight-byte integer scalars; it does not add
 pointer arithmetic, non-integer post-increment, or a general lvalue layer.
 Verification: focused Bytecode red then green; `ninja bin/ut`; and
 `bin/ut --random`.
+
+`pointer.addressOfDatasegGlobalDoesNotShadowInitializer` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported expression in bytecode core: & gValue`. The typed-frame
+core now materializes a scalar module-data address for both DMD address forms
+(`AddrExp` and `SymOffExp`), and seeds an integer scalar module initializer in
+the existing mutable module-data segment. This does not add aggregate module
+storage, dynamic module initializers, module constructors, or general module
+lifetime semantics. Verification: focused Bytecode red then green; `ninja
+bin/ut`; and `bin/ut --random` passed (seed `3623415330`).
+
+`pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat` promoted to
+Bytecode, 2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row writes `1.0f`'s raw bits to
+a caller's `float` local through a `uint*` passed to a normal callee, then
+reads the caller's local after return. The focused Bytecode row passed on its
+first candidate run, confirming the existing addressable scalar slot crosses
+the ordinary call boundary without a production change. Ctfe and LLVMJit
+remain omitted under the existing omit-don't-pin convention. Verification:
+focused Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
+
+`pointer.addressOfStructFieldIsDistinctAcrossInstances` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The row takes the addresses of identically initialized
+scalar fields from two local struct instances, requires distinct addresses,
+and reads both pointees. The focused Bytecode row passed on its first candidate
+run, confirming the existing inline struct-field offset and frame-address
+paths already match compiled D. This adds no broader aggregate-address or
+heap-struct semantics. Verification: focused Bytecode row; `ninja bin/ut`;
+and `bin/ut --random` attempted with seed `874019670`, which failed in the
+concurrently modified `dynamicArrayTruthinessControlsEnforceFallback.Bytecode`
+row (`130 != 3`), outside this rung's files.
+
+Reviewer fix, 2026-07-14: the running machine now uses the program's live
+module-data segment rather than a startup copy. The compiler reserves every
+16-bit-addressable module-data byte when it creates the program, so a lazily
+compiled callee can grow the segment without invalidating raw module addresses
+already handed to bytecode. No new language surface or tests were added.
+
+Reviewer fix, 2026-07-14: scalar module slots now validate their initializer
+before becoming addressable. Integer literals retain the existing native-byte
+initialization, while `float`, `double`, and `real` literals use the same raw
+IEEE/native-real bytes as frame literals. Other initializer expressions fail
+deterministically instead of exposing a silently zero-initialized module slot.
+No tests were changed.
+
+`dynamicArray.dollarReflectsLengthAfterInPlaceGrowth` promoted to Bytecode,
+2026-07-14: pre-approved SystemLinker-backed matrix promotion. DMD lowers the
+assertion's indexed operand into a `ref` temporary, so obtaining the element
+address compiles the `$ - 1` index before the ordinary array-load path. The
+compiler now makes the current descriptor length available while compiling
+both dynamic-array load indices and dynamic-element address indices. This
+keeps `$` scoped to an individual index expression and reflects the descriptor
+after the preceding `length++`; it does not add slice bounds, writes through
+indexed `ref` arguments, or general `$` support. Verification: focused
+Bytecode row red (`Unsupported variable in bytecode core: $`) then green; full
+`ninja bin/ut`; and `bin/ut --random` passed (seed `3470295131`).
+
+`struct.voidInitialisedFieldSliceAssignment` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The focused Bytecode row was red first because a static
+array field could not become a slice view; after that narrow support it exposed
+the string parameter's compact descriptor and a runtime static-array index.
+Static-array field offsets now feed the existing slice-view materialization;
+string slicing converts the compact descriptor to the existing native one; and
+only constant static-array indices retain the direct inline-offset path, with
+runtime indices using the existing slice descriptor. This does not add bounds
+checks, struct default initialization, or general static-array lifetime work.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random` reproduced the pre-existing
+`dynamicArrayTruthinessControlsEnforceFallback.Bytecode` failure; mandated
+`bin/ut --seed 3353579115 --quiet` replay also exposed pre-existing
+SystemLinker temporary-library races.
+
+Regression fix, 2026-07-14: the existing direct SystemLinker-backed
+`dynamicArrayTruthinessControlsEnforceFallback.Bytecode` row had treated the
+first byte of a dynamic-array descriptor as its condition, so a nonempty
+array could follow a false branch. Dynamic-array conditions now read the
+descriptor length, covering `if`, `for`, `do`, ternary, `!`, and short-circuit
+logical expressions through the shared condition compiler. This does not add
+array comparisons, bounds checks, or array values beyond the existing
+descriptor support. No test body changed. Verification: focused SystemLinker
+and Bytecode rows (Bytecode red `130 != 3`, then green); `ninja bin/ut`; and
+`bin/ut --random` plus the requested seed replays.
+
+`refArgument.floatWriteBackSkipComparesBitPatternNotEquality` promoted to
+Bytecode, 2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. Its focused Bytecode row was red
+with `Unsupported division in bytecode core: 1.0 / d`. The typed-frame core
+now emits and executes a `double` division instruction, allowing the fixture
+to distinguish positive from negative zero after a `ref` write-back. This does
+not add float or real division, division-by-zero diagnostics, or broader
+floating arithmetic. Verification: focused Bytecode red then green; `ninja
+bin/ut`; and `bin/ut --random` initially hit an unrelated LLVMJit
+`dependencyImage.externDStructDestructor` assertion failure, while the
+required `bin/ut --seed 2107431968 --quiet` replay passed.
+
+`pointer.addressOfStructFieldIsStableAcrossReEvaluation` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The focused Bytecode row passed on its first candidate
+run, confirming that repeated `&localStruct.field` evaluation reuses the
+typed-frame address identity, complementing the preceding distinct-instances
+promotion. This adds no field write-through, heap-struct, or aggregate-address
+semantics. Verification: focused Bytecode row; `ninja bin/ut`; and
+`bin/ut --random` failed in the unrelated SystemLinker
+`refCursorReadAdvancesPosition` row; the mandated `--seed 3463408491 --quiet`
+replay reproduced its temporary-library link failure.
+
+`pointer.addressOfStructFieldWriteThroughUpdatesField` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row passed on
+its first candidate run, confirming that the existing typed-frame field
+address remains a live alias for a subsequent scalar pointer store. No
+production change was needed. This does not add aggregate writes, heap
+structs, or general lvalue support. Verification: focused Bytecode row;
+`ninja bin/ut`; and `bin/ut --random`.
+
+`pointer.reinterpretWriteThroughRefParameterPointerReachesCaller` promoted to
+Bytecode, 2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row passes a caller `float`
+through a `ref` parameter, takes a same-size `uint*` view in the callee, and
+writes raw bits that the caller then reads as `1.0f`. The focused Bytecode row
+passed on its first candidate run, confirming that the existing typed-frame
+`ref` binding preserves the caller's live scalar storage across the ordinary
+call boundary. No production change was needed. This adds no general pointer
+or aggregate alias semantics. Verification: focused Bytecode row; `ninja
+bin/ut`; and `bin/ut --random`.
+
+`staticArray.foreachRefWritesVoidInitialisedElements` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The focused Bytecode row was red (`0 != 34`) because a
+`ref int[2]` parameter was treated as a by-value static-array block. Static
+array parameter layout now passes a caller-frame offset for `ref` parameters,
+records the block-size write-back, and accepts static-array locals as ref
+arguments. The existing frame copy/write-back mechanism then preserves the
+loop's element writes in the caller's `= void` array. This does not add general
+foreach lowering, aggregate lifetime handling, or static-array copies.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random`.
+
+`pointer.recursiveDeclarationDropsStaleScalarCell` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct SystemLinker-backed
+compile-time fixture. The row recursively takes the address of a same-AST
+local at two call depths, requiring each call frame to retain distinct native
+storage. The focused Bytecode row passed on its first candidate run, confirming
+that its typed-frame slots do not inherit stale local state across recursion.
+No production change was needed. This does not add general recursive aggregate
+or pointer lifetime semantics. Verification: focused Bytecode row; `ninja
+bin/ut`; and `bin/ut --random`.
+
+`dynamicArray.ptrPointsAtFirstElement` promoted to Bytecode, 2026-07-14:
+pre-approved promotion of the existing direct SystemLinker-backed compile-time
+fixture. The row compares `values.ptr` to `&values[0]`, dereferences it, and
+uses pointer indexing. The focused Bytecode row passed on its first candidate
+run, confirming the existing dynamic-array descriptor pointer and pointer-load
+paths already agree. No production change was needed. This does not add array
+reserve, capacity, or interior-slice append semantics. Verification: passing
+focused five-backend matrix; `ninja bin/ut`; and `bin/ut --random`.
+
+`refCall.assignmentToRefReturningCallWritesArgument` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported assignment in bytecode core: self(i) = 42`. The typed-frame
+core now accepts an assignment through a direct `ref`-returning call when its
+sole return is a `ref` parameter: it executes the callee (including its
+existing ref-parameter writeback), then stores through that parameter's
+original caller slot. This deliberately does not add branch-dependent ref
+returns, ref returns of fields or globals, or member ref returns. Verification:
+focused Bytecode red then green; passing focused five-backend matrix; `ninja
+bin/ut`; and `bin/ut --random`.
+
+`dynamicArray.refParamWriteBackThroughIndexArgument` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported ref argument in bytecode core: arr[1]`. A scalar dynamic
+array element passed by `ref` now materializes in one call-local slot, uses the
+existing ref-parameter copy/writeback path during the call, and stores that
+slot back through the same already-evaluated descriptor and index after a
+normal return. This deliberately excludes aggregate elements, unknown array
+expressions, and exception-path writeback. Verification: focused Bytecode red
+then green; passing focused five-backend matrix; `ninja bin/ut`; and
+`bin/ut --random` passed (seed `3598663860`).
+
+`pointer.newStructPointersWithEqualContentAreDistinct` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported struct value in bytecode core: *a`. A dereference of a
+pointer to a 1-, 2-, 4-, 8-, or 16-byte struct now loads its complete block
+into an inline frame slot before the existing field-wise struct equality path
+compares it. This deliberately does not support larger struct loads, struct
+pointer assignment, or general pointer-based aggregate operations.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random` plus replay with seed `2456686981` passed.
+
+`pointer.addressOfRefReturningCallAliasesArgument` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported expression in bytecode core: &self(i)`. A direct scalar
+`ref` return that returns one `ref` parameter now executes normally, then
+forms a typed-frame address of that parameter's original caller lvalue. This
+does not add branch-dependent ref returns, ref returns of fields or globals,
+or member ref returns. Verification: focused Bytecode red then green;
+`ninja bin/ut`; and `bin/ut --random` encountered an unrelated LLVMJit
+symbol-materialization failure, while the required
+`bin/ut --seed 1147723882 --quiet` replay passed.
+
+`pointer.loopRedeclaredLocalDropsStaleScalarCell` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row takes the address of a
+fresh loop-local scalar on each `foreach` iteration and reads it through that
+pointer. The focused Bytecode row passed on its first candidate run,
+confirming typed-frame local storage is fresh for each loop iteration. No
+production change was needed. This does not add loop-scoped aggregate
+lifetimes, general lvalue support, or pointer arithmetic. Verification:
+focused Bytecode row; `ninja bin/ut`; and `bin/ut --random`.
+
+`pointer.postIncrementReadsPromotedScalarCell` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row writes a local through a
+pointer in a callee, then post-increments and reads the local in its caller.
+The focused Bytecode row passed on its first candidate run, confirming the
+typed-frame scalar slot remains authoritative for a direct post-increment
+after a cross-frame pointer write. No production change was needed. This does
+not add pointer arithmetic, aggregate pointer writes, or general lvalue
+post-increment semantics. Verification: focused Bytecode row; `ninja bin/ut`;
+and `bin/ut --random`.
+
+`struct.staticArrayCopyRunsPostblitAndDtors` promoted to Bytecode,
+2026-07-14: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The row copies a static array of
+structs with postblits and destructors, then verifies the corresponding
+lifetime effects. The focused Bytecode row passed on its first candidate run,
+confirming the existing aggregate copy and lifetime paths match compiled D.
+No production change was needed. This does not add dynamic-array lifetime,
+class lifetime, or general aggregate assignment semantics. Verification:
+focused Bytecode row and `ninja bin/ut` passed. `bin/ut --random` failed in
+the unrelated Interpreter `dependencyImage.externDRefReturn` row (seed
+`610107794`); its mandated replay instead exposed pre-existing SystemLinker
+temporary-library races.

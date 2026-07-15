@@ -981,7 +981,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1286,7 +1286,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("struct.voidInitialisedFieldSliceAssignment." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1547,9 +1547,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // fixture pins that case. `Walker.identicalValues` (impl.d) now compares
 // floating scalars by bit pattern (D's `is` semantics), matching real D's
 // actual `-0.0`/`+0.0` distinction, and defers to `==` for everything else.
-// Bytecode omitted: floating-point division is not implemented there yet
-// (`Unsupported division in bytecode core`), unrelated to this fix.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("refArgument.floatWriteBackSkipComparesBitPatternNotEquality." ~
         backend.stringof)
     @Tags(backend.stringof)

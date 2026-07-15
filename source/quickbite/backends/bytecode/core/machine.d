@@ -32,7 +32,11 @@ package(quickbite.backends.bytecode) RunResult run(
     // intervening calls that grow the stack.
     auto stack = new ubyte[](program.functions[0].frameSize);
     stack.reserve(stackCapacity);
-    auto moduleData = program.moduleData.dup;
+    // Lazy compilation can add module slots while this machine is running, so
+    // access the program-owned segment directly. The compiler reserves its
+    // maximum addressable capacity before execution, keeping raw addresses
+    // produced by `moduleAddress` stable as the visible length grows.
+    ref moduleData = program.moduleData;
     // VM-owned writable heap blocks backing dynamic arrays. Holding the GC
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.
@@ -438,6 +442,15 @@ package(quickbite.backends.bytecode) RunResult run(
                         base + instruction.a
                         .. base + instruction.a + instruction.c
                     ];
+                ++ip;
+                break;
+
+            case moduleAddress:
+                writeRawPointer(
+                    stack,
+                    base + instruction.a,
+                    cast(size_t) (moduleData.ptr + instruction.b),
+                );
                 ++ip;
                 break;
 
@@ -1042,6 +1055,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 );
                 stack[base + instruction.a
                     .. base + instruction.a + float.sizeof] = difference;
+                ++ip;
+                break;
+
+            case divDouble:
+                const ubyte[double.sizeof] quotient = floatBytes(
+                    floatValue!double(stack, base + instruction.b) /
+                    floatValue!double(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = quotient;
                 ++ip;
                 break;
 

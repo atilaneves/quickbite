@@ -1365,9 +1365,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // Same reinterpret-write, but through a pointer passed across a call: the
 // callee writes raw bits into the caller's `float` local via a `uint*`
 // parameter. The caller must observe the write after the call returns.
-// SystemLinker is the oracle; other backends omitted for the same reasons as
-// the fixture above.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+// SystemLinker is the oracle; Ctfe and LLVMJit remain omitted for the same
+// reasons as the fixture above.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1432,10 +1432,11 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // must observe the write after the call returns. This is the guest-level
 // call-site frontier of value.md item 7: a freshly promoted native cell for
 // the `ref` parameter must stay connected to the caller's own cell/box.
-// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
-// convention (address-of-a-local/parameter and float byte-reinterpretation
-// are unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+// SystemLinker is the oracle; Bytecode runs this confirmed typed-frame path.
+// Other backends remain omitted per the omit-don't-pin convention
+// (address-of-a-local/parameter and float byte-reinterpretation are
+// unconfirmed/unsupported there).
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.reinterpretWriteThroughRefParameterPointerReachesCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1472,7 +1473,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // getting a fresh one. SystemLinker is the oracle; other backends omitted
 // per the omit-don't-pin convention (address-of-a-local is
 // unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.recursiveDeclarationDropsStaleScalarCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1496,7 +1497,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // Same Finding 1 bug, loop-shaped: a `foreach` body re-executes the same
 // `DeclarationExp` for `x` every iteration, so the first iteration's
 // promoted cell must not leak into the second iteration's fresh `x`.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.loopRedeclaredLocalDropsStaleScalarCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1520,7 +1521,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `variable in locals` directly, bypassing a promoted `scalarCells` entry --
 // stale once a cross-frame pointer write (`setToFive`) refreshes only the
 // cell.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.postIncrementReadsPromotedScalarCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1600,7 +1601,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // address made every later read of `gValue` see 0 instead of 42. Only true
 // stack locals get cells; dataseg variables keep their own
 // storage/initializer/extern machinery.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.addressOfDatasegGlobalDoesNotShadowInitializer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1955,7 +1956,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // must run the call and yield the address of the returned lvalue, aliasing
 // the caller's argument so writes through the pointer stick.  automem's
 // vector tests hit this on every `theAllocator` fetch.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.addressOfRefReturningCallAliasesArgument." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2004,9 +2005,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // original.  Ctfe omitted: DMD CTFE genuinely refuses to convert a struct
 // field's address for pointer-identity comparison at compile time
 // (`cannot cast '&Holder(7).value' to 'ulong' at compile time`), not a gap
-// to close here.  Bytecode omitted: AddrExp of a DotVarExp is not
-// implemented there yet (still under active development).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+// to close here.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.addressOfStructFieldIsDistinctAcrossInstances." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2038,8 +2038,9 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 // (`&a.value !is &a.value`) — real D gives the same address back. Fixed by
 // memoizing the allocation id per (receiver variable, field index). Ctfe
 // omitted: DMD CTFE genuinely refuses this construct at compile time.
-// Bytecode omitted: AddrExp of a DotVarExp is not implemented there yet.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+// Bytecode shares the typed-frame field-address path; Ctfe still rejects the
+// pointer-identity comparison during compile-time evaluation.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("pointer.addressOfStructFieldIsStableAcrossReEvaluation." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2077,10 +2078,11 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 // end. The Interpreter used to refuse this write outright
 // (`shouldThrowWithMessage("Unsupported interpreter assignment target.")`,
 // characterizing the pre-cell limitation); now it writes through the same
-// cell exactly like SystemLinker's real aliasing, so both backends assert
-// the SAME value and share one fixture rather than a throw pinned only for
-// Interpreter.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+// cell exactly like SystemLinker's real aliasing. Bytecode was promoted
+// onto this same fixture independently on master (bytecode struct field
+// address write-through), so all three backends now share one fixture
+// asserting the SAME value rather than a throw pinned only for Interpreter.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2478,9 +2480,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `struct.pointer` test (`decOuter.inner.shouldNotEqual(outer.inner)`) hits
 // this: the decoded pointer and the original both allocate a fresh
 // `InnerStruct` via a bodyless-constructor-free `new`, and both landed on
-// allocation id 0.  Bytecode omitted: dereferencing a struct pointer (`*a`)
-// is not implemented there yet (still under active development).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+// allocation id 0.
+static foreach (backend; AliasSeq!(
+    Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit,
+)) {
     @("pointer.newStructPointersWithEqualContentAreDistinct." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2506,7 +2509,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // callee and write through the returned lvalue, aliasing the caller's
 // argument.  automem's vector tests hit this shape 10× as
 // `Unsupported interpreter assignment target: call`.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("refCall.assignmentToRefReturningCallWritesArgument." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
