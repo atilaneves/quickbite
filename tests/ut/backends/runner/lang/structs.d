@@ -53,7 +53,6 @@ static foreach (backend; Matrix!()) {
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("struct.tupleofForeachRefReadsAndWritesFields." ~ backend.stringof)
     @Tags(backend.stringof)

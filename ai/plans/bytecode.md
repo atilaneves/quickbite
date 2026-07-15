@@ -6165,3 +6165,20 @@ promotion, the focused Bytecode row, focused five-backend matrix, and final
 unrelated REPL failure before crashing with signal 11 under seed
 `2863503837`; its required `bin/ut --seed 2863503837 --quiet` replay
 reproduced exit code 139.
+
+`struct.tupleofForeachRefReadsAndWritesFields` promoted to Bytecode,
+2026-07-16: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that `foreach (ref field; record.tupleof)` reads
+and writes the inline scalar fields through their native struct storage. No
+production change was needed. This does not add nested aggregate fields,
+tuple expansion outside `foreach`, or broader aggregate-reference lowering.
+Before promotion, the recorded seed `2863503837` still reproduced the
+pre-existing signal-11 suite crash. The separately reported
+`repl.backend.displaysStaticStringArrayResults.Bytecode` failure also
+reproduced alone as an `ArraySliceError` at `machine.d:437`; it is therefore
+an independent pre-existing display-track ratchet failure, not caused by this
+struct promotion. After promotion, the focused Bytecode row and
+`ninja bin/ut` passed. The final `bin/ut --random` crashed with the
+pre-existing signal 11 under seed `1989571982`; its required
+`bin/ut --seed 1989571982 --quiet` replay reproduced exit code 139.
