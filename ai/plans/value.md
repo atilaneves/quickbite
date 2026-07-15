@@ -5971,6 +5971,64 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    item 4 (aggregate composition -- a class field that is itself a
    struct/array/class handle rather than a scalar).
 
+   Progress 2026-07-15 (class reference identity, decomposition item 2 --
+   cross-frame parameter aliasing): investigated the task's own headline
+   scenario first (`void mutate(C c) { c.x = 99; } ... mutate(c); assert(c.x
+   == 99);`) and found it ALREADY GREEN today, both as a fresh fixture and
+   as the pre-existing `classReferencePassedByValueMutatesObject` fixture in
+   `cerealed.d`: `writeCelledLocal` (used by every `writeLocation` `VarExp`
+   arm, including the §9.10 shim `writeBackByValueClassArguments`'s own
+   whole-value writeback) already refreshes a variable's `classCells` entry
+   on any whole-value overwrite when one is present, so the existing
+   value-diffing shim and the byte-shared cell mechanism cooperate
+   correctly for a single caller/callee alias pair, even across a call
+   boundary. The REAL divergence: the shim links only the ONE argument
+   expression it was invoked with back to the caller; it has no mechanism
+   linking two DIFFERENT parameter `VarDeclaration`s bound from the SAME
+   argument within the callee's OWN frame. Fixture
+   `class.sameObjectPassedAsTwoParametersSharesIdentity.{Interpreter,
+   SystemLinker}` in `tests/ut/backends/runner/ct/expressions.d`: `void
+   combine(C a, C b) { b.x = 99; assert(a.x == 99); }` called as `combine(c,
+   c)` -- RED diagnostic on Interpreter: `0 != 99` (green on the
+   SystemLinker oracle). Fix: `registerClassArgumentAliases` (mirrors
+   `registerClassAliasIfPlainVar`, cross-frame) in `impl.d`, called from
+   `runFunction` and `runMemberFunction` right after `child.classCells =
+   classCells.dup` and before `child.bindFunctionParameters` -- for every
+   non-`ref` class-typed parameter whose argument expression is a plain
+   `VarExp`, promotes (or reuses) `this` (the CALLER)'s `classCells` entry
+   for the source variable via the existing `promoteClassCell`, then points
+   `child`'s entry for the PARAMETER at the SAME `NativeBlock`. Two
+   parameters bound from the same source variable therefore both alias the
+   identical cell (the second's `promoteClassCell` call is a no-op reusing
+   the first's promotion), and the single-parameter caller/callee case gets
+   the identical byte-shared cell too, keeping it green through the real
+   path rather than the diffing shim alone. Drops any stale
+   `child.classCells` entry inherited from an ancestor recursive call of
+   the same `FuncDeclaration` first (parameters are the same
+   `VarDeclaration` at every recursion depth), matching the existing
+   `scalarCells`/`arrayCells`/`structCells` drop-on-rebind pattern in
+   `bindFunctionParameters`, so a non-aliasing argument at a later call
+   cannot resurrect an unrelated ancestor cell. No §9.10 shim retired:
+   `writeBackByValueClassArguments` still runs unconditionally after every
+   call (its own existing fixtures, including
+   `classReferencePassedByValueMutatesObject`, stay green through the real
+   path now rather than needing it, but retiring the shim itself is out of
+   scope for this slice -- per the work order, retirement begins with
+   decomposition item 3's `this`-reached aliasing). Scope limited to
+   `runFunction`/`runMemberFunction` (the free-function and member-function
+   call paths that already call `writeBackByValueClassArguments`); the
+   ref-returning-function and constructor call sites were left untouched --
+   narrower argument-expression plumbing there, and no fixture demanded it.
+   Focused suites all green: ct.expressions 529/0 (5 failing as expected),
+   ct.structs 291/0, ct.exceptions 130/0, interpreter 218/0, bin.repl
+   228/0, evaluator.eval 71/0, ct.cerealed 164/0 (1 failing as expected),
+   ct.pollution 3/0, ct.diagnostics 177/0 (all "failing as expected" counts
+   are pre-existing `@ShouldFail` characterizations, untouched). Remaining
+   follow-up: decomposition item 3 (`this`-reached aliasing, which begins
+   retiring `writeBackByValueClassArguments`) and item 4 (aggregate
+   composition -- a class field that is itself a struct/array/class handle
+   rather than a scalar).
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

@@ -2095,6 +2095,42 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Cross-frame class reference aliasing (value.md item 7's class phase,
+// decomposition item 2): passing the SAME object as TWO different by-value
+// parameters must leave both parameters observing the SAME object, since a
+// class argument is reference-passed -- exactly as if both parameters were
+// `C c2 = c;` aliases of one another, except the aliasing happens at the
+// call boundary (parameter binding) rather than a declaration. The existing
+// §9.10 shim (`writeBackByValueClassArguments`) only writes the mutated
+// value back into the ONE argument expression location it was invoked with
+// (`locals[b]`'s own caller-side location) after the call returns -- it has
+// no mechanism linking the SEPARATE `VarDeclaration`s `a` and `b` DURING the
+// call, so a read of `a.x` immediately after `b.x = 99` inside the callee's
+// own frame still sees the stale, independently-boxed copy bound for `a`.
+// Only Interpreter and SystemLinker (the oracle) are pinned here per the
+// omit-don't-pin convention.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.sameObjectPassedAsTwoParametersSharesIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            void combine(C a, C b) {
+                b.x = 99;
+                assert(a.x == 99);
+            }
+
+            unittest {
+                C c = new C();
+                combine(c, c);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

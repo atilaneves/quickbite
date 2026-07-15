@@ -2612,6 +2612,73 @@ private struct Walker {
             classCells[target] = *cell;
     }
 
+    // Cross-frame counterpart of `registerClassAliasIfPlainVar` above (value.md
+    // item 7 decomposition item 2): a by-value class PARAMETER is still a
+    // REFERENCE to the caller's object, exactly like `C c2 = c;`, except the
+    // aliasing happens at the call boundary (parameter binding) instead of a
+    // declaration, and the two `VarDeclaration`s involved (the caller's
+    // argument variable and the callee's own parameter) live in different
+    // frames -- `this` is the CALLER (where the argument variable's cell must
+    // be promoted/read) and `child` is the callee-to-be (whose classCells
+    // entry for the parameter this seeds). Runs once per call, right after
+    // `child.classCells = classCells.dup` -- so this assignment is not
+    // clobbered by that dup -- and before `child.bindFunctionParameters`.
+    // Promotes (or reuses) `this.classCells[sourceVariable]` the same way
+    // `registerClassAliasIfPlainVar` does, then points `child`'s entry for
+    // `parameter` at that SAME `NativeBlock`, so TWO different parameters
+    // bound from the SAME argument variable (`combine(c, c)`) end up sharing
+    // one cell too -- the second iteration's `promoteClassCell` is a no-op
+    // (the first iteration already promoted it), and both parameters' entries
+    // point at the identical bytes. Drops any stale `child.classCells` entry
+    // inherited from an ancestor recursive call of the same `FuncDeclaration`
+    // (parameters are the same `VarDeclaration` at every recursion depth) so
+    // a non-aliasing argument on a later call never resurrects a prior
+    // depth's unrelated cell. A no-op (no `child.classCells` entry left) for
+    // a `ref` parameter (already reference-passed via
+    // `writeBackRefArguments`), a non-class parameter, a non-`VarExp`
+    // argument (e.g. `mutate(makeC())`), or a receiver whose
+    // `promoteClassCell` is itself a no-op (dataseg source, or a boxed value
+    // that is not a class object, e.g. still `null`) -- every one of those
+    // leaves the parameter using the existing boxed
+    // `writeBackByValueClassArguments` shim unchanged.
+    private void registerClassArgumentAliases(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (parameter.isReference)
+                continue;
+
+            if (parameter.type is null || parameter.type.toBasetype.isTypeClass is null)
+                continue;
+
+            child.classCells.remove(parameter);
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            if (argument is null)
+                continue;
+
+            auto sourceVar = argument.isVarExp;
+            if (sourceVar is null)
+                continue;
+
+            auto sourceVariable = sourceVar.var.isVarDeclaration;
+            if (sourceVariable is null)
+                continue;
+
+            promoteClassCell(sourceVariable);
+            if (auto cell = sourceVariable in classCells)
+                child.classCells[parameter] = *cell;
+        }
+    }
+
     // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
     // `cell` from `classValue`'s boxed fields -- the class counterpart of
     // `writeStructCellScalarFields`. A non-scalar field (nested struct,
@@ -4565,6 +4632,7 @@ private struct Walker {
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
         seedPointerTargetLocals(child);
+        registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
@@ -4664,6 +4732,7 @@ private struct Walker {
             child.thisValue = receiver;
         }
         child.hasThis = true;
+        registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
