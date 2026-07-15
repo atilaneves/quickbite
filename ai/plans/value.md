@@ -5930,6 +5930,47 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    call site for the composition accessors -- that remains the next step
    described just above.
 
+   Progress 2026-07-15 (class reference identity, decomposition item 1 --
+   same-frame plain-variable aliasing): the class phase's first
+   guest-reachable slice beyond `&c.field`. Before this, class REFERENCE
+   identity was unmodelled: each class-typed local boxed its OWN
+   independent copy of the field array (`Value.withClassField` builds a
+   brand-new value written only into the target variable's own `locals`),
+   so `C c2 = c; c2.x = 99; assert(c.x == 99)` silently read the stale
+   original. Fixture
+   `class.aliasedVariableWriteIsVisibleThroughOriginal.{Interpreter,
+   SystemLinker}` in `tests/ut/backends/runner/ct/expressions.d` (RED
+   diagnostic on Interpreter: `0 != 99`; green on the SystemLinker
+   oracle). Fix: `C c2 = c;` / `c2 = c;` now eagerly shares ONE
+   authoritative `classCells` `NativeBlock` between the two variables --
+   `registerClassAliasIfPlainVar` (called from `runDeclarationExpression`
+   and `runAssignExpression`) promotes the source's cell via
+   `promoteClassCell` and points the target's `classCells` entry at the
+   same block (a `NativeBlock` is a value struct over a `bytes` slice, so
+   the copy shares the byte range, exactly as two
+   `structFieldPointerVariables` share a `structCells` block). The general
+   class-field read and write paths now consult that cell WHEN PRESENT:
+   `runDotVarExpression` reads through `classCellFieldValue` before the
+   boxed `classFieldAt`, and `writeLocation`'s `DotVarExp` arm mirrors the
+   write through `writeClassCellFieldIfPresent` before the boxed
+   `withClassField` -- both no-ops for a non-`VarExp` receiver, a receiver
+   with no `classCells` entry, or a non-scalar field, so every existing
+   class/struct test that never aliases keeps its boxed `locals` path
+   unchanged. Scope limited to scalar (`native_scalar.isNativeScalarType`)
+   fields, matching the existing `classCells` slice. No §9.10 shim retired
+   (`writeBackByValueClassArguments` retirement begins with decomposition
+   item 3's `this`-reached aliasing, per the migration plan). Focused
+   suites all green: ct.expressions 527/0, ct.structs 291/0,
+   ct.cerealed 164/0, ct.diagnostics 177/0, ct.exceptions 130/0,
+   ct.pollution 3/0, interpreter 218/0, bin.repl 228/0,
+   evaluator.eval 71/0 (the "failing as expected" counts are pre-existing
+   `@ShouldFail` characterizations, untouched). Remaining follow-up:
+   decomposition item 2 (cross-frame aliasing -- an aliased class local
+   passed into or returned from a callee), item 3 (`this`-reached
+   aliasing, which begins retiring `writeBackByValueClassArguments`), and
+   item 4 (aggregate composition -- a class field that is itself a
+   struct/array/class handle rather than a scalar).
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

@@ -2578,6 +2578,40 @@ private struct Walker {
         classCells[variable] = cell;
     }
 
+    // value.md item 7 decomposition item 1 (same-frame plain-variable class
+    // aliasing): `C c2 = c;` or `c2 = c;` copies a REFERENCE, so `c2` must
+    // share `c`'s object identity, not box an independent copy of its
+    // fields. Eagerly promotes (or reuses) `source`'s `classCells` entry and
+    // points `target` at the SAME `NativeBlock` -- `NativeBlock` is a value
+    // struct whose `bytes` is a slice, so copying it (`classCells[target] =
+    // *cell`) shares the one underlying byte range, exactly like two
+    // `structFieldPointerVariables` entries sharing a `structCells` block.
+    // A no-op when `source` is not a bare `VarExp` (e.g. `c2 = f();`), or
+    // `target` is not class-typed, or `promoteClassCell` itself is a no-op
+    // (a dataseg variable, or a receiver whose boxed value is not a class
+    // object -- e.g. still `null`) -- every one of those leaves `target`
+    // with no `classCells` entry, so it keeps using the existing boxed
+    // `locals` path unchanged.
+    private void registerClassAliasIfPlainVar(
+        VarDeclaration target,
+        imported!"dmd.expression".Expression source,
+    ) {
+        if (target.type.toBasetype.isTypeClass is null)
+            return;
+
+        auto sourceVar = source.isVarExp;
+        if (sourceVar is null)
+            return;
+
+        auto sourceVariable = sourceVar.var.isVarDeclaration;
+        if (sourceVariable is null || sourceVariable is target)
+            return;
+
+        promoteClassCell(sourceVariable);
+        if (auto cell = sourceVariable in classCells)
+            classCells[target] = *cell;
+    }
+
     // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
     // `cell` from `classValue`'s boxed fields -- the class counterpart of
     // `writeStructCellScalarFields`. A non-scalar field (nested struct,
@@ -6187,12 +6221,72 @@ private struct Walker {
             const target = receiver.isLocalPointer
                 ? localPointerTarget(receiver)
                 : receiver;
-            if (target.isClassObject)
-                return target.classFieldAt(classFieldIndex(dot, target));
+            if (target.isClassObject) {
+                const fieldIndex = classFieldIndex(dot, target);
+
+                // value.md item 7 decomposition item 1: `dot.e1`'s own
+                // `classCells` entry, when present, is authoritative over
+                // this receiver's independent boxed copy -- it may be a
+                // SHARED cell (another alias's write lands here too) or a
+                // cell an earlier `&c.field` promoted directly. Falls back
+                // to the existing boxed read for every other receiver (no
+                // cell at all, the common unaliased/unpromoted case).
+                Value cellValue;
+                if (classCellFieldValue(dot.e1, fieldIndex, cellValue))
+                    return cellValue;
+
+                return target.classFieldAt(fieldIndex);
+            }
             return target.structFieldAt(structFieldIndex(dot));
         }
 
         throw new Exception("Unsupported interpreter field read.");
+    }
+
+    // Read-side counterpart of `writeClassCellFieldIfPresent` below, and the
+    // direct-field-read sibling of `classFieldPointerCellValue` (which
+    // serves pointer DEREF reads): `receiverExpression` must be a bare
+    // `VarExp` naming a variable with a `classCells` entry, and `fieldIndex`
+    // must be a `native_scalar.isNativeScalarType` field, or this returns
+    // `false` and leaves `value` untouched -- every one of those keeps the
+    // caller's existing boxed fallback unchanged.
+    private bool classCellFieldValue(
+        imported!"dmd.expression".Expression receiverExpression,
+        in size_t fieldIndex,
+        out Value value,
+    ) {
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, readScalar;
+
+        auto var = receiverExpression.isVarExp;
+        if (var is null)
+            return false;
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            return false;
+
+        auto cell = variable in classCells;
+        if (cell is null)
+            return false;
+
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return false;
+
+        auto fields = classFields(classType.sym);
+        if (fieldIndex >= fields.length)
+            return false;
+
+        auto field = fields[fieldIndex];
+        if (!isNativeScalarType(field.type))
+            return false;
+
+        const offset = fieldByteOffset(field);
+        const size = typeByteSize(field.type);
+        value = readScalar(field.type, cell.bytes[offset .. offset + size]);
+        return true;
     }
 
     private Value runClassInfoExpression(
@@ -6328,6 +6422,16 @@ private struct Walker {
 
         const value = runExpression(assign.e2);
         writeLocation(assign.e1, value);
+
+        // `c2 = c;` (plain-variable rebind, as opposed to `c2.x = v`'s
+        // field write below): register the class-reference alias here too,
+        // the assignment-operator sibling of `runDeclarationExpression`'s
+        // own `registerClassAliasIfPlainVar` call (value.md item 7
+        // decomposition item 1).
+        if (auto var = assign.e1.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                registerClassAliasIfPlainVar(variable, assign.e2);
+
         return value;
     }
 
@@ -6414,9 +6518,22 @@ private struct Walker {
                 return;
             }
 
-            writeLocation(dot.e1, receiver.isClassObject
-                ? receiver.withClassField(classFieldIndex(dot, receiver), value)
-                : receiver.withStructField(structFieldIndex(dot), value));
+            if (receiver.isClassObject) {
+                const fieldIndex = classFieldIndex(dot, receiver);
+
+                // value.md item 7 decomposition item 1: mirror the write
+                // into `dot.e1`'s own `classCells` entry, when present,
+                // BEFORE the boxed write below -- a no-op unless `dot.e1`
+                // is a bare `VarExp` with a cell (shared with another alias,
+                // or promoted directly), matching `classCellFieldValue`'s
+                // read-side authority so a later read through either
+                // variable sees this write.
+                writeClassCellFieldIfPresent(dot.e1, fieldIndex, value);
+                writeLocation(dot.e1, receiver.withClassField(fieldIndex, value));
+                return;
+            }
+
+            writeLocation(dot.e1, receiver.withStructField(structFieldIndex(dot), value));
             return;
         }
 
@@ -7126,6 +7243,56 @@ private struct Walker {
         classFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
         return true;
+    }
+
+    // Write-side counterpart of `classCellFieldValue` above (value.md item 7
+    // decomposition item 1): mirrors a direct field write (`c.field = v`,
+    // as opposed to a pointer deref write, which
+    // `writeThroughClassFieldPointer` above already handles) into
+    // `receiverExpression`'s own `classCells` entry, when one exists, so a
+    // later read through this SAME cell -- whether via this variable, an
+    // aliased variable sharing the cell (`registerClassAliasIfPlainVar`), or
+    // a pointer promoted from either -- sees the write. A no-op (nothing
+    // written) for a non-`VarExp` receiver, a receiver with no `classCells`
+    // entry, or a non-scalar field -- every one of those leaves the write
+    // to reach only the boxed `locals` mirror the caller updates separately,
+    // exactly as before this slice.
+    private void writeClassCellFieldIfPresent(
+        imported!"dmd.expression".Expression receiverExpression,
+        in size_t fieldIndex,
+        in Value value,
+    ) {
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, writeScalar;
+
+        auto var = receiverExpression.isVarExp;
+        if (var is null)
+            return;
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            return;
+
+        auto cell = variable in classCells;
+        if (cell is null)
+            return;
+
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return;
+
+        auto fields = classFields(classType.sym);
+        if (fieldIndex >= fields.length)
+            return;
+
+        auto field = fields[fieldIndex];
+        if (!isNativeScalarType(field.type))
+            return;
+
+        const offset = fieldByteOffset(field);
+        const size = typeByteSize(field.type);
+        writeScalar(field.type, cell.bytes[offset .. offset + size], value);
     }
 
     private bool canWriteThroughArrayPointer(in Value pointer) {
@@ -9368,6 +9535,7 @@ private struct Walker {
                 : runExpression(initializer),
         );
         locals[variable] = value;
+        registerClassAliasIfPlainVar(variable, initializer);
         recordGCArrayUsedAlias(variable, initializer);
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)

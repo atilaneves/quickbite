@@ -2062,6 +2062,39 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// Same-frame plain-variable class aliasing (value.md item 7's class phase,
+// decomposition item 1): `C c2 = c;` copies a REFERENCE, not an object, so
+// `c` and `c2` must observe the same underlying object -- a write through
+// one alias's field must be visible through the other, with no `&`/pointer
+// involved at all. Before this slice each class-typed local boxed its own
+// independent copy of the field array (`Value.withClassField` writes only
+// into the target variable's own `locals` entry), so the interpreter
+// silently dropped the write. Only Interpreter and SystemLinker (the
+// oracle) are pinned here per the omit-don't-pin convention; the other
+// backends are untouched by this slice.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.aliasedVariableWriteIsVisibleThroughOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                C c2 = c;
+                c2.x = ninetyNine();
+                assert(c.x == 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
