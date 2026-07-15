@@ -5725,3 +5725,19 @@ does not add conditional or early member ref returns, non-scalar fields,
 class methods, or general lvalue-return lowering. Verification: focused
 Bytecode red then green; passing focused five-backend matrix; `ninja bin/ut`;
 and `bin/ut --random` (seed `2688354283`).
+
+Review finding 1, member ref-return assignment base, 2026-07-15: the
+`tryMemberRefCallAssign` slice above always added the returned field offset to
+the method receiver, even when the returned `DotVarExp` was based on a `ref`
+parameter. The approved direct SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnUsesReturnedBase` proved compiled D writes
+`other.value` for `receiver.slot(other) = 42`; Bytecode was red with
+`42 != 0` because it wrote `receiver.value`. Member ref-return assignment now
+uses the caller lvalue of a returned ref-parameter base, while implicit
+`this`/`super` fields retain receiver-relative lowering and other bases decline
+this specialized path. This does not add value-parameter bases, nested field
+bases, pointers, conditionals, early returns, or general lvalue-return
+lowering. Verification: focused SystemLinker oracle green and Bytecode red;
+focused Bytecode/SystemLinker regression green; the prior member ref-return
+Bytecode row green; `ninja bin/ut`; and `bin/ut --random` (seed `233816370`,
+3389 tests, 0 failed, 6/6 failing as expected).

@@ -6660,6 +6660,25 @@ private struct Compiler {
         if (field is null || !field.isField)
             return null;
 
+        ushort destination;
+        if (dot is null || dot.e1.isThisExp !is null ||
+            dot.e1.isSuperExp !is null) {
+            destination = cast(ushort)
+                (methodReceiverOffset(call) + field.offset);
+        } else {
+            auto base = dot.e1.isVarExp;
+            auto parameter = base is null
+                ? null
+                : base.var.isVarDeclaration;
+            auto index = parameter is null || !parameter.isReference
+                ? null
+                : parameterIndex(function_, parameter);
+            if (index is null || *index >= call.arguments.length)
+                return null;
+            destination = cast(ushort)
+                (referenceOffset((*call.arguments)[*index]) + field.offset);
+        }
+
         compileCall(call);
         const value = compileExpression(rhs);
         const scalar = scalarType(field.type);
@@ -6669,8 +6688,6 @@ private struct Compiler {
                 expressionChars(call),
             ));
 
-        const destination = cast(ushort)
-            (methodReceiverOffset(call) + field.offset);
         _code ~= Instruction(
             Op.copy,
             destination,
