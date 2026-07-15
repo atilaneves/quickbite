@@ -3243,7 +3243,7 @@ static foreach (backend; Matrix!()) {
 // Interpreter returned 7 (the rebound array's first element) instead of the
 // pre-rebind value 1. SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue." ~
         backend.stringof)
     @Tags(backend.stringof)

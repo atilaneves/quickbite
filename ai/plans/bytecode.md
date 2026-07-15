@@ -5903,3 +5903,15 @@ array fields, ref aliases to heap struct fields, or broader non-scalar struct
 field reconciliation. Verification: focused Bytecode row, `ninja bin/ut`, and
 `bin/ut --random` (seed `3663640261`, 3404 tests, 0 failed, 6/6 failing as
 expected).
+
+`pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a pointer into a dynamic array retains the
+pre-rebind allocation's value after the array variable is rebound and a new
+element pointer is taken. No production change was needed. This does not add
+pointer validity across append reallocation, shorter-array rebound coverage,
+or broader stale-allocation reconciliation. Verification: passing baseline
+`ninja bin/ut` and `bin/ut --random` (seed `1658998645`), focused Bytecode row,
+final `ninja bin/ut`, and `bin/ut --random` (seed `4232171985`, 3405 tests,
+0 failed, 6/6 failing as expected).
