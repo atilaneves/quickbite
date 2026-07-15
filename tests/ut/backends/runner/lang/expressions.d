@@ -1917,9 +1917,9 @@ static foreach (backend; Matrix!()) {
 // `&a[i]` resolution already does), so `&s[1]` promotes/reads that shared
 // cell directly -- confirmed green on Interpreter with no production change
 // alongside this fixture. SystemLinker's `p` aliases `a`'s real storage, so
-// the direct write is visible through `*p`. Other backends omitted per the
-// omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// the direct write is visible through `*p`. The mature backend matrix now
+// confirms the same aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice." ~
         backend.stringof)
     @Tags(backend.stringof)

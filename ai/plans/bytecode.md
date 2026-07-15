@@ -6134,3 +6134,18 @@ five-backend matrix, and final `ninja bin/ut` passed. The final
 `bin/ut --random` crashed with the pre-existing signal 11 under seed
 `951640116`; its required `bin/ut --seed 951640116` replay reproduced the
 crash.
+
+`pointer.arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice`
+promoted to Bytecode, 2026-07-16: pre-approved promotion of the existing
+direct SystemLinker-backed fixture. The focused Bytecode row passed on its
+first candidate run, confirming that a pointer taken through a full-slice
+alias observes a later direct write to the source array's native backing
+storage. No production change was needed. This does not add slice rebinding,
+cross-frame slice aliases, or broader pointer-cell reconciliation. The
+pre-edit `ninja bin/ut` baseline passed; pre-edit `bin/ut --random` crashed
+with the pre-existing signal 11 under seed `1150051088`, and its required
+`bin/ut --seed 1150051088 --quiet` replay reproduced exit code 139. After
+promotion, the focused Bytecode row and final `ninja bin/ut` passed. The final
+`bin/ut --random --quiet` crashed with the pre-existing signal 11 under seed
+`2251851887`; its required `bin/ut --seed 2251851887 --quiet` replay
+reproduced exit code 139.
