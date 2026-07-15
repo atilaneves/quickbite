@@ -1957,9 +1957,9 @@ static foreach (backend; Matrix!()) {
 // storage, so a later direct write to the field (`s.x = ninetyNine()`) was
 // invisible through the earlier pointer -- the same snapshot gap the array
 // phase closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so
-// the direct write is visible through `*p`. Other backends omitted per the
-// omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// the direct write is visible through `*p`. The mature backend matrix now
+// confirms the same aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)

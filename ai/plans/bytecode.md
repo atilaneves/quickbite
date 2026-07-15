@@ -6149,3 +6149,19 @@ promotion, the focused Bytecode row and final `ninja bin/ut` passed. The final
 `bin/ut --random --quiet` crashed with the pre-existing signal 11 under seed
 `2251851887`; its required `bin/ut --seed 2251851887 --quiet` replay
 reproduced exit code 139.
+
+`pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer` promoted
+to Bytecode, 2026-07-16: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a pointer into a scalar struct field remains a
+live alias after a later direct write to that field. No production change was
+needed. This does not add heap-struct fields, cross-frame struct aliases, or
+broader aggregate-pointer reconciliation. The pre-edit `ninja bin/ut`
+baseline passed; pre-edit `bin/ut --random --quiet` crashed with the
+pre-existing signal 11 under seed `204415266`, and its required
+`bin/ut --seed 204415266 --quiet` replay reproduced exit code 139. After
+promotion, the focused Bytecode row, focused five-backend matrix, and final
+`ninja bin/ut` passed. The final `bin/ut --random --quiet` reported an
+unrelated REPL failure before crashing with signal 11 under seed
+`2863503837`; its required `bin/ut --seed 2863503837 --quiet` replay
+reproduced exit code 139.
