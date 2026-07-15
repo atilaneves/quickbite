@@ -5866,3 +5866,15 @@ reconciliation. Verification: passing baseline `ninja bin/ut` and
 `bin/ut --random` (seed `3963106144`), then the focused Bytecode row and final
 `ninja bin/ut` passed after promotion. Final `bin/ut --random` passed with seed
 `2838625850` (3401 tests, 0 failed, 6/6 failing as expected).
+
+`pointer.structFieldRefLocalWriteThroughRefreshesCellAfterAddressOf` promoted
+to Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row was red with `1 != 99`
+because a scalar `ref` local initialized from a struct field received a copied
+slot rather than aliasing the field's inline frame storage. Ref-local lowering
+now reuses a resolvable struct field's frame offset, so assignment through the
+ref is visible through an earlier pointer to that field. This does not add ref
+aliases to heap struct fields, pointer-receiver fields, or broader ref-lvalue
+forms. Verification: focused Bytecode red then green, final `ninja bin/ut`,
+and `bin/ut --random` (seed `310765499`, 3402 tests, 0 failed, 6/6 failing as
+expected).

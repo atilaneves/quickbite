@@ -2740,6 +2740,12 @@ private struct Compiler {
                 return true;
             }
 
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot)) {
+                _locals[variable] = field.offset;
+                return true;
+            }
+
         auto index = expression.isIndexExp;
         if (index is null)
             return false;
