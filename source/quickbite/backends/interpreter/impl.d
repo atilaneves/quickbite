@@ -270,13 +270,24 @@ private struct Walker {
     // Reverse lookup from a promoted `&c.field` pointer's allocation id back
     // to which class variable and field index (declaration order) share the
     // SAME `classCells` entry's bytes -- the class-field counterpart of
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`. Not
-    // duplicated into child-frame walkers (unlike `classCells` itself):
-    // cross-frame class-field-pointer dereference is out of scope for this
-    // narrow first slice, matching `structFieldPointerVariables`'s own
-    // bounded first-slice scope before its later cross-frame follow-up.
+    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`.
+    // Cross-frame follow-up (2026-07-15): now duplicated into child-frame
+    // walkers and merged back exactly like `structFieldPointerVariables`/
+    // `FieldIndices` (`mergeClassFieldPointerVariableMaps`), so a `&c.field`
+    // pointer does survive being passed into another function; see
+    // `classFieldPointerWritebacks` below for the write-through side.
     private VarDeclaration[size_t] classFieldPointerVariables;
     private size_t[size_t] classFieldPointerFieldIndices;
+
+    // Set by `writeThroughClassFieldPointer` for the receiver variable it
+    // wrote into, the class sibling of `structFieldPointerWritebacks`: a
+    // cross-frame write (the receiver is the CALLER's own local, absent from
+    // the callee's own `locals`) cannot refresh the caller's boxed mirror
+    // immediately, so this flags `variable` for
+    // `writeBackClassFieldPointerTargets` to re-derive from the
+    // (shared-bytes) `classCells` entry once control returns to the frame
+    // that actually owns `variable`.
+    private bool[VarDeclaration] classFieldPointerWritebacks;
 
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
@@ -1978,6 +1989,9 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
+        child.classFieldPointerVariables = classFieldPointerVariables.dup;
+        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -4485,6 +4499,9 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
+        child.classFieldPointerVariables = classFieldPointerVariables.dup;
+        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -4557,6 +4574,9 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
+        child.classFieldPointerVariables = classFieldPointerVariables.dup;
+        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -4666,6 +4686,8 @@ private struct Walker {
         structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
         mergeNestedStructFieldPointerVariableMaps(child);
         nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
+        mergeClassFieldPointerVariableMaps(child);
+        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -4673,6 +4695,7 @@ private struct Walker {
         writeBackStructFieldPointerTargets(child);
         writeBackStructArrayFieldPointerTargets(child);
         writeBackNestedStructFieldPointerTargets(child);
+        writeBackClassFieldPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child, arguments);
         writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
@@ -4706,12 +4729,15 @@ private struct Walker {
         structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
         mergeNestedStructFieldPointerVariableMaps(child);
         nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
+        mergeClassFieldPointerVariableMaps(child);
+        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
         writeBackStructFieldPointerTargets(child);
         writeBackStructArrayFieldPointerTargets(child);
         writeBackNestedStructFieldPointerTargets(child);
+        writeBackClassFieldPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child, arguments);
         writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
@@ -4842,6 +4868,29 @@ private struct Walker {
 
             if (auto innerFieldIndex = id in child.nestedStructFieldPointerInnerFieldIndices)
                 nestedStructFieldPointerInnerFieldIndices[id] = *innerFieldIndex;
+        }
+    }
+
+    // Class sibling of `mergeStructFieldPointerVariableMaps` above (value.md
+    // item 7's class phase, cross-frame write-through-pointer follow-up):
+    // `classFieldPointerVariables`/`FieldIndices` merge the identical,
+    // conflict-free way -- a class-field id is memoized through the SAME
+    // `fieldAddressAllocations[variable]` map `fieldSnapshotAllocationId`
+    // uses for a struct field (it only dispatches the field-INDEX
+    // computation on receiver kind, not the id memo itself), so the same
+    // forward map is the right conflict check here too.
+    private void mergeClassFieldPointerVariableMaps(ref Walker child) {
+        foreach (id, variable; child.classFieldPointerVariables) {
+            auto fieldIndex = id in child.classFieldPointerFieldIndices;
+            if (fieldIndex !is null)
+                if (auto ownFieldIds = variable in fieldAddressAllocations)
+                    if (auto ownId = *fieldIndex in *ownFieldIds)
+                        if (*ownId != id)
+                            continue;
+
+            classFieldPointerVariables[id] = variable;
+            if (fieldIndex !is null)
+                classFieldPointerFieldIndices[id] = *fieldIndex;
         }
     }
 
@@ -5103,6 +5152,67 @@ private struct Walker {
         }
     }
 
+    // Class sibling of `writeBackStructFieldPointerTargets` above (value.md
+    // item 7's class phase, cross-frame write-through-pointer follow-up):
+    // same reasoning, for a cross-frame `&c.field` pointer -- a direct
+    // class-field read (`c.field`) never consults `classCells` either, only
+    // a `*pointer` deref does, so the owning frame's boxed `locals` mirror
+    // must be refreshed here from the (already-updated) cell once control
+    // returns to it.
+    private void writeBackClassFieldPointerTargets(ref Walker child) {
+        foreach (_, variable; child.classFieldPointerVariables) {
+            if ((variable in child.classFieldPointerWritebacks) is null)
+                continue;
+
+            auto current = variable in locals;
+            if (current is null || !current.isClassObject)
+                continue;
+
+            auto cell = variable in classCells;
+            if (cell is null)
+                continue;
+
+            auto classType = variable.type.toBasetype.isTypeClass;
+            if (classType is null || classType.sym is null)
+                continue;
+
+            locals[variable] = classValueFromCell(*current, *cell, classType.sym);
+        }
+    }
+
+    // Re-derives a class `Value` from `cell`'s scalar-field bytes, the class
+    // sibling of `structValueFromCell` and the read-side mirror of
+    // `writeClassCellScalarFields`: every `native_scalar.isNativeScalarType`
+    // field is overlaid onto `current` from the cell (authoritative once a
+    // cross-frame write-through-pointer touched it via
+    // `writeThroughClassFieldPointer`); any other field is left exactly as
+    // `current` already had it, matching `writeClassCellScalarFields`'s own
+    // scalar-only reach for this phase's bounded scope.
+    private Value classValueFromCell(
+        in Value current,
+        ref NativeBlock cell,
+        imported!"dmd.dclass".ClassDeclaration class_,
+    ) {
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, readScalar;
+
+        Value value = current;
+        foreach (index, field; classFields(class_)) {
+            if (!isNativeScalarType(field.type))
+                continue;
+
+            const offset = fieldByteOffset(field);
+            const size = typeByteSize(field.type);
+            value = value.withClassField(
+                index,
+                readScalar(field.type, cell.bytes[offset .. offset + size]),
+            );
+        }
+
+        return value;
+    }
+
     // Re-derives a struct `Value` from `cell`'s scalar-field bytes: the
     // read-side mirror of `writeStructCellScalarFields`. Every
     // `native_scalar.isNativeScalarType` field is overlaid onto `current`
@@ -5225,6 +5335,9 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
+        child.classFieldPointerVariables = classFieldPointerVariables.dup;
+        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -6490,6 +6603,9 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
+        child.classFieldPointerVariables = classFieldPointerVariables.dup;
+        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -6593,6 +6709,9 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
+        child.classFieldPointerVariables = classFieldPointerVariables.dup;
+        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -6960,12 +7079,18 @@ private struct Walker {
     // `classFieldPointerCellValue` already reads for the deref-read side) and
     // re-derives the boxed `locals` mirror from the (already-updated) whole
     // object, mirroring `writeThroughStructFieldPointer`'s cell-then-mirror
-    // discipline. Same-frame only, per this phase's own bounded scope:
-    // `classFieldPointerVariables`/`classFieldPointerFieldIndices` are not
-    // duped into child frames (see the class-phase-starts progress note), so
-    // a genuine hit here always finds `variable` bound in THIS frame's own
-    // `locals` -- there is no cross-frame writeback bookkeeping to add, unlike
-    // the struct sibling. Returns `false` (writing nothing) for every other
+    // discipline. Cross-frame follow-up (2026-07-15): `current` (the
+    // receiver's own boxed value) can be absent here even on a genuine hit,
+    // exactly as in `writeThroughStructFieldPointer` -- a CROSS-FRAME write
+    // (`variable` is the CALLER's own local, `id` recorded before the call
+    // and shared into this callee's frame only via the duped
+    // `classFieldPointerVariables`/`classCells`) finds `variable` in neither
+    // this frame's parameters nor its `locals` at all. The write still lands
+    // in the shared cell either way; `classFieldPointerWritebacks` flags
+    // `variable` so `writeBackClassFieldPointerTargets` can re-derive the
+    // OWNING frame's boxed mirror once control returns there. `current`,
+    // when present, still declines a rebind (no longer a class object)
+    // exactly as before. Returns `false` (writing nothing) for every other
     // field pointer -- no `classCells` entry for the receiver, no reverse-
     // lookup field index, or a receiver whose boxed value is no longer a
     // class object -- leaving `writeLocation`'s `PtrExp` arm to keep
@@ -6998,6 +7123,7 @@ private struct Walker {
 
         if (current !is null)
             locals[*variable] = current.withClassField(*fieldIndex, value);
+        classFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
         return true;
     }
@@ -8881,6 +9007,9 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
+        child.classFieldPointerVariables = classFieldPointerVariables.dup;
+        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;

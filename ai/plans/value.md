@@ -5282,6 +5282,106 @@ run, 0 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-15 (class-field cross-frame follow-up: `&c.field`
+write-through-pointer survives a call into another function): the
+write-through-pointer slice above (8a392ea2) closed same-frame `*p = v`
+through `&c.field` but left cross-frame propagation unmodeled, matching the
+struct phase's own history before its cross-frame follow-up
+(`pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller`). This
+slice closes the class-field sibling gap the same way.
+
+New fixture,
+`pointer.classFieldWriteThroughPointerInCalleeIsVisibleToCaller` (`tests/ut/
+backends/runner/ct/expressions.d`), scoped to
+`Ctfe`/`Interpreter`/`SystemLinker`/`LLVMJit` (`Bytecode` omitted, matching
+the other class fixtures' own backend set): `class C { int x; int y; }`,
+`C c = new C(); c.x = one(); c.y = two();` (every value seeded from a
+runtime function call), `int* p = &c.x;` in a function `f`, then `put(p,
+ninetyNine());` (`put` writes `*p = v;` in a SEPARATE function), `return *p
++ c.x;`, asserting `f() == 198` -- the class-field sibling of the existing
+scalar struct-field cross-frame fixture, mirroring its exact shape.
+Confirmed RED on Interpreter before any production change: `object.
+Exception: Unsupported interpreter assignment target.`, thrown from
+`writeLocation`'s `PtrExp` arm's existing `fieldSnapshotAllocationIds`
+refusal guard -- `writeThroughClassFieldPointer`'s reverse-lookup maps
+(`classFieldPointerVariables`/`classFieldPointerFieldIndices`), un-duped
+into the callee's child `Walker`, missed, exactly the diagnostic the struct
+phase's own cross-frame fixture predicted for this sibling. Only 1 failure
+in the full `ut.backends.runner.ct.expressions` run (525 total, the other
+524 including the new fixture's Ctfe/SystemLinker/LLVMJit instances all
+green). Confirmed green on Ctfe, SystemLinker, and LLVMJit throughout.
+
+Fix, in `impl.d`, mirroring the struct-field cross-frame mechanism exactly
+(no new plumbing shape invented): (1) `classFieldPointerVariables`/
+`classFieldPointerFieldIndices` are now duped into every child `Walker` at
+the same 7 dup sites that already dupe `classCells`. (2) A new
+`mergeClassFieldPointerVariableMaps`, the class sibling of
+`mergeStructFieldPointerVariableMaps`, reusing the SAME
+`fieldAddressAllocations` forward map for its conflict check --
+`fieldSnapshotAllocationId` mints a class-field id through that same
+per-(receiver, field-index) memo, only dispatching the field-INDEX
+computation itself (`classFieldIndex` vs `structFieldIndex`) on receiver
+kind, so the id space and its forward map are shared with the struct
+family. (3) A new `classFieldPointerWritebacks` flag map (the class sibling
+of `structFieldPointerWritebacks`), duped at the same 7 sites and merged the
+same way in `writeBackFunctionState`/`writeBackMemberFunctionState`. (4)
+`writeThroughClassFieldPointer` already tolerated `current is null` (it
+never required the receiver present in this frame's own `locals` to begin
+with -- an accident of the write-through-pointer slice's own cell-then-
+mirror discipline, not a deliberate cross-frame design) but never flagged a
+cross-frame writeback; it now sets `classFieldPointerWritebacks[*variable]
+= true` unconditionally after writing the cell, mirroring
+`writeThroughStructFieldPointer`'s own flagging discipline. (5) A new
+`writeBackClassFieldPointerTargets`, the class sibling of
+`writeBackStructFieldPointerTargets`, wired into both call sites right
+after its nested-struct-field sibling. (6) A new `classValueFromCell`, the
+class sibling of `structValueFromCell` (until now struct-only): re-derives
+a class `Value` from a `classCells` `NativeBlock`'s scalar-field bytes via
+`classFields`/`fieldByteOffset`/`typeByteSize` (a class cell is a plain
+`NativeBlock`, not a `NativeStruct`, so it cannot reuse `structValueFromCell`
+itself), the read-side counterpart `writeBackClassFieldPointerTargets` needs
+to re-derive the OWNING frame's object from the shared cell.
+
+`classFieldPointerCellValue` (the deref-READ side, `runPointerExpression`/
+`pointerTargetValue`) needed no code change: it already looked up
+`classFieldPointerVariables`/`classFieldPointerFieldIndices` and `classCells`
+directly with no same-frame `locals` presence check, so duping the reverse-
+lookup maps into child frames (step 1) was sufficient on its own to make a
+cross-frame deref-READ through `&c.field` work too, alongside the
+write-through fix above.
+
+No `interpreter.md` §9.10 shim is retired by this slice, matching every
+prior note in this log: it widens which class-cell writes survive a call
+into another function, it does not touch any of the shim inventory's own
+named functions. This slice also does NOT touch class REFERENCE identity in
+any way -- the fixture's `int* p = &c.field` is the same raw field-pointer
+shape the struct phase already handles cross-frame; a second variable
+aliasing the SAME object (`C c2 = c;`), a field reached through `this`, and
+a field of a `new`-returned pointer never bound to a plain local remain
+entirely unmodeled, exactly as the class-phase-starts slice's own "What
+this slice does NOT do" section described.
+
+Remaining open items, unchanged from the write-through-pointer slice's own
+list except for the one line this slice closes: class REFERENCE identity
+(`C c2 = c;`, a field reached through `this`, a field of a `new`-returned
+pointer never bound to a plain local, a field reached through a function
+argument) is still entirely unmodeled; nested class fields and
+array/struct-typed class fields are still unexercised and unimplemented.
+Expect a comparable sequence of follow-up slices to the struct phase's own
+nested-field history if this phase proceeds the same way.
+
+Focused runs, all green: the new fixture (all four backends, folded into
+the full suite run below since it added no isolated fixture-only command);
+`bin/ut -s ut.backends.runner.ct.expressions` (525 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (291 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.runner.ct.exceptions` (130 run, 0
+failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.bin.repl` (228 run, 0 failed); `bin/ut -s ut.backends.evaluator.eval` (71
+run, 0 failed). The full `bin/ut --random` was left to the orchestrator per
+the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

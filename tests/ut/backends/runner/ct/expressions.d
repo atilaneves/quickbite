@@ -2011,6 +2011,57 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// Cross-frame sibling of the write-through fixture above (value.md item 7's
+// class phase, next slice): the caller takes `&c.x` (promoting a `classCells`
+// entry and a `classFieldPointerVariables`/`classFieldPointerFieldIndices`
+// reverse-lookup entry in the CALLER's own frame), then passes the pointer
+// into a callee that writes through it, mirroring the struct phase's own
+// `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller`. Other
+// backends omitted per the omit-don't-pin convention, matching the other
+// class fixtures' own backend set.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.classFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                C c = new C();
+                c.x = one();
+                c.y = two();
+                int* p = &c.x;
+                put(p, ninetyNine());
+                return *p + c.x;
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
