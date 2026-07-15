@@ -5206,6 +5206,82 @@ ut.bin.repl` (228 run, 0 failed); `bin/ut -s ut.backends.evaluator.eval` (71
 run, 0 failed). The full `bin/ut --random` was left to the orchestrator per
 the usual long-suite handoff.
 
+Progress 2026-07-15 (class-field write-through-pointer: `*p = v` through
+`&c.field` now aliases via the native cell): the class-phase-starts slice
+above named this gap directly in its own "What this slice does NOT do" --
+writing THROUGH a `&c.field` pointer still threw even after that slice gave
+the receiver a `classCells` entry. This slice closes exactly that gap for
+the same narrow, already-cell-supported case, mirroring the struct phase's
+own write-through-pointer slice (`writeThroughStructFieldPointer`).
+
+New fixture, `pointer.classFieldWriteThroughPointerUpdatesField`
+(`tests/ut/backends/runner/ct/expressions.d`), scoped to
+`Ctfe`/`Interpreter`/`SystemLinker`/`LLVMJit` (`Bytecode` omitted, matching
+the direct-write class fixture's own backend set): `class C { int x; int
+y; }`, `C c = new C(); c.x = one(); c.y = two();` (every value seeded from
+a runtime function call), `int* p = &c.x; *p = ninetyNine();`, asserting
+`c.x == 99` by a direct field read (the write-through counterpart of the
+direct-write fixture's earlier-pointer read). Confirmed RED on Interpreter
+before any production change: `object.Exception: Unsupported interpreter
+assignment target.`, thrown from `writeLocation`'s `PtrExp` arm's existing
+`fieldSnapshotAllocationIds` refusal guard -- `&c.x`'s id is recorded there
+by `fieldSnapshotAllocationId` regardless of receiver type, and nothing yet
+short-circuited that refusal for a class-field pointer, exactly the
+diagnostic the struct phase's own write-through-pointer slice hit for
+`&s.field` before its fix. Confirmed green on Ctfe, SystemLinker, and
+LLVMJit throughout.
+
+Fix, in `impl.d`: a new `writeThroughClassFieldPointer`, the class sibling
+of `writeThroughStructFieldPointer`, built directly from facts the read-side
+`classFieldPointerCellValue` already computes (a plain `NativeBlock`, not a
+`NativeStruct`, so the field's byte range comes from
+`classFields`/`fieldByteOffset`/`typeByteSize` rather than
+`NativeStruct.field`). Given the pointer value, it looks the allocation id
+up in `classFieldPointerVariables`/`classFieldPointerFieldIndices` (the
+class-phase-starts slice's own reverse lookup) to find the receiver's
+`classCells` entry and field index; a miss on any of the lookups, or a
+receiver whose current boxed `locals` value is no longer a class object,
+returns `false` and does nothing. On a hit, it writes `value`'s bytes into
+`cell.bytes[offset .. offset + size]` (`native_scalar.writeScalar`, sized by
+the field's own declared type) and re-derives the boxed `locals` mirror as
+`current.withClassField(fieldIndex, value)`, mirroring
+`writeThroughStructFieldPointer`'s cell-then-mirror discipline. Unlike the
+struct sibling, there is no cross-frame writeback flag: this phase's own
+`classFieldPointerVariables`/`classFieldPointerFieldIndices` are not duped
+into child frames (the class-phase-starts slice's own bounded scope), so a
+genuine hit always finds `variable` bound in THIS frame's own `locals` --
+no separate frame can ever own it. `writeLocation`'s `PtrExp` arm now calls
+this helper right after `writeThroughNestedStructFieldPointer` and before
+the existing `fieldSnapshotAllocationIds` refusal check, and
+`writePointerTarget` (the compound-assignment/atomic/post-increment
+write-back path) calls it at the same relative position among its own
+struct-family checks, mirroring both call sites' existing wiring for the
+struct family exactly.
+
+No `interpreter.md` §9.10 shim is retired by this slice, matching every
+prior note in this log.
+
+Remaining open items, unchanged from the class-phase-starts slice's own
+list except for the one line this slice closes: class REFERENCE identity
+(`C c2 = c;`, a field reached through `this`, a field of a `new`-returned
+pointer never bound to a plain local, a field reached through a function
+argument) is still entirely unmodeled; cross-frame class-field-pointer
+dereference, nested class fields, and array/struct-typed class fields are
+still unexercised and unimplemented. Expect a comparable sequence of
+follow-up slices to the struct phase's own cross-frame/nested-field
+history if this phase proceeds the same way.
+
+Focused runs, all green: the new fixture (all four backends, `4 test(s)
+run, 0 failed`); `bin/ut -s ut.backends.runner.ct.expressions` (521 run, 0
+failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.structs`
+(291 run, 0 failed); `bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed,
+1/1 failing as expected); `bin/ut -s ut.backends.runner.ct.exceptions` (130
+run, 0 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
+`bin/ut -s ut.bin.repl` (228 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

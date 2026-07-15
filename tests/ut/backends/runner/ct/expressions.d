@@ -1969,6 +1969,48 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// Write-through-pointer sibling of the direct-write fixture above (value.md
+// item 7's class phase, next slice): the same `&c.x` cell must also accept a
+// write THROUGH the pointer (`*p = v`), visible via a later direct field
+// read, mirroring the struct phase's own
+// `pointer.addressOfStructFieldWriteThroughUpdatesField`. Other backends
+// omitted per the omit-don't-pin convention, matching the direct-write class
+// fixture's own backend set.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.classFieldWriteThroughPointerUpdatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.x = one();
+                c.y = two();
+                int* p = &c.x;
+                *p = ninetyNine();
+                assert(c.x == 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.

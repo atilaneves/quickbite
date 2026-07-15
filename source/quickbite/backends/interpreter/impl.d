@@ -6416,6 +6416,14 @@ private struct Walker {
             if (writeThroughNestedStructFieldPointer(pointer, value))
                 return;
 
+            // `&c.x` of a scalar field on a plain class-typed LOCAL promoted
+            // a `classCells` entry at address-of time (value.md item 7's
+            // class phase, write-through-pointer slice): write through it
+            // exactly like SystemLinker's real aliasing, instead of refusing
+            // below.
+            if (writeThroughClassFieldPointer(pointer, value))
+                return;
+
             // Every OTHER `&s.field` (addressOfExpression's DotVarExp
             // branch) yields a read-only value snapshot, not an alias to
             // the field: refuse loudly instead of silently rewriting the
@@ -6941,6 +6949,55 @@ private struct Walker {
             locals[*variable] = current.withStructField(*outerFieldIndex, updatedInner);
         }
         nestedStructFieldPointerWritebacks[*variable] = true;
+        uninitializedLocals.remove(*variable);
+        return true;
+    }
+
+    // Class sibling of `writeThroughStructFieldPointer` above (value.md item
+    // 7's class phase, write-through-pointer slice): once `&c.field` has
+    // promoted a `classCells` entry, `*p = value` writes `value`'s bytes
+    // straight into the cell's field byte range (the same offset/size facts
+    // `classFieldPointerCellValue` already reads for the deref-read side) and
+    // re-derives the boxed `locals` mirror from the (already-updated) whole
+    // object, mirroring `writeThroughStructFieldPointer`'s cell-then-mirror
+    // discipline. Same-frame only, per this phase's own bounded scope:
+    // `classFieldPointerVariables`/`classFieldPointerFieldIndices` are not
+    // duped into child frames (see the class-phase-starts progress note), so
+    // a genuine hit here always finds `variable` bound in THIS frame's own
+    // `locals` -- there is no cross-frame writeback bookkeeping to add, unlike
+    // the struct sibling. Returns `false` (writing nothing) for every other
+    // field pointer -- no `classCells` entry for the receiver, no reverse-
+    // lookup field index, or a receiver whose boxed value is no longer a
+    // class object -- leaving `writeLocation`'s `PtrExp` arm to keep
+    // refusing those exactly as before.
+    private bool writeThroughClassFieldPointer(in Value pointer, in Value value) {
+        auto variable = pointer.pointerAllocation in classFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in classCells;
+        if (cell is null)
+            return false;
+
+        auto fieldIndex = pointer.pointerAllocation in classFieldPointerFieldIndices;
+        if (fieldIndex is null)
+            return false;
+
+        auto current = *variable in locals;
+        if (current !is null && !current.isClassObject)
+            return false;
+
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+        auto classType = (*variable).type.toBasetype.isTypeClass;
+        auto field = classFields(classType.sym)[*fieldIndex];
+        const offset = fieldByteOffset(field);
+        const size = typeByteSize(field.type);
+        writeScalar(field.type, cell.bytes[offset .. offset + size], value);
+
+        if (current !is null)
+            locals[*variable] = current.withClassField(*fieldIndex, value);
         uninitializedLocals.remove(*variable);
         return true;
     }
@@ -8562,6 +8619,12 @@ private struct Walker {
         // sibling of the two checks above (value.md item 7's nested-struct-
         // field follow-up), same reasoning.
         if (writeThroughNestedStructFieldPointer(pointer, value))
+            return;
+
+        // A class-field pointer (`&c.field`): the class-typed sibling of the
+        // struct-family checks above (value.md item 7's class phase,
+        // write-through-pointer slice), same reasoning.
+        if (writeThroughClassFieldPointer(pointer, value))
             return;
 
         if (auto address = expression.isAddrExp) {
