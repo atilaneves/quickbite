@@ -1910,7 +1910,6 @@ static foreach (backend; Matrix!()) {
 // SystemLinker is the oracle; other backends omitted per the omit-don't-pin
 // convention (unconfirmed there).
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell." ~
         backend.stringof)

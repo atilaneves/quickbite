@@ -6002,3 +6002,17 @@ Verification: passing baseline `ninja bin/ut` and `bin/ut --random` (seed
 `3793291738`), focused Bytecode red then green, and passing focused
 five-backend matrix; final `ninja bin/ut` and `bin/ut --random` (seed
 `1453010754`).
+
+`dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that rebinding a full-slice local to another array
+does not write through the stale slice into the original array. No production
+change was needed. This does not add slice rebinding through `ref` parameters,
+append-reallocation aliases, or broader stale-cell reconciliation. The
+pre-edit `ninja bin/ut` baseline passed; pre-edit `bin/ut --random` crashed
+with signal 11 under seed `3771854188`, and its required seed replay reproduced
+the existing crash. After promotion, the focused Bytecode row and final
+`ninja bin/ut` passed. Final `bin/ut --random` crashed with signal 11 under
+seed `2482436535`; its required quiet seed replay reproduced the existing
+suite crash.
