@@ -6016,3 +6016,16 @@ the existing crash. After promotion, the focused Bytecode row and final
 `ninja bin/ut` passed. Final `bin/ut --random` crashed with signal 11 under
 seed `2482436535`; its required quiet seed replay reproduced the existing
 suite crash.
+
+`dynamicArray.appendRefreshesSlicePromotedStaleCell` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that append refreshes an array cell promoted by a
+prior full slice before the appended element is read. No production change
+was needed. This does not add slice rebinding, append behavior through `ref`
+parameters, or broader stale-cell reconciliation. The preceding commit had
+already recorded reproducible pre- and post-edit signal-11 crashes in the
+randomized suite. For this promotion, the focused Bytecode row passed, as did
+`ninja bin/ut`; `bin/ut --random` again ended with signal 11 under seed
+`95235460`, and the required quiet replay of that seed reproduced exit code
+139.

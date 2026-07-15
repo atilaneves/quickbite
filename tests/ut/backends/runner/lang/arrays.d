@@ -1955,7 +1955,6 @@ static foreach (backend; Matrix!(
 // arm against the stale, too-short cell. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("dynamicArray.appendRefreshesSlicePromotedStaleCell." ~
         backend.stringof)
