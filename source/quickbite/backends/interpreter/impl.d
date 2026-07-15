@@ -2067,11 +2067,15 @@ private struct Walker {
     // cell the first time `&a[i]` is taken (value.md item 7's array
     // guest-local slice, `arrayCells`'s own promotion, mirroring
     // `promoteScalarCell` above), seeded from the array's current boxed
-    // elements. Narrow first slice: only a dynamic array whose element type
-    // is `native_scalar.isNativeScalarType` gets a cell; a static array, a
-    // non-scalar element type (struct, class, nested array), or a dataseg
-    // variable is left untouched and keeps using the existing boxed/aliasing
-    // paths.
+    // elements. A dynamic array whose element type is `native_scalar.
+    // isNativeScalarType` gets a scalar-bytes cell; a dynamic array whose
+    // element type is a (non-union) struct gets a cell too, seeded field by
+    // field through `NativeArray.structElement`/`writeStructCellScalarFields`
+    // -- the array-of-struct counterpart of `promoteStructCell` above,
+    // reusing the same container accessor the plan's composition matrix
+    // already built. A static array, a union element, any other non-scalar
+    // element type (class, nested array, slice), or a dataseg variable is
+    // left untouched and keeps using the existing boxed/aliasing paths.
     private void promoteArrayCell(VarDeclaration variable) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
@@ -2087,8 +2091,6 @@ private struct Walker {
             return;
 
         auto elementType = variable.type.toBasetype.nextOf.toBasetype;
-        if (!isNativeScalarType(elementType))
-            return;
 
         auto current = defaultValue(variable);
         if (auto existing = variable in locals)
@@ -2097,9 +2099,30 @@ private struct Walker {
         if (!current.isArray)
             return;
 
+        if (isNativeScalarType(elementType)) {
+            auto cell = NativeArray.allocate(elementType, current.length);
+            foreach (index; 0 .. current.length)
+                writeScalar(elementType, cell.element(index), current[index]);
+
+            arrayCells[variable] = cell;
+            return;
+        }
+
+        auto structType = elementType.isTypeStruct;
+        if (structType is null)
+            return;
+
+        // A `union` element cannot be represented by `writeStructCellScalarFields`'s
+        // whole-block scalar-field overlay any more than a union LOCAL can --
+        // see `promoteStructCell`'s identical guard for why.
+        if (structType.sym.isUnionDeclaration !is null)
+            return;
+
         auto cell = NativeArray.allocate(elementType, current.length);
-        foreach (index; 0 .. current.length)
-            writeScalar(elementType, cell.element(index), current[index]);
+        foreach (index; 0 .. current.length) {
+            auto elementCell = cell.structElement(index);
+            writeStructCellScalarFields(elementCell, current[index]);
+        }
 
         arrayCells[variable] = cell;
     }
@@ -2416,7 +2439,7 @@ private struct Walker {
             // length.
             if (arrayIsRefWriteback && value.isArray && value.length == cell.length) {
                 foreach (index; 0 .. value.length)
-                    writeScalar(cell.elementType, cell.element(index), value[index]);
+                    writeArrayCellElement(*cell, index, value[index]);
             } else {
                 // A rebind's cell drop must also drop the memoized
                 // allocation id (`dropArrayCell`, not a bare `arrayCells.
@@ -6283,11 +6306,65 @@ private struct Walker {
         in size_t index,
         in Value value,
     ) {
-        if (auto cell = variable in arrayCells) {
-            import quickbite.backends.interpreter.native_scalar: writeScalar;
+        if (auto cell = variable in arrayCells)
+            writeArrayCellElement(*cell, index, value);
+    }
 
-            writeScalar(cell.elementType, cell.element(index), value);
+    // Writes boxed `value` into `cell`'s element `index` (the array-of-struct
+    // counterpart of a bare `native_scalar.writeScalar` element write):
+    // `cell.elementType` a native scalar routes through `writeScalar`
+    // exactly as before this array-of-struct widening; `cell.elementType` a
+    // (necessarily non-union, per `promoteArrayCell`'s own guard) struct
+    // routes through `NativeArray.structElement`/`writeStructCellScalarFields`
+    // -- the same scalar-fields-only overlay `promoteStructCell`'s own cell
+    // uses, applied to one array element's sub-range instead of a whole
+    // struct local. Shared by every `arrayCells` element-write call site so
+    // none of them needs its own element-type branch.
+    private void writeArrayCellElement(
+        ref NativeArray cell,
+        in size_t index,
+        in Value value,
+    ) {
+        if (cell.elementType.isTypeStruct) {
+            auto elementCell = cell.structElement(index);
+            writeStructCellScalarFields(elementCell, value);
+            return;
         }
+
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+        writeScalar(cell.elementType, cell.element(index), value);
+    }
+
+    // Reads `cell`'s element `index` back into a boxed `Value` (the
+    // array-of-struct counterpart of a bare `native_scalar.readScalar`
+    // element read): `cell.elementType` a native scalar routes through
+    // `readScalar` exactly as before this widening; a struct element routes
+    // through `structValueFromCell` -- the same read-back `writeBack
+    // StructFieldPointerTargets` already uses for a top-level struct-field
+    // cell, applied here to one array element's sub-range. The base `Value`
+    // overlaid is `variable`'s own current boxed element when one exists (so
+    // a non-scalar sub-field, out of this narrow slice's scope, keeps
+    // whatever the boxed mirror already had) or the element type's default
+    // otherwise. Shared by every `arrayCells` element-read call site.
+    private Value readArrayCellElement(
+        VarDeclaration variable,
+        ref NativeArray cell,
+        in size_t index,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        if (cell.elementType.isTypeStruct) {
+            auto current = defaultValue(cell.elementType);
+            if (auto existing = variable in locals)
+                if (index < existing.length)
+                    current = (*existing)[index];
+
+            auto elementCell = cell.structElement(index);
+            return structValueFromCell(current, elementCell);
+        }
+
+        return readScalar(cell.elementType, cell.element(index));
     }
 
     private Value runAssocArraySlotAssignExpression(
@@ -7300,11 +7377,8 @@ private struct Walker {
         // slice does not extend.
         if (auto var = index.e1.isVarExp)
             if (auto variable = var.var.isVarDeclaration)
-                if (auto cell = variable in arrayCells) {
-                    import quickbite.backends.interpreter.native_scalar: readScalar;
-
-                    return readScalar(cell.elementType, cell.element(arrayIndex));
-                }
+                if (auto cell = variable in arrayCells)
+                    return readArrayCellElement(variable, *cell, arrayIndex);
 
         return source[arrayIndex];
     }
@@ -7349,8 +7423,10 @@ private struct Walker {
     // and `pointerTargetValue` (the compound-assignment/atomic/post-
     // increment read path) so both agree on the same cell. Returns `false`
     // (leaving `value` untouched) for every other array pointer -- no
-    // promoted cell, a non-scalar element type, or a static array -- which
-    // keeps the existing boxed `pointerTarget` fallback at each call site.
+    // promoted cell, or a static array -- which keeps the existing boxed
+    // `pointerTarget` fallback at each call site. A struct element (value.md
+    // item 7's array-of-struct widening) is handled the same as a scalar
+    // element, both via `readArrayCellElement`.
     private bool arrayPointerCellValue(in Value pointer, out Value value) {
         auto variable = arrayPointerVariable(pointer);
         if (variable is null)
@@ -7360,11 +7436,10 @@ private struct Walker {
         if (cell is null)
             return false;
 
-        import quickbite.backends.interpreter.native_scalar: readScalar;
-
-        value = readScalar(
-            cell.elementType,
-            cell.element(cast(size_t) pointer.pointerElementOffset),
+        value = readArrayCellElement(
+            *variable,
+            *cell,
+            cast(size_t) pointer.pointerElementOffset,
         );
         return true;
     }

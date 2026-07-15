@@ -4582,6 +4582,103 @@ case inside it ran and none failed before that teardown crash. The full
 `bin/ut --random` was left to the orchestrator per the usual long-suite
 handoff.
 
+Progress 2026-07-15 (array-of-struct guest-local slice: `promoteArrayCell`
+widened past scalar elements): the next frontier item after PR #421 --
+`&a[i]` on a dynamic array whose element type is a struct -- stayed on the
+pure boxed-snapshot path: `promoteArrayCell` early-returned on
+`!isNativeScalarType(elementType)`, so no `arrayCells` entry ever backed
+such a pointer, and `runPointerExpression`'s `arrayPointerCellValue` check
+always missed and fell to the frozen `pointer.pointerTarget` snapshot taken
+at address-of time -- a direct whole-element write after the pointer was
+taken was invisible through it, even though `arrayPointer`'s VarExp branch
+already mints an `arrayAllocationVariables` id for every array pointer
+regardless of element type (that bookkeeping is unconditional; only the
+cell itself was scalar-gated). One new fixture (pre-approved), all four
+matrix backends: `pointer.
+structArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+(`Ctfe`/`Interpreter`/`SystemLinker`/`LLVMJit`) -- `S[] a = [S(one()),
+S(one())]; S* p = &a[0]; a[0] = S(ninetyNine()); assert((*p).x == 99);`.
+Confirmed red on Interpreter before any production change (`1 != 99`,
+verified via an unnamed scratch probe with the identical body before the
+fixture was given its real name and committed); confirmed green on
+SystemLinker throughout.
+
+Fix, in `impl.d`: `promoteArrayCell` now also promotes a cell for a
+dynamic array whose element type is a (non-union) struct, seeded field by
+field through `NativeArray.structElement`/`writeStructCellScalarFields` --
+reusing the exact container accessor and boxed-value-bridge helper the
+struct-field-cell phase already built, not a new mechanism (`writeStruct
+CellScalarFields` already existed for the top-level struct-local case;
+`NativeArray.structElement` already existed in the container layer per the
+"array-of-struct element views" progress note, with no interpreter call
+site until now). A union element is refused with the same guard
+`promoteStructCell` already uses, for the same reason (a union's
+overlapping fields cannot be seeded by a per-field scalar-overlay loop
+without clobbering an earlier field's bytes). Every other `arrayCells`
+element read/write call site that previously called `native_scalar.
+readScalar`/`writeScalar` unconditionally once a cell existed --
+`writeCelledLocal`'s same-length ref-writeback refresh loop, `writeThrough
+ArrayCell` (the direct `a[i] = x` write path), `runIndexExpression`'s
+cell-priority read arm (the direct `a[i]` read path), and
+`arrayPointerCellValue` (the pointer-deref read path) -- now route through
+two new shared helpers, `writeArrayCellElement`/`readArrayCellElement`,
+which branch on `cell.elementType.isTypeStruct` and dispatch to
+`NativeArray.structElement` + `writeStructCellScalarFields`/`struct
+ValueFromCell` for a struct element, or the pre-existing scalar path
+otherwise. Touching all four was not optional: once `promoteArrayCell` can
+produce a struct-element cell, every one of those call sites can now reach
+it, and each previously assumed `cell.elementType` was always
+`isNativeScalarType` -- left as bare `readScalar`/`writeScalar` calls, any
+one of them would have crashed the first time a struct-element cell reached
+it. `readArrayCellElement`'s struct branch overlays the cell's scalar
+fields onto `variable`'s own current boxed element (or the element type's
+default, if none) via `structValueFromCell` -- the same read-back helper
+`writeBackStructFieldPointerTargets` already uses for a top-level
+struct-field cell, applied here to one array element's sub-range instead of
+a whole struct local -- so a struct element with a non-scalar sub-field (a
+nested struct/array/slice field, out of this narrow slice's scope) keeps
+whatever the boxed mirror already had for that sub-field rather than losing
+it.
+
+No `interpreter.md` §9.10 shim is retired by this slice: it widens which
+arrays get a native cell, it does not touch any of the shim inventory's own
+named functions (`emplaceRef`, the `gc_*` capacity stubs,
+`reinterpretLocalPointerLoad`/`floatBits`/`doubleBits`,
+`writeBackByValueClassArguments`). Remaining frontier after this slice,
+unchanged from the item 7 framing above except this one entry moving from
+boxed to native: struct fields that are themselves non-scalar (nested
+struct, static array, or slice -- `&s.inner.x`, `&s.arr[i]`, `&s.slice[i]`,
+none of which promote a `structCells` entry yet, since `promoteStructFieldCell`
+still gates on `isNativeScalarType(dot.type)` and `arrayPointer`'s
+`DotVarExp` branch still mints an unregistered, un-cell-backed pointer id
+every time); non-scalar array-of-array/array-of-slice elements (only the
+struct-element case was widened this slice); and class objects (still
+third in the migration order). A quick empirical check (three scratch
+probes, all confirmed red on Interpreter / green on SystemLinker before
+being discarded down to the one fixture above) found genuine SystemLinker
+divergences in both the nested-struct-field-write case (`&s.inner.x; *p =
+v;` -- currently `writeLocation`'s `PtrExp` arm throws "Unsupported
+interpreter assignment target" for any multi-hop `DotVarExp` chain, since
+`fieldSnapshotAllocationId`/`promoteStructFieldCell` only resolve a
+`dot.e1.isVarExp` receiver) and the struct-static-array-field case
+(`&s.arr[i]`, addressed above by `arrayPointer`'s `array.isDotVarExp`
+branch, which mints `++allocationCount` with no reverse-lookup registration
+at all) -- both real next candidates, deliberately left for a follow-up
+commit because closing either requires a new (receiver, field-path)
+reverse-lookup generalization beyond the single (receiver, field index)
+`structFieldPointerVariables`/`structFieldPointerFieldIndices` pair the
+existing struct-scalar-field mechanism uses, not a same-shape widening of
+an existing gate the way this slice's array-of-struct change was.
+
+Focused runs, all green: the new fixture (all four backends); `bin/ut -s
+ut.backends.runner.ct.expressions` (497 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (291 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing as
+expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
+`bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

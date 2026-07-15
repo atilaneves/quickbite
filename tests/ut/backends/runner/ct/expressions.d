@@ -3468,3 +3468,43 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+
+// value.md item 7's array-of-struct widening: `promoteArrayCell` previously
+// only gave `arrayCells` an entry when the element type was `native_scalar.
+// isNativeScalarType`, so `&a[i]` on an array of structs stayed on the
+// boxed-snapshot path (`arrayPointer`'s VarExp branch still minted an
+// `arrayAllocationVariables` id via `allocationId`, but no cell backed it,
+// so `runPointerExpression`'s `arrayPointerCellValue` check always missed
+// and fell to the frozen `pointer.pointerTarget` snapshot taken at
+// address-of time). A direct whole-element write (`a[i] = S(...)`) after
+// `&a[i]` was taken was therefore invisible through the earlier pointer.
+// Before any production change, Interpreter returned 1 (the pre-write
+// snapshot) instead of 99. SystemLinker is the oracle.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S[] a = [S(one()), S(one())];
+                S* p = &a[0];
+                a[0] = S(ninetyNine());
+                assert((*p).x == 99);
+            }
+        });
+    }
+}
