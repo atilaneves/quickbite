@@ -5796,3 +5796,22 @@ focused SystemLinker oracle green and Bytecode red; focused
 Bytecode/SystemLinker regression green; and the three prior member ref-return
 Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
 `1377337795`, 3395 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 5, forwarded receiver argument evaluation, 2026-07-15: caller
+offset recovery for a ref-returning receiver executed its selected `ref`
+argument again after emitting the receiver call. The approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnEvaluatesRefArgumentOnce` forwards
+`*pointed(counter, evaluations)` through a ref-returning receiver helper.
+SystemLinker evaluated `pointed` once; Bytecode was red while trying to load
+the complete `Counter` through its returned pointer. Caller-offset recovery
+now follows direct ref-parameter forwarding recursively, including a pointer
+returned as `&parameter`, and supplies each recovered offset to call emission
+so the corresponding argument is not recompiled. Addressing an inline struct
+slot is supported as an opaque struct pointer so the forwarding helper's body
+can execute. This does not add conditional forwarding, non-parameter pointer
+returns, pointer field access, or general ref-return lowering. Verification:
+focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and all four prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`463451710`, 3397 tests, 0 failed, 6/6 failing as expected).

@@ -3670,10 +3670,10 @@ private struct Compiler {
         ));
     }
 
-    // A struct receiver returned by `ref` from one of the receiver call's own
-    // `ref` parameters aliases that caller lvalue. Execute the receiver call
-    // once for its body effects, then reuse the original caller slot as the
-    // outer method's hidden `this` block and assignment destination.
+    // A struct receiver returned by `ref`, or through `&`, from one of the
+    // receiver call's own `ref` parameters aliases that caller lvalue. Resolve
+    // nested forwarding calls from the inside out, passing each recovered
+    // caller slot into call emission so every argument expression runs once.
     private ushort* refParameterCallReceiverOffset(Expression expression) {
         if (auto dereference = expression.isPtrExp)
             expression = dereference.e1;
@@ -3682,10 +3682,14 @@ private struct Compiler {
         auto call = expression.isCallExp;
         auto function_ = call is null ? null : callFunction(call);
         auto type = function_ is null ? null : function_.type.isTypeFunction;
-        if (type is null || !type.isRef || call.arguments is null)
+        if (type is null || call.arguments is null)
             return null;
 
         auto returned = provenFinalReturnExpression(function_.fbody);
+        const returnsAddress = returned !is null &&
+            returned.isAddrExp !is null;
+        if (!type.isRef && !returnsAddress)
+            return null;
         if (auto dereference = returned is null ? null : returned.isPtrExp)
             returned = dereference.e1;
         if (auto address = returned is null ? null : returned.isAddrExp)
@@ -3698,9 +3702,14 @@ private struct Compiler {
         if (index is null || *index >= call.arguments.length)
             return null;
 
-        compileCall(call);
-        auto result = new ushort;
-        *result = referenceOffset((*call.arguments)[*index]);
+        auto result = refParameterCallReceiverOffset(
+            (*call.arguments)[*index],
+        );
+        if (result is null) {
+            result = new ushort;
+            *result = referenceOffset((*call.arguments)[*index]);
+        }
+        compileCall(call, null, index, result);
         return result;
     }
 
@@ -5458,7 +5467,10 @@ private struct Compiler {
                 return null;
             auto existing = declaration in _locals;
             if (existing is null) {
-                if (auto moduleVariable =
+                if (auto struct_ = declaration in _structLocals) {
+                    slot = struct_.offset;
+                    pointedType = declaration.type;
+                } else if (auto moduleVariable =
                         moduleScalarVariableOrNull(declaration)) {
                     const pointer = allocateBytes(
                         cast(uint) size_t.sizeof,
@@ -5478,12 +5490,13 @@ private struct Compiler {
                         moduleVariable.type,
                     );
                     return result;
+                } else {
+                    auto staticArray = declaration in _staticArrayLocals;
+                    if (staticArray is null)
+                        return null;
+                    slot = *staticArray;
+                    pointedType = address.type.toBasetype.nextOf;
                 }
-                auto staticArray = declaration in _staticArrayLocals;
-                if (staticArray is null)
-                    return null;
-                slot = *staticArray;
-                pointedType = address.type.toBasetype.nextOf;
             } else {
                 slot = *existing;
                 pointedType = declaration.type;
@@ -5497,14 +5510,17 @@ private struct Compiler {
         } else
             return null;
 
-        if (pointedType.toBasetype.ty == TY.Tstruct)
-            return null;
-
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameAddress, pointer, slot);
         auto result = new Operand;
         *result = Operand(
-            pointer, ScalarType.ulong_, false, true, scalarType(pointedType),
+            pointer,
+            ScalarType.ulong_,
+            false,
+            true,
+            pointedType.toBasetype.ty == TY.Tstruct
+                ? ScalarType.void_
+                : scalarType(pointedType),
         );
         return result;
     }
@@ -8120,6 +8136,8 @@ private struct Compiler {
     private Operand compileCall(
         CallExp call,
         const ushort* evaluatedMethodReceiver = null,
+        const size_t* evaluatedReferenceArgumentIndex = null,
+        const ushort* evaluatedReferenceArgumentOffset = null,
     ) {
         import dmd.astenums: TY;
         import std.conv: text;
@@ -8280,6 +8298,18 @@ private struct Compiler {
                 const slot = cast(ushort)
                     (argumentArea +
                         layout.offsets[nextArgumentIndex + argumentIndex]);
+                if (layout.isReference[nextArgumentIndex + argumentIndex] &&
+                    evaluatedReferenceArgumentIndex !is null &&
+                    evaluatedReferenceArgumentOffset !is null &&
+                    argumentIndex == *evaluatedReferenceArgumentIndex) {
+                    _code ~= Instruction(
+                        Op.loadConstant,
+                        slot,
+                        constantIndex(*evaluatedReferenceArgumentOffset),
+                        cast(ushort) size(ScalarType.uint_),
+                    );
+                    continue;
+                }
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
                     if (emitDynamicArrayRefArgument(
                         slot,
