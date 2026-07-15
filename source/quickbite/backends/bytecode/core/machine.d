@@ -284,6 +284,12 @@ package(quickbite.backends.bytecode) RunResult run(
                 const hi = scalarValue!size_t(
                     stack, base + instruction.c + size_t.sizeof,
                 );
+                validateSubSlice(
+                    stack,
+                    base + instruction.b,
+                    lo,
+                    hi,
+                );
                 const sourcePointer =
                     scalarValue!size_t(stack, base + instruction.b);
                 writeSliceDescriptorPointer(
@@ -2117,6 +2123,25 @@ private uint subSliceElementSize(
     if (op == Op.subSlice4)
         return 4;
     return op == Op.subSlice2 ? 2 : 1;
+}
+
+private void validateSubSlice(
+    in ubyte[] stack,
+    in size_t sourceOffset,
+    in size_t lo,
+    in size_t hi,
+) @safe {
+    import std.conv: text;
+
+    const length = scalarValue!size_t(
+        stack,
+        sourceOffset + size_t.sizeof,
+    );
+    if (hi > length)
+        throw new Exception(text(
+            "slice [", lo, " .. ", hi,
+            "] extends past source array of length ", length,
+        ));
 }
 
 private uint sliceCopyElementSize(

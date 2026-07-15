@@ -6040,3 +6040,19 @@ widths, static-array slice fills, or broader stale-cell reconciliation.
 Verification: focused Bytecode row and `ninja bin/ut` passed after promotion.
 The final `bin/ut --random` ended with the pre-existing signal-11 suite crash
 under seed `1305901141`; the required quiet replay reproduced exit code 139.
+
+`dynamicArray.sliceAssignPastLengthThrowsRangeError` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row was red with signal 11
+because the sub-slice opcode formed a descriptor past the source allocation
+before the scalar fill touched it. Dynamic-array sub-slice formation now
+rejects an upper bound past the source descriptor's length before pointer
+arithmetic or right-hand-side evaluation, using the fixture's compiled-D
+message. This does not add pointer-slice bounds checking, lower-bound
+diagnostics, or new slice-assignment element widths. The pre-edit
+`ninja bin/ut` baseline passed; pre-edit `bin/ut --random` crashed with signal
+11 under seed `1925911090`, and its required quiet replay reproduced exit code
+139. After promotion, the focused Bytecode row, focused four-backend matrix,
+and final `ninja bin/ut` passed. Final `bin/ut --random` crashed with the
+pre-existing signal 11 under seed `1452298491`; its required quiet replay
+reproduced exit code 139.

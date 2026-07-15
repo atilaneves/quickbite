@@ -2048,7 +2048,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed,
         "DMD's CTFE engine reports its own compile-time diagnostic wording here, but no sibling pin test captures it"),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("dynamicArray.sliceAssignPastLengthThrowsRangeError." ~ backend.stringof)
     @Tags(backend.stringof)
