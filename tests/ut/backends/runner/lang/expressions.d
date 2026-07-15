@@ -2961,7 +2961,7 @@ static foreach (backend; Matrix!()) {
 // fixture in arrays.d for the full-slice-fill variant. SystemLinker is the
 // oracle; other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -305,6 +305,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case sliceFill4:
+                fillSlice4(stack, base + instruction.a, base + instruction.b);
+                ++ip;
+                break;
+
             case sliceEqual1, sliceEqual4:
                 stack[base + instruction.a] = slicesEqual(
                     stack,
@@ -2348,6 +2353,21 @@ private void copySlice(
     auto destination = (cast(ubyte*) destinationPointer)[0 .. byteCount];
     const source = (cast(const(ubyte)*) sourcePointer)[0 .. byteCount];
     destination[] = source[];
+}
+
+// The compiler supplies a valid native slice descriptor and a 4-byte scalar
+// slot; the trusted boundary only forms the corresponding typed host slice.
+private void fillSlice4(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination = (cast(uint*) destinationPointer)[0 .. destinationLength];
+    destination[] = scalarValue!uint(stack, valueOffset);
 }
 
 // Element-wise `dest[] = left[] + right[]` over 4-byte integer elements,

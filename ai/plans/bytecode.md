@@ -5827,3 +5827,17 @@ cell reconciliation. Verification: passing baseline `ninja bin/ut` and
 `bin/ut --random` (seed `2372427440`), then the focused Bytecode row and
 `ninja bin/ut` passed after promotion. The final `bin/ut --random` passed
 with seed `2248053155` (3398 tests, 0 failed, 6/6 failing as expected).
+
+`pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell` promoted
+to Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row was red with
+`Unsupported slice-assignment source in bytecode core: ninetyNine()` because
+the core treated every dynamic-array slice assignment as a slice-to-slice
+copy. A 4-byte scalar slice-fill opcode now evaluates the right-hand side once
+and fills the bounded destination's native backing memory, preserving the
+address-taken element alias. This does not add scalar fills for other element
+widths, aggregate elements, or static-array slice fills. Verification:
+passing baseline `ninja bin/ut` and `bin/ut --random` (seed `4251602219`),
+focused Bytecode red then green, passing focused five-backend matrix,
+`ninja bin/ut`, and final `bin/ut --random` (seed `3366125856`, 3399 tests,
+0 failed, 6/6 failing as expected).

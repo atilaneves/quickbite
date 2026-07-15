@@ -7768,6 +7768,17 @@ private struct Compiler {
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileSliceInto(destination, elementType, slice);
 
+        if (size(elementType) == uint.sizeof &&
+            rhs.type !is null &&
+            rhs.type.toBasetype.isTypeBasic !is null) {
+            const value = compileExpression(rhs);
+            _code ~= Instruction(Op.sliceFill4, destination, value.offset);
+
+            auto result = new Operand;
+            *result = Operand.init;
+            return result;
+        }
+
         const source = compileSourceSlice(elementType, rhs);
         _code ~= Instruction(
             sliceCopyOp(size(elementType)),

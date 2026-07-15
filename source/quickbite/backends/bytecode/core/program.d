@@ -258,6 +258,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // indexLoad/indexStore split.
     sliceCopy1,
     sliceCopy4,
+    // Fill every 4-byte element of the destination slice descriptor at frame
+    // offset a with the scalar value at frame offset b.
+    sliceFill4,
     // Compare the two slice descriptors at frame offsets b and c, writing one
     // boolean byte to frame offset a: true iff their lengths and all element
     // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
