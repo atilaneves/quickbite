@@ -438,11 +438,8 @@ static foreach (backend; Matrix!()) {
 // write to `a` is visible through `s` too -- the opposite direction from
 // `nestedSliceWritesPropagateToOriginalArray` above (a write through the
 // slice, visible in the source). SystemLinker's `s` aliases `a`'s real
-// storage, so the direct write to `a` is visible through `s`. Other backends
-// omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+// storage, so the direct write to `a` is visible through `s`.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice." ~
         backend.stringof)
     @Tags(backend.stringof)

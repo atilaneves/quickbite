@@ -5978,3 +5978,13 @@ baseline `ninja bin/ut` and `bin/ut --random` (seed `1306247939`), focused
 Bytecode red then green, and final `ninja bin/ut`.
 Final `bin/ut --random` passed with seed `383017829` (3410 tests, 0 failed,
 6/6 failing as expected).
+
+`dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a full slice retains the dynamic array's
+backing storage when the source array is later written directly. No production
+change was needed. This does not add slice rebinding, append-reallocation
+aliases, or broader stale-array reconciliation. Verification: focused Bytecode
+row, `ninja bin/ut`, and final `bin/ut --random` passed (seed `3679512546`;
+the quiet seed replay also passed).
