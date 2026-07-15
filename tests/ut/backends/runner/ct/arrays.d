@@ -438,7 +438,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // slice, visible in the source). SystemLinker's `s` aliases `a`'s real
 // storage, so the direct write to `a` is visible through `s`. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1833,7 +1833,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // the FIRST iteration's stale cell bytes instead of its own row's values.
 // SystemLinker is the oracle; other backends omitted per the omit-don't-pin
 // convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1874,7 +1874,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // view over `a`'s cell, so the buggy in-place refresh corrupted `a` itself.
 // SystemLinker is the oracle; other backends omitted per the omit-don't-pin
 // convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1918,7 +1918,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // the newly-appended element then goes through `readIndexExpression`'s cell
 // arm against the stale, too-short cell. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("dynamicArray.appendRefreshesSlicePromotedStaleCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1956,7 +1956,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // fixture in expressions.d for the bounded/`&a[0]` variant. SystemLinker is
 // the oracle; other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2006,7 +2006,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // with its own compile-time diagnostic wording ("slice `[0..5]` exceeds
 // array bounds `[0..2]`") rather than the runtime `RangeError` message this
 // fixture pins.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("dynamicArray.sliceAssignPastLengthThrowsRangeError." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

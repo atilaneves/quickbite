@@ -1680,7 +1680,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // (`a[0] = ...`, not through the pointer). SystemLinker's `p` aliases `a`'s
 // real storage, so the direct write is visible through `*p`. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1714,7 +1714,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // `p`/`q` both alias `a`'s real storage, so a write through `p` is visible
 // through `q`. Other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1748,7 +1748,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // aliases `a`'s real storage, so the loop's writes are visible through `*p`.
 // Other backends omitted per the omit-don't-pin convention (unconfirmed
 // there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1782,7 +1782,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // itself and directly on the array. SystemLinker's `p` aliases `a`'s real
 // storage, so the increment is visible both ways. Other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1812,7 +1812,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // (taken in the caller BEFORE the call, into the SAME backing array) must
 // see the write too. Other backends omitted per the omit-don't-pin
 // convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1856,7 +1856,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // alongside this fixture. SystemLinker's `p` aliases `a`'s real storage, so
 // the direct write is visible through `*p`. Other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1896,7 +1896,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // phase closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so
 // the direct write is visible through `*p`. Other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2117,7 +2117,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // depth's stale cell instead of getting a fresh one for its own (shorter,
 // differently-valued) array. SystemLinker is the oracle; other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.recursiveArrayDeclarationDropsStaleArrayCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2163,7 +2163,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // which happens to route through the existing in-place `writeCelledLocal`
 // refresh and masks this particular gap. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.recursiveStructDeclarationDropsStaleStructCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2213,7 +2213,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // 107, the inner depth's own unrelated value. SystemLinker is the oracle;
 // other backends omitted per the omit-don't-pin convention (unconfirmed
 // there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2244,7 +2244,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 
 // Struct sibling of the fixture above: the same stale-id bug for
 // `fieldSnapshotAllocationId`/`structFieldPointerVariables`.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2279,7 +2279,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // (shorter) cell and threw `NativeArray.element: index out of range`
 // instead of declining to the outer pointer's own frozen (in-range)
 // snapshot.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.recursiveArrayPointerPassedAcrossShorterRebindDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2333,7 +2333,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // Interpreter's `*p = 42;` after the call returns did not take effect (the
 // write silently declined), so `*p + s.x` read back the pre-write value
 // instead of the correct post-write one.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2384,7 +2384,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // write falls through to the `fieldSnapshotAllocationIds` refusal check
 // (also duped) instead of aliasing. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2716,7 +2716,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // used to throw a spurious out-of-range error before the fix. SystemLinker
 // is the oracle; other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayAppendRefreshesStaleCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2758,7 +2758,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // fixture in arrays.d for the full-slice-fill variant. SystemLinker is the
 // oracle; other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2805,7 +2805,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // mirror and so kept answering with the stale, pre-write value.
 // SystemLinker is the oracle; other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2850,7 +2850,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // `*p` re-read the stale cell instead of the freshly-incremented value.
 // SystemLinker is the oracle; other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.structFieldPointerCompoundIncrementWritesThroughCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2893,7 +2893,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // authoritative over the boxed mirror and so kept answering with the stale,
 // pre-write value. SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.structFieldRefLocalWriteThroughRefreshesCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2940,7 +2940,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // a struct, so a later deref-read through `p`
 // (`structFieldPointerCellValue`) sees the new value rather than a stale
 // cell.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2991,7 +2991,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // unrelated `s.x` field to still read `1`: the array-field write must skip
 // the cell write entirely and leave the boxed mirror path (unaffected by
 // this finding) as the sole record for a non-scalar aliased field.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3040,7 +3040,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // Interpreter returned 7 (the rebound array's first element) instead of the
 // pre-rebind value 1. SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3082,7 +3082,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // resolved the stale outer id into the rebound array's own (shorter) cell
 // and threw `NativeArray.element: index out of range` instead of declining
 // to the outer pointer's own frozen (in-range) snapshot.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3129,7 +3129,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // reading its own pre-append snapshot even after a write through `q`.
 // SystemLinker is the oracle for this exact value; other backends omitted
 // per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3186,7 +3186,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // instead of 11 (`leak(0)`'s inner `a`, the value the escaped pointer
 // actually names). SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3225,7 +3225,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // parent's stale cell kept answering `a[0]` with the pre-call value even
 // though the boxed mirror was correctly refreshed. SystemLinker is the
 // oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.nestedFunctionArrayRebindIsVisibleThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3280,7 +3280,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // boxed `locals` mirror's length, not the cell's, so the out-of-range cell
 // read crashes the host instead of throwing a `RangeError`. SystemLinker is
 // the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.nestedFunctionArrayAppendGrowsArrayVisibleThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3327,7 +3327,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // bare-assignment gap, so a same-length in-place element write made by the
 // recursive callee never reconciled the caller's own stale cell.
 // SystemLinker is the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.recursiveArrayParameterElementWriteIsVisibleThroughCallerCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3375,7 +3375,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // `s`'s view with the REBOUND array's bytes even though real D gives `a`
 // entirely new storage and leaves `s`'s old view untouched. SystemLinker is
 // the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.refParameterRebindDoesNotCorruptPreexistingSliceView." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3420,7 +3420,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // slice view of the captured array's OLD storage, via
 // `writeBackNestedLocals`'s own use of the same `writeCelledLocal(...,
 // arrayIsRefWriteback: true)` reconciliation. SystemLinker is the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.nestedFunctionArrayRebindDoesNotCorruptPreexistingSliceView." ~
         backend.stringof)
     @Tags(backend.stringof)
