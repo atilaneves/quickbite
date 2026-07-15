@@ -2041,7 +2041,7 @@ static foreach (backend; Matrix!()) {
 // A ref-returning ternary lowers to `*(cond ? &a : &fallback(b))`, so even
 // reading the call as an rvalue evaluates AddrExp(CallExp).  phobos'
 // `theAllocator` (`!p.isNull() ? p : setupThreadAllocator()`) is this shape.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.refTernaryReturnLowersToAddressOfCall." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2608,7 +2608,7 @@ static foreach (backend; Matrix!()) {
 // A ref-returning ternary as assignment target: the return lowers to
 // `*(cond ? &a : &fallback(b))`, so the write must land on whichever branch
 // actually ran — phobos' `theAllocator = x` family is this shape.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("refCall.assignmentToRefTernaryReturnWritesChosenBranch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2638,7 +2638,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // just locate its return expression — so pre-return side effects happen
 // exactly once and the executed return (not the textually first) picks the
 // lvalue.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("refCall.assignmentToMemberRefReturnRunsCalleeBody." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2654,6 +2654,129 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
                 counter.slot() = 42;
                 assert(counter.value == 42);
                 assert(counter.calls == 1);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToMemberRefReturnUsesReturnedBase." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot(ref Counter other) {
+                    return other.value;
+                }
+            }
+
+            unittest {
+                Counter receiver;
+                Counter other;
+
+                receiver.slot(other) = 42;
+
+                assert(receiver.value == 0);
+                assert(other.value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToConditionalMemberRefReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot(bool useOther, ref Counter other) {
+                    if (useOther)
+                        return other.value;
+                    return value;
+                }
+            }
+
+            unittest {
+                Counter receiver;
+                Counter other;
+
+                receiver.slot(true, other) = 42;
+
+                assert(receiver.value == 0);
+                assert(other.value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToMemberRefReturnEvaluatesReceiverOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot() {
+                    return value;
+                }
+            }
+
+            ref Counter receiver(ref Counter counter, ref int evaluations) {
+                ++evaluations;
+                return counter;
+            }
+
+            unittest {
+                Counter counter;
+                int evaluations;
+
+                receiver(counter, evaluations).slot() = 42;
+
+                assert(evaluations == 1);
+                assert(counter.value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToMemberRefReturnEvaluatesRefArgumentOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot() {
+                    return value;
+                }
+            }
+
+            Counter* pointed(ref Counter counter, ref int evaluations) {
+                ++evaluations;
+                return &counter;
+            }
+
+            ref Counter receiver(ref Counter counter) {
+                return counter;
+            }
+
+            unittest {
+                Counter counter;
+                int evaluations;
+
+                receiver(*pointed(counter, evaluations)).slot() = 42;
+
+                assert(evaluations == 1);
+                assert(counter.value == 42);
             }
         });
     }

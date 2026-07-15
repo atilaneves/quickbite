@@ -1421,11 +1421,7 @@ static foreach (backend; Matrix!()) {
 // (`Walker.runIndexAssignExpression`'s `DotVarExp` branch) affects
 // `h.arr[$ - 1] = ...` and is tracked separately in interpreter.md §9.7,
 // not fixed here, to keep this fixture pinned to the one root it exposes.
-// `Bytecode` omitted: still red there (under active development), per
-// interpreter.md §8's omit-don't-pin rule for matrix width.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed, "still red there (under active development)"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.postfixLengthIncrementGrowsRefParamArrayField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1454,11 +1450,7 @@ static foreach (backend; Matrix!(
 // 1] = ...`) read a stale/default-zero length and underflowed. This is
 // the write-path counterpart of the read-path fix in
 // `dynamicArray.dollarReflectsLengthAfterInPlaceGrowth` (arrays.d).
-// `Bytecode` omitted: `$` is not implemented there (`Unsupported variable
-// in bytecode core: $`), per interpreter.md §8's omit-don't-pin rule.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed, "`$` not implemented (\"Unsupported variable in bytecode core: $\")"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1594,11 +1586,8 @@ static foreach (backend; Matrix!()) {
 // (a struct field, here `val.units`) left `__r` untracked as a slice alias:
 // writes to `e`'s fields updated the interpreter's local snapshot of `__r`
 // but never propagated back to `val.units`, so the caller's array element
-// silently kept its default value. interpreter.md §9.7. `Bytecode` omitted:
-// it segfaults on this fixture (under active development, omit-don't-pin).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed, "segfaults on this fixture (under active development)"),
-)) {
+// silently kept its default value. interpreter.md §9.7.
+static foreach (backend; Matrix!()) {
     @("struct.foreachRefOverFieldArrayPersistsElementWrites." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1628,6 +1617,38 @@ static foreach (backend; Matrix!(
                 assert(container.items[0].b == 2);
                 assert(container.items[1].a == 7);
                 assert(container.items[1].b == 3);
+            }
+        });
+    }
+}
+
+// Repeated forwarding of the same ref-foreach element must preserve its
+// identity across every ref parameter. Each mutation therefore reaches the
+// same array element instead of competing through independent snapshots.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("struct.foreachRefRepeatedArgumentPreservesAlias." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Item {
+                int x;
+                int y;
+            }
+
+            void mutate(ref Item first, ref Item second) {
+                first.x = 1;
+                second.y = 2;
+            }
+
+            unittest {
+                Item[] items;
+                items.length = 1;
+
+                foreach (ref item; items)
+                    mutate(item, item);
+
+                assert(items[0].x == 1);
+                assert(items[0].y == 2);
             }
         });
     }

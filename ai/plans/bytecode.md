@@ -5650,3 +5650,168 @@ omit-don't-pin convention (a backend that cannot run a test is left out of
 its matrix, not pinned to a known-bad result). Re-add Bytecode once the VM's
 `readHeapElement` handles static-array-of-structs postblit/dtor heap element
 copies.
+
+`struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported variable in bytecode core: $` because dynamic-array element
+assignment compiled its index without exposing the target descriptor's current
+length. The assignment path now scopes the existing active-dollar length slot
+around the index expression, matching the dynamic-array read and address paths.
+This does not add `$` outside array indices or change array-resize semantics.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random` (seed `3401576571`).
+
+`struct.postfixLengthIncrementGrowsRefParamArrayField` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+because dmd lowers postfix `.length++` through a synthetic `ref T[]` local,
+which the core copied into an independent descriptor; resizing it therefore
+left the original struct field empty. Ref dynamic-array locals now reuse the
+initializer's existing descriptor, preserving the lvalue alias and its
+pointer writeback metadata. This does not add general ref-local aliases or
+ref aliases of array elements. Verification: focused Bytecode red then green
+and `ninja bin/ut` passed. `bin/ut --random` exited with signal 11 under seed
+`1923927317`; the required replay reproduced the crash after the complete
+promoted backend matrix row had passed.
+
+`struct.foreachRefOverFieldArrayPersistsElementWrites` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+because the foreach-lowered `ref Item` local was not represented as a pointer
+into the dynamic array's backing block, and forwarding that local to another
+`ref` parameter could not use the frame-offset call ABI directly. Struct
+element ref locals now retain their backing pointer; a forwarded ref call
+copies the struct to a frame temporary and writes it through the pointer after
+return. This does not add ref aliases of static-array elements, non-local ref
+returns, or structs larger than the VM's existing pointer load/store widths.
+Verification: focused Bytecode red then green, focused five-backend matrix,
+and `ninja bin/ut` passed. `bin/ut --random` exited with signal 11 under seed
+`1300728544` after this promoted row had passed. Before this promotion,
+replaying seed `1923927317` reproduced the recorded signal 11 only after the
+promoted row and multiple subsequent
+struct matrices; a focused sequence from that row through the crash-boundary
+matrix passed, so no causal link to commit `1ae75308` was established.
+
+`pointer.refTernaryReturnLowersToAddressOfCall` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row passed on
+the rebased upstream at `dd977275`, confirming the existing ref-return call
+and conditional-pointer paths already preserve the selected caller lvalue.
+No production change was needed. This does not add assignment through a
+ternary ref return, member ref returns, or broader ref-return lowering.
+
+`refCall.assignmentToRefTernaryReturnWritesChosenBranch` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported assignment in bytecode core: pick(false, x, y) = 42`.
+Assignment through a ref-returning call now recognizes the lowered single
+ternary return, traces each branch through a direct ref parameter or a simple
+ref-forwarding call, executes the callee, and writes the result to the caller
+slot selected by the fixture's literal condition. This does not add runtime
+conditions, member or global ref returns, nested conditionals, or general
+lvalue-return lowering. Verification: focused Bytecode red then green; passing
+focused five-backend matrix; `ninja bin/ut`; and `bin/ut --random` (seed
+`2550343385`).
+
+`refCall.assignmentToMemberRefReturnRunsCalleeBody` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported assignment in bytecode core: counter.slot() = 42`. A
+ref-returning struct method whose final statement returns a scalar field now
+executes the complete method body, including receiver side effects, before
+writing the assignment value into that field of the caller's receiver. This
+does not add conditional or early member ref returns, non-scalar fields,
+class methods, or general lvalue-return lowering. Verification: focused
+Bytecode red then green; passing focused five-backend matrix; `ninja bin/ut`;
+and `bin/ut --random` (seed `2688354283`).
+
+Review finding 1, member ref-return assignment base, 2026-07-15: the
+`tryMemberRefCallAssign` slice above always added the returned field offset to
+the method receiver, even when the returned `DotVarExp` was based on a `ref`
+parameter. The approved direct SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnUsesReturnedBase` proved compiled D writes
+`other.value` for `receiver.slot(other) = 42`; Bytecode was red with
+`42 != 0` because it wrote `receiver.value`. Member ref-return assignment now
+uses the caller lvalue of a returned ref-parameter base, while implicit
+`this`/`super` fields retain receiver-relative lowering and other bases decline
+this specialized path. This does not add value-parameter bases, nested field
+bases, pointers, conditionals, early returns, or general lvalue-return
+lowering. Verification: focused SystemLinker oracle green and Bytecode red;
+focused Bytecode/SystemLinker regression green; the prior member ref-return
+Bytecode row green; `ninja bin/ut`; and `bin/ut --random` (seed `233816370`,
+3389 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 2, conditional member ref return, 2026-07-15: the specialized
+member ref-return assignment path trusted the textually final return even when
+an earlier conditional return selected a different field. The approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToConditionalMemberRefReturn` proved compiled D writes
+`other.value` for `receiver.slot(true, other) = 42`; Bytecode was red with
+`42 != 0` because it wrote `receiver.value`. The specialized path now
+recognizes the exact `if (parameter) return field; return field;` shape when
+the caller condition is a literal, executes the callee, and writes through the
+selected return base. Its ordinary final-return path now accepts only
+expression-statement prefixes, so unproved control flow declines instead of
+silently selecting the final return. This does not add runtime conditions,
+`else` returns, nested conditionals, loops, or general lvalue-return lowering.
+Verification: focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and both prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`2831149159`, 3391 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 3, repeated ref-foreach argument alias, 2026-07-15: forwarding
+one ref-foreach struct local to two `ref` parameters materialized independent
+caller temporaries, so their post-call pointer stores competed and the final
+store erased the first parameter's field mutation. The approved direct
+SystemLinker/Bytecode regression
+`struct.foreachRefRepeatedArgumentPreservesAlias` proved compiled D preserves
+both writes to the shared array element; Bytecode was red with `0 != 1`.
+Repeated forwarding of the same struct-pointer local now reuses one caller
+temporary, and the machine keeps callee parameter slots that name the same
+caller storage coherent between instructions. Distinct caller offsets remain
+separate. This does not add ref-foreach over static arrays, general aggregate
+lvalues, or structs beyond the existing pointer load/store widths.
+Verification: focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; seven relevant Bytecode ref and
+ref-foreach rows green; `ninja bin/ut`; and `bin/ut --random` (seed
+`1286042481`, 3393 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 4, member ref-return receiver evaluation, 2026-07-15: the
+specialized member ref-return assignment path evaluated a nontrivial receiver
+once while reconstructing the returned field destination and again while
+emitting the method call's hidden `this` argument. The reviewer's comma
+expression fixture was invalid compiled D, so the approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnEvaluatesReceiverOnce` uses a
+ref-returning receiver helper with the same observable evaluation count.
+SystemLinker evaluated the receiver helper once; Bytecode was red with
+`2 != 1`. The specialized path now passes its already-evaluated receiver into
+call emission. A receiver returned directly from one of its helper call's
+`ref` parameters executes that helper once and reuses the original caller
+slot, preserving both receiver identity and the outer method's writeback.
+This does not add conditional receiver ref returns, non-parameter receiver ref
+returns, class receivers, or general ref-return lowering. Verification:
+focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and the three prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`1377337795`, 3395 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 5, forwarded receiver argument evaluation, 2026-07-15: caller
+offset recovery for a ref-returning receiver executed its selected `ref`
+argument again after emitting the receiver call. The approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnEvaluatesRefArgumentOnce` forwards
+`*pointed(counter, evaluations)` through a ref-returning receiver helper.
+SystemLinker evaluated `pointed` once; Bytecode was red while trying to load
+the complete `Counter` through its returned pointer. Caller-offset recovery
+now follows direct ref-parameter forwarding recursively, including a pointer
+returned as `&parameter`, and supplies each recovered offset to call emission
+so the corresponding argument is not recompiled. Addressing an inline struct
+slot is supported as an opaque struct pointer so the forwarding helper's body
+can execute. This does not add conditional forwarding, non-parameter pointer
+returns, pointer field access, or general ref-return lowering. Verification:
+focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and all four prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`463451710`, 3397 tests, 0 failed, 6/6 failing as expected).
