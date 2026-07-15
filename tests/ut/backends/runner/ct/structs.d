@@ -1810,6 +1810,35 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// SystemLinker (the oracle) zero-initializes a union's whole storage block
+// from its FIRST declared member's own default value, so an untouched
+// sibling scalar reads the first member's bits reinterpreted as its own
+// type: here `U`'s first member `float f`'s default is NaN
+// (`0x7FC00000`), so `u.i` reads that same bit pattern, not `int.init`
+// (`0`). `Ctfe` is deliberately omitted (omit-don't-pin, `ai/mistakes.md`):
+// real DMD's own CTFE engine refuses this exact read with `reinterpretation
+// through overlapped field 'i' is not allowed in CTFE` -- a genuine
+// Ctfe/SystemLinker divergence in DMD itself, not something this repo's
+// backends can or should paper over.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("union.untouchedSiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float f;
+                int i;
+            }
+
+            unittest {
+                U u;
+                assert(u.i == 0x7FC00000);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     @("union.writeThroughOneMemberIsVisibleThroughAnother." ~
         backend.stringof)

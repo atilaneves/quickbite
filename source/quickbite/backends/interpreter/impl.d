@@ -9410,18 +9410,78 @@ private struct Walker {
         if (literal.elements !is null)
             foreach (index, element; *literal.elements)
                 fields ~= element is null
-                    ? structLiteralDefaultFieldValue(literal, index)
+                    ? structLiteralDefaultFieldValue(literal, index, fields)
                     : structLiteralFieldValue(literal, index, runExpression(element));
 
         return Value.structValue(structLiteralName(literal), fields);
     }
 
+    // DMD's `defaultInitLiteral` for a union only ever fills the FIRST
+    // declared member's `elements` slot; every sibling stays `null`
+    // (confirmed by inspection: a probe fixture's `elements` array had
+    // `[<float.init literal>, null]` for `union U { float f; int i; }`).
+    // Real D zero-initializes the union's WHOLE storage block from that
+    // first member's own bytes, so an untouched sibling reads the first
+    // member's bits reinterpreted as its own type -- not its own type's
+    // independent default (value.md item 7, union default-init follow-up).
+    // `fieldsSoFar` is this literal's own `fields` accumulator: by the time
+    // a later index is processed, index 0's value has already been
+    // computed and appended, so it is always available here without a
+    // second pass.
     private Value structLiteralDefaultFieldValue(
         imported!"dmd.expression".StructLiteralExp literal,
         in size_t index,
+        in Value[] fieldsSoFar,
     ) {
         auto field = structLiteralField(literal, index);
-        return field is null ? Value.void_ : defaultValue(field);
+        if (field is null)
+            return Value.void_;
+
+        Value reinterpreted;
+        if (unionSiblingDefaultFieldValue(literal, index, field, fieldsSoFar, reinterpreted))
+            return reinterpreted;
+
+        return defaultValue(field);
+    }
+
+    // Scalar-to-scalar reinterpretation only, matching `withUnionFieldWrite`'s
+    // identical scope: returns `false` (leaving `value` untouched) for index
+    // 0 itself, a non-union literal, or a non-`native_scalar.
+    // isNativeScalarType` first member/sibling, so the caller's existing
+    // independent-`defaultValue` fallback applies unchanged in every other
+    // case -- including the still-open gap (value.md) for a union member
+    // that is itself an aggregate.
+    private bool unionSiblingDefaultFieldValue(
+        imported!"dmd.expression".StructLiteralExp literal,
+        in size_t index,
+        imported!"dmd.declaration".VarDeclaration field,
+        in Value[] fieldsSoFar,
+        out Value value,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, readScalar, writeScalar;
+
+        if (index == 0 || fieldsSoFar.length == 0 || literal.sd is null)
+            return false;
+
+        if (literal.sd.isUnionDeclaration is null)
+            return false;
+
+        auto unionType = literal.type is null ? null : literal.type.toBasetype.isTypeStruct;
+        if (unionType is null)
+            return false;
+
+        auto firstField = structLiteralField(literal, 0);
+        if (
+            firstField is null ||
+            !isNativeScalarType(firstField.type) ||
+            !isNativeScalarType(field.type)
+        )
+            return false;
+
+        auto cell = NativeStruct.allocate(unionType);
+        writeScalar(firstField.type, cell.field(0), fieldsSoFar[0]);
+        value = readScalar(field.type, cell.field(index));
+        return true;
     }
 
     private Value structLiteralFieldValue(

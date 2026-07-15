@@ -7080,6 +7080,91 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    the same nested field) is unproven, as is deeper nesting (2+ levels, in
    any shape) and full field-PATH generalization beyond one level.
 
+   Progress 2026-07-15 (union default-init: an untouched sibling scalar now
+   reads the first member's bits, not its own type's independent default):
+   attempted the divergence the prior slices' own follow-up named --
+   `union U { float f; int i; } U u;` -- `u.i` must read `float.init`'s NaN
+   bit pattern (`0x7FC00000`), not `int.init` (`0`). The follow-up note
+   pointed at `frontend/dmd/values.d`'s `structDefaultValue` (shared with
+   `Ctfe`) as the culprit; traced the ACTUAL runtime path first rather than
+   trusting that pointer, since a wrong shared-module change here is high
+   blast radius. Confirmed by inspection (temporary debug instrumentation,
+   run then discarded, not part of this commit): a local union declaration
+   with no initializer never reaches `structDefaultValue` at all -- DMD
+   lowers `U u;` to a `BlitExp` whose RHS is a `VarExp` over a
+   `SymbolDeclaration` (the compiler's `U.init` symbol), which `impl.d`'s
+   `runSymbolDeclarationVarExpression` resolves via DMD's OWN
+   `TypeStruct.defaultInitLiteral`, then evaluates as a `StructLiteralExp`.
+   DMD's own `defaultInitLiteral` for a union fills ONLY the first declared
+   member's `elements` slot (confirmed: `[<float.init literal>, null]` for
+   `U` above) -- every sibling slot is `null`. The actual bug is
+   `impl.d`'s own `structLiteralValue`/`structLiteralDefaultFieldValue`:
+   a `null` element unconditionally called `defaultValue(field.type)`,
+   independently re-deriving the sibling's OWN type's default instead of
+   reinterpreting the already-resolved first member's bits. So the real
+   fix is entirely interpreter-local (`impl.d`), not in the frontend-shared
+   `values.d` the follow-up note pointed at -- `structDefaultValue` is
+   unreached for this case and was left untouched (confirmed by reverting
+   an initial speculative `values.d` change once this was discovered: 0
+   effect on the red fixture, so it was dropped per strict TDD -- no
+   failing test drove it).
+
+   Fixture `union.untouchedSiblingDefaultsFromFirstMemberBits.
+   {Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/structs.d`,
+   immediately before the prior union fixtures. RED confirmed on
+   Interpreter before any production change: `0 != 2143289344`. Green on
+   `SystemLinker` throughout. `Ctfe` deliberately omitted (omit-don't-pin):
+   real DMD's own CTFE engine throws `reinterpretation through overlapped
+   field 'i' is not allowed in CTFE` for this exact read -- confirmed via a
+   temporary three-backend probe (`Ctfe`/`Interpreter`/`SystemLinker`, run
+   then discarded) that this is DMD's own `dinterpret.d` diagnostic, not a
+   quickbite message, so `Ctfe` diverges from `SystemLinker` here by a
+   DIFFERENT mechanism than the interpreter's (an exception instead of a
+   silently-wrong `0`) and is not this repo's to fix.
+
+   Fix, in `impl.d` only: `structLiteralValue` now threads its own
+   `fields` accumulator into `structLiteralDefaultFieldValue` (index 0's
+   value is always already computed and appended by the time a later
+   `null` sibling is processed, so no second pass is needed). New
+   `unionSiblingDefaultFieldValue` returns `false` (leaving the caller's
+   existing independent-`defaultValue` fallback unchanged) unless: the
+   literal's `sd` is a union, `index != 0`, and BOTH the first member and
+   the target sibling are `native_scalar.isNativeScalarType` -- the exact
+   same scalar-only scope `withUnionFieldWrite` already established for
+   the write-through gap. When it applies, it reuses that same slice's
+   idiom exactly: `NativeStruct.allocate(unionType)`, `writeScalar` the
+   first member's already-resolved value into `cell.field(0)`, `readScalar`
+   the sibling back out of the same (zero-offset-overlapping) cell bytes --
+   no new byte-reinterpretation machinery, the existing scalar<->bytes
+   codec `writeScalar`/`readScalar` already used for the union write-through
+   overlay.
+
+   Deliberately unchanged, matching the identical scope this repo's other
+   union slices already accepted: a union whose first member or targeted
+   sibling is non-scalar (struct/array/class) still falls back to the
+   independent per-field `defaultValue` -- the same open gap
+   `writeStructCellScalarFields`/`withUnionFieldWrite` already have, not
+   widened here.
+
+   No §9.10 shim retired -- unrelated to this default-init fix.
+
+   Focused suites all green: ct.expressions 561/0 (5 failing as expected,
+   unchanged), ct.structs 299/0 (297 + this slice's 2 new backend
+   instances), ct.arrays 346/0, ct.exceptions 130/0, ct.control_flow 336/0,
+   ct.logic 204/0, ct.diagnostics 177/0, ct.integrals 81/0, ct.math 265/0,
+   ct.cerealed 164/0 (1 failing as expected, unchanged), ct.imports 1/0,
+   ct.pollution 3/0, interpreter 218/0, bin.repl 228/0, evaluator.eval
+   71/0; also ran rt.cstdlib 89/0 and rt.dependency_image 119/0
+   (pre-existing union FFI fixtures, unaffected). The full `bin/ut
+   --random` was left to the orchestrator per the usual long-suite
+   handoff.
+
+   Remaining follow-up, unchanged from before: (1) a union member that is
+   itself an aggregate (struct/array/class) still has no default-init
+   reinterpret, matching the identical write-through gap; (2) `Ctfe`'s own
+   divergence here (an exception, not a silent wrong value) is DMD's own
+   CTFE engine behaviour and is out of this repo's scope to change.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
