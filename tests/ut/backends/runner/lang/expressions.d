@@ -1744,7 +1744,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // (`a[0] = ...`, not through the pointer). SystemLinker's `p` aliases `a`'s
 // real storage, so the direct write is visible through `*p`. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)

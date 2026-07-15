@@ -5941,3 +5941,13 @@ Verification: passing baseline `ninja bin/ut` and `bin/ut --random` (seed
 `1860012521`), focused Bytecode row, final `ninja bin/ut`, and
 `bin/ut --random` (seed `3092187886`, 3407 tests, 0 failed, 6/6 failing as
 expected).
+
+`pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer` promoted
+to Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a direct element assignment updates the
+dynamic array's native backing storage observed through an earlier pointer.
+No production change was needed. This does not add writes through pointers,
+cross-frame array pointer aliases, or broader array-cell reconciliation.
+Verification: focused Bytecode row, `ninja bin/ut`, and `bin/ut --random`
+(seed `803268194`).
