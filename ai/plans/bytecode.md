@@ -5915,3 +5915,16 @@ or broader stale-allocation reconciliation. Verification: passing baseline
 `ninja bin/ut` and `bin/ut --random` (seed `1658998645`), focused Bytecode row,
 final `ninja bin/ut`, and `bin/ut --random` (seed `4232171985`, 3405 tests,
 0 failed, 6/6 failing as expected).
+
+`pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash`
+promoted to Bytecode, 2026-07-15: pre-approved promotion of the existing
+direct SystemLinker-backed fixture. The focused Bytecode row passed on its
+first candidate run, confirming that a pointer into the original dynamic
+array remains readable after the array variable is rebound to a shorter
+allocation, even when the pointer's original index is past the rebound
+array's end. No production change was needed. This does not add pointer
+validity across append reallocation, writes through the retained pointer, or
+broader stale-allocation reconciliation. Verification: passing baseline
+`ninja bin/ut` and `bin/ut --random` (seed `2492861490`), focused Bytecode row,
+final `ninja bin/ut`, and `bin/ut --random` passed (seed `843184053`, 3406
+tests, 0 failed, 6/6 failing as expected).

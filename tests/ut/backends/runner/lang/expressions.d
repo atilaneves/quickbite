@@ -3285,7 +3285,7 @@ static foreach (backend; Matrix!()) {
 // resolved the stale outer id into the rebound array's own (shorter) cell
 // and threw `NativeArray.element: index out of range` instead of declining
 // to the outer pointer's own frozen (in-range) snapshot.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
