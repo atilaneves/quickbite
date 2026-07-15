@@ -7135,6 +7135,14 @@ private struct Walker {
             if (writeThroughNestedClassStructFieldPointer(pointer, value))
                 return;
 
+            // `&c.arr[i]` of a static-array field on a plain class-typed
+            // LOCAL promoted a `classCells` entry at address-of time
+            // (value.md item 7 decomposition item 4's write-through-pointer
+            // follow-up): write through it exactly like SystemLinker's real
+            // aliasing, instead of refusing below.
+            if (writeThroughClassArrayFieldPointer(pointer, value))
+                return;
+
             // Every OTHER `&s.field` (addressOfExpression's DotVarExp
             // branch) yields a read-only value snapshot, not an alias to
             // the field: refuse loudly instead of silently rewriting the
@@ -7789,6 +7797,72 @@ private struct Walker {
             const updatedInner = current.classFieldAt(*outerFieldIndex)
                 .withStructField(*innerFieldIndex, value);
             locals[*variable] = current.withClassField(*outerFieldIndex, updatedInner);
+        }
+        uninitializedLocals.remove(*variable);
+        return true;
+    }
+
+    // Class-receiver sibling of `writeThroughStructArrayFieldPointer` above
+    // (value.md item 7 decomposition item 4, aggregate composition,
+    // write-through-pointer follow-up): once `&c.arr[i]` has promoted a
+    // `classCells` entry via `promoteClassArrayFieldCell`, `*p = value`
+    // writes `value`'s bytes into the cell's `NativeArray` view -- adopted
+    // over the field's own byte sub-range, the SAME view
+    // `classArrayFieldPointerCellValue` already reads for the deref-read
+    // side, since a `classCells` entry is a plain `NativeBlock` rather than
+    // a `NativeStruct` (see `classCells`'s own field comment) -- at the
+    // pointer's own element offset, and re-derives the boxed `locals`
+    // mirror from the (already-updated) whole object, mirroring
+    // `writeThroughStructArrayFieldPointer`'s cell-then-mirror discipline.
+    // Same-frame only, matching this shape's own narrow first (read-only)
+    // slice: `classArrayFieldPointerVariables` is not yet duplicated into
+    // child-frame walkers, so this pointer cannot yet be passed into
+    // another function call -- there is no cross-frame case to handle here
+    // yet, unlike `writeThroughStructFieldPointer`/`writeThroughStructArrayFieldPointer`,
+    // whose single-level maps already gained that cross-frame dup (a
+    // remaining follow-up, same as the read side's own comment already
+    // notes). Returns `false` (writing nothing) for every other pointer --
+    // no `classCells` entry for the receiver, no reverse-lookup field
+    // index, the field is no longer a static array, or a receiver whose
+    // boxed value is no longer a class object -- leaving `writeLocation`'s
+    // `PtrExp` arm to keep refusing those exactly as before.
+    private bool writeThroughClassArrayFieldPointer(in Value pointer, in Value value) {
+        auto variable = pointer.pointerAllocation in classArrayFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in classCells;
+        if (cell is null)
+            return false;
+
+        auto fieldIndex = pointer.pointerAllocation in classArrayFieldPointerFieldIndices;
+        if (fieldIndex is null)
+            return false;
+
+        auto current = *variable in locals;
+        if (current !is null && !current.isClassObject)
+            return false;
+
+        import quickbite.backends.interpreter.layout:
+            classFields, fieldByteOffset, staticArrayLength, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+        auto classType = (*variable).type.toBasetype.isTypeClass;
+        auto field = classFields(classType.sym)[*fieldIndex];
+        auto arrayType = field.type.toBasetype.isTypeSArray;
+        if (arrayType is null)
+            return false;
+
+        auto elementType = arrayType.next.toBasetype;
+        const offset = fieldByteOffset(field);
+        const size = typeByteSize(field.type);
+        auto arrayCell = NativeArray.adopt(cell.subRange(offset, size), elementType, staticArrayLength(arrayType));
+        const elementIndex = cast(size_t) pointer.pointerElementOffset;
+        writeScalar(elementType, arrayCell.element(elementIndex), value);
+
+        if (current !is null) {
+            const updatedField = current.classFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
+            locals[*variable] = current.withClassField(*fieldIndex, updatedField);
         }
         uninitializedLocals.remove(*variable);
         return true;
@@ -9624,6 +9698,13 @@ private struct Walker {
         // item 7 decomposition item 4's write-through-pointer follow-up),
         // same reasoning.
         if (writeThroughNestedClassStructFieldPointer(pointer, value))
+            return;
+
+        // A class-array-field pointer (`&c.arr[i]`): the class-typed
+        // sibling of `writeThroughStructArrayFieldPointer` (value.md item 7
+        // decomposition item 4's write-through-pointer follow-up), same
+        // reasoning.
+        if (writeThroughClassArrayFieldPointer(pointer, value))
             return;
 
         if (auto address = expression.isAddrExp) {

@@ -3891,6 +3891,41 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// value.md item 7 decomposition item 4 (aggregate composition), write-
+// through-pointer follow-up: the opposite direction of `pointer.
+// classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+// above -- write THROUGH `&c.arr[i]`, then read `c.arr[i]` directly --
+// mirroring `pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly`'s
+// shape but for the static-array-field aggregate-composition shape instead
+// of the nested-struct-field one. Other backends omitted per the
+// omit-don't-pin convention, matching the other class fixtures' own backend
+// set.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.classArrayFieldElementWrittenThroughPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr[0] = one();
+                int* p = &c.arr[0];
+                *p = 5;
+
+                assert(c.arr[0] == 5);
+            }
+        });
+    }
+}
+
 // value.md item 7's nested-struct-field follow-up (the smaller of the two
 // deferred candidates named in the struct-static-array-field progress
 // note): `&s.inner.x` where `inner` is a (non-union) struct field of a

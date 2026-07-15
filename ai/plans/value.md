@@ -6506,6 +6506,62 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    progress notes is now closed for the declaration/loop/recursion
    fresh-binding path.
 
+   Progress 2026-07-15 (class-array-field write-through-pointer: the
+   follow-up `02a08c67`'s own commit message named explicitly -- `*p = v`
+   through `&c.arr[i]`, a class-receiver, scalar-element static-array
+   field): closes the write-through-pointer gap `02a08c67` deliberately
+   left open after drafting and reverting an untested version of exactly
+   this code, mirroring `writeThroughStructArrayFieldPointer` (the struct
+   sibling) and `writeThroughClassFieldPointer`/
+   `writeThroughNestedClassStructFieldPointer` (the class-receiver
+   write-through siblings already landed).
+
+   Fixture `pointer.classArrayFieldElementWrittenThroughPointerIsVisible
+   Directly.{Ctfe,Interpreter,SystemLinker,LLVMJit}` in `tests/ut/backends/
+   runner/ct/expressions.d`, mirroring `pointer.nestedClassStructField
+   WrittenThroughPointerIsVisibleDirectly`'s shape one aggregate-
+   composition case over: `class C { int[3] arr; }`, `c.arr[0] = one();`,
+   `int* p = &c.arr[0];`, `*p = 5;`, then `assert(c.arr[0] == 5);`. RED
+   confirmed on Interpreter before any production change: `object.
+   Exception: Unsupported interpreter assignment target.` at the `*p = 5;`
+   line -- `writeLocation`'s `PtrExp` arm had no class-array-field-pointer
+   check, so it fell through every existing write-through check to the
+   `fieldSnapshotAllocationIds` refusal guard. Green on SystemLinker and
+   Ctfe throughout.
+
+   Fix, in `impl.d`: a new `writeThroughClassArrayFieldPointer`, the
+   class-receiver sibling of `writeThroughStructArrayFieldPointer` --
+   resolves the same `classArrayFieldPointerVariables`/
+   `classArrayFieldPointerFieldIndices` reverse lookup
+   `classArrayFieldPointerCellValue` (the read side) already uses, adopts
+   the same `NativeArray.adopt(cell.subRange(offset, size), elementType,
+   staticArrayLength(arrayType))` view over the field's byte sub-range
+   (since a `classCells` entry is a plain `NativeBlock`, not a
+   `NativeStruct`), writes the element at the pointer's own element offset
+   with `writeScalar`, then re-derives the boxed `locals` mirror via
+   `current.classFieldAt(*fieldIndex).withArrayElement(elementIndex,
+   value)`/`current.withClassField(*fieldIndex, updatedField)` -- the same
+   two calls the existing direct-write class-array-field-element path
+   already uses. Wired into `writeLocation`'s `PtrExp` arm and
+   `writePointerTarget` alongside the existing six write-through checks.
+
+   No §9.10 shim retired (as expected -- `writeBackByValueClassArguments`
+   protects whole-boxed-value uses, unrelated to this write-through-pointer
+   addition).
+
+   Focused suites all green: ct.expressions 551/0 (5 failing as expected,
+   pre-existing `@ShouldFail` characterizations, unchanged from before this
+   slice), ct.structs 291/0, ct.arrays 346/0, ct.exceptions 130/0,
+   interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0. The full
+   `bin/ut --random` was left to the orchestrator per the usual long-suite
+   handoff. Remaining follow-up: cross-frame support for this shape (this
+   pointer passed into another function call) -- unlike the single-level
+   `classFieldPointerVariables`/`nestedClassStructFieldPointerVariables`
+   maps, `classArrayFieldPointerVariables` is not yet duplicated into
+   child-frame walkers; §9.10 shim retirement itself remains deferred
+   until a slice addresses `writeBackByValueClassArguments`'s
+   whole-value-use coverage.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
