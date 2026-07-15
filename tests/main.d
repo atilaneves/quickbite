@@ -37,10 +37,10 @@ int main(string[] args) {
         "ut.backends.runner.rt.concurrency",
         "ut.backends.runner.rt.cstdlib",
         "ut.backends.runner.rt.file",
-        "ut.backends.runner.rt.dependency_image",
-        "ut.backends.runner.rt.elf",
-        "ut.backends.runner.rt.inline_asm",
-        "ut.backends.runner.rt.llvm_jit",
         "ut.backends.runner.rt.random",
+        "ut.orc.elf",
+        "ut.backends.native.llvm_jit",
+        "ut.backends.native.inline_asm",
+        "ut.backends.ffi.dependency_image",
     );
 }

@@ -1,4 +1,4 @@
-module ut.backends.runner.rt.dependency_image;
+module ut.backends.ffi.dependency_image;
 
 
 import ut.backends;

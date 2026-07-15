@@ -1,4 +1,4 @@
-module ut.backends.runner.rt.llvm_jit;
+module ut.backends.native.llvm_jit;
 
 
 import ut.backends;
