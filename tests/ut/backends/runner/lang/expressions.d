@@ -2318,7 +2318,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 
 // Struct sibling of the fixture above: the same stale-id bug for
 // `fieldSnapshotAllocationId`/`structFieldPointerVariables`.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue." ~
         backend.stringof)
     @Tags(backend.stringof)

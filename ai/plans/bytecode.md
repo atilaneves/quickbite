@@ -6200,3 +6200,20 @@ focused five-backend matrix passed, as did final `ninja bin/ut`. The final
 `bin/ut --random` crashed with the pre-existing signal 11 under seed
 `4180859583`; its required `bin/ut --seed 4180859583 --quiet` replay
 reproduced exit code 139.
+
+`pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue`
+promoted to Bytecode, 2026-07-16: pre-approved promotion of the existing
+direct SystemLinker-backed fixture. The focused Bytecode row passed on its
+first candidate run, confirming that a struct-field pointer passed into a
+recursive call continues to name the outer frame's field after the inner
+frame redeclares and address-promotes the same struct local. No production
+change was needed. This does not add recursive dynamic-array pointers,
+pointer writes across recursive frames, or broader aggregate-cell
+reconciliation. Before promotion, `ninja bin/ut` passed; the randomized suite
+reported the pre-existing
+`repl.backend.displaysStaticStringArrayResults.Bytecode` `ArraySliceError`
+under seed `1487962367`, while its required quiet seed replay passed. After
+promotion, the focused Bytecode row, focused five-backend matrix, and final
+`ninja bin/ut` passed. The final randomized suite reported the same
+pre-existing REPL failure under seed `1851098009`; its required quiet seed
+replay passed.
