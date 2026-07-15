@@ -1873,9 +1873,9 @@ static foreach (backend; Matrix!()) {
 // takes `&a[i]` of a caller's array passed by `ref` and writes through it.
 // SystemLinker's `ref` parameter aliases the caller's real storage, so `p`
 // (taken in the caller BEFORE the call, into the SAME backing array) must
-// see the write too. Other backends omitted per the omit-don't-pin
-// convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// see the write too. The mature backend matrix now confirms the same
+// cross-frame aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
