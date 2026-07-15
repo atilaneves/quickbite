@@ -25,7 +25,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled code (dmd -unittest -checkaction=context) reports the exception's
 // own message; the "uncaught CTFE exception" wrapper is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (CTFE wraps in \"uncaught CTFE exception\" message)"),
+)) {
     @("exception.uncaughtThrowReportsMessage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -52,7 +54,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled code reports the exception's own message (see above).
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (CTFE wraps in \"uncaught CTFE exception\" message)"),
+)) {
     @("exception.uncaughtThrowPreservesExceptionMessage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -83,7 +87,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled `assert(false)` in a unittest body raises the plain _d_unittest
 // hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (`assert(false)` failed is CTFE-only)"),
+)) {
     @("exception.catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

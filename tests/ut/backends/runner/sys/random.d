@@ -15,9 +15,10 @@ import ut.backends;
 // the posix FFI machinery). A sandbox import-path module does not reproduce it:
 // user imports are root-promoted and get semantic2, so this must lean on a real
 // archive (Phobos) module.
-//
-// Ctfe (no getrandom source) and Bytecode are omitted.
-static foreach (backend; AliasSeq!(SystemLinker, LLVMJit, Interpreter)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "no getrandom source; CTFE cannot reach host entropy"),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
     @("random.unpredictableSeedReadsNonRootInitializer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

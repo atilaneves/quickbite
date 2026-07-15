@@ -226,7 +226,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
 // Compiled `assert(0)` in a non-unittest function raises the plain _d_assert
 // message "Assertion failure" (checkaction=context adds no operands for a
 // literal condition); "`assert(0)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (`assert(0)` failed is CTFE-only)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin above (shares CTFE-style wording)"),
+)) {
     @("voidFunctionOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -242,14 +245,7 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
-    LLVMJit,
-)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("functionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -265,14 +261,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
-    LLVMJit,
-)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("tenFunctionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -300,14 +289,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
-    LLVMJit,
-)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("functionParameterOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -323,14 +305,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
-    LLVMJit,
-)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("ifElseOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -367,12 +342,9 @@ static foreach (backend; Matrix!(Plus!(IR))) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
+static foreach (backend; Matrix!(
+    Plus!(IR),
+    Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("inFunctionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -432,7 +404,9 @@ static foreach (backend; AliasSeq!(Ctfe, IR)) {
 
 // Compiled `assert(false)` in a unittest body raises the plain _d_unittest
 // hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (`assert(false)` failed is CTFE-only)"),
+)) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

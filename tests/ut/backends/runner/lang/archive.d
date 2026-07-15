@@ -10,7 +10,11 @@ import ut.backends;
 // the archive and the archive-backed module was not codegen'd from its
 // source. Archive linking is a runtime linking mechanism, so `Ctfe` (which
 // wraps dmd.dinterpret) cannot express it.
-static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
     @("runTests.archiveBackedImportLinksFromArchive." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

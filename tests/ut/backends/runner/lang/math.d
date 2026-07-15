@@ -30,7 +30,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -46,7 +48,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -81,7 +85,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -100,7 +106,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -134,7 +142,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeSqrtInputFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -149,7 +159,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeSqrtInputFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -179,7 +191,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -195,7 +209,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -226,7 +242,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -242,7 +260,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -275,7 +295,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -292,7 +314,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -326,7 +350,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -341,7 +367,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -371,7 +399,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -387,7 +417,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -735,7 +767,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -757,7 +791,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE assert formatter emits `<double not supported>` for double failure messages"),
+)) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)

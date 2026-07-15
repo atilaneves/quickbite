@@ -51,7 +51,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
     @("struct.tupleofForeachRefReadsAndWritesFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -649,7 +652,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+)) {
     @("struct.templatedConstructorPreservesDynamicArrayField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -985,7 +990,9 @@ static foreach (backend; Matrix!()) {
 // (readHeapElement) on this static-array-of-structs postblit/dtor case.
 // Omitted per the omit-don't-pin convention until the Bytecode VM supports
 // static-array-of-structs postblit/dtor heap element copies.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed, "Bytecode VM null-derefs at machine.d:2396 (readHeapElement)"),
+)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1416,7 +1423,9 @@ static foreach (backend; Matrix!()) {
 // not fixed here, to keep this fixture pinned to the one root it exposes.
 // `Bytecode` omitted: still red there (under active development), per
 // interpreter.md §8's omit-don't-pin rule for matrix width.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed, "still red there (under active development)"),
+)) {
     @("struct.postfixLengthIncrementGrowsRefParamArrayField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1447,7 +1456,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `dynamicArray.dollarReflectsLengthAfterInPlaceGrowth` (arrays.d).
 // `Bytecode` omitted: `$` is not implemented there (`Unsupported variable
 // in bytecode core: $`), per interpreter.md §8's omit-don't-pin rule.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed, "`$` not implemented (\"Unsupported variable in bytecode core: $\")"),
+)) {
     @("struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1585,7 +1596,9 @@ static foreach (backend; Matrix!()) {
 // but never propagated back to `val.units`, so the caller's array element
 // silently kept its default value. interpreter.md §9.7. `Bytecode` omitted:
 // it segfaults on this fixture (under active development, omit-don't-pin).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed, "segfaults on this fixture (under active development)"),
+)) {
     @("struct.foreachRefOverFieldArrayPersistsElementWrites." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1712,7 +1725,9 @@ static foreach (backend; Matrix!()) {
 // `Holder(a).values` aliases `a` and `bump`'s write is visible through
 // `a[0]`); other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
     @("struct.memberFunctionArrayFieldWriteRefreshesSourceArrayCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1767,7 +1782,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `f`. Before any production change, Interpreter's `s.x` read 3 (the
 // pre-write value) instead of 42. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
     @("struct.memberFunctionForwardsPointerWriteToOwningFrame." ~
         backend.stringof)
     @Tags(backend.stringof)

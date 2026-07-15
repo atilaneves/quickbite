@@ -9,7 +9,10 @@ import std.conv: text;
 // sandbox, writes to it, and reads it back. The path is spliced into the
 // source because the snippet runs under the backend, which cannot see the
 // host test's sandbox object.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

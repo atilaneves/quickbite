@@ -69,8 +69,8 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call host libc; the Interpreter marshals the char array"),
 )) {
     @("atoi.value." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -100,8 +100,8 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call host libc; the Interpreter writes the endptr out param and dereferences the native char pointer"),
 )) {
     @("strtol.endptr." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -141,8 +141,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 
-static foreach (backend; AliasSeq!(
-    Interpreter, SystemLinker, Bytecode,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
+    Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("free.null.voidReturn." ~ backend.stringof)
     unittest {
@@ -161,8 +162,8 @@ static foreach (backend; AliasSeq!(
 }
 
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
 )) {
     @("malloc.pointerRoundTrip." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -237,7 +238,10 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, Bytecode)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -311,8 +315,8 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
 )) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
@@ -323,8 +327,8 @@ static foreach (backend; AliasSeq!(
 }
 
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
 )) {
 
     @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
@@ -373,7 +377,9 @@ static foreach (backend; AliasSeq!(IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
+)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -402,8 +408,8 @@ enum reallocSliceAssignSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(
-    Interpreter, SystemLinker, Bytecode, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
 )) {
 
     @("realloc.sliceAssignWritesNativeMemory." ~ backend.stringof)
@@ -428,7 +434,10 @@ static foreach (backend; AliasSeq!(Bytecode, IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE rejects div: DMD CTFE has no host libc struct-return support"),
+    Omit!(Bytecode, Because.diverges, "see sibling pin above: Bytecode (with IR) also lacks struct-return support for div/ldiv"),
+)) {
 
     @("div.structReturn." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -447,7 +456,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 // above is interpretation-only. LLVMJit is promoted alongside SystemLinker
 // (its single behaviour oracle) on this surviving rt/ block: a real runtime
 // libc malloc call through the in-process JIT.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "compiled code calls the real malloc; the CTFE diagnostic is interpretation-only (see malloc.noSource pin above)"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
     @("malloc." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -531,8 +543,8 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call host libc; each fixture reaches the body-less leaf"),
 )) {
     @("abs.scalar." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -549,8 +561,8 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call host libc; each fixture reaches the body-less leaf"),
 )) {
     @("labs.widerScalar." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -567,8 +579,8 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call host libc; each fixture reaches the body-less leaf"),
 )) {
     @("ctype.toupperTolower." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -585,8 +597,8 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call host libc; each fixture reaches the body-less leaf"),
 )) {
     @("atof.floatReturn." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -603,8 +615,8 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Interpreter, Bytecode, SystemLinker, LLVMJit,
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call host libc; each fixture reaches the body-less leaf"),
 )) {
     @("strtod.floatReturn.endptr." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -624,7 +636,9 @@ enum strlenLocalBufferSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
+)) {
     @("strlen.localBuffer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -667,7 +681,10 @@ enum pthreadMutexattrUnionSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
     @("pthread.mutexattr.unionOutPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

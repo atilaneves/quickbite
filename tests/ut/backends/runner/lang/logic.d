@@ -207,7 +207,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
 
 // Compiled `assert(0)` in a non-unittest function raises the plain _d_assert
 // message "Assertion failure"; "`assert(0)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (Ctfe, Interpreter, IR)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin above (Ctfe, Interpreter, IR)"),
+)) {
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

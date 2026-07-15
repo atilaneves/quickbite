@@ -877,7 +877,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled bounds checks raise druntime's ArrayIndexError text; the
 // backtick-range wording in the Ctfe block above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "CTFE emits backtick-range wording, see sibling pin above"),
+)) {
     @("roundTripEnumExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -976,7 +978,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled bounds checks raise druntime's ArrayIndexError text (see above).
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "CTFE emits backtick-range wording, see sibling pin above"),
+)) {
     @("roundTripBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1046,7 +1050,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled bounds checks raise druntime's ArrayIndexError text (see above).
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "CTFE emits backtick-range wording, see sibling pin above"),
+)) {
     @("decodeBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1075,7 +1081,11 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("arrayTooShortExceptionMessageIncludesBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1115,7 +1125,11 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("stdConvTextRendersCharArrayExpressionRaw." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1216,7 +1230,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled code reads the static child-class registry fine; the Ctfe
 // @ShouldFail limitation above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "DMD CTFE cannot read a static child-class registry at compile time, see @ShouldFail pin above"),
+)) {
     @("classSerialisationReadsStaticChildRegistry." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1261,7 +1277,9 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 
 // Bytecode omitted: lazy parameters are not yet implemented there
 // ("Unsupported call in bytecode core: expression()").
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed, "lazy parameters not yet implemented (\"Unsupported call in bytecode core: expression()\")"),
+)) {
     @("lazyForwardedAssertionThunkRunsExpression." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1293,7 +1311,11 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // A `lazy` parameter is a delegate over the caller's live frame: reading a
 // dynamic-array local from inside the thunk must see the caller's actual
 // backing storage, not an empty default (ai/plans/interpreter.md §9.10).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("lazyArgumentReadsCallerDynamicArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1313,7 +1335,11 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // scalar field (`index`) mutates between evaluations. Each mutation must be
 // visible to the *next* evaluation, matching a `lazy` parameter's real
 // closure-over-the-caller-frame semantics.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("decodeLazyForwardedRangeErrorSeesReaderState." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1435,7 +1461,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("grainBitsBoolWritesScalar." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1466,7 +1495,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("dynamicArrayTruthinessControlsEnforceFallback." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1543,7 +1575,9 @@ static foreach (backend; Matrix!()) {
 // native-layout track lands and the shim is deleted (§9.10).
 // Bytecode must preserve this one postblit while its `emplaceRef` wrapper
 // writes the indexed destination.
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.inexpressible, "shim writes via raw writeLocation, skipping the postblit entirely"),
+)) {
     @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1583,7 +1617,9 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
 // refusal.
 // Interpreter omitted per §8: the omission is the documentation of this
 // refusal. Verbatim red: `Unsupported eval call.`
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.refusal, "Unsupported eval call."),
+)) {
     @("emplaceRefRefusesZeroArgDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1606,7 +1642,9 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
 // `wchar.init` is `0xFFFF`, unlike the all-zero default initialization of
 // most scalar elements. This keeps the zero-argument `emplaceRef` path honest
 // about materialising the element type's real `.init` value.
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.refusal, "Unsupported eval call. (same 1-arg emplaceRef shim refusal as the zero-arg fixture above)"),
+)) {
     @("emplaceRefDefaultInitializesWcharArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1634,7 +1672,9 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
 // Interpreter omitted per §8: the omission is the documentation of this
 // refusal. Verbatim red: `Unsupported eval call.`
 // Bytecode covers its narrow indexed-array struct-constructor path here.
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.refusal, "Unsupported eval call."),
+)) {
     @("emplaceRefRefusesMultiArgConstructor." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
