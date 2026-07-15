@@ -5104,6 +5104,108 @@ expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
 -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-15 (class phase starts: scalar-field native cell, reverse
+propagation through `&c.field`): item 7's "Migration order" bullet moves to
+its third and last named phase -- "Class objects third -- they need native
+object identity, vptr/monitor layout, and constructor lifetime" -- now that
+the struct phase above is saturated. This is the FIRST class-phase slice,
+mirroring the struct phase's own first slice (`structFieldWrittenDirectly
+IsVisibleThroughEarlierPointer`) exactly, one field-shape narrower: only a
+scalar field of a class object bound to its own plain local gets a cell.
+Class REFERENCE identity (two variables aliasing the SAME object, a field
+reached through `this`, a field of a `new`-returned or callee-owned object)
+is untouched -- see "What this slice does NOT do" below.
+
+Confirmed red first: `class C { int x; int y; } C c = new C(); c.x = one();
+c.y = two(); int* p = &c.x; c.x = ninetyNine(); assert(*p == 99);` (every
+value seeded from a runtime function call) threw on the Interpreter --
+`object.Exception: Unsupported interpreter field access.` -- BEFORE any
+production change, thrown from `fieldSnapshotAllocationId`'s
+`structFieldIndex(dot)` call: `structFieldIndex` resolves the receiver's
+type via `receiverStructType`, which returns `null` for a class receiver, so
+`&c.field` could not even take an address-of snapshot, let alone alias
+writes -- a real pre-existing bug in the shared address-of path, not
+something the struct phase's own tests ever exercised (they only ever took
+`&s.field` of a struct). SystemLinker, Ctfe, and LLVMJit all confirmed green
+throughout. Committed as `pointer.
+classFieldWrittenDirectlyIsVisibleThroughEarlierPointer` in `tests/ut/
+backends/runner/ct/expressions.d`, scoped to `Ctfe`/`Interpreter`/
+`SystemLinker`/`LLVMJit` -- `Bytecode` omitted per the same omit-don't-pin
+convention the struct fixture's own backend set already uses.
+
+Fix, in `impl.d`: (1) `fieldSnapshotAllocationId` now dispatches its
+field-index computation on the receiver's own static type --
+`classFieldIndex(dot)` for a class receiver (`receiverClassType(dot.e1) !is
+null`), `structFieldIndex(dot)` otherwise -- fixing the throw at its root
+rather than only reachable class-cell code paths. The two field-index
+spaces never collide in `fieldAddressAllocations[variable]`, which is keyed
+per-variable and a variable's static type never changes. (2) A new
+`NativeBlock[VarDeclaration] classCells` map, parallel to `structCells`, but
+built from a plain `NativeBlock` rather than `NativeStruct`: a class's own
+`Type.size` is a reference's pointer width, not the object body's size, so
+`NativeStruct.allocate(TypeStruct)` cannot size it. `promoteClassCell`
+instead sums (`fieldByteOffset(field) + typeByteSize(field.type)`) over
+`layout.classFields` -- facts this file already reads elsewhere
+(`nativeClassFieldValue` already does exactly this for native exception
+fields) -- rather than introducing a new raw DMD field (e.g.
+`ClassDeclaration.structsize`) this codebase does not otherwise consult.
+(3) A new reverse lookup, `classFieldPointerVariables`/
+`classFieldPointerFieldIndices`, the class sibling of
+`structFieldPointerVariables`/`structFieldPointerFieldIndices`, populated by
+a new `promoteClassFieldCell` (the class sibling of
+`promoteStructFieldCell`), called from `addressOfExpression`'s `DotVarExp`
+arm alongside the existing struct/nested-struct promotions. (4) A new
+`writeClassCellScalarFields` (the class sibling of
+`writeStructCellScalarFields`), and a new `classFieldPointerCellValue` (the
+class sibling of `structFieldPointerCellValue`), consulted by both
+`runPointerExpression`'s deref-read arm and `pointerTargetValue`, mirroring
+the three existing struct-family checks at each site. (5) `writeCelledLocal`
+gained a `classCells` refresh-or-drop branch alongside its existing
+`structCells` one -- `writeLocation`'s `DotVarExp` arm rewrites the WHOLE
+class object the same way it does a struct, so a direct field write
+refreshes every scalar field's bytes. (6) `child.classCells = classCells.
+dup;` added at the same 7 child-frame-spawn sites that already dup
+`structCells`, so a nested call sees the promoted cell too (sharing its
+bytes by reference) -- matching the struct phase's OWN first slice, which
+duped `structCells` at all 7 sites without yet duping its reverse-lookup
+maps. `classFieldPointerVariables`/`classFieldPointerFieldIndices` are
+similarly NOT duped into child frames in this slice, matching that same
+bounded first-slice precedent; no fixture here needs cross-frame class-field
+pointer dereference. Writing THROUGH the pointer (`*p = v`) is untouched:
+the id stays recorded in `fieldSnapshotAllocationIds`, so `writeLocation`'s
+`PtrExp` arm continues to refuse it exactly as it does for structs.
+
+What this slice does NOT do, to be precise about item 7's class-phase
+state: only an address-taken SCALAR field of a plain, non-dataseg class
+local gets a cell. Class REFERENCE identity is entirely unmodeled -- a
+second variable holding the SAME object (`C c2 = c;`), a field reached
+through `this` inside a member function, a field of a `new`-returned
+pointer never bound to a plain local, and a field reached through a
+function argument all stay on the pre-existing boxed `locals`/`Value.
+classValue` path, where `writeBackByValueClassArguments`'s post-call value
+diffing remains the only approximation of aliasing (interpreter.md §9.10).
+This slice does not touch, retire, or narrow that shim -- it widens a
+DIFFERENT gap (address-of-field snapshot staleness for the single-local
+case), the class-phase counterpart of what the struct phase's first slice
+did before its own later cross-frame/write-through/reference-alias
+follow-ups. Cross-frame class-field-pointer dereference, writing THROUGH
+the pointer, nested class fields, and array/struct-typed class fields are
+all unexercised and unimplemented, matching the struct phase's own
+incremental history -- expect a comparable sequence of follow-up slices if
+this phase proceeds the same way arrays and structs did. No
+`interpreter.md` §9.10 shim is retired by this slice.
+
+Focused runs, all green: the new fixture (all four backends); `bin/ut -s
+ut.backends.runner.ct.expressions` (517 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (291 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing as
+expected); `bin/ut -s ut.backends.runner.ct.exceptions` (130 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.bin.repl` (228 run, 0 failed); `bin/ut -s ut.backends.evaluator.eval` (71
+run, 0 failed). The full `bin/ut --random` was left to the orchestrator per
+the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

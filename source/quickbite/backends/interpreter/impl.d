@@ -243,6 +243,41 @@ private struct Walker {
     // the frame that actually owns `variable`.
     private bool[VarDeclaration] nestedStructFieldPointerWritebacks;
 
+    // Authoritative native bytes for a class-typed local that has had one of
+    // its `native_scalar.isNativeScalarType` fields address-taken (value.md
+    // item 7's class phase starts, mirroring `structCells` above): populated
+    // eagerly the moment `&c.field` is taken for a scalar field (see
+    // `promoteClassCell`, called from `addressOfExpression`'s `DotVarExp`
+    // arm). Once a cell exists, a direct field write (`writeLocation`'s
+    // `DotVarExp` arm, via `writeCelledLocal`) and a pointer deref-read
+    // (`runPointerExpression`/`pointerTargetValue`, via
+    // `classFieldPointerCellValue`) route through the same underlying byte
+    // range instead of the boxed snapshot `&c.field` used to return, so a
+    // write through one is visible through the other. Unlike `structCells`,
+    // this is a plain `NativeBlock` (not a `NativeStruct`): a class's own
+    // `Type.size` is a reference's pointer width, not the object body's
+    // size, so the block is sized by summing this narrow slice's own
+    // (offset + typeByteSize) over `layout.classFields`, not `NativeStruct.
+    // allocate`'s `TypeStruct`-only sizing. Only the address-taken field(s)
+    // of a plain (non-dataseg) class LOCAL are covered; every other field
+    // access (a second reference to the SAME object, a field reached
+    // through `this`, `new`-returned pointers, or any object not bound to
+    // its own bare local) is untouched and keeps using the existing boxed
+    // `locals` path -- this slice does not model class reference identity,
+    // only the one-local case `structCells` models for structs.
+    private NativeBlock[VarDeclaration] classCells;
+
+    // Reverse lookup from a promoted `&c.field` pointer's allocation id back
+    // to which class variable and field index (declaration order) share the
+    // SAME `classCells` entry's bytes -- the class-field counterpart of
+    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`. Not
+    // duplicated into child-frame walkers (unlike `classCells` itself):
+    // cross-frame class-field-pointer dereference is out of scope for this
+    // narrow first slice, matching `structFieldPointerVariables`'s own
+    // bounded first-slice scope before its later cross-frame follow-up.
+    private VarDeclaration[size_t] classFieldPointerVariables;
+    private size_t[size_t] classFieldPointerFieldIndices;
+
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
     private size_t nextLocalPointerId;
@@ -1824,9 +1859,15 @@ private struct Walker {
             // recognises the one-level-nested shape on its own and registers
             // this id in its own reverse lookup when it applies; a no-op
             // otherwise.
+            // value.md item 7's class phase starts: `promoteClassFieldCell`
+            // is the class sibling of `promoteStructFieldCell` -- gives the
+            // receiver a `classCells` entry when `dot`'s receiver is a plain
+            // class-typed local (a no-op for a struct receiver, exactly as
+            // `promoteStructFieldCell` no-ops for a class receiver).
             const id = fieldSnapshotAllocationId(dot);
             promoteStructFieldCell(dot, id);
             promoteNestedStructFieldCell(dot, id);
+            promoteClassFieldCell(dot, id);
             return Value.arrayPointerValue([runExpression(dot)], id, 0);
         }
 
@@ -1850,6 +1891,15 @@ private struct Walker {
     // receiver that cannot be resolved to a variable (e.g. `&call().field`)
     // gets a fresh id every time. Either way the id is recorded as a field
     // snapshot so writeLocation's PtrExp path can refuse writing through it.
+    // A class-typed receiver's field index comes from `classFieldIndex`, not
+    // `structFieldIndex` (value.md item 7's class phase starts): the latter
+    // resolves the receiver's type via `receiverStructType`, which returns
+    // `null` for a class and previously made this function throw
+    // "Unsupported interpreter field access." for every `&c.field`, before
+    // any class-cell machinery could even run. `variable`'s static type
+    // never changes, so dispatching once here on the receiver's own type is
+    // safe -- the two field-index spaces never collide in
+    // `fieldAddressAllocations[variable]`, which is keyed per-variable.
     private size_t fieldSnapshotAllocationId(
         imported!"dmd.expression".DotVarExp dot,
     ) {
@@ -1861,7 +1911,9 @@ private struct Walker {
             return id;
         }
 
-        const fieldIndex = structFieldIndex(dot);
+        const fieldIndex = receiverClassType(dot.e1) !is null
+            ? classFieldIndex(dot)
+            : structFieldIndex(dot);
         if (auto forReceiver = variable in fieldAddressAllocations)
             if (auto id = fieldIndex in *forReceiver)
                 return *id;
@@ -1925,6 +1977,7 @@ private struct Walker {
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
+        child.classCells = classCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -2466,6 +2519,113 @@ private struct Walker {
         structFieldPointerFieldIndices[id] = structFieldIndex(dot);
     }
 
+    // Eagerly gives an address-taken class local a `classCells` cell the
+    // first time `&c.field` is taken for one of its own scalar fields
+    // (value.md item 7's class phase starts, the class sibling of
+    // `promoteStructCell`), seeded from the object's current boxed field
+    // values. Narrow first slice: only a plain (non-dataseg) class-typed
+    // local gets a cell; a dataseg variable, or a receiver whose boxed value
+    // isn't a class object, is left untouched and keeps using the existing
+    // boxed `locals` path. The cell is sized by summing (offset +
+    // typeByteSize) over `layout.classFields`, not `class_.structsize`: this
+    // slice reads only facts already used elsewhere in this file
+    // (`fieldByteOffset`/`typeByteSize`, as `nativeClassFieldValue` already
+    // does for native exception fields), rather than introducing a new raw
+    // DMD field this codebase does not otherwise consult.
+    private void promoteClassCell(VarDeclaration variable) {
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+
+        if (variable.isDataseg)
+            return;
+
+        if (variable in classCells)
+            return;
+
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return;
+
+        auto current = defaultValue(variable);
+        if (auto existing = variable in locals)
+            current = *existing;
+
+        if (!current.isClassObject)
+            return;
+
+        size_t byteSize;
+        foreach (field; classFields(classType.sym)) {
+            const end = fieldByteOffset(field) + typeByteSize(field.type);
+            if (end > byteSize)
+                byteSize = end;
+        }
+
+        auto cell = NativeBlock.allocate(byteSize, NativeBlock.Scan.conservative);
+        writeClassCellScalarFields(cell, classType.sym, current);
+        classCells[variable] = cell;
+    }
+
+    // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
+    // `cell` from `classValue`'s boxed fields -- the class counterpart of
+    // `writeStructCellScalarFields`. A non-scalar field (nested struct,
+    // array, another class reference) is left untouched, matching this
+    // narrow first slice's scope -- only an address-taken SCALAR field is
+    // ever read back through a `classCells` entry, so leaving another
+    // field's bytes stale here is harmless.
+    private void writeClassCellScalarFields(
+        ref NativeBlock cell,
+        imported!"dmd.dclass".ClassDeclaration class_,
+        in Value classValue,
+    ) {
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, writeScalar;
+
+        foreach (index, field; classFields(class_)) {
+            if (!isNativeScalarType(field.type))
+                continue;
+
+            const offset = fieldByteOffset(field);
+            const size = typeByteSize(field.type);
+            writeScalar(field.type, cell.bytes[offset .. offset + size], classValue.classFieldAt(index));
+        }
+    }
+
+    // `&c.field`'s promotion moment (value.md item 7's class phase starts):
+    // when `dot`'s receiver resolves to a plain local variable and the field
+    // itself is `native_scalar.isNativeScalarType`, gives the receiver a
+    // `classCells` entry (`promoteClassCell`, the class sibling of
+    // `promoteStructFieldCell`) and records `id` in the reverse lookup
+    // `classFieldPointerVariables`/`classFieldPointerFieldIndices`, so a
+    // later deref-read through this id's pointer
+    // (`classFieldPointerCellValue`) can find the same cell and field. A
+    // no-op (no cell, no reverse-lookup entry) for a non-`VarExp` receiver
+    // (e.g. `&call().field`), a non-scalar field, or a receiver whose boxed
+    // value isn't a class object -- every one of those leaves
+    // `promoteClassCell` itself a no-op, so there is no cell here to point
+    // at. Also a no-op for a struct receiver: `promoteClassCell` requires
+    // `variable.type.toBasetype.isTypeClass`, which is `null` for a struct.
+    private void promoteClassFieldCell(
+        imported!"dmd.expression".DotVarExp dot,
+        in size_t id,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        auto var = dot.e1.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable is null)
+            return;
+
+        if (!isNativeScalarType(dot.type))
+            return;
+
+        promoteClassCell(variable);
+        if ((variable in classCells) is null)
+            return;
+
+        classFieldPointerVariables[id] = variable;
+        classFieldPointerFieldIndices[id] = classFieldIndex(dot);
+    }
+
     // Array-typed-field sibling of `promoteStructFieldCell` above (value.md
     // item 7's struct-static-array-field follow-up): when `dot`'s receiver
     // resolves to a plain local variable and the field itself is a static
@@ -2784,6 +2944,21 @@ private struct Walker {
                 structCells.remove(variable);
         }
 
+        // Class sibling of the struct refresh above (value.md item 7's class
+        // phase starts): `writeLocation`'s `DotVarExp` arm rewrites the WHOLE
+        // class object the same way it does a struct (`receiver.
+        // withClassField(fieldIndex, value)`), so this refreshes every
+        // scalar field's bytes from the new boxed value. A boxed value that
+        // is no longer a class object cannot be represented in the cell, so
+        // the cell is dropped rather than corrupted, mirroring the struct
+        // branch's own decline-rather-than-corrupt choice.
+        if (auto cell = variable in classCells) {
+            if (value.isClassObject)
+                writeClassCellScalarFields(*cell, variable.type.toBasetype.isTypeClass.sym, value);
+            else
+                classCells.remove(variable);
+        }
+
         locals[variable] = value;
         uninitializedLocals.remove(variable);
     }
@@ -2916,6 +3091,13 @@ private struct Walker {
             // three checks above for the array-element, scalar-field, and
             // static-array-field cases.
             if (nestedStructFieldPointerCellValue(value, cellValue))
+                return cellValue;
+
+            // Byte-level authority for a class-field pointer (value.md item
+            // 7's class phase starts): once `&c.field` has promoted a
+            // `classCells` entry, mirroring `structFieldPointerCellValue`
+            // above for the struct case.
+            if (classFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
             return value.pointerTarget;
@@ -4302,6 +4484,7 @@ private struct Walker {
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
+        child.classCells = classCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -4373,6 +4556,7 @@ private struct Walker {
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
+        child.classCells = classCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -5040,6 +5224,7 @@ private struct Walker {
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
+        child.classCells = classCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -6296,6 +6481,7 @@ private struct Walker {
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
+        child.classCells = classCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -6398,6 +6584,7 @@ private struct Walker {
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
+        child.classCells = classCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -8188,6 +8375,41 @@ private struct Walker {
         return true;
     }
 
+    // Class sibling of `structFieldPointerCellValue` above (value.md item
+    // 7's class phase starts): once `&c.field` has promoted a `classCells`
+    // entry for the class variable a non-local pointer points into, its
+    // bytes -- not the boxed snapshot `addressOfExpression` took at
+    // address-of time -- are the true value. Shared by the same two call
+    // sites. Returns `false` (leaving `value` untouched) for every other
+    // field pointer -- no promoted cell, a non-scalar field, or a pointer
+    // that was never a class-field address at all.
+    private bool classFieldPointerCellValue(in Value pointer, out Value value) {
+        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+            return false;
+
+        auto variable = pointer.pointerAllocation in classFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in classCells;
+        if (cell is null)
+            return false;
+
+        auto fieldIndex = pointer.pointerAllocation in classFieldPointerFieldIndices;
+        if (fieldIndex is null)
+            return false;
+
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        auto classType = (*variable).type.toBasetype.isTypeClass;
+        auto field = classFields(classType.sym)[*fieldIndex];
+        const offset = fieldByteOffset(field);
+        const size = typeByteSize(field.type);
+        value = readScalar(field.type, cell.bytes[offset .. offset + size]);
+        return true;
+    }
+
     // Array-typed-field sibling of `structFieldPointerCellValue` above
     // (value.md item 7's struct-static-array-field follow-up): once
     // `&s.arr[i]` has promoted a `structCells` entry, the cell's
@@ -8278,6 +8500,8 @@ private struct Walker {
         if (structArrayFieldPointerCellValue(pointer, cellValue))
             return cellValue;
         if (nestedStructFieldPointerCellValue(pointer, cellValue))
+            return cellValue;
+        if (classFieldPointerCellValue(pointer, cellValue))
             return cellValue;
 
         return pointer.pointerTarget;
@@ -8593,6 +8817,7 @@ private struct Walker {
         child.scalarCells = scalarCells.dup;
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
+        child.classCells = classCells.dup;
         child.nextLocalPointerId = nextLocalPointerId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
