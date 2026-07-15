@@ -175,6 +175,24 @@ private struct Walker {
     // that actually owns `variable`.
     private bool[VarDeclaration] structFieldPointerWritebacks;
 
+    // Reverse lookup from a promoted `&s.arr[i]` pointer's allocation id back
+    // to which struct variable and (static-array) field index share the SAME
+    // `structCells` entry's bytes -- the array-typed-field counterpart of
+    // `structFieldPointerVariables`/`structFieldPointerFieldIndices` above,
+    // needed because a static-array field's pointer carries an element
+    // offset (`Value.pointerElementOffset`) and its cell view is a
+    // `NativeArray` (`NativeStruct.arrayField`), not the single scalar byte
+    // range `structFieldPointerVariables` resolves to. Populated by
+    // `promoteStructArrayFieldCell`, called from `arrayPointer`'s
+    // `DotVarExp` branch (mirroring `promoteStructFieldCell`'s role for a
+    // scalar field). Narrow first slice, same-frame only: unlike
+    // `structFieldPointerVariables`, these maps are not duplicated into
+    // child-frame walkers, so a `&s.arr[i]` pointer does not yet survive a
+    // call into another function (a real gap, left for a follow-up, same as
+    // the struct-scalar-field phase's own initial "plain local only" scope).
+    private VarDeclaration[size_t] structArrayFieldPointerVariables;
+    private size_t[size_t] structArrayFieldPointerFieldIndices;
+
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
     private size_t nextLocalPointerId;
@@ -1926,11 +1944,24 @@ private struct Walker {
 
         auto var = array.isVarExp;
         if (var is null) {
-            if (array.isDotVarExp !is null) {
+            if (auto dot = array.isDotVarExp) {
+                // value.md item 7's struct-static-array-field follow-up:
+                // `&s.arr[i]` where `arr` is a static-array field of a plain
+                // struct local. Reusing `fieldSnapshotAllocationId` gives the
+                // same memoized-per-(receiver, field index) identity
+                // `&s.field` already gets, and registers the id into
+                // `fieldSnapshotAllocationIds` regardless of whether
+                // `promoteStructArrayFieldCell` below actually promotes a
+                // cell, so `writeLocation`'s `PtrExp` arm still refuses a
+                // write it cannot back with real aliasing instead of
+                // silently rewriting the pointer variable's own snapshot.
+                const id = fieldSnapshotAllocationId(dot);
+                promoteStructArrayFieldCell(dot, id);
+
                 const value = runExpression(array);
                 return Value.arrayPointerValue(
                     arrayPointerElements(value),
-                    ++allocationCount,
+                    id,
                     arrayPointerOffset(value, offset),
                 );
             }
@@ -2236,21 +2267,47 @@ private struct Walker {
 
     // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
     // `cell` from `structValue`'s boxed fields (the struct counterpart of
-    // `promoteArrayCell`'s element loop): a non-scalar field (nested struct,
-    // array, class) is left untouched, matching this narrow first slice's
-    // scope -- only an address-taken SCALAR field is ever read back through
-    // a `structCells` entry, so leaving another field's bytes stale here is
-    // harmless.
+    // `promoteArrayCell`'s element loop), and -- value.md item 7's
+    // struct-static-array-field follow-up -- every static-array field whose
+    // OWN element type is `native_scalar.isNativeScalarType`, via
+    // `NativeStruct.arrayField`'s `NativeArray` view over the same block.
+    // Every other non-scalar field (nested struct, dynamic array/slice,
+    // class) is left untouched, matching this narrow slice's scope -- only
+    // an address-taken scalar field or scalar-element static-array field is
+    // ever read back through a `structCells` entry, so leaving another
+    // field's bytes stale here is harmless. Called both at cell-creation
+    // time (`promoteStructCell`) and on every subsequent whole-struct
+    // refresh (`writeCelledLocal`), so a direct `s.arr[i] = x` write after
+    // `&s.arr[j]` promoted the cell reaches this same refresh, keeping the
+    // array-field cell current for a later deref-read
+    // (`structArrayFieldPointerCellValue`).
     private void writeStructCellScalarFields(ref NativeStruct cell, in Value structValue) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
 
         foreach (index; 0 .. cell.fieldCount) {
             auto fieldType = cell.fieldDeclaration(index).type;
-            if (!isNativeScalarType(fieldType))
+
+            if (isNativeScalarType(fieldType)) {
+                writeScalar(fieldType, cell.field(index), structValue.structFieldAt(index));
+                continue;
+            }
+
+            if (!isStaticArrayType(fieldType))
                 continue;
 
-            writeScalar(fieldType, cell.field(index), structValue.structFieldAt(index));
+            auto elementType = fieldType.toBasetype.nextOf.toBasetype;
+            if (!isNativeScalarType(elementType))
+                continue;
+
+            const fieldValue = structValue.structFieldAt(index);
+            if (!fieldValue.isArray)
+                continue;
+
+            auto arrayCell = cell.arrayField(index);
+            foreach (elementIndex; 0 .. fieldValue.length)
+                writeScalar(elementType, arrayCell.element(elementIndex), fieldValue[elementIndex]);
         }
     }
 
@@ -2290,6 +2347,46 @@ private struct Walker {
         structFieldPointerFieldIndices[id] = structFieldIndex(dot);
     }
 
+    // Array-typed-field sibling of `promoteStructFieldCell` above (value.md
+    // item 7's struct-static-array-field follow-up): when `dot`'s receiver
+    // resolves to a plain local variable and the field itself is a static
+    // array whose element type is `native_scalar.isNativeScalarType`, gives
+    // the receiver a `structCells` entry and records `id` in the
+    // `structArrayFieldPointerVariables`/`structArrayFieldPointerFieldIndices`
+    // reverse lookup, so a later deref-read through this id's pointer
+    // (`structArrayFieldPointerCellValue`) can find the same cell and field.
+    // A no-op (no cell, no reverse-lookup entry) for a non-`VarExp` receiver,
+    // a field that is not a scalar-element static array, or a receiver whose
+    // boxed value isn't a struct -- every one of those leaves
+    // `promoteStructCell` itself a no-op, so there is no cell here to point
+    // at.
+    private void promoteStructArrayFieldCell(
+        imported!"dmd.expression".DotVarExp dot,
+        in size_t id,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+
+        auto var = dot.e1.isVarExp;
+        auto variable = var is null ? null : var.var.isVarDeclaration;
+        if (variable is null)
+            return;
+
+        if (!isStaticArrayType(dot.type))
+            return;
+
+        auto elementType = dot.type.toBasetype.nextOf.toBasetype;
+        if (!isNativeScalarType(elementType))
+            return;
+
+        promoteStructCell(variable);
+        if ((variable in structCells) is null)
+            return;
+
+        structArrayFieldPointerVariables[id] = variable;
+        structArrayFieldPointerFieldIndices[id] = structFieldIndex(dot);
+    }
+
     // Drops `variable`'s `structCells` entry (if any) together with every
     // `structFieldPointerVariables`/`structFieldPointerFieldIndices` reverse-
     // lookup entry that pointed at it (value.md item 7 review round 2,
@@ -2325,6 +2422,22 @@ private struct Walker {
         foreach (id; staleIds) {
             structFieldPointerVariables.remove(id);
             structFieldPointerFieldIndices.remove(id);
+        }
+
+        // Same stale-id cleanup for the array-typed-field reverse lookup
+        // (value.md item 7's struct-static-array-field follow-up) -- a
+        // `&s.arr[i]` id left behind here would let a pointer minted BEFORE
+        // this fresh binding keep resolving into whatever cell THIS binding
+        // promotes next, exactly the bug the scalar-field cleanup above
+        // exists to prevent.
+        size_t[] staleArrayFieldIds;
+        foreach (id, pointedVariable; structArrayFieldPointerVariables)
+            if (pointedVariable is variable)
+                staleArrayFieldIds ~= id;
+
+        foreach (id; staleArrayFieldIds) {
+            structArrayFieldPointerVariables.remove(id);
+            structArrayFieldPointerFieldIndices.remove(id);
         }
 
         fieldAddressAllocations.remove(variable);
@@ -2600,6 +2713,13 @@ private struct Walker {
             // pointer (no promoted cell, a non-scalar field) keeps the
             // existing boxed `pointerTarget` fallback.
             if (structFieldPointerCellValue(value, cellValue))
+                return cellValue;
+
+            // Byte-level authority for a struct-static-array-field pointer
+            // (value.md item 7's struct-static-array-field follow-up): once
+            // `&s.arr[i]` has promoted a `structCells` entry, mirroring the
+            // two checks above for the scalar-field and plain-array cases.
+            if (structArrayFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
             return value.pointerTarget;
@@ -5718,6 +5838,14 @@ private struct Walker {
             if (writeThroughStructFieldPointer(pointer, value))
                 return;
 
+            // `&s.arr[i]` of a static-array field on a plain struct LOCAL
+            // promoted a `structCells` entry at address-of time (value.md
+            // item 7's struct-static-array-field follow-up): write through
+            // it exactly like SystemLinker's real aliasing, instead of
+            // refusing below.
+            if (writeThroughStructArrayFieldPointer(pointer, value))
+                return;
+
             // Every OTHER `&s.field` (addressOfExpression's DotVarExp
             // branch) yields a read-only value snapshot, not an alias to
             // the field: refuse loudly instead of silently rewriting the
@@ -6112,6 +6240,48 @@ private struct Walker {
         if (current !is null)
             locals[*variable] = current.withStructField(*fieldIndex, value);
         structFieldPointerWritebacks[*variable] = true;
+        uninitializedLocals.remove(*variable);
+        return true;
+    }
+
+    // Array-typed-field sibling of `writeThroughStructFieldPointer` above
+    // (value.md item 7's struct-static-array-field follow-up): once
+    // `&s.arr[i]` has promoted a `structCells` entry, `*p = value` writes
+    // `value`'s bytes into the cell's `NativeStruct.arrayField` view at the
+    // pointer's element offset and re-derives the boxed `locals` mirror from
+    // the (already-updated) whole struct, mirroring
+    // `writeThroughStructFieldPointer`'s cell-then-mirror discipline.
+    // Same-frame only, per the field declarations' doc comment above: unlike
+    // `writeThroughStructFieldPointer`, this does not flag a cross-frame
+    // writeback -- `variable` is expected present in THIS frame's `locals`
+    // (`structArrayFieldPointerVariables` is never duplicated into a child
+    // walker yet), so a cross-frame write here declines below via `current
+    // is null` rather than silently losing the write.
+    private bool writeThroughStructArrayFieldPointer(in Value pointer, in Value value) {
+        auto variable = pointer.pointerAllocation in structArrayFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in structCells;
+        if (cell is null)
+            return false;
+
+        auto fieldIndex = pointer.pointerAllocation in structArrayFieldPointerFieldIndices;
+        if (fieldIndex is null)
+            return false;
+
+        auto current = *variable in locals;
+        if (current is null || !current.isStruct)
+            return false;
+
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+        auto arrayCell = cell.arrayField(*fieldIndex);
+        const elementIndex = cast(size_t) pointer.pointerElementOffset;
+        writeScalar(arrayCell.elementType, arrayCell.element(elementIndex), value);
+
+        const updatedField = current.structFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
+        locals[*variable] = current.withStructField(*fieldIndex, updatedField);
         uninitializedLocals.remove(*variable);
         return true;
     }
@@ -7478,6 +7648,41 @@ private struct Walker {
         return true;
     }
 
+    // Array-typed-field sibling of `structFieldPointerCellValue` above
+    // (value.md item 7's struct-static-array-field follow-up): once
+    // `&s.arr[i]` has promoted a `structCells` entry, the cell's
+    // `NativeStruct.arrayField` view -- not the boxed snapshot
+    // `arrayPointer` took at address-of time -- is the true value at the
+    // pointer's element offset. Returns `false` (leaving `value` untouched)
+    // for every other pointer -- no promoted cell, or a pointer that was
+    // never a struct-array-field address at all -- which keeps the existing
+    // boxed `pointerTarget` fallback at each call site.
+    private bool structArrayFieldPointerCellValue(in Value pointer, out Value value) {
+        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+            return false;
+
+        auto variable = pointer.pointerAllocation in structArrayFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in structCells;
+        if (cell is null)
+            return false;
+
+        auto fieldIndex = pointer.pointerAllocation in structArrayFieldPointerFieldIndices;
+        if (fieldIndex is null)
+            return false;
+
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        auto arrayCell = cell.arrayField(*fieldIndex);
+        value = readScalar(
+            arrayCell.elementType,
+            arrayCell.element(cast(size_t) pointer.pointerElementOffset),
+        );
+        return true;
+    }
+
     private Value pointerTargetValue(in Value pointer) {
         if (pointer.isLocalPointer)
             return localPointerTarget(pointer);
@@ -7489,6 +7694,8 @@ private struct Walker {
         if (arrayPointerCellValue(pointer, cellValue))
             return cellValue;
         if (structFieldPointerCellValue(pointer, cellValue))
+            return cellValue;
+        if (structArrayFieldPointerCellValue(pointer, cellValue))
             return cellValue;
 
         return pointer.pointerTarget;
@@ -7537,6 +7744,12 @@ private struct Walker {
         // from -- instead of the stale boxed-value rewrite the fallback
         // below would otherwise perform (value.md review, finding 6).
         if (writeThroughStructFieldPointer(pointer, value))
+            return;
+
+        // A struct-static-array-field pointer (`&s.arr[i]`): the array-typed
+        // sibling of the check above (value.md item 7's struct-static-
+        // array-field follow-up), same reasoning.
+        if (writeThroughStructArrayFieldPointer(pointer, value))
             return;
 
         if (auto address = expression.isAddrExp) {

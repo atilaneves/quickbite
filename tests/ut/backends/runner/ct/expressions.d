@@ -3508,3 +3508,43 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// value.md item 7's struct-static-array-field follow-up (the smaller of the
+// two deferred candidates named in the array-of-struct progress note):
+// `&s.arr[i]` where `arr` is a static-array field of a plain struct local.
+// `arrayPointer`'s `array.isDotVarExp` branch minted a fresh `++
+// allocationCount` id for this shape with no reverse-lookup registration at
+// all, so a direct element write to the field (`s.arr[0] = ...`) after the
+// pointer was taken stayed invisible through it -- the same snapshot gap the
+// struct-scalar-field phase closed for `&s.field`, and the array phase
+// closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so the
+// direct write is visible through `*p`. Other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S s;
+                s.arr[0] = one();
+                int* p = &s.arr[0];
+                s.arr[0] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}

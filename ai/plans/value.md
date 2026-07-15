@@ -4679,6 +4679,99 @@ expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
 `bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was
 left to the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-15 (struct-static-array-field follow-up: `&s.arr[i]` gets a
+(receiver, field-path) reverse lookup): the smaller of the two candidates the
+array-of-struct progress note above deliberately deferred -- `&s.arr[i]`
+where `arr` is a static-array field of a plain struct local. One new
+fixture, `pointer.
+structStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+(`Ctfe`/`Interpreter`/`SystemLinker`/`LLVMJit`, matching the omit-Bytecode
+convention the sibling scalar-field fixture already set): `struct S { int[3]
+arr; } S s; s.arr[0] = one(); int* p = &s.arr[0]; s.arr[0] = ninetyNine();
+assert(*p == 99);`. Confirmed red on Interpreter before any production
+change (`1 != 99`, the pre-write snapshot); confirmed green on Ctfe,
+SystemLinker, and LLVMJit throughout.
+
+Root cause, exactly as the prior note predicted: `arrayPointer`'s
+`array.isDotVarExp` branch minted a bare `++allocationCount` id for `&s.arr`/
+`&s.arr[i]` with no reverse-lookup registration at all, so
+`arrayPointerCellValue`/`structFieldPointerCellValue` both missed and the
+deref fell to the frozen `pointer.pointerTarget` snapshot.
+
+Fix, in `impl.d`: a new (receiver variable, field index) reverse-lookup pair,
+`structArrayFieldPointerVariables`/`structArrayFieldPointerFieldIndices` --
+the array-typed-field sibling of the existing scalar-field
+`structFieldPointerVariables`/`structFieldPointerFieldIndices`, needed
+because a static-array field's pointer carries an element offset and its
+cell view is a `NativeArray` (`NativeStruct.arrayField`, already built by an
+earlier progress note's composition matrix) rather than the single scalar
+byte range the existing pair resolves to. `arrayPointer`'s `DotVarExp` branch
+now reuses `fieldSnapshotAllocationId` (the same per-(receiver, field index)
+memo `&s.field` already gets, giving `&s.arr[i]` the same real-address
+identity stability) and calls the new `promoteStructArrayFieldCell(dot, id)`
+-- mirroring `promoteStructFieldCell` but gated on `isStaticArrayType(dot.
+type)` with a `native_scalar.isNativeScalarType` element, instead of
+`isNativeScalarType(dot.type)` directly. `writeStructCellScalarFields` (both
+the cell-creation seed and the whole-struct refresh `writeCelledLocal`
+already calls on every direct field write) is widened to also seed/refresh a
+scalar-element static-array field's bytes via `cell.arrayField(index)`, one
+element at a time -- the single change that keeps a direct `s.arr[i] = x`
+write visible through an earlier pointer, since that write always goes
+through a whole-struct `writeLocation`/`writeCelledLocal` round trip. Two new
+functions, `structArrayFieldPointerCellValue` (wired into
+`pointerTargetValue` and `runPointerExpression`'s deref-read arm, alongside
+the existing `arrayPointerCellValue`/`structFieldPointerCellValue` checks)
+and `writeThroughStructArrayFieldPointer` (wired into `writeLocation`'s
+`PtrExp` arm and `writePointerTarget`, alongside
+`writeThroughStructFieldPointer`), mirror the scalar-field pair's read/write
+dispatch exactly. `dropStructCell` also clears stale
+`structArrayFieldPointerVariables`/`structArrayFieldPointerFieldIndices`
+entries for a fresh redeclaration, mirroring its existing scalar-field
+cleanup, for the same reason (a stale id resolving into a later, unrelated
+binding's cell).
+
+Scoped narrower than the scalar-field mechanism in one respect, called out
+explicitly in the field declarations' own comment: `structArrayFieldPointer
+Variables`/`structArrayFieldPointerFieldIndices` are NOT duplicated into
+child-frame walkers the way `structFieldPointerVariables` is at every
+existing dup site, so a `&s.arr[i]` pointer does not yet survive being
+passed into another function call -- `writeThroughStructArrayFieldPointer`
+declines (returns `false`) rather than silently losing the write when the
+receiver isn't in the current frame's `locals`. The fixture above is
+same-frame only (the two `one()`/`ninetyNine()` calls never touch `s` or
+`p`), so this gap is untested, not closed; cross-frame propagation (the 8
+existing `structFieldPointerVariables.dup`/merge/writeback call sites'
+mechanical counterparts) is a real next candidate if a cross-frame fixture
+is ever proposed.
+
+No `interpreter.md` §9.10 shim is retired by this slice, matching the
+array-of-struct note above: it widens which struct fields a `structCells`
+entry backs, it does not touch any of the shim inventory's own named
+functions.
+
+The other deferred candidate from the array-of-struct progress note --
+nested struct field write-through `&s.inner.x` (currently `writeLocation`'s
+`PtrExp` arm throws "Unsupported interpreter assignment target" for any
+multi-hop `DotVarExp` chain, since `fieldSnapshotAllocationId`/
+`promoteStructFieldCell` only resolve a `dot.e1.isVarExp` receiver) --
+remains open for a follow-up commit. It needs a genuinely different
+generalization than this slice's: a field PATH (not a single field index)
+resolved by walking a `DotVarExp` chain down to its root `VarExp`, plus
+`writeStructCellScalarFields` recursing into nested (non-union) struct
+fields via `NativeStruct.structField` the same way this slice's fix recursed
+into static-array fields via `NativeStruct.arrayField` -- a similarly shaped
+but distinct widening, not reachable by reusing this slice's new maps
+as-is.
+
+Focused runs, all green: the new fixture (all four backends); `bin/ut -s
+ut.backends.runner.ct.expressions` (497 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (291 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing as
+expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
+-s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
