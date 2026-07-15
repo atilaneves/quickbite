@@ -1810,9 +1810,8 @@ static foreach (backend; Matrix!()) {
 // value.md item 7 candidate slice: `foreach (ref e; a)` mutation must be
 // visible through an earlier-taken pointer into `a`. SystemLinker's `p`
 // aliases `a`'s real storage, so the loop's writes are visible through `*p`.
-// Other backends omitted per the omit-don't-pin convention (unconfirmed
-// there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// The mature backend matrix now confirms the same aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)

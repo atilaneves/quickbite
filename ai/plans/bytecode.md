@@ -6057,6 +6057,21 @@ and final `ninja bin/ut` passed. Final `bin/ut --random` crashed with the
 pre-existing signal 11 under seed `1452298491`; its required quiet replay
 reproduced exit code 139.
 
+`pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer`
+promoted to Bytecode, 2026-07-16: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a `foreach (ref)` element write updates the
+dynamic array's native backing storage observed through an earlier pointer.
+No production change was needed. This does not add cross-frame `ref` iteration,
+iteration over slices, or broader pointer-cell reconciliation. The pre-edit
+`ninja bin/ut` baseline passed; pre-edit `bin/ut --random` crashed with the
+pre-existing signal 11 under seed `2135211524`, and its required
+`bin/ut --seed 2135211524` replay reproduced exit code 139. After promotion,
+the focused Bytecode row and final `ninja bin/ut` passed. The final
+`bin/ut --random` crashed with the pre-existing signal 11 under seed
+`2053671443`; its required `bin/ut --seed 2053671443` replay reproduced exit
+code 139.
+
 `pointer.sliceArgumentEvaluatesPointerOnce` promoted to Bytecode, 2026-07-16:
 pre-approved promotion of the existing direct SystemLinker-backed fixture. The
 focused Bytecode row was red with `Unsupported expression in bytecode core: &
