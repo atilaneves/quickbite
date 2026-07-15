@@ -3628,3 +3628,53 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// value.md item 7's struct-static-array-field cross-frame follow-up: the
+// array-typed-field sibling of `pointer.
+// structFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The caller
+// takes `&s.arr[0]` (promoting a `structCells` entry and a
+// `structArrayFieldPointerVariables`/`structArrayFieldPointerFieldIndices`
+// reverse-lookup entry in the CALLER's own frame), then passes the pointer
+// into a callee that writes through it. The callee's own child `Walker`
+// dupes `structCells` (so the cell's bytes are shared) but, before this
+// slice, never duped the reverse-lookup maps themselves, so the callee's
+// `writeThroughStructArrayFieldPointer` reverse-lookup missed and the write
+// fell through to the `fieldSnapshotAllocationIds` refusal check (also
+// duped) instead of aliasing. SystemLinker is the oracle; Bytecode omitted
+// per the omit-Bytecode convention.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                S s;
+                s.arr[0] = one();
+                int* p = &s.arr[0];
+                put(p, ninetyNine());
+                return *p + s.arr[0];
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}

@@ -4943,6 +4943,86 @@ expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
 -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-15 (struct-static-array-field cross-frame follow-up:
+`&s.arr[i]` write-through survives a call into another function): of the
+two remaining item-7 struct-cell gaps the array-of-static-array note above
+named (both same-frame only), the smaller one -- `structArrayFieldPointer
+Variables`/`structArrayFieldPointerFieldIndices` have only two maps to
+propagate, versus the nested-struct-field triple. One new fixture,
+`pointer.structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller`
+(`Ctfe`/`Interpreter`/`SystemLinker`/`LLVMJit`, omit-Bytecode convention),
+the array-typed-field sibling of the existing scalar-field cross-frame
+fixture `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller`:
+`struct S { int[3] arr; } S s; s.arr[0] = one(); int* p = &s.arr[0];
+put(p, ninetyNine());` (`put` writes `*p = v;`) `return *p + s.arr[0];`,
+asserting `198`. Confirmed red on Interpreter before any production
+change: `object.Exception: Unsupported interpreter assignment target.`,
+thrown from `writeLocation`'s `PtrExp` arm falling through
+`writeThroughStructArrayFieldPointer` (its reverse-lookup maps, un-duped
+into the callee's child `Walker`, missed) to the `fieldSnapshotAllocationIds`
+refusal guard -- exactly the diagnostic the scalar-field cross-frame
+fixture's own comment predicted for this sibling. Confirmed green on Ctfe,
+SystemLinker, and LLVMJit throughout.
+
+Fix, in `impl.d`, mirroring the scalar-field cross-frame mechanism exactly
+(no new plumbing shape invented): (1) `structArrayFieldPointerVariables`/
+`structArrayFieldPointerFieldIndices` are now duped into every child
+`Walker` at all 7 existing scalar-field dup call sites (the same
+`replace_all` edit point as `structFieldPointerVariables`'s own dup lines).
+(2) A new `mergeStructArrayFieldPointerVariableMaps`, the array-field
+sibling of `mergeStructFieldPointerVariableMaps`, reusing the SAME
+`fieldAddressAllocations` forward map for its conflict check since both
+map families mint ids through the shared `fieldSnapshotAllocationId` memo.
+(3) A new `structArrayFieldPointerWritebacks` flag map (the array-field
+sibling of `structFieldPointerWritebacks`), duped at the same 7 sites and
+merged the same way in `writeBackFunctionState`/
+`writeBackMemberFunctionState`. (4) `writeThroughStructArrayFieldPointer`
+no longer requires `current !is null` (the receiver present in THIS
+frame's `locals`) to proceed -- it now writes into the shared `structCells`
+entry unconditionally (given a cell and reverse-lookup hit), updates the
+boxed `locals` mirror only when `current` is present, and always flags
+`structArrayFieldPointerWritebacks[*variable]`, mirroring
+`writeThroughStructFieldPointer`'s own `current`-optional discipline. (5) A
+new `writeBackStructArrayFieldPointerTargets`, the array-field sibling of
+`writeBackStructFieldPointerTargets`, wired into both call sites right
+after its scalar-field sibling. (6) `structValueFromCell` (until now the
+scalar-only read-side mirror of `writeStructCellScalarFields`) is widened
+to also overlay every scalar-element static-array field via
+`NativeStruct.arrayField`, since the write-back above needs to re-derive
+the OWNING frame's array field, not just its scalar fields -- the read-side
+counterpart of `writeStructCellScalarFields`'s own array-field seeding,
+closing a pre-existing scalar/array asymmetry in that helper as a direct
+consequence of wiring this slice's writeback through it (no separate
+array-only overlay function was written; the shared helper backs both the
+scalar- and array-field writeback callers now).
+
+No `interpreter.md` §9.10 shim is retired by this slice, matching every
+prior note in this log: it widens which struct-cell writes survive a call
+into another function, it does not touch any of the shim inventory's own
+named functions.
+
+Remaining open items, unchanged in kind from the nested-struct-field/
+array-of-static-array notes above: `&s.inner.x` (nested-struct-field
+pointer) is still same-frame only -- its own three-map reverse lookup
+(`nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
+`...InnerFieldIndices`) is not yet duped into child walkers, and its own
+pointer-identity memoization gap (repeated `&s.inner.x` evaluations do not
+share an id) remains too; deeper nesting (2+ levels, in any of the
+struct-field, array-element, or static-array-element shapes) is out of
+scope everywhere. Both are real follow-up candidates, the nested-field
+cross-frame gap being the more direct next slice (mirroring this one's own
+recipe, but for three maps and reusing/widening `structValueFromCell`
+further for the nested case).
+
+Focused runs, all green: the new fixture (all four backends); `bin/ut -s
+ut.backends.runner.ct.expressions` (509 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (291 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing as
+expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
+-s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
