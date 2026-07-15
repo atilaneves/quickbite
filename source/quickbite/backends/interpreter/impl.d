@@ -8419,12 +8419,25 @@ private struct Walker {
     // already use: `writeStructCellScalarFields` to seed the struct-typed
     // field's own scalar sub-fields into the transient cell's shared bytes,
     // and `structValueFromCell` to re-derive a struct-typed sibling's boxed
-    // value back out of those same bytes. A union member that is a dynamic
-    // array, class, static array, or nested union is still left on its own
-    // prior boxed value on both sides (written and sibling) -- matching
-    // `writeStructCellScalarFields`'s identical scope; `promoteStructCell`'s
-    // guard is unchanged and still declines cell PROMOTION (the
-    // address-taken/pointer path) for a union with any such member.
+    // value back out of those same bytes. Widened again (value.md item 7,
+    // 2026-07-16, static-array union member follow-up) so a SIBLING field
+    // that is a static array whose OWN element type is `native_scalar.
+    // isNativeScalarType` is also refreshed, via the SAME `NativeStruct.
+    // arrayField` view `writeStructCellScalarFields`/`structValueFromCell`
+    // already use for a struct's own static-array field: `readScalar`s each
+    // element back out of the transient cell's shared bytes into the
+    // sibling's boxed array value. The WRITTEN side is deliberately left
+    // unwidened -- no fixture exercises assigning a whole static-array union
+    // member (e.g. `u.a = [...]`) and reading a scalar sibling back, so that
+    // direction still falls through the `!writtenScalar && !writtenStruct`
+    // guard unchanged, matching strict TDD (only the tested direction gets
+    // production code). A union member that is a dynamic array, class,
+    // static array of NON-scalar elements, or nested union is still left on
+    // its own prior boxed value on both sides (written and sibling) --
+    // matching `writeStructCellScalarFields`'s identical scope;
+    // `promoteStructCell`'s guard is unchanged and still declines cell
+    // PROMOTION (the address-taken/pointer path) for a union with any such
+    // member.
     private Value withUnionFieldWrite(
         in Value receiver,
         imported!"dmd.mtype".TypeStruct unionType,
@@ -8434,6 +8447,7 @@ private struct Walker {
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar, writeScalar;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
 
         auto updated = receiver.withStructField(fieldIndex, value);
 
@@ -8466,6 +8480,23 @@ private struct Walker {
             if (isNativeScalarType(sibling.type)) {
                 updated = updated.withStructField(siblingIndex,
                     readScalar(sibling.type, cell.field(siblingIndex)));
+                continue;
+            }
+
+            if (isStaticArrayType(sibling.type)) {
+                auto siblingElementType = sibling.type.toBasetype.nextOf.toBasetype;
+                if (!isNativeScalarType(siblingElementType))
+                    continue;
+
+                auto siblingCurrent = updated.structFieldAt(siblingIndex);
+                if (!siblingCurrent.isArray)
+                    continue;
+
+                auto siblingArrayCell = cell.arrayField(siblingIndex);
+                foreach (elementIndex; 0 .. siblingCurrent.length)
+                    siblingCurrent = siblingCurrent.withArrayElement(elementIndex,
+                        readScalar(siblingElementType, siblingArrayCell.element(elementIndex)));
+                updated = updated.withStructField(siblingIndex, siblingCurrent);
                 continue;
             }
 

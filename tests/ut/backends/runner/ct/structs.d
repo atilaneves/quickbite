@@ -1909,3 +1909,26 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("union.writeThroughScalarMemberIsVisibleThroughArrayMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int[2] a;
+                long l;
+            }
+
+            unittest {
+                U u;
+                int low = 7;
+                int high = 13;
+                long bits = (cast(long) high << 32) | cast(long) low;
+                u.l = bits;
+                assert(u.a[0] == low && u.a[1] == high);
+            }
+        });
+    }
+}

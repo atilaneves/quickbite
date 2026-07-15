@@ -7165,6 +7165,65 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    divergence here (an exception, not a silent wrong value) is DMD's own
    CTFE engine behaviour and is out of this repo's scope to change.
 
+   Progress 2026-07-16 (static-array union member: writing a scalar sibling
+   is now visible through an overlapping static-array member's elements):
+   probed the documented gap -- `union U { int[2] a; long l; } U u; u.l =
+   bits; assert(u.a[0] == low && u.a[1] == high);` -- against the
+   `Interpreter`/`SystemLinker` oracle pair. Confirmed a real divergence: RED
+   on `Interpreter`, green on `SystemLinker`. `withUnionFieldWrite`'s sibling
+   refresh loop had no branch for a static-array sibling at all, so `u.a`
+   kept its stale prior boxed value after writing `u.l` (silently skipped,
+   same as any other unhandled field kind).
+
+   Fixture `union.writeThroughScalarMemberIsVisibleThroughArrayMember.
+   {Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/structs.d`,
+   immediately after the prior union fixtures. RED confirmed on `Interpreter`
+   before any production change: `assert(u.a[0] == low && (u.a[1] == high))`
+   failed. Green on `SystemLinker` throughout. `Ctfe` omitted: DMD's own
+   CTFE reinterpretation-through-overlapped-field restriction applies here
+   too (established by the prior default-init slice for the scalar case;
+   not re-probed since this slice only touches the write-through side, which
+   was already `Ctfe`-omitted for the analogous scalar/struct siblings).
+
+   Fix, in `impl.d`'s `withUnionFieldWrite` only: added a
+   `isStaticArrayType(sibling.type)` branch to the sibling loop, gated on the
+   array's own element type being `native_scalar.isNativeScalarType` (scope
+   explicitly limited to scalar-ELEMENT static arrays per the task brief).
+   Reuses the exact composition machinery `writeStructCellScalarFields`/
+   `structValueFromCell` already established for a struct's own
+   static-array field: `cell.arrayField(siblingIndex)` views the transient
+   `NativeStruct`'s shared bytes as a `NativeArray`, and each element is
+   `readScalar`'d back into the sibling's boxed array value via
+   `withArrayElement`. The WRITTEN side (assigning a whole static-array union
+   member, e.g. `u.a = [x, y];`, then reading a scalar sibling back) is
+   deliberately NOT widened: no fixture exercises it, so per strict TDD only
+   the tested direction got production code; that direction still falls
+   through the pre-existing `!writtenScalar && !writtenStruct` decline
+   unchanged. `promoteStructCell`'s guard (cell PROMOTION / address-taken
+   path) is untouched, exactly as the prior union slices' own
+   guard-preserving discipline.
+
+   No §9.10 shim retired -- unrelated to this union-write overlay widening.
+
+   Focused suites all green: ct.expressions 561/0 (5 failing as expected,
+   unchanged), ct.structs 301/0 (299 + this slice's 2 new backend
+   instances), ct.arrays 346/0, ct.exceptions 130/0, interpreter 218/0,
+   bin.repl 228/0, evaluator.eval 71/0; also ran rt.dependency_image 119/0
+   and rt.cstdlib 89/0 (pre-existing union FFI fixtures, unaffected). The
+   full `bin/ut --random` was left to the orchestrator per the usual
+   long-suite handoff.
+
+   Remaining follow-up: (1) the WRITTEN-side static-array union member
+   (`u.a = [...]` then reading a scalar sibling) is still unwidened, matching
+   the note above; (2) a union member that is a dynamic array, class, or
+   static array of non-scalar elements still has no write-through overlay on
+   either side; (3) default-init (`unionSiblingDefaultFieldValue`) still
+   falls back to independent `defaultValue` for any aggregate (struct/array/
+   class) first member or sibling, unchanged from the prior slice's own
+   follow-up; (4) cell PROMOTION (`&u.<field>`) for a union with a
+   non-scalar member is still declined entirely by `promoteStructCell`'s
+   guard.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
