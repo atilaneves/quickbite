@@ -2638,7 +2638,7 @@ static foreach (backend; Matrix!()) {
 // just locate its return expression — so pre-return side effects happen
 // exactly once and the executed return (not the textually first) picks the
 // lvalue.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("refCall.assignmentToMemberRefReturnRunsCalleeBody." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -6585,7 +6585,13 @@ private struct Compiler {
 
         auto function_ = callFunction(call);
         auto type = function_ is null ? null : function_.type.isTypeFunction;
-        if (type is null || !type.isRef || call.arguments is null)
+        if (type is null || !type.isRef)
+            return null;
+
+        if (auto result = tryMemberRefCallAssign(call, function_, rhs))
+            return result;
+
+        if (call.arguments is null)
             return null;
 
         auto returned = singleReturnExpression(function_.fbody);
@@ -6627,6 +6633,49 @@ private struct Compiler {
 
         _code ~= Instruction(
             Op.copy, destination, value.offset, cast(ushort) size(scalar),
+        );
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    private Operand* tryMemberRefCallAssign(
+        CallExp call,
+        FuncDeclaration function_,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        if (function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        auto returned = finalReturnExpression(function_.fbody);
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            returned = dereference.e1;
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto dot = returned is null ? null : returned.isDotVarExp;
+        auto field = variable !is null
+            ? variable.var.isVarDeclaration
+            : dot is null ? null : dot.var.isVarDeclaration;
+        if (field is null || !field.isField)
+            return null;
+
+        compileCall(call);
+        const value = compileExpression(rhs);
+        const scalar = scalarType(field.type);
+        if (value.type != scalar)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const destination = cast(ushort)
+            (methodReceiverOffset(call) + field.offset);
+        _code ~= Instruction(
+            Op.copy,
+            destination,
+            value.offset,
+            cast(ushort) size(scalar),
         );
         auto result = new Operand;
         *result = Operand(value.offset, scalar);
@@ -8756,6 +8805,27 @@ private struct Compiler {
             if (compound.statements is null || compound.statements.length != 1)
                 return null;
             return singleReturnExpression((*compound.statements)[0]);
+        }
+
+        if (auto return_ = statement.isReturnStatement)
+            return return_.exp;
+
+        return null;
+    }
+
+    private Expression finalReturnExpression(Statement statement) {
+        if (statement is null)
+            return null;
+
+        if (auto scope_ = statement.isScopeStatement)
+            return finalReturnExpression(scope_.statement);
+
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements is null || compound.statements.length == 0)
+                return null;
+            return finalReturnExpression(
+                (*compound.statements)[compound.statements.length - 1],
+            );
         }
 
         if (auto return_ = statement.isReturnStatement)

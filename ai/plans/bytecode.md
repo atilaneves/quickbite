@@ -5713,3 +5713,15 @@ conditions, member or global ref returns, nested conditionals, or general
 lvalue-return lowering. Verification: focused Bytecode red then green; passing
 focused five-backend matrix; `ninja bin/ut`; and `bin/ut --random` (seed
 `2550343385`).
+
+`refCall.assignmentToMemberRefReturnRunsCalleeBody` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported assignment in bytecode core: counter.slot() = 42`. A
+ref-returning struct method whose final statement returns a scalar field now
+executes the complete method body, including receiver side effects, before
+writing the assignment value into that field of the caller's receiver. This
+does not add conditional or early member ref returns, non-scalar fields,
+class methods, or general lvalue-return lowering. Verification: focused
+Bytecode red then green; passing focused five-backend matrix; `ninja bin/ut`;
+and `bin/ut --random` (seed `2688354283`).
