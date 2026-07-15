@@ -6029,6 +6029,93 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    composition -- a class field that is itself a struct/array/class handle
    rather than a scalar).
 
+   Progress 2026-07-15 (class reference identity, decomposition item 3 --
+   `this`-reached aliasing): a METHOD mutating `this.x` must be visible to
+   another caller-side alias of the SAME object through the shared class
+   cell, exactly like item 2's `combine(a, b)` case, except the mutating
+   write happens through `this` rather than an ordinary by-value
+   parameter. Fixture
+   `class.methodMutatingThisIsVisibleThroughAliasedParameter.{Interpreter,
+   SystemLinker}` in `tests/ut/backends/runner/ct/expressions.d`: `void
+   mutateAndCheck(C other) { this.x = 99; assert(other.x == 99); }` called
+   as `c.mutateAndCheck(c)` -- both the receiver and the by-value
+   parameter `other` bind from the SAME argument expression `c`, so
+   `other` already gets a `classCells` entry shared with the caller's `c`
+   (item 2's `registerClassArgumentAliases`), but `this` itself was bound
+   from a plain boxed `Value` with no cell at all, so the assert read
+   stale data. RED diagnostic on Interpreter: `0 != 99` (green on the
+   SystemLinker oracle) -- the divergence is observed DURING the call,
+   inside the method's own frame, before `writeBackThis`'s post-call
+   whole-value copy into the receiver's location ever runs, so that
+   existing writeback path cannot save it. Fix, all in `impl.d`: (1) a new
+   `classCellKeyVariable` helper factors the receiver-to-`classCells`-key
+   resolution `classCellFieldValue`/`writeClassCellFieldIfPresent` already
+   did for a bare `VarExp`, and extends it to a bare `ThisExp`, resolving
+   to `currentFunction.vthis` -- dmd's own stable `VarDeclaration` identity
+   for the hidden `this` parameter, always available in the CURRENT
+   frame's own `currentFunction`; (2) `registerClassThisAlias`, called
+   from `runMemberFunction` right after `registerClassArgumentAliases` and
+   before `child.bindFunctionParameters`, mirrors that function exactly
+   for the receiver: promotes (or reuses) the CALLER's cell for
+   `receiverExpression`'s source variable (when a bare `VarExp`) and
+   points `child.classCells[function_.vthis]` at the same `NativeBlock`,
+   dropping any stale entry inherited from an ancestor recursive call
+   first, matching the existing drop-on-rebind pattern. A `this.x = v`
+   write inside the method body now reaches the shared cell through the
+   existing `writeClassCellFieldIfPresent` call in `writeLocation`'s
+   `DotVarExp` arm, unchanged except for resolving its key through the new
+   helper.
+
+   A first attempt regressed two PRE-EXISTING virtual-dispatch fixtures
+   (`class.virtualCallUsesDynamicClass.Interpreter`,
+   `interface.virtualCallUsesRuntimeDispatch.Interpreter`) with a native
+   `ArraySliceError: slice [16 .. 20] extends past source array of length
+   0` inside `classCellFieldValue`: `Base value = new Child(...); return
+   value.score;` dispatches to `Child.score()`, whose body reads
+   `this.field`. `registerClassThisAlias` had promoted `value`'s cell
+   sized from `value`'s STATIC type (`Base`, zero fields, since `field` is
+   Child-only and Base's declared type is all `promoteClassCell` ever
+   sees), then aliased it to `vthis`, whose type is `Child` (the override
+   method's OWN declaring class) -- reading `this.field` through `vthis`'s
+   LARGER layout ran past the tiny `Base`-sized cell. This is a new
+   mismatch class item 1/2 never hit: their field-access call sites always
+   resolve `dot.var`/`classFieldIndex` against the receiver EXPRESSION's
+   own static type, so the cell's sizing type and the reading type were
+   always identical; `this`-through-`vthis` is the first path where the
+   sizing type (the CALLER's static declared type) and the reading type
+   (the OVERRIDE method's own declaring class) can legitimately differ
+   under polymorphism. Fix: `registerClassThisAlias` now compares the
+   source variable's static class (`ClassDeclaration` identity) against
+   `vthis`'s class and skips aliasing entirely on any mismatch -- the
+   override body then falls back to its own boxed `thisValue`, exactly as
+   before this slice, for every polymorphic/virtual-dispatch call; the
+   exact-type case (this slice's own fixture, no inheritance involved)
+   still aliases normally.
+
+   No §9.10 shim retired. `writeBackByValueClassArguments` is NOT
+   retired: it still protects whole-boxed-value uses of a by-value class
+   argument (e.g. passing it onward, printing it, equality checks) that
+   never go through `classCellFieldValue`'s scalar-field-only read
+   authority -- only the CELL's bytes get refreshed by a direct field
+   write, not the boxed `locals`/`thisValue` mirror the shim's diffing
+   still reconciles for every other use. Retiring it would need those
+   non-field-read uses proven safe first, which is out of surgical scope
+   for this slice per the task's own instruction to leave the shim in
+   place rather than risk a regression; its own fixture
+   (`classReferencePassedByValueMutatesObject` in `ct/cerealed.d`) is
+   additionally a FREE FUNCTION case (`fill(box)`), untouched by this
+   `this`-reached slice's `runMemberFunction`-only change, and stays
+   green through the pre-existing item 2 path exactly as before. Focused
+   suites all green: ct.expressions 531/0 (5 failing as expected),
+   ct.structs 291/0, ct.exceptions 130/0, ct.cerealed 164/0 (1 failing as
+   expected), interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0 (all
+   "failing as expected" counts are pre-existing `@ShouldFail`
+   characterizations, untouched). Remaining follow-up: item 4 (aggregate
+   composition -- a class field that is itself a struct/array/class
+   handle rather than a scalar); shim retirement itself remains deferred
+   until a slice addresses `writeBackByValueClassArguments`'s
+   whole-value-use coverage, not just scalar-field reads/writes.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

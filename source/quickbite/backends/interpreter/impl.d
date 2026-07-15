@@ -2679,6 +2679,83 @@ private struct Walker {
         }
     }
 
+    // `this`-reached counterpart of `registerClassArgumentAliases` above
+    // (value.md item 7 decomposition item 3): the hidden `this` parameter is
+    // itself a by-value REFERENCE to the caller's object, exactly like any
+    // other by-value class parameter aliased from the same argument
+    // variable -- except there is no argument EXPRESSION for `this`, only
+    // `receiverExpression` (`c` in `c.setX(99)`). Called from
+    // `runMemberFunction` right after `child.classCells = classCells.dup`
+    // and before `child.bindFunctionParameters`, same as
+    // `registerClassArgumentAliases`. Promotes (or reuses)
+    // `this.classCells[sourceVariable]` (the CALLER's cell) and points
+    // `child`'s entry for `function_.vthis` -- dmd's own stable
+    // `VarDeclaration` identity for the hidden `this` parameter -- at that
+    // SAME `NativeBlock`, so a write through `this.x = v` inside the
+    // callee's own frame (`writeClassCellFieldIfPresent`, via
+    // `classCellKeyVariable` resolving a bare `ThisExp` to `vthis`) lands in
+    // the identical bytes another by-value parameter bound from the same
+    // argument (`registerClassArgumentAliases`) or the caller's own
+    // variable observes. Drops any stale `child.classCells` entry inherited
+    // from an ancestor recursive call of the same `FuncDeclaration` first
+    // (`vthis` is the same `VarDeclaration` at every recursion depth),
+    // matching `registerClassArgumentAliases`'s own drop-on-rebind. A no-op
+    // (no `child.classCells[vthis]` entry) for a `null` `vthis` or `null`
+    // `receiverExpression` (should not happen for a real member call), a
+    // non-`VarExp` receiver (e.g. `makeC().setX(99)`), or a receiver whose
+    // `promoteClassCell` is itself a no-op (dataseg source, or a boxed
+    // value that is not a class object) -- every one of those leaves
+    // `this`-field writes updating only the callee's own boxed `thisValue`,
+    // relying on `writeBackThis`'s post-call value copy exactly as before
+    // this slice.
+    private void registerClassThisAlias(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression receiverExpression,
+        ref Walker child,
+    ) {
+        auto vthis = function_.vthis;
+        if (vthis is null)
+            return;
+
+        child.classCells.remove(vthis);
+
+        if (receiverExpression is null)
+            return;
+
+        auto sourceVar = receiverExpression.isVarExp;
+        if (sourceVar is null)
+            return;
+
+        auto sourceVariable = sourceVar.var.isVarDeclaration;
+        if (sourceVariable is null)
+            return;
+
+        // A polymorphic call -- the source variable's STATIC declared type
+        // (e.g. `Base`) can be a proper ancestor of `vthis`'s type (the
+        // OVERRIDE method's own declaring class, e.g. `Child`, reached via
+        // virtual dispatch on a `Base value = new Child(...);` receiver).
+        // `promoteClassCell` sizes the cell from the SOURCE variable's
+        // static type, so aliasing it to `vthis` here would let the
+        // override body's `this.field` reads/writes -- resolved against
+        // `vthis`'s own, possibly LARGER, class layout -- run past the
+        // smaller cell's bytes (confirmed: an out-of-bounds `NativeBlock`
+        // slice read on `class.virtualCallUsesDynamicClass`). Skip
+        // aliasing whenever the two class declarations are not identical;
+        // the override body then falls back to its own boxed `thisValue`,
+        // exactly as before this slice.
+        auto sourceClass = sourceVariable.type.toBasetype.isTypeClass;
+        auto vthisClass = vthis.type.toBasetype.isTypeClass;
+        if (
+            sourceClass is null || vthisClass is null ||
+            sourceClass.sym !is vthisClass.sym
+        )
+            return;
+
+        promoteClassCell(sourceVariable);
+        if (auto cell = sourceVariable in classCells)
+            child.classCells[vthis] = *cell;
+    }
+
     // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
     // `cell` from `classValue`'s boxed fields -- the class counterpart of
     // `writeStructCellScalarFields`. A non-scalar field (nested struct,
@@ -4733,6 +4810,7 @@ private struct Walker {
         }
         child.hasThis = true;
         registerClassArgumentAliases(function_, argumentExpressions, child);
+        registerClassThisAlias(function_, receiverExpression, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
 
         try {
@@ -6312,13 +6390,37 @@ private struct Walker {
         throw new Exception("Unsupported interpreter field read.");
     }
 
+    // Shared receiver-to-`classCells`-key resolution for `classCellFieldValue`
+    // and `writeClassCellFieldIfPresent` below (value.md item 7 decomposition
+    // item 3): a bare `VarExp` resolves to its own `VarDeclaration`, exactly
+    // as before this slice. A bare `ThisExp` (the receiver of `this.field`
+    // inside a method body) resolves to `currentFunction.vthis` -- the
+    // hidden `this` parameter's `VarDeclaration`, dmd's own stable per-
+    // function identity for it -- which is exactly the key
+    // `registerClassThisAlias` seeds `child.classCells` under. Any other
+    // receiver shape (e.g. `makeC().field`, `super.field`) resolves to
+    // `null`, matching the pre-existing VarExp-only behaviour for every
+    // other case.
+    private VarDeclaration classCellKeyVariable(
+        imported!"dmd.expression".Expression receiverExpression,
+    ) {
+        if (auto var = receiverExpression.isVarExp)
+            return var.var.isVarDeclaration;
+
+        if (receiverExpression.isThisExp !is null)
+            return currentFunction is null ? null : currentFunction.vthis;
+
+        return null;
+    }
+
     // Read-side counterpart of `writeClassCellFieldIfPresent` below, and the
     // direct-field-read sibling of `classFieldPointerCellValue` (which
-    // serves pointer DEREF reads): `receiverExpression` must be a bare
-    // `VarExp` naming a variable with a `classCells` entry, and `fieldIndex`
-    // must be a `native_scalar.isNativeScalarType` field, or this returns
-    // `false` and leaves `value` untouched -- every one of those keeps the
-    // caller's existing boxed fallback unchanged.
+    // serves pointer DEREF reads): `receiverExpression` must resolve to a
+    // `classCells` key via `classCellKeyVariable` above (a bare `VarExp`, or
+    // a bare `ThisExp` resolving to `currentFunction.vthis`), and
+    // `fieldIndex` must be a `native_scalar.isNativeScalarType` field, or
+    // this returns `false` and leaves `value` untouched -- every one of
+    // those keeps the caller's existing boxed fallback unchanged.
     private bool classCellFieldValue(
         imported!"dmd.expression".Expression receiverExpression,
         in size_t fieldIndex,
@@ -6328,11 +6430,7 @@ private struct Walker {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
 
-        auto var = receiverExpression.isVarExp;
-        if (var is null)
-            return false;
-
-        auto variable = var.var.isVarDeclaration;
+        auto variable = classCellKeyVariable(receiverExpression);
         if (variable is null)
             return false;
 
@@ -7318,14 +7416,18 @@ private struct Walker {
     // decomposition item 1): mirrors a direct field write (`c.field = v`,
     // as opposed to a pointer deref write, which
     // `writeThroughClassFieldPointer` above already handles) into
-    // `receiverExpression`'s own `classCells` entry, when one exists, so a
-    // later read through this SAME cell -- whether via this variable, an
-    // aliased variable sharing the cell (`registerClassAliasIfPlainVar`), or
-    // a pointer promoted from either -- sees the write. A no-op (nothing
-    // written) for a non-`VarExp` receiver, a receiver with no `classCells`
-    // entry, or a non-scalar field -- every one of those leaves the write
-    // to reach only the boxed `locals` mirror the caller updates separately,
-    // exactly as before this slice.
+    // `receiverExpression`'s resolved `classCells` key
+    // (`classCellKeyVariable` above -- a bare `VarExp`'s own variable, or a
+    // bare `ThisExp`'s `currentFunction.vthis`), when one has a `classCells`
+    // entry, so a later read through this SAME cell -- whether via this
+    // variable, an aliased variable sharing the cell
+    // (`registerClassAliasIfPlainVar`/`registerClassArgumentAliases`/
+    // `registerClassThisAlias`), or a pointer promoted from any of them --
+    // sees the write. A no-op (nothing written) for a receiver
+    // `classCellKeyVariable` cannot resolve, a resolved variable with no
+    // `classCells` entry, or a non-scalar field -- every one of those leaves
+    // the write to reach only the boxed `locals`/`thisValue` mirror the
+    // caller updates separately, exactly as before this slice.
     private void writeClassCellFieldIfPresent(
         imported!"dmd.expression".Expression receiverExpression,
         in size_t fieldIndex,
@@ -7335,11 +7437,7 @@ private struct Walker {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
 
-        auto var = receiverExpression.isVarExp;
-        if (var is null)
-            return;
-
-        auto variable = var.var.isVarDeclaration;
+        auto variable = classCellKeyVariable(receiverExpression);
         if (variable is null)
             return;
 

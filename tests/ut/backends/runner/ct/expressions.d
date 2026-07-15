@@ -2131,6 +2131,44 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// `this`-reached class aliasing (value.md item 7's class phase,
+// decomposition item 3): a METHOD mutating `this.x` must be visible to
+// another caller-side alias of the SAME object through the shared class
+// cell, exactly like decomposition item 2's `combine(a, b)` case, except
+// the mutating write happens through `this` rather than an ordinary
+// by-value parameter. `c.mutateAndCheck(c)` binds the receiver AND the
+// by-value parameter `other` from the SAME argument expression `c`, so
+// `other` gets a `classCells` entry shared with the caller's `c`
+// (`registerClassArgumentAliases`) -- but `this` itself is bound from
+// `receiver`, a plain boxed `Value` with no cell at all, so `this.x = 99`
+// only updates the callee's own boxed `thisValue`, never the shared cell.
+// `writeBackThis`'s post-call whole-value copy into the receiver's own
+// location cannot save this: the divergence is observed DURING the call,
+// inside the method's own frame, before that writeback ever runs. Only
+// Interpreter and SystemLinker (the oracle) are pinned here per the
+// omit-don't-pin convention.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.methodMutatingThisIsVisibleThroughAliasedParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+
+                void mutateAndCheck(C other) {
+                    this.x = 99;
+                    assert(other.x == 99);
+                }
+            }
+
+            unittest {
+                C c = new C();
+                c.mutateAndCheck(c);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
