@@ -3926,6 +3926,56 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// value.md item 7 decomposition item 4's remaining cross-frame follow-up: the
+// class-receiver sibling of `pointer.
+// structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
+// caller takes `&c.arr[0]` (promoting a `classCells` entry and a
+// `classArrayFieldPointerVariables`/`classArrayFieldPointerFieldIndices`
+// reverse-lookup entry in the CALLER's own frame), then passes the pointer
+// into a callee that writes through it. The callee's own child `Walker` dupes
+// `classCells` (so the cell's bytes are shared) but, before this slice, never
+// duped the reverse-lookup maps themselves, so the callee's
+// `writeThroughClassArrayFieldPointer` reverse-lookup missed and the write
+// fell through to the `fieldSnapshotAllocationIds` refusal check (also duped)
+// instead of aliasing. SystemLinker is the oracle; Bytecode omitted per the
+// omit-Bytecode convention.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                C c = new C();
+                c.arr[0] = one();
+                int* p = &c.arr[0];
+                put(p, ninetyNine());
+                return *p + c.arr[0];
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}
+
 // value.md item 7's nested-struct-field follow-up (the smaller of the two
 // deferred candidates named in the struct-static-array-field progress
 // note): `&s.inner.x` where `inner` is a (non-union) struct field of a

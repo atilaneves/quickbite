@@ -6562,6 +6562,95 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    until a slice addresses `writeBackByValueClassArguments`'s
    whole-value-use coverage.
 
+   Progress 2026-07-15 (class-array-field pointer cross-frame follow-up):
+   closes the smaller of the two remaining item-7 class-cell cross-frame
+   gaps this task was asked to pick between -- `&c.arr[i]` (a
+   scalar-element static-array field of a plain class local) surviving a
+   call into another function -- deferring the nested-class-struct-field
+   pointer (`&c.inner.x`) cross-frame gap as still open. Chosen as the
+   smaller slice because a directly-precedented mechanism already existed
+   twice over: the struct-receiver sibling's own cross-frame follow-up
+   (`056e5590`, `structArrayFieldPointerVariables`/
+   `structArrayFieldPointerWritebacks`/
+   `mergeStructArrayFieldPointerVariableMaps`/
+   `writeBackStructArrayFieldPointerTargets`) and the class single-field
+   pointer's own cross-frame follow-up (`5314162a`,
+   `classFieldPointerWritebacks`/`mergeClassFieldPointerVariableMaps`/
+   `writeBackClassFieldPointerTargets`/`classValueFromCell`) combine
+   directly into this shape's fix, whereas the nested-class-struct-field
+   pointer has no landed cross-frame sibling anywhere in the codebase yet
+   (the struct-receiver nested-field pointer's own cross-frame follow-up,
+   `f9dafa6f`, is a larger diff and its merge helper's "never memoized"
+   assumption would need separate verification for the class-receiver
+   shape).
+
+   Fixture
+   `pointer.classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller.
+   {Ctfe,Interpreter,SystemLinker,LLVMJit}` in `tests/ut/backends/runner/
+   ct/expressions.d`, mirroring `pointer.
+   structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller`'s shape
+   one receiver type over: `class C { int[3] arr; }`, `c.arr[0] = one();`,
+   `int* p = &c.arr[0];`, a `put(int* p, int v) { *p = v; }` callee, `put(p,
+   ninetyNine());`, then `return *p + c.arr[0];` asserting `198`. RED
+   confirmed on Interpreter before any production change: `object.
+   Exception: Unsupported interpreter assignment target.` at the `*p = v;`
+   line inside `put` -- the callee's own child `Walker` duped `classCells`
+   (sharing the cell's bytes) but never duped
+   `classArrayFieldPointerVariables`/`classArrayFieldPointerFieldIndices`,
+   so the callee's own `writeThroughClassArrayFieldPointer` reverse-lookup
+   missed and the write fell through to the `fieldSnapshotAllocationIds`
+   refusal guard. Green on Ctfe, SystemLinker, and LLVMJit throughout.
+
+   Fix, all in `impl.d`, mirroring `056e5590`'s mechanism combined with
+   `5314162a`'s class-cell value-derivation helper: (1) a new
+   `classArrayFieldPointerWritebacks` flag map, declared alongside
+   `classArrayFieldPointerVariables`/`FieldIndices`. (2)
+   `classArrayFieldPointerVariables`/`FieldIndices`/`Writebacks` are now
+   duped into every child `Walker` at the same 7 sites that already dupe
+   `classFieldPointerVariables`/`FieldIndices`/`Writebacks`. (3) a new
+   `mergeClassArrayFieldPointerVariableMaps`, the array-typed-field sibling
+   of `mergeClassFieldPointerVariableMaps` -- a class-array-field id is
+   memoized through the SAME `fieldAddressAllocations[variable]` map a
+   class scalar field's id is (`arrayPointer`'s `DotVarExp` branch mints
+   both via `fieldSnapshotAllocationId`), so the same conflict-checked
+   merge applies unchanged. (4) `writeThroughClassArrayFieldPointer` now
+   sets `classArrayFieldPointerWritebacks[*variable] = true` unconditionally
+   on every successful write (it already tolerated a missing `current` --
+   an accident of its existing cell-then-mirror discipline, same as the
+   struct sibling before its own cross-frame follow-up). (5) a new
+   `writeBackClassArrayFieldPointerTargets`, wired into
+   `writeBackFunctionState`/`writeBackMemberFunctionState` alongside the
+   existing `writeBackClassFieldPointerTargets` call, refreshing the owning
+   frame's boxed mirror via `classValueFromCell` once control returns. (6)
+   `classValueFromCell` -- previously scalar-field-only -- widened to also
+   overlay every scalar-element static-array field via a `NativeArray`
+   adopted over the field's own byte sub-range, the read-side mirror of
+   `writeClassCellScalarFields`'s own array-field widening, mirroring
+   `structValueFromCell`'s identical widening in `056e5590`.
+
+   Stale doc comments corrected in the same diff: the
+   `classArrayFieldPointerVariables`/`FieldIndices` field declaration and
+   `writeThroughClassArrayFieldPointer`'s own doc comment both still
+   described the shape as same-frame-only and (in the field comment's
+   case) read-only, though write-through-pointer support had already
+   landed in `5b26ac49`; both now describe the actual (cross-frame,
+   read+write) state.
+
+   No §9.10 shim retired (as expected -- `writeBackByValueClassArguments`
+   protects whole-boxed-value uses, unrelated to this cross-frame
+   write-through-pointer addition).
+
+   Focused suites all green: ct.expressions 555/0 (5 failing as expected,
+   pre-existing `@ShouldFail` characterizations, unchanged from before this
+   slice), ct.structs 291/0, ct.arrays 346/0, ct.exceptions 130/0,
+   interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0. The full
+   `bin/ut --random` was left to the orchestrator per the usual long-suite
+   handoff. Remaining follow-up: nested-class-struct-field pointer
+   (`&c.inner.x`) cross-frame propagation remains open -- the other shape
+   this task named and deferred as the larger pick; §9.10 shim retirement
+   itself remains deferred until a slice addresses
+   `writeBackByValueClassArguments`'s whole-value-use coverage.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
