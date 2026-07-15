@@ -310,11 +310,11 @@ private struct Walker {
     // only, matching this narrow first slice: not yet duplicated into
     // child-frame walkers, so this pointer does not yet survive being passed
     // into another function call (a remaining follow-up, mirroring the
-    // struct/class phases' own incremental cross-frame history). Read-only
-    // in this slice: writing THROUGH this pointer (`*p = v`) is untouched
-    // and still refused by `writeLocation`'s `PtrExp` arm's existing
-    // `fieldSnapshotAllocationIds` guard, exactly as for a fresh pointer
-    // shape with no dedicated write-through helper yet.
+    // struct/class phases' own incremental cross-frame history). Write-
+    // through-pointer support (`*p = v`) landed in a follow-up slice --
+    // `writeThroughNestedClassStructFieldPointer`, wired into
+    // `writeLocation`'s `PtrExp` arm and `writePointerTarget` alongside its
+    // struct/class-field siblings -- so only the cross-frame gap remains.
     private VarDeclaration[size_t] nestedClassStructFieldPointerVariables;
     private size_t[size_t] nestedClassStructFieldPointerOuterFieldIndices;
     private size_t[size_t] nestedClassStructFieldPointerInnerFieldIndices;
@@ -6945,6 +6945,15 @@ private struct Walker {
             if (writeThroughClassFieldPointer(pointer, value))
                 return;
 
+            // `&c.inner.x` of a nested (one level) scalar field on a plain
+            // class-typed LOCAL promoted a `classCells` entry at address-of
+            // time (value.md item 7 decomposition item 4, aggregate
+            // composition, write-through-pointer follow-up): write through it
+            // exactly like SystemLinker's real aliasing, instead of refusing
+            // below.
+            if (writeThroughNestedClassStructFieldPointer(pointer, value))
+                return;
+
             // Every OTHER `&s.field` (addressOfExpression's DotVarExp
             // branch) yields a read-only value snapshot, not an alias to
             // the field: refuse loudly instead of silently rewriting the
@@ -7532,6 +7541,74 @@ private struct Walker {
         if (current !is null)
             locals[*variable] = current.withClassField(*fieldIndex, value);
         classFieldPointerWritebacks[*variable] = true;
+        uninitializedLocals.remove(*variable);
+        return true;
+    }
+
+    // Class+nested-struct-field sibling of `writeThroughNestedStructFieldPointer`
+    // and `writeThroughClassFieldPointer` above (value.md item 7 decomposition
+    // item 4, aggregate composition, write-through-pointer follow-up): once
+    // `&c.inner.x` has promoted a `classCells` entry via
+    // `promoteNestedClassStructFieldCell`, `*p = value` writes `value`'s
+    // bytes straight into the cell's nested `NativeStruct` view -- adopted
+    // over the outer field's own byte sub-range, the SAME view
+    // `nestedClassStructFieldPointerCellValue` already reads for the
+    // deref-read side -- and re-derives the boxed `locals` mirror from the
+    // (already-updated) whole object, mirroring
+    // `writeThroughNestedStructFieldPointer`'s cell-then-mirror discipline.
+    // Same-frame only, matching this shape's own narrow first (read-only)
+    // slice: `nestedClassStructFieldPointerVariables` is not yet duplicated
+    // into child-frame walkers, so this pointer cannot yet be passed into
+    // another function call -- there is no cross-frame case to handle here
+    // yet, unlike `writeThroughStructFieldPointer`/`writeThroughClassFieldPointer`,
+    // whose single-level maps already gained that cross-frame dup (a
+    // remaining follow-up, same as the read side's own comment already
+    // notes). Returns `false` (writing nothing) for every other pointer --
+    // no `classCells` entry for the receiver, no reverse-lookup field-index
+    // pair, the outer field is no longer struct-typed, or a receiver whose
+    // boxed value is no longer a class object -- leaving `writeLocation`'s
+    // `PtrExp` arm to keep refusing those exactly as before.
+    private bool writeThroughNestedClassStructFieldPointer(in Value pointer, in Value value) {
+        auto variable = pointer.pointerAllocation in nestedClassStructFieldPointerVariables;
+        if (variable is null)
+            return false;
+
+        auto cell = *variable in classCells;
+        if (cell is null)
+            return false;
+
+        auto outerFieldIndex = pointer.pointerAllocation in nestedClassStructFieldPointerOuterFieldIndices;
+        if (outerFieldIndex is null)
+            return false;
+
+        auto innerFieldIndex = pointer.pointerAllocation in nestedClassStructFieldPointerInnerFieldIndices;
+        if (innerFieldIndex is null)
+            return false;
+
+        auto current = *variable in locals;
+        if (current !is null && !current.isClassObject)
+            return false;
+
+        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+        auto classType = (*variable).type.toBasetype.isTypeClass;
+        auto outerField = classFields(classType.sym)[*outerFieldIndex];
+        auto structType = outerField.type.toBasetype.isTypeStruct;
+        if (structType is null)
+            return false;
+
+        const offset = fieldByteOffset(outerField);
+        const size = typeByteSize(outerField.type);
+        auto nestedCell = NativeStruct.adopt(cell.subRange(offset, size), structType);
+        writeScalar(nestedCell.fieldDeclaration(*innerFieldIndex).type,
+            nestedCell.field(*innerFieldIndex), value);
+
+        if (current !is null) {
+            const updatedInner = current.classFieldAt(*outerFieldIndex)
+                .withStructField(*innerFieldIndex, value);
+            locals[*variable] = current.withClassField(*outerFieldIndex, updatedInner);
+        }
         uninitializedLocals.remove(*variable);
         return true;
     }
@@ -9262,6 +9339,13 @@ private struct Walker {
         // struct-family checks above (value.md item 7's class phase,
         // write-through-pointer slice), same reasoning.
         if (writeThroughClassFieldPointer(pointer, value))
+            return;
+
+        // A nested-class-struct-field pointer (`&c.inner.x`): the class-
+        // typed sibling of `writeThroughNestedStructFieldPointer` (value.md
+        // item 7 decomposition item 4's write-through-pointer follow-up),
+        // same reasoning.
+        if (writeThroughNestedClassStructFieldPointer(pointer, value))
             return;
 
         if (auto address = expression.isAddrExp) {

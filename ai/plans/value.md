@@ -6227,6 +6227,81 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    until a slice addresses `writeBackByValueClassArguments`'s
    whole-value-use coverage.
 
+   Progress 2026-07-15 (class reference identity, decomposition item 4 --
+   aggregate composition, nested class-struct field, write-through-pointer
+   follow-up): closes the write-through gap the prior slice's own note left
+   open for `&c.inner.x` (class receiver, one-level-nested struct field,
+   scalar leaf) -- `*p = v` now writes through the pointer, mirroring
+   `writeThroughNestedStructFieldPointer`'s struct-receiver shape one
+   receiver type over, exactly as the read side
+   (`nestedClassStructFieldPointerCellValue`) already did for
+   `classFieldPointerCellValue`. Same-frame only, as scoped.
+
+   Fixture `pointer.
+   nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly.
+   {Ctfe,Interpreter,SystemLinker,LLVMJit}` in `tests/ut/backends/runner/
+   ct/expressions.d`: `struct Inner { int x; } class C { Inner inner; }`,
+   `C c = new C(); c.inner.x = seed(); int* p = &c.inner.x; *p = 5; assert(
+   c.inner.x == 5);` (seeded from a runtime function call) -- the opposite
+   direction from the prior slice's own fixture
+   (`nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer`),
+   mirroring `addressOfNestedStructFieldWriteThroughUpdatesField`'s
+   struct-receiver shape but with a class receiver. RED diagnostic
+   confirmed on Interpreter before any production change: `object.
+   Exception: Unsupported interpreter assignment target.` (the pre-
+   existing `fieldSnapshotAllocationIds` refusal in `writeLocation`'s
+   `PtrExp` arm, since no dedicated write-through helper existed yet for
+   this pointer shape). Green on SystemLinker and Ctfe throughout.
+
+   Fix, all in `impl.d`: a new `writeThroughNestedClassStructFieldPointer`,
+   the class+nested-struct-field sibling of
+   `writeThroughNestedStructFieldPointer` (struct receiver) and
+   `writeThroughClassFieldPointer` (single-level class field) -- resolves
+   the same `nestedClassStructFieldPointerVariables`/
+   `...OuterFieldIndices`/`...InnerFieldIndices` reverse lookup the read
+   side already built, adopts the same `NativeStruct` view over the outer
+   field's byte sub-range (via `classFields`/`fieldByteOffset`/
+   `typeByteSize`, the same facts `nestedClassStructFieldPointerCellValue`
+   already reads), writes the inner field's scalar bytes through it with
+   `writeScalar`, then re-derives the boxed `locals` mirror from the
+   (already-updated) whole object via `current.classFieldAt(outerFieldIndex)
+   .withStructField(innerFieldIndex, value)` composed back with
+   `current.withClassField(outerFieldIndex, ...)`, mirroring
+   `writeThroughNestedStructFieldPointer`'s cell-then-mirror discipline.
+   Wired into `writeLocation`'s `PtrExp` arm (alongside its five existing
+   pointer-shape checks) and `writePointerTarget` (alongside its own five),
+   in both cases immediately after the single-level
+   `writeThroughClassFieldPointer` check, matching the read side's own
+   ordering in `pointerTargetValue`.
+
+   No writeback-flag map (`nestedClassStructFieldPointerWritebacks`) was
+   added, unlike the single-level `classFieldPointerWritebacks`/
+   `structFieldPointerWritebacks`: that mechanism exists solely to recover
+   a CROSS-frame write once control returns to the owning frame, and
+   `nestedClassStructFieldPointerVariables` is still same-frame only (not
+   duplicated into child-frame walkers), so no cross-frame case can occur
+   yet for this pointer shape -- adding the flag now would be speculative
+   plumbing with no fixture to exercise it. When the cross-frame follow-up
+   lands, mirror `writeBackClassFieldPointerTargets`/
+   `writeBackNestedStructFieldPointerTargets` at that point.
+
+   No §9.10 shim retired (as expected -- `writeBackByValueClassArguments`
+   protects whole-boxed-value uses, untouched by this scalar/struct-field-
+   composition write-through, same as every prior class-phase slice).
+
+   Focused suites all green: ct.expressions 539/0 (5 failing as expected,
+   pre-existing `@ShouldFail` characterizations, unchanged from before this
+   slice), ct.structs 291/0, ct.exceptions 130/0, interpreter 218/0,
+   bin.repl 228/0, evaluator.eval 71/0. The full `bin/ut --random` was left
+   to the orchestrator per the usual long-suite handoff. Remaining
+   follow-up: cross-frame support for this nested shape (this pointer
+   passed into another function call); a class field that is a static
+   array (item 4's other named aggregate-composition shape, still
+   untouched); `dropClassCell` (stale-cell cleanup on recursive
+   redeclaration) remains unimplemented for the whole class phase; shim
+   retirement itself remains deferred until a slice addresses
+   `writeBackByValueClassArguments`'s whole-value-use coverage.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

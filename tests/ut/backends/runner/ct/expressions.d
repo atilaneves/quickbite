@@ -4019,3 +4019,41 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// value.md item 7 decomposition item 4 (aggregate composition), write-
+// through-pointer follow-up: the opposite direction of `pointer.
+// nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer` above
+// -- write THROUGH `&c.inner.x`, then read `c.inner.x` directly -- mirroring
+// `pointer.addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but
+// with a class RECEIVER instead of a struct one. Other backends omitted per
+// the omit-don't-pin convention, matching the other class fixtures' own
+// backend set.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            class C {
+                Inner inner;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                C c = new C();
+                c.inner.x = seed();
+                int* p = &c.inner.x;
+                *p = 5;
+
+                assert(c.inner.x == 5);
+            }
+        });
+    }
+}
