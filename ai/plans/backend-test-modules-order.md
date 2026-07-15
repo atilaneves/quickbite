@@ -49,10 +49,17 @@ Within the selected module:
   production code.
 - Make the smallest honest backend change that turns the promoted test green.
 
-There is no global `backends` matrix any more. Each test block lists its
-backends explicitly with `static foreach (backend; AliasSeq!(...))`. Promoting
-a test means adding the target backend type to that one block's `AliasSeq`,
-not broadening an entire file at once.
+There is no global `backends` matrix any more (`backendsWith!` is gone). In
+its place: `tests/ut/backends/package.d` defines per-directory *default*
+matrices, `LangBackends` and `SysBackends`, and each test block opts into
+one via `static foreach (backend; Matrix!(...))`. A mature backend is
+included by default and opts *out* with a reason
+(`Omit!(B, Because.…, "note")`); an in-development backend (e.g. `IR`) is
+excluded by default and opts *in* per fixture (`Plus!(IR)`). Promoting a
+test means deleting that backend's `Omit!(B, Because.unconfirmed)` (or,
+for a still hand-written `AliasSeq!(...)` characterization block, adding
+the target backend type to that one block's `AliasSeq`), not broadening
+an entire file at once.
 
 Adding a backend to an existing shared behaviour test is a backend promotion,
 not a new behavior test. Adding a new test or changing expected behavior still
@@ -184,9 +191,15 @@ on `Ctfe`/`Interpreter` rather than `Ctfe` alone.
 ## Not Behavior Targets
 
 `tests/ut/backends/package.d` is promotion plumbing, not a behavior target: it
-defines `newBackend` and the `runBackend*Fixture*` helpers. It does not
-execute any test itself, and it no longer defines a `backends` matrix or
-`backendsWith` — backend lists live in each test block's `AliasSeq`.
+defines `newBackend`, the `runBackend*Fixture*` helpers, and the `Matrix!`
+helper (`LangBackends`/`SysBackends` defaults, `Omit!`/`Plus!`). It does not
+execute any test itself. This is not the old, removed `backends`/
+`backendsWith!` global matrix: that gave every test block the same backend
+list; `Matrix!` gives each block a *default* (mature backends in, in-
+development backends like `IR` out) that the block then adjusts per-fixture
+via `Omit!`/`Plus!` — the per-block list still lives at the test block, not
+centrally. A still hand-written `AliasSeq!(...)` block (a characterization
+pin) lists its backends directly, unaffected by `Matrix!`.
 
 `tests/ut/backends/evaluator/value.d` tests the `Value` type directly with no
 backend parameterization. It is shared infrastructure every backend relies on,

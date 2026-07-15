@@ -112,17 +112,19 @@ Every new test, regardless of which mechanism produced it, follows the
 same finishing steps: verify the expected value/message against the
 oracle empirically before pinning it; show the fixture and stop for
 approval (the approval gate); write its block as
-`static foreach (backend; AliasSeq!(...))` listing **every backend
-that passes it** — `SystemLinker` at minimum (the oracle), plus `Ctfe`
-and the VM backends where they agree; adding backends to the `AliasSeq`
-is pre-approved. A backend that *fails* the new fixture is
-the plan working as intended: a found semantic divergence. Fix it if
-the fix is small (strict TDD — the fixture is the failing test);
-otherwise leave that backend out of the `AliasSeq` with a comment
-naming the divergence so the omission is visible, and record it for
-that backend's stream. If the behaviour is genuinely unsupported by a
-backend's design, pin an explicit unsupported-diagnostic expectation
-instead. Then `ninja bin/ut` and `bin/ut --random`.
+`static foreach (backend; Matrix!(...))`
+(`tests/ut/backends/package.d`), which defaults to **every mature
+backend** — `SystemLinker` at minimum (the oracle), plus `Ctfe` and the
+VM backends where they agree; deleting an `Omit!(B, Because.unconfirmed)`
+to promote a backend into an existing fixture is pre-approved. A backend
+that *fails* the new fixture is the plan working as intended: a found
+semantic divergence. Fix it if the fix is small (strict TDD — the
+fixture is the failing test); otherwise omit that backend with
+`Omit!(B, Because.…, "note")` naming the divergence so the omission is
+visible, and record it for that backend's stream. If the behaviour is
+genuinely unsupported by a backend's design, pin an explicit
+unsupported-diagnostic expectation instead. Then `ninja bin/ut` and
+`bin/ut --random`.
 
 ### A1. Backend mutation (generator + exit criterion)
 
@@ -262,12 +264,15 @@ REPL driver (`runReplLoop`).
 - **Omit empty parens**: `doStuff;`, including inside `q{...}`.
 - **No host-test asserts inside `q{...}`** — the fixture's `unittest`
   does the asserting.
-- **Float assertion-failure messages are `@ShouldFail` on the CTFE
-  matrix** (the `<double not supported>` quirk above). Passing float
-  asserts are fine.
+- **Float assertion-failure messages omit `Ctfe`**: `Matrix!(Omit!(Ctfe,
+  Because.diverges, "<double not supported> quirk, see pin"))` plus a
+  sibling `AliasSeq!(Ctfe)` block pinning the actual wording (the
+  `<double not supported>` quirk above). Passing float asserts are fine.
 - **Approval gate.** Show the exact fixture in a syntax-highlighted
   block and stop for approval before writing it. Adding a backend to
-  an existing test block's `AliasSeq` is the only pre-approved move.
+  an existing test block's `AliasSeq`, or deleting an
+  `Omit!(B, Because.unconfirmed)` from a `Matrix!(...)` block, is the
+  only pre-approved move.
 - **Never weaken a test to make it pass.** If CTFE rejects something,
   convert to an unsupported-diagnostic test and keep the inner
   supported assertion.

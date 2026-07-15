@@ -500,7 +500,9 @@ standalone distilled snippets, not a cerealed import).
 **Matrix width and refusals (user guidance, 2026-07-07).** Each fixture runs
 on the widest backend matrix it can express. A backend for which the fixture
 stays red after the rung's fix is *omitted* from the fixture's backend
-list — the omission is the documentation. Do **not** pin a structured
+list — the omission is the documentation, now spelled
+`Omit!(B, Because.refusal, "verbatim red")`
+(`tests/ut/backends/package.d`). Do **not** pin a structured
 unsupported diagnostic with `shouldThrowWithMessage`, especially for
 backends still in development (`BytecodeNewCore`): such pins turn every
 feature landing into a test-update chore, and per §7's
