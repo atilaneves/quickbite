@@ -4866,6 +4866,83 @@ expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
 -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-15 (array-of-static-array follow-up: `&a[i]` gets a cell
+when the element is itself a scalar-element static array): the smallest
+remaining candidate named for a follow-up -- `&a[i]` on a dynamic array
+whose element type is itself a static array (`int[2][] a`), the
+array-of-static-array sibling of the array-of-struct slice earlier in this
+log. One new fixture, `pointer.
+staticArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+(`Ctfe`/`Interpreter`/`SystemLinker`/`LLVMJit`): `int[2][] a = [[one(),
+one()], [one(), one()]]; int[2]* p = &a[0]; a[0] = [ninetyNine(),
+ninetyNine()]; assert((*p)[0] == 99);`. Confirmed red on Interpreter before
+any production change (`1 != 99`, verified via an unnamed scratch probe
+with the identical body before the fixture was given its real name and
+committed); confirmed green on Ctfe, SystemLinker, and LLVMJit throughout.
+
+Root cause, exactly the array-of-struct shape: `arrayPointer`'s VarExp
+branch already calls `promoteArrayCell(source)` unconditionally, and
+already mints an `arrayAllocationVariables` id regardless of element type,
+but `promoteArrayCell` itself early-returned once the element type failed
+both the native-scalar and (non-union) struct checks -- a static-array
+element fell through both, so no `arrayCells` entry ever backed such a
+pointer, and `arrayPointerCellValue` always missed, falling to the frozen
+`pointer.pointerTarget` snapshot taken at address-of time.
+
+Fix, in `impl.d`: `promoteArrayCell` now also promotes a cell for a dynamic
+array whose element type is itself a static array, PROVIDED that static
+array's own element type is `native_scalar.isNativeScalarType` -- no
+deeper-nesting rabbit hole (array-of-array-of-struct, array-of-array-of-
+array stay on the boxed path). Seeded element by element through
+`NativeArray.arrayElement` (the container layer's existing inline-bytes
+view over a static-array-typed element, already built per the composition
+matrix, with no interpreter call site until now) and a new helper,
+`writeStaticArrayCellScalarElements` -- the static-array-element sibling of
+`writeStructCellScalarFields`, simpler because there is no non-scalar
+sub-element case to skip (the guard above guarantees every element is
+scalar). `writeArrayCellElement`/`readArrayCellElement` -- the two shared
+dispatch points every `arrayCells` element read/write call site already
+routes through -- each gained a `cell.elementType.isTypeSArray` branch
+alongside the existing `isTypeStruct` branch: the write side calls
+`writeStaticArrayCellScalarElements` directly (reused from
+`promoteArrayCell`'s own seed); the read side calls a new
+`arrayValueFromCell`, the static-array-element sibling of
+`structValueFromCell`, simpler for the same reason (no base `Value` to
+overlay onto -- every element is authoritative in the cell by
+construction, so it builds a fresh `Value.arrayValue` outright). Touching
+both shared dispatch functions was not optional, matching the array-of-
+struct slice's own reasoning: once `promoteArrayCell` can produce a
+static-array-element cell, every call site reachable through those two
+functions (`writeThroughArrayCell`, `runIndexExpression`'s cell-priority
+read, `arrayPointerCellValue`) can now reach it.
+
+No `interpreter.md` §9.10 shim is retired by this slice, matching every
+prior note in this log: it widens which arrays get a native cell, it does
+not touch any of the shim inventory's own named functions.
+
+This closes the item-7 "aggregates/arrays at the call site" struct/array
+guest-local frontier's last openly-named same-frame gap from the array-of-
+struct progress note's own framing. Remaining open items, unchanged from
+the nested-struct-field note above: pointer-identity memoization for
+`&s.inner.x`; deeper nesting (2+ levels, in any of the struct-field,
+array-element, or now static-array-element shapes); and cross-frame
+propagation of the struct-array-field/nested-field/(now)
+static-array-element pointer maps -- this slice's own cell is `arrayCells`,
+which already has cross-frame duplication via `child.arrayCells =
+arrayCells.dup` at every existing dup site, so cross-frame propagation was
+already covered for this shape by the array guest-local slice's own
+original machinery, unlike the struct-field-pointer maps' same-frame-only
+gap.
+
+Focused runs, all green: the new fixture (all four backends); `bin/ut -s
+ut.backends.runner.ct.expressions` (505 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (291 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.arrays` (346 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing as
+expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut
+-s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

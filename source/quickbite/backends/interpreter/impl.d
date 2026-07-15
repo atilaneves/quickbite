@@ -2139,9 +2139,18 @@ private struct Walker {
     // field through `NativeArray.structElement`/`writeStructCellScalarFields`
     // -- the array-of-struct counterpart of `promoteStructCell` above,
     // reusing the same container accessor the plan's composition matrix
-    // already built. A static array, a union element, any other non-scalar
-    // element type (class, nested array, slice), or a dataseg variable is
-    // left untouched and keeps using the existing boxed/aliasing paths.
+    // already built. A dynamic array whose element type is itself a
+    // scalar-element static array (`int[3][] a`, value.md item 7's
+    // array-of-static-array follow-up) gets a cell too, seeded element by
+    // element through `NativeArray.arrayElement`/
+    // `writeStaticArrayCellScalarElements` -- the array-of-array counterpart
+    // of the struct branch above, reusing the same inline-bytes container
+    // accessor. A union element, a static-array element whose OWN element
+    // type is not `native_scalar.isNativeScalarType` (out of this narrow
+    // slice's scope -- no deeper-nesting rabbit hole), any other non-scalar
+    // element type (class, nested dynamic array, slice), or a dataseg
+    // variable is left untouched and keeps using the existing
+    // boxed/aliasing paths.
     private void promoteArrayCell(VarDeclaration variable) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
@@ -2175,19 +2184,40 @@ private struct Walker {
         }
 
         auto structType = elementType.isTypeStruct;
-        if (structType is null)
+        if (structType !is null) {
+            // A `union` element cannot be represented by `writeStructCellScalarFields`'s
+            // whole-block scalar-field overlay any more than a union LOCAL can --
+            // see `promoteStructCell`'s identical guard for why.
+            if (structType.sym.isUnionDeclaration !is null)
+                return;
+
+            auto cell = NativeArray.allocate(elementType, current.length);
+            foreach (index; 0 .. current.length) {
+                auto elementCell = cell.structElement(index);
+                writeStructCellScalarFields(elementCell, current[index]);
+            }
+
+            arrayCells[variable] = cell;
+            return;
+        }
+
+        auto arrayType = elementType.isTypeSArray;
+        if (arrayType is null)
             return;
 
-        // A `union` element cannot be represented by `writeStructCellScalarFields`'s
-        // whole-block scalar-field overlay any more than a union LOCAL can --
-        // see `promoteStructCell`'s identical guard for why.
-        if (structType.sym.isUnionDeclaration !is null)
+        // Only a scalar-element static array is seeded here -- the
+        // static-array-element sibling of the union guard above; a deeper
+        // nested element (array-of-array-of-struct, array-of-array-of-array)
+        // is out of this narrow slice's scope and stays on the existing
+        // boxed/aliasing path.
+        auto innerElementType = arrayType.next.toBasetype;
+        if (!isNativeScalarType(innerElementType))
             return;
 
         auto cell = NativeArray.allocate(elementType, current.length);
         foreach (index; 0 .. current.length) {
-            auto elementCell = cell.structElement(index);
-            writeStructCellScalarFields(elementCell, current[index]);
+            auto elementCell = cell.arrayElement(index);
+            writeStaticArrayCellScalarElements(elementCell, current[index]);
         }
 
         arrayCells[variable] = cell;
@@ -6674,8 +6704,13 @@ private struct Walker {
     // routes through `NativeArray.structElement`/`writeStructCellScalarFields`
     // -- the same scalar-fields-only overlay `promoteStructCell`'s own cell
     // uses, applied to one array element's sub-range instead of a whole
-    // struct local. Shared by every `arrayCells` element-write call site so
-    // none of them needs its own element-type branch.
+    // struct local. `cell.elementType` a (necessarily scalar-element, per
+    // `promoteArrayCell`'s own guard) static array -- value.md item 7's
+    // array-of-static-array follow-up -- routes through `NativeArray.
+    // arrayElement`/`writeStaticArrayCellScalarElements`, the array-typed
+    // sibling of the struct branch. Shared by every `arrayCells`
+    // element-write call site so none of them needs its own element-type
+    // branch.
     private void writeArrayCellElement(
         ref NativeArray cell,
         in size_t index,
@@ -6687,9 +6722,41 @@ private struct Walker {
             return;
         }
 
+        if (cell.elementType.isTypeSArray) {
+            auto elementCell = cell.arrayElement(index);
+            writeStaticArrayCellScalarElements(elementCell, value);
+            return;
+        }
+
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
         writeScalar(cell.elementType, cell.element(index), value);
+    }
+
+    // Writes boxed `arrayValue`'s scalar elements into `cell`'s bytes (the
+    // static-array-element counterpart of `writeStructCellScalarFields`,
+    // value.md item 7's array-of-static-array follow-up): shared by
+    // `promoteArrayCell`'s static-array-element branch (the cell-creation
+    // seed) and `writeArrayCellElement`'s own branch above (a direct
+    // element write, `a[i] = [...]`, after the cell already exists).
+    // `cell.elementType` is always `native_scalar.isNativeScalarType` by
+    // construction here -- `promoteArrayCell` only ever creates this cell
+    // shape under that same guard -- so there is no nested non-scalar case
+    // to fall back to, unlike `writeStructCellScalarFields`'s own
+    // static-array-field branch. A no-op for a boxed value that isn't
+    // actually an array (defensive, mirroring that same branch's guard).
+    private void writeStaticArrayCellScalarElements(
+        ref NativeArray cell,
+        in Value arrayValue,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: writeScalar;
+
+        if (!arrayValue.isArray)
+            return;
+
+        foreach (index; 0 .. cell.length)
+            if (index < arrayValue.length)
+                writeScalar(cell.elementType, cell.element(index), arrayValue[index]);
     }
 
     // Reads `cell`'s element `index` back into a boxed `Value` (the
@@ -6698,11 +6765,16 @@ private struct Walker {
     // `readScalar` exactly as before this widening; a struct element routes
     // through `structValueFromCell` -- the same read-back `writeBack
     // StructFieldPointerTargets` already uses for a top-level struct-field
-    // cell, applied here to one array element's sub-range. The base `Value`
-    // overlaid is `variable`'s own current boxed element when one exists (so
-    // a non-scalar sub-field, out of this narrow slice's scope, keeps
-    // whatever the boxed mirror already had) or the element type's default
-    // otherwise. Shared by every `arrayCells` element-read call site.
+    // cell, applied here to one array element's sub-range. `cell.
+    // elementType` a static array (value.md item 7's array-of-static-array
+    // follow-up) routes through `arrayValueFromCell`, the array-typed
+    // sibling of `structValueFromCell`. The base `Value` overlaid for the
+    // struct branch is `variable`'s own current boxed element when one
+    // exists (so a non-scalar sub-field, out of this narrow slice's scope,
+    // keeps whatever the boxed mirror already had) or the element type's
+    // default otherwise; the static-array branch needs no such overlay,
+    // since every one of its own elements is authoritative in the cell by
+    // construction. Shared by every `arrayCells` element-read call site.
     private Value readArrayCellElement(
         VarDeclaration variable,
         ref NativeArray cell,
@@ -6720,7 +6792,33 @@ private struct Walker {
             return structValueFromCell(current, elementCell);
         }
 
+        if (cell.elementType.isTypeSArray) {
+            auto elementCell = cell.arrayElement(index);
+            return arrayValueFromCell(elementCell);
+        }
+
         return readScalar(cell.elementType, cell.element(index));
+    }
+
+    // Re-derives a static-array `Value` from `cell`'s scalar-element bytes
+    // (the static-array-element counterpart of `structValueFromCell`, used
+    // by `readArrayCellElement`'s branch above): every element is read back
+    // from the cell -- authoritative once a write-through-pointer or a
+    // direct element write touched it. Unlike `structValueFromCell`'s
+    // per-field overlay onto a `current` base value, there is no non-scalar
+    // sub-element here to preserve -- `promoteArrayCell` only ever creates
+    // this cell shape when every element is `native_scalar.
+    // isNativeScalarType` -- so this builds a fresh element array outright
+    // rather than taking a base `Value` to overlay onto.
+    private Value arrayValueFromCell(ref NativeArray cell) {
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        Value[] elements;
+        elements.length = cell.length;
+        foreach (index; 0 .. cell.length)
+            elements[index] = readScalar(cell.elementType, cell.element(index));
+
+        return Value.arrayValue(elements);
     }
 
     private Value runAssocArraySlotAssignExpression(

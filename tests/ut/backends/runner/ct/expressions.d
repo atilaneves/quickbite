@@ -3590,3 +3590,41 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// value.md item 7's array-of-static-array follow-up (the smallest remaining
+// candidate the nested-struct-field progress note above left open):
+// `&a[i]` on a dynamic array whose element type is itself a scalar-element
+// static array (`int[2][]`) -- the array-of-static-array sibling of the
+// array-of-struct fixture above. `promoteArrayCell` previously stopped at
+// `isNativeScalarType`/struct element types, so a static-array element
+// stayed on the boxed-snapshot path exactly as struct elements once did:
+// `arrayPointer`'s VarExp branch still mints an `arrayAllocationVariables`
+// id, but no cell backed it, so `arrayPointerCellValue` always missed and
+// fell to the frozen `pointer.pointerTarget` snapshot taken at address-of
+// time. Before any production change, Interpreter returned 1 (the pre-write
+// snapshot) instead of 99; confirmed via an unnamed scratch probe with the
+// identical body before the fixture was given its real name and committed.
+// SystemLinker is the oracle.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.staticArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[2][] a = [[one(), one()], [one(), one()]];
+                int[2]* p = &a[0];
+                a[0] = [ninetyNine(), ninetyNine()];
+                assert((*p)[0] == 99);
+            }
+        });
+    }
+}
