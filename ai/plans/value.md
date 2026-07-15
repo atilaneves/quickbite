@@ -7443,6 +7443,61 @@ change left out of scope here. (2) Two-or-more-level field nesting (e.g.
 fallback), unchanged from `54d0bb99`'s own "full field-PATH
 generalization" gap.
 
+Progress 2026-07-16 (union write-through: assigning a WHOLE static-array
+member is now visible through an overlapping scalar sibling -- the
+WRITTEN-side counterpart of the prior static-array slice): probed the
+gap fa6b5e12's own follow-up flagged as unwidened -- `union U { int[2] a;
+long l; } U u; u.a = [low, high]; assert(u.l == combined);` -- against the
+`Interpreter`/`SystemLinker` oracle pair. Confirmed a real divergence: RED
+on `Interpreter`, green on `SystemLinker`. `withUnionFieldWrite` only
+handled a scalar-or-struct WRITTEN member; a whole static-array WRITTEN
+member fell through its `!writtenScalar && !writtenStruct` decline
+entirely, so `u.l` stayed on its stale prior value instead of picking up
+`u.a`'s just-written bytes.
+
+Fixture `union.writeThroughArrayMemberIsVisibleThroughScalarMember.
+{Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/structs.d`,
+immediately after `writeThroughScalarMemberIsVisibleThroughArrayMember`
+(the read-side sibling `fa6b5e12` added). RED confirmed on `Interpreter`
+before any production change: `0 != 55834574855`. Green on `SystemLinker`
+throughout. `Ctfe` omitted, matching the established convention for this
+whole fixture family (DMD's own CTFE reinterpretation-through-overlapped-
+field restriction; not re-probed since this slice only touches the
+WRITTEN side of the same overlay machinery already `Ctfe`-omitted for
+every sibling direction).
+
+Fix, in `impl.d`'s `withUnionFieldWrite` only: added a third `writtenArray`
+case (gated on the WRITTEN field being a static array whose own element
+type is `native_scalar.isNativeScalarType`, scope-matched to the read-side
+slice) alongside the existing scalar/struct branches. Reuses the exact
+`NativeStruct.arrayField` view `writeStructCellScalarFields`'s own
+static-array branch already established: `writeScalar`s each of the
+just-written array value's own elements into the transient cell's shared
+bytes via `cell.arrayField(fieldIndex).element(elementIndex)`, before the
+existing (unchanged) sibling refresh loop overlays every other member. No
+new byte-reinterpretation machinery; `promoteStructCell`'s guard is
+untouched.
+
+No `interpreter.md` §9.10 shim retired -- unrelated to this union-write
+overlay widening.
+
+Focused suites all green (run together): ct.expressions, ct.structs,
+ct.arrays, ct.exceptions, interpreter, bin.repl, evaluator.eval,
+rt.dependency_image, rt.cstdlib -- 2071 run, 0 failed, 5/5 failing as
+expected (the same pre-existing ct.expressions failures, unchanged count;
+ct.structs itself grew by this slice's own 2 new backend instances). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
+Remaining follow-up: (1) a union member that is a dynamic array, class,
+static array of non-scalar elements, or nested union still has no
+write-through overlay on either side (written or sibling), unchanged from
+the prior slice's own follow-up; (2) default-init
+(`unionSiblingDefaultFieldValue`) still falls back to independent
+`defaultValue` for any aggregate (struct/array/class) first member or
+sibling; (3) cell PROMOTION (`&u.<field>`) for a union with a non-scalar
+member is still declined entirely by `promoteStructCell`'s guard.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

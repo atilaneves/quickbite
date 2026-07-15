@@ -8536,12 +8536,14 @@ private struct Walker {
     // arrayField` view `writeStructCellScalarFields`/`structValueFromCell`
     // already use for a struct's own static-array field: `readScalar`s each
     // element back out of the transient cell's shared bytes into the
-    // sibling's boxed array value. The WRITTEN side is deliberately left
-    // unwidened -- no fixture exercises assigning a whole static-array union
-    // member (e.g. `u.a = [...]`) and reading a scalar sibling back, so that
-    // direction still falls through the `!writtenScalar && !writtenStruct`
-    // guard unchanged, matching strict TDD (only the tested direction gets
-    // production code). A union member that is a dynamic array, class,
+    // sibling's boxed array value. Widened again (value.md item 7,
+    // 2026-07-16, WRITTEN-side static-array follow-up) so assigning a WHOLE
+    // scalar-element static-array union member (e.g. `u.a = [...]`) also
+    // seeds the transient cell's shared bytes -- via the SAME `NativeStruct.
+    // arrayField` view, `writeScalar`ing each of the just-written array
+    // value's own elements -- before the sibling refresh loop above overlays
+    // every other member, closing the gap this file's own prior entry
+    // flagged as unwidened. A union member that is a dynamic array, class,
     // static array of NON-scalar elements, or nested union is still left on
     // its own prior boxed value on both sides (written and sibling) --
     // matching `writeStructCellScalarFields`'s identical scope;
@@ -8570,17 +8572,26 @@ private struct Walker {
         auto writtenStructType = writtenType.toBasetype.isTypeStruct;
         const writtenStruct = writtenStructType !is null
             && writtenStructType.sym.isUnionDeclaration is null;
+        const writtenArray = isStaticArrayType(writtenType)
+            && isNativeScalarType(writtenType.toBasetype.nextOf.toBasetype)
+            && value.isArray;
 
-        if (!writtenScalar && !writtenStruct)
+        if (!writtenScalar && !writtenStruct && !writtenArray)
             return updated;
 
         auto cell = NativeStruct.allocate(unionType);
 
         if (writtenScalar) {
             writeScalar(writtenType, cell.field(fieldIndex), value);
-        } else {
+        } else if (writtenStruct) {
             auto writtenCell = cell.structField(fieldIndex);
             writeStructCellScalarFields(writtenCell, value);
+        } else {
+            auto writtenElementType = writtenType.toBasetype.nextOf.toBasetype;
+            auto writtenArrayCell = cell.arrayField(fieldIndex);
+            foreach (elementIndex; 0 .. value.length)
+                writeScalar(writtenElementType, writtenArrayCell.element(elementIndex),
+                    value[elementIndex]);
         }
 
         foreach (siblingIndex, sibling; fields) {

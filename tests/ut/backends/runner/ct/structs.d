@@ -1932,3 +1932,32 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
         });
     }
 }
+
+// The WRITTEN-side counterpart of the fixture above: assigning the WHOLE
+// static-array member and reading an overlapping scalar sibling back.
+// fa6b5e12's own follow-up flagged this direction as unwidened --
+// `withUnionFieldWrite` only handles a scalar-or-struct WRITTEN member, so
+// `u.a = [...]` fell through its `!writtenScalar && !writtenStruct` decline
+// and left `u.l` on its stale prior value.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("union.writeThroughArrayMemberIsVisibleThroughScalarMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int[2] a;
+                long l;
+            }
+
+            unittest {
+                U u;
+                int low = 7;
+                int high = 13;
+                u.a = [low, high];
+                long bits = (cast(long) high << 32) | cast(long) low;
+                assert(u.l == bits);
+            }
+        });
+    }
+}
