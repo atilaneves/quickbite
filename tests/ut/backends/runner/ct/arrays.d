@@ -431,6 +431,41 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
+// value.md item 7's SLICE guest-local, reverse direction: `int[] s = a[];`
+// should alias `a`'s storage exactly like `&a[0]` does, so a later direct
+// write to `a` is visible through `s` too -- the opposite direction from
+// `nestedSliceWritesPropagateToOriginalArray` above (a write through the
+// slice, visible in the source). SystemLinker's `s` aliases `a`'s real
+// storage, so the direct write to `a` is visible through `s`. Other backends
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                a[0] = ninetyNine();
+                assert(s[0] == 99);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
     @("dynamicArray.nestedSliceAppendKeepsOriginalArrayTail." ~
         backend.stringof)
@@ -1785,5 +1820,211 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
                 assert(arr[1] == 7);
             }
         });
+    }
+}
+
+// value.md item 7 review, finding 1: a nested `foreach` re-declares the
+// inner loop's slice temporary (dmd lowers `foreach (v; row)` to a fresh
+// `auto __r = row[];` every OUTER iteration) over the SAME `VarDeclaration`
+// at every outer pass. `promoteSliceArrayCell` promotes `row` itself
+// (the slice source) eagerly as a side effect -- no address-of needed --
+// and, without dropping that stale cell on `row`'s own fresh re-declaration
+// each outer iteration, the second outer iteration's inner loop reads back
+// the FIRST iteration's stale cell bytes instead of its own row's values.
+// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int f() {
+                int sum;
+                foreach (row; [[one(), two()], [three()]])
+                    foreach (v; row)
+                        sum += v;
+                return sum;
+            }
+
+            unittest {
+                assert(f() == 6);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, finding 2: `writeCelledLocal`'s `arrayCells`
+// branch treated ANY same-length whole-array assignment as an in-place byte
+// mutation -- correct for the ref-writeback case it was built for, but a
+// plain source-level `s = b;` REBINDS `s` to `b`'s storage; it must not
+// write `b`'s bytes into whatever `s` used to alias. Here `s` is a slice
+// view over `a`'s cell, so the buggy in-place refresh corrupted `a` itself.
+// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                int[] b = [eight(), nine()];
+                s = b;
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, finding 3: `a ~= x` (`runArrayAppendAssignExpression`'s
+// plain-`VarExp` arm) grew `locals` but left a promoted `arrayCells` entry at
+// its OLD length -- a slice (`int[] s = a[];`) eagerly promotes `a`'s cell via
+// `promoteSliceArrayCell`, with no address-of needed at all. A later read of
+// the newly-appended element then goes through `readIndexExpression`'s cell
+// arm against the stale, too-short cell. SystemLinker is the oracle; other
+// backends omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.appendRefreshesSlicePromotedStaleCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int f() {
+                int[] a = [one()];
+                int[] s = a[];
+                a ~= two();
+                return a[1];
+            }
+
+            unittest {
+                assert(f() == 2);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, finding 4: `runSliceAssignExpression` (`a[] = x` /
+// `a[i .. j] = x`) writes `locals[variable]` directly but never refreshes a
+// promoted `arrayCells` entry, which `readIndexExpression`'s cell arm reads
+// in preference to the boxed mirror. Here `s = a[]` promotes `a`'s cell
+// eagerly (no address-of), so `a[] = ninetyNine()` fills the boxed array but
+// a later `a[0]` read returns the stale cell's original value instead. See
+// the sibling `pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell`
+// fixture in expressions.d for the bounded/`&a[0]` variant. SystemLinker is
+// the oracle; other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                a[] = ninetyNine();
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 99);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, final-review finding 7: `runSliceAssignExpression`'s
+// cell-refresh loop indexed `lower .. upper` unconditionally against
+// `elements` (built with only `current.length` entries), so an out-of-bounds
+// guest `a[0 .. 5] = x` on a 2-element array indexed `elements` past its own
+// bounds and died with a HOST `core.exception.RangeError` -- even when
+// `variable` never had a promoted cell at all, since `elements[index]` is
+// built as the call argument before `writeThroughArrayCell`'s own no-op
+// check ever runs. Fix: reject an out-of-bounds `upper` up front, before
+// `elements` is built (or `rhs` is even evaluated), with the interpreter's
+// own guest-visible `RangeError`, using the exact wording compiled D's own
+// `ArraySliceError` raises for the identical slice assignment (confirmed
+// against a real `dmd`-compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`).
+// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
+// convention (unconfirmed there).
+// Ctfe omitted: DMD's CTFE engine rejects the out-of-bounds slice assignment
+// with its own compile-time diagnostic wording ("slice `[0..5]` exceeds
+// array bounds `[0..2]`") rather than the runtime `RangeError` message this
+// fixture pins.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("dynamicArray.sliceAssignPastLengthThrowsRangeError." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(1);
+                int[] a = [first, first + 1];
+                size_t lower = cast(size_t) value(0);
+                size_t upper = cast(size_t) value(5);
+
+                a[lower .. upper] = value(9);
+            }
+        }).shouldThrowWithMessage(
+            "slice [0 .. 5] extends past source array of length 2",
+        );
     }
 }

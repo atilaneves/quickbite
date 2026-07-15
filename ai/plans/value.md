@@ -2874,6 +2874,1714 @@ ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`;
 ut.backends.runner.ct.pollution`. The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.
 
+Progress 2026-07-14 (array-native storage's first guest call site: shared
+element cell for `&a[i]`): item 7's "Migration order" bullet names arrays
+first; this is that guest-level call site's first slice, the array
+counterpart of the 2026-07-13 `scalarCells` work above. `impl.d`'s `Walker`
+gains `private NativeArray[VarDeclaration] arrayCells;`, next to
+`scalarCells`, an authoritative `NativeArray` cell for an address-taken
+dynamic-array local whose element type is `native_scalar.
+isNativeScalarType`. `arrayPointer` (the common path for `&a[i]`, called
+from `addressOfExpression`'s `IndexExp` arm) now calls a new
+`promoteArrayCell(source)` -- keyed by the slice-alias-resolved `source`,
+matching `allocationId(source)`'s own key, so `arrayPointerVariable`'s
+existing reverse lookup (`pointer.pointerAllocation in
+arrayAllocationVariables`) and the new cell agree on which variable owns
+the shared bytes. `promoteArrayCell` allocates the cell eagerly the first
+time a qualifying array's address is taken (skipping `isDataseg` variables,
+non-dynamic-array types, and non-native-scalar element types, mirroring
+`promoteScalarCell`'s own guards), seeding it element-by-element from the
+array's current boxed `Value` via `native_scalar.writeScalar`. Once a cell
+exists, two call sites route through it instead of leaving `locals`'
+`.dup`'d, detached elements as the only record: (1) `runPointerExpression`'s
+array-pointer deref-read arm (`*p`, when `p` is not a `LocalPointer`) now
+checks `arrayPointerVariable(value)` for a promoted `arrayCells` entry
+before falling back to the boxed `pointer.pointerTarget` snapshot taken at
+address-of time; (2) a new `writeThroughArrayCell(variable, index, value)`
+helper, called from both `runIndexAssignExpression`'s plain-`VarExp` arm
+(the actual code path for a bare `a[i] = x;` -- `runAssignExpression`
+routes an `IndexExp` LHS there directly, NOT through `writeLocation`/
+`writeIndexLocation`) and `writeIndexLocation`'s own plain-`VarExp` arm
+(reached via `writeLocation`, e.g. a compound/nested assignment target),
+`writeScalar`s the assigned value into the cell's `element(index)` bytes
+whenever a cell exists, alongside each call site's pre-existing `locals`
+mirror update. Every `Walker child` construction that already dupes
+`scalarCells` (the same seven call sites the 2026-07-13 note counted) now
+also does `child.arrayCells = arrayCells.dup;`, so a duped `NativeArray`'s
+underlying bytes are shared by reference across a nested call frame,
+mirroring `scalarCells`' own cross-frame sharing.
+
+New fixture (pre-approved):
+`pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
+convention) -- `int[] a = [one(), two()]; int* p = &a[0]; a[0] =
+ninetyNine(); assert(*p == 99);`, every value seeded from a runtime function
+call so DMD cannot fold it. SystemLinker's `p` aliases `a`'s real storage,
+so the direct write is visible through `*p`. Confirmed red on Interpreter
+before any production change (`1 != 99`: `p`'s own boxed element snapshot,
+taken at address-of time, never saw the later direct write) and green on
+SystemLinker; green on both after.
+
+What this slice does NOT do, to be precise about item 7's array-phase
+state: only a dynamic array whose element type is `native_scalar.
+isNativeScalarType` gets a cell -- a static array, a non-scalar element
+type (struct, class, nested array/slice), array growth (`~=`,
+`.length = n`), and slice construction (`a[]`) are all untouched and keep
+using the existing boxed/aliasing paths (`sliceAliases`,
+`arrayAllocationAliases`, `writeThroughArrayPointer`'s own boxed writeback,
+etc.) exactly as before. `writeIndexLocation`'s `DotVarExp` arm (a struct
+field's array element) and `runIndexAssignExpression`'s `DotVarExp`/nested-
+`IndexExp`/pointer-target arms do not consult `arrayCells` at all -- only
+the plain-`VarExp` arm in each does. The existing boxed writeback
+machinery (`arrayPointerWritebacks`, `ArrayElementAlias`,
+`writeThroughArrayPointer`'s `locals`-only rewrite for a pointer-side
+write, e.g. `*p = x` or `p[i] = x`) is completely unchanged -- this slice
+only closes the DIRECT-write-then-pointer-read direction for a plain
+scalar-element array local; a write THROUGH the pointer already reached
+`locals` via the pre-existing mechanism, and a cross-frame array `&a[i]`
+(the array counterpart of the 2026-07-13 cross-frame scalar fixture) has
+no fixture yet, though the `child.arrayCells = arrayCells.dup` sharing
+added here is expected to cover it for the same reason it did for scalars.
+No `interpreter.md` §9.10 shim is retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (360 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.arrays` (320 run, 0 failed -- the previously-known
+`sliceAssignmentWritesArrayStorage.Bytecode`/
+`staticArrayCopyRunsPostblitAndDtors.Bytecode` failures noted in the round
+above are gone, from unrelated master merges, not this slice); `bin/ut -s
+ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.structs` (281 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (array-native storage's write-side closure: a write
+THROUGH the pointer now also authors the shared `arrayCells` block): the
+slice directly above closed the direct-write-then-pointer-read direction
+(`a[0] = x; assert(*p == x);`) but left the opposite direction open --
+`writeThroughArrayPointer` (the single function every `*p = x`/`p[k] = x`
+write-through-pointer call site funnels through: `writeLocation`'s `PtrExp`
+arm for a non-`LocalPointer` array-derived pointer, `runIndexAssignExpression`'s
+two pointer-target arms, and `applyPointerElementsWritebacks`) only ever
+wrote `locals`' detached, `.dup`'d array copy, never the promoted
+`arrayCells` entry a deref-read (`runPointerExpression`) or a later direct
+write (`writeIndexLocation`) actually consult. New fixture (pre-approved):
+`pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
+convention) -- `int[] a = [one(), two()]; int* p = &a[0]; int* q = &a[0];
+*p = ninetyNine(); assert(*q == 99);`, every value seeded from a runtime
+function call so DMD cannot fold it. Confirmed red on Interpreter before any
+production change (`1 != 99`: `q`'s own boxed element snapshot, taken at
+address-of time, never saw the later write through `p`) and green on
+SystemLinker (real aliased memory); green on both after. Fix:
+`writeThroughArrayPointer`'s array-element branch (`current.isArray`) now
+calls the same `writeThroughArrayCell(variable, index, value)` helper
+`writeIndexLocation`/`runIndexAssignExpression`'s plain-`VarExp` write arms
+already call, keyed by the same `arrayPointerVariable`-resolved variable the
+pre-existing `locals` write already uses -- no new side table, one shared
+`NativeArray` authority for both directions. `writeThroughArrayCell` is
+already a no-op when no cell was ever promoted for the variable (a
+non-native-scalar-element or static array, etc.), so this is a pure
+addition alongside the existing `locals` write, not a behavior change for
+anything outside item 7's narrow native-scalar-dynamic-array-element gating.
+The scalar (non-array, `scalarWithByte`) branch of `writeThroughArrayPointer`
+is untouched -- `arrayPointerVariable` only ever resolves to a variable
+`promoteArrayCell` promoted while its boxed value was an array, so that
+branch's variable never has an `arrayCells` entry to refresh.
+
+What remains: a write through a pointer to a struct field's array element or
+a nested-`IndexExp`/pointer-target write (the `DotVarExp` and other non-
+plain-`VarExp` arms of `writeIndexLocation`/`runIndexAssignExpression`) still
+does not consult `arrayCells` at all, matching the direct-write slice's own
+scope note -- unchanged by this slice either. Array growth (`~=`, `.length =
+n`) and slice construction (`a[]`) remain on the existing boxed/aliasing
+paths. No `interpreter.md` §9.10 shim is retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (361 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.arrays` (320 run, 0 failed); `bin/ut -s
+ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (array-native storage extended to SLICE aliasing,
+reverse direction: a write to the SOURCE is now visible through an
+earlier-taken slice): the two slices above closed both directions of
+POINTER aliasing (`&a[i]`); a guest `int[] s = a[];` was still handled
+entirely by the pre-existing BOXED `sliceAliases`/`writeThroughSliceAlias`
+machinery, which only ever propagated writes FORWARD (through `s`, into
+`a`'s `locals` mirror) -- a direct write to `a` after `s` was created never
+reached `s`'s own `locals` entry, a detached `.dup` snapshot taken at slice-
+creation time, because a slice is not a real aliasing view in the boxed
+model at all. New fixture (pre-approved):
+`dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice` in
+`tests/ut/backends/runner/ct/arrays.d`, scoped to `Interpreter`/
+`SystemLinker` only (omitted elsewhere per the omit-don't-pin convention)
+-- `int[] a = [one(), two()]; int[] s = a[]; a[0] = ninetyNine(); assert(
+s[0] == 99);`, every value seeded from a runtime function call so DMD
+cannot fold it. Confirmed red on Interpreter before any production change
+(`1 != 99`: `s`'s own boxed `.dup` snapshot never saw the later direct
+write to `a`) and green on SystemLinker (real aliased memory); green on
+both after.
+
+Fix: two production changes in `impl.d`. (1) A new `promoteSliceArrayCell
+(variable)`, called from `runDeclarationExpression`'s `SliceExp`-
+initializer arm right after `recordSliceAlias` has resolved `variable`'s
+own `SliceAlias`
+(following any chain of nested slices to the ROOT source and the combined
+lower bound, exactly as `recordSliceAlias` itself already does) -- a no-op
+for a struct-field-rooted slice (`alias_.hasFieldIndex`, e.g. `val.field[]`,
+out of this slice's scope) or when `promoteArrayCell(alias_.source)` itself
+stays a no-op (a non-dataseg/dynamic-array/native-scalar-element guard
+failure, mirroring `promoteArrayCell`'s own gating). Once the source has a
+cell, `NativeArray.slice(begin, end)` -- already built for exactly this
+(its own doc: "a write through the returned handle is visible through this
+array and vice versa") -- gives a real, bidirectionally-aliasing sub-range
+view over the SAME underlying bytes (`NativeBlock.subRange` slices the
+block's own `ubyte[]`, sharing the GC allocation, not copying it); that
+view becomes `arrayCells[variable]`, sized from `alias_.lower` and the
+slice's own already-computed length (`locals[variable]`, the boxed dup
+`runSliceExpression` just produced) -- ONE shared `NativeArray` authority
+for source and slice, no new boxed reverse side-table. (2)
+`runIndexExpression`'s plain-`VarExp` read arm (`a[i]`/`s[i]`, the actual
+code path `index.e1.isVarExp` reaches) now checks `variable in arrayCells`
+before falling back to `source[arrayIndex]` (the boxed value), reading
+`readScalar(cell.elementType, cell.element(arrayIndex))` instead when a
+cell exists -- mirroring the read-priority `runPointerExpression`'s deref
+arm and `readCelledLocal` already give scalar cells. This was the missing
+piece: before this slice, NOTHING ever consulted `arrayCells` on a whole-
+array read path (only a pointer deref and the direct-write arms did), so
+even giving `s` a shared cell would have been invisible to `s[0]` without
+it. Confirmed the fix does not merely special-case the one fixture:
+manually extended (in a scratch, uncommitted edit, reverted before this
+commit) to a sub-slice (`int[] s = a[1 .. 3]; a[1] = ninetyNine();
+assert(s[0] == 99);`) and a bidirectional case (`int[] s = a[]; int* p =
+&a[0]; s[0] = ninetyNine(); assert(*p == 99 && a[0] == 99);`) -- both
+passed on Interpreter with no further production change, confirming this
+is genuine shared storage, not a snapshot patched to fit one shape.
+
+What this slice does NOT do: a struct-field-rooted slice keeps using the
+existing boxed `sliceAliases` machinery untouched, matching
+`hasFieldIndex`'s existing gate elsewhere. Array growth (`~=`, `.length =
+n`) on either the source or the slice remains on the existing boxed paths
+-- `NativeArray.reserve`/`setLength`'s own documented reallocation
+behaviour for a `borrowed` (sliced) block is "throw", so a promoted slice
+cell would need a call site to rebind or fall back to boxed growth before
+this slice's `arrayCells` entry could safely see `~=`/`.length =`; there is
+no such call site yet. Only the plain-`VarExp` read arm of
+`runIndexExpression` was extended to consult `arrayCells` -- a struct
+field's array element (`DotVarExp`) and nested-`IndexExp` reads still read
+the boxed value only, matching every other `arrayCells` call site's
+existing plain-`VarExp`-only scope. No `interpreter.md` §9.10 shim is
+retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (361 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (slice-cell promotion guard: fixing a regression the
+above slice introduced): the cerealed matrix test
+`ut.backends.runner.ct.cerealed.multidimensionalArrayWritesNestedLengths`,
+GREEN on master before the slice-aliasing work above, went RED on
+Interpreter: `NativeArray.slice: end > length`, thrown from the last line of
+`promoteSliceArrayCell`. Root cause: the fixture's `encode(int[][] values)`
+grows a `ubyte[] bytes` local via repeated `~=` inside helper functions, and
+separately does `foreach (row; values) { foreach (value; row) ... }`, whose
+inner loop DMD lowers to a fresh `auto __r16 = row[];` on every OUTER
+iteration. Each such re-declaration re-enters `promoteSliceArrayCell`, whose
+`alias_.lower + length` (bounds computed against the CURRENT `row`) could
+exceed `alias_.source`'s (`row`'s) cell length -- either because the source
+had grown past its cell since the cell was promoted, or, as diagnosed here
+with a temporary debug print, because `row` is the SAME `VarDeclaration`
+reused every outer-loop pass, and `promoteArrayCell`'s own idempotent "already
+has a cell, no-op" guard left `row`'s cell stuck at an EARLIER iteration's
+(shorter) length once one had been promoted.
+
+Fix, both in `promoteSliceArrayCell` (`impl.d`): (1) the guard the length
+comparison already called for -- decline the promotion (return without
+setting `arrayCells[variable]`) whenever `alias_.lower + length >
+cell.length`, instead of handing that range to `NativeArray.slice`, which
+throws. (2) Discovered only by testing (1) in isolation, which turned the
+`end > length` throw into a DIFFERENT crash, `NativeArray.element: index out
+of range`: `promoteSliceArrayCell` must also unconditionally
+`arrayCells.remove(variable)` at entry, before the guard. Without it, a
+declined promotion on a LATER binding of the same loop-reused `variable`
+(e.g. `__r16` on the second outer-loop pass) left an EARLIER binding's
+still-present, now-too-short cell in `arrayCells[variable]`, which a later
+index read (`runIndexExpression`'s `arrayCells`-consulting arm) then indexed
+out of range instead of falling through to the boxed `locals` value. Neither
+fix touches `NativeArray.slice` or `promoteArrayCell` itself: a declined or
+invalidated promotion leaves `variable` on the pre-existing boxed `locals` +
+`writeThroughSliceAlias` aliasing path, exactly as it worked before this
+promotion existed.
+
+Confirmed red before the fix (`end > length`) and green after on the exact
+regressed test, and confirmed slice 3's own fixture
+(`dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice`) still
+green (its full-slice case has `lower == 0, length == cell.length` and still
+promotes). Focused runs, all green: `bin/ut -s ut.backends.runner.ct.cerealed`
+(164 run, 0 failed, 1/1 failing as expected); `bin/ut -s
+ut.backends.runner.ct.arrays` (322 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.expressions` (361 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full
+`bin/ut --random` was left to the orchestrator per the usual long-suite
+handoff.
+
+Progress 2026-07-14 (array-native storage's `ref`-element-alias gap: a write
+through `foreach (ref e; a) e = ...;` now also authors the shared
+`arrayCells` block): the four slices above closed direct-write, write-
+through-pointer, and slice-aliasing paths, but left one write path
+untouched: dmd lowers `foreach (ref e; a)` to a `ref` local bound to an
+element of a (possibly slice-lowered) array temporary, which the
+interpreter already models via `arrayElementAliases`/
+`writeThroughArrayElementAlias` (`impl.d`) -- called from `writeLocation`'s
+plain-`VarExp` arm whenever the written variable (`e`) is itself an
+`ArrayElementAlias`. That function refreshed the alias source's `locals`
+mirror and, when the source was itself slice-aliased, `sliceAliases`, but
+never consulted `arrayCells` at all, so a write through `e` never reached a
+cell an earlier-taken pointer's deref-read (`runPointerExpression`) actually
+consults. New fixture (pre-approved):
+`pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
+convention) -- `int[] a = [one(), two()]; int* p = &a[0]; foreach (ref e; a)
+e = e + ninetyNine(); assert(*p == 1 + 99);`, every value seeded from a
+runtime function call so DMD cannot fold it. Confirmed red on Interpreter
+before any production change (`1 != 100`: `p`'s cell, promoted at
+address-of time, never saw the loop's writes, which only ever updated
+`locals`) and green on SystemLinker (real aliased memory); green on both
+after.
+
+Fix: one production change in `impl.d`. `writeThroughArrayElementAlias` now
+also calls `writeThroughArrayCell(alias_.source, alias_.index, value)` --
+the same helper `writeIndexLocation`, `runIndexAssignExpression`'s plain-
+`VarExp` arm, and `writeThroughArrayPointer` already call -- right after its
+existing `locals`/`writeThroughSliceAlias` updates, keyed by the same
+`alias_.source` (the array-typed variable `e`'s `ref` initializer indexed
+into, e.g. the foreach lowering's own slice temporary) those existing
+writes already use. `writeThroughArrayCell` is already a no-op when
+`alias_.source` never had a cell promoted (a non-native-scalar-element or
+static array, a struct-field-rooted alias, etc.), so this is a pure
+addition alongside the existing `locals`/slice-alias writes, not a behavior
+change outside item 7's narrow native-scalar-dynamic-array-element gating.
+No new side table: `arrayElementAliases` and `arrayCells` are both existing
+tables, keyed by the same `VarDeclaration`.
+
+What remains: a `ref` alias to a struct field's array element or a nested-
+index alias (anything not reaching `arrayElementAliases` in the first
+place) is still untouched, matching every other `arrayCells` call site's
+existing plain-`VarExp`-only scope. Array growth (`~=`, `.length = n`) and
+non-full slice construction guards from the prior slices are unaffected.
+Cross-frame pointer aliasing (a callee writing through a caller's `&a[i]`
+pointer, or a callee taking `&a[i]` of a caller's `ref` array parameter) is
+untested by this slice -- the `child.arrayCells = arrayCells.dup` sharing
+already in place is expected to cover it for the same reason it does for
+scalars, but no fixture yet confirms it. No `interpreter.md` §9.10 shim is
+retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (363 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
+`bin/ut -s ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (array-native storage's compound/post-increment gap: a
+write through `(*p)++`/`*p += x` on an array-element pointer now also
+authors the shared `arrayCells` block, both ways): the five slices above
+closed direct-write, write-through-pointer (`*p = x`), slice-aliasing, and
+`foreach (ref e; a)` writes, but a compound or post/pre-increment write
+through an array-element pointer took a wholly different code path that
+never touched `arrayCells` at all, on EITHER side. `(*p)++`,
+`runAddAssignExpression`'s `+=`, and the `core.internal.atomic` load/store/
+exchange/fetchAdd/fetchSub hooks all read the pointer's current target via
+`pointerTargetValue` and write the result back via `writePointerTarget`
+(`impl.d`) -- both distinct from `writeLocation`'s own `*p = x` assignment
+arm, which already called `writeThroughArrayPointer`. `pointerTargetValue`
+fell straight to `pointer.pointerTarget` (the boxed snapshot taken at
+address-of time) for any non-local, non-native pointer, never checking
+`arrayCells` the way `runPointerExpression`'s deref-read arm already did;
+`writePointerTarget`'s equivalent fallback, `writeLocation(expression,
+pointer.withPointerTarget(value))` (`expression` there being the pointer
+variable's OWN `VarExp`, e.g. `p`, not `*p`), only rewrote `p`'s own boxed
+local value with a new embedded target -- never `a`'s `locals` mirror or
+its `arrayCells` entry.
+
+New fixture (pre-approved):
+`pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+`SystemLinker` only (omitted elsewhere per the omit-don't-pin convention) --
+`int[] a = [one(), two()]; int* p = &a[0]; (*p)++; assert(a[0] == 2 && *p ==
+2);`, every value seeded from a runtime function call so DMD cannot fold it.
+Confirmed red on Interpreter before any production change (`assert(a[0] ==
+2 && (*p == 2))` failed: neither side ever moved off 1, since the increment
+only ever rewrote `p`'s own boxed value, not `a`'s storage or its cell) and
+green on SystemLinker (real aliased memory); green on both after.
+
+Fix, two production changes in `impl.d`, both reusing the existing
+`arrayCells`/`arrayPointerVariable`/`writeThroughArrayPointer` machinery --
+no new side table. (1) A new `arrayPointerCellValue(pointer, out value)`
+helper extracted from `runPointerExpression`'s array-pointer read arm
+(behaviour unchanged there, now calling the shared helper); `
+pointerTargetValue` calls it before falling back to `pointer.pointerTarget`,
+so the read side of a compound/increment/atomic op sees the same
+cell-authoritative bytes a plain `*p` deref already did. (2)
+`writePointerTarget`'s array-pointer fallback now calls
+`writeThroughArrayPointer(pointer, value)` first (returning immediately on
+success), placed right after the existing native/local-pointer checks and
+before the `AddrExp`/`CastExp`/boxed-rewrite fallback -- the same placement
+`writeLocation`'s own `*p = x` arm already uses. `writeThroughArrayPointer`
+already refreshes both `locals` and, when promoted, `arrayCells`, so this
+closes the write side the same way the four prior slices did for their own
+call sites; it is a no-op (returns `false`, unchanged behaviour) for every
+pointer `arrayPointerVariable` does not resolve (a `LocalPointer`, a native
+pointer, or a `&s.field` snapshot), so nothing outside item 7's narrow
+native-scalar-dynamic-array-element gating changes.
+
+Verified this is not a fixture-shaped patch: manually extended (in a
+scratch, uncommitted edit, reverted before this commit) to `*p += ninetyNine
+();` (`runAddAssignExpression`'s compound-assignment path, a different call
+site than post-increment but funnelled through the same two functions) --
+`assert(a[0] == 100 && *p == 100);` passed on Interpreter with no further
+production change. The `core.internal.atomic` load/store/exchange/fetchAdd/
+fetchSub hooks (`runAtomicHookCall`) funnel through the identical
+`readPointerTarget`/`writePointerTarget` pair and are expected to be fixed
+for the same reason, but have no fixture confirming it.
+
+What remains: a compound/increment write through a pointer to a struct
+field's array element, or one derived from a nested `IndexExp` (any pointer
+`arrayPointerVariable` does not resolve to a plain array-local variable),
+is untouched, matching every other `arrayCells` call site's existing
+plain-variable-only scope. Cross-frame array-pointer aliasing (item 7's
+"Migration order" bullet: a callee writing through a caller's `&a[i]`, or a
+callee taking `&a[i]` of a caller's `ref` array parameter) remains
+untested by any slice so far -- the `child.arrayCells = arrayCells.dup`
+sharing already in place is expected to cover it for the same reason it
+does for scalars, but still no fixture confirms it; it is the next
+candidate to try. Array growth (`~=`, `.length = n`) and non-full slice
+construction guards from the prior slices are untouched by THIS slice's own
+change (correction, 2026-07-14 review fixes below: "unaffected" here
+understated the actual risk -- once a slice or `&a[i]` had promoted a cell,
+`~=` growing the same variable left that cell stranded at its old length,
+a real stale-read/throw bug fixed only later, as finding 3 of that review).
+No `interpreter.md` §9.10 shim is retired by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (365 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
+Progress 2026-07-14 (cross-frame array-pointer aliasing: a callee taking
+`&a[i]` of a caller's `ref` array parameter now refreshes the caller's own
+`arrayCells` entry, closing the last untested item-7 candidate the prior
+slice flagged): two candidates were tried, in order.
+
+Candidate (a) -- a callee writes through an ordinary BY-VALUE `int*`
+parameter into the caller's array element, the caller reading back both
+through its own still-live pointer and directly:
+`void put(int* p, int v) { *p = v; } ... int[] a = [one(), two()]; int* p =
+&a[0]; put(p, ninetyNine()); assert(*p == 99 && a[0] == 99);`. Tried first
+and found GREEN on Interpreter already -- a genuine characterization, not a
+gap. Reasoning, confirmed by re-reading the call machinery rather than
+assumed: `arrayPointerVariable(pointer)` resolves `p`'s pointer to the SAME
+`VarDeclaration` (`a`) in every frame (the value carries the allocation id,
+not a re-derived AST lookup); `child.arrayCells = arrayCells.dup` shares
+that entry's underlying `NativeArray`/`NativeBlock` bytes by reference, so
+the callee's `writeThroughArrayPointer` write lands in memory the caller's
+own cell already aliases, before any writeback ever runs. `a[0]`'s direct
+read (`runIndexExpression`) also turned out to prefer a promoted `arrayCells`
+entry over the boxed `locals` mirror once one exists (found while
+investigating this slice -- the same cell-priority discipline
+`readCelledLocal` already documented for scalars, previously unnoticed for
+plain array-index reads), so even a lagging boxed-`locals` writeback
+(`writeBackArrayPointerTargets` copies `child.locals[variable]` back
+unconditionally for a dynamic array, unlike `writeBackLocalPointerTargets`'s
+explicit `scalarCells` skip) is harmless here: both `*p` and `a[0]` read the
+same shared, already-current cell bytes regardless.
+
+Candidate (b) -- a callee takes `&a[i]` of a caller's array passed by `ref`
+and writes through it: `void bump(ref int[] a) { int* q = &a[0]; *q =
+ninetyNine(); } ... int[] a = [one(), two()]; int* p = &a[0]; bump(a);
+assert(*p == 99 && a[0] == 99);`. This one is genuinely RED on Interpreter.
+Root cause, isolated by splitting the assert and by testing a plain `a[0] =
+ninetyNine();` ref-parameter write with no address ever taken (green) versus
+the same write with the caller having taken `&a[0]` first (red on the
+DIRECT `a[0]` read alone, "1 != 99", before `*p` was even consulted): a
+`ref int[]` parameter is its own, distinct `VarDeclaration` from the
+caller's array, so `&a[0]` inside `bump` promotes a brand-new, unrelated
+`arrayCells` entry for the PARAMETER, never touching the caller's own
+already-promoted cell. `writeBackRefArguments` -- the ONLY call site that
+funnels a `ref` parameter's final value back to the caller -- routes a
+plain dynamic-array target through `writeLocation`'s plain-`VarExp` arm,
+i.e. `writeCelledLocal`, which (until this slice) refreshed a promoted
+`scalarCells` entry but had no equivalent branch for `arrayCells` at all: it
+correctly updated the boxed `locals` mirror to the callee's final array
+value, but left the caller's OWN `arrayCells` entry holding stale bytes --
+exactly the entry both `*p`'s deref-read and (per the candidate-(a)
+finding above) `a[0]`'s own direct read now prefer over `locals`. Confirmed
+red on Interpreter before any production change and green on SystemLinker
+(`ref` genuinely aliases the caller's storage); green on both after.
+
+New fixture (pre-approved):
+`pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer`
+in `tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+`SystemLinker` only (omitted elsewhere per the omit-don't-pin convention).
+
+Fix, one production change in `impl.d`: `writeCelledLocal` gained an
+`arrayCells` branch alongside its existing `scalarCells` one, same
+cell-then-mirror pattern. When `variable in arrayCells` and the incoming
+value's length matches the cell's length -- the in-place-mutation case this
+bug exercises -- every element's bytes are rewritten into the cell from the
+incoming array value, exactly as `promoteArrayCell` seeds a fresh cell. A
+length MISMATCH (a genuine rebind to differently-sized storage, which a
+native cell cannot represent) instead drops the stale cell
+(`arrayCells.remove(variable)`) so later reads fall back to boxed `locals`,
+mirroring `promoteSliceArrayCell`'s existing decline-rather-than-corrupt
+guard for a drifted length. No new side table; `writeCelledLocal` is the
+same helper `writeLocation`'s `VarExp` arm already called for every direct
+variable write, scalar or not, so nothing outside a variable that already
+has a promoted `arrayCells`/`scalarCells` entry changes behaviour.
+
+What remains: the same narrow scope as every other `arrayCells` call site --
+only a plain array-typed local or `ref` parameter reached via a bare
+`VarExp`; a struct-field-rooted or nested-index array target is untouched.
+The length-mismatch drop path (a `ref` parameter wholesale-reassigned to a
+different-length array while the caller's original had a promoted cell) has
+no dedicated fixture of its own; only the same-length in-place path this
+slice's fixture exercises is confirmed. No `interpreter.md` §9.10 shim is
+retired by this slice. This closes the last cross-frame array-pointer
+candidate the prior slice's "What remains" flagged as untested.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (367 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (chained/nested slice coherence: array-cell coherence
+is saturated for these cases, no gap found): the prior slices closed direct-
+write, write-through-pointer, slice-aliasing (full slice only), `foreach
+(ref)`, compound/atomic, and cross-frame `ref`-array writeback. This slice
+tried the deeper chained/nested slice shapes item 7's migration order still
+listed as untested: (a) a pointer taken into a SLICE, source write visible
+through it (`int* p = &s[1]` where `s = a[]`); (b) sub-slice (non-zero lower
+bound) reverse propagation (`s = a[1 .. 3]`, write to `a[2]`, read `s[1]`);
+(c) slice-of-a-slice (chained, `t = s[1 .. 3]` where `s = a[1 .. 4]`),
+reverse propagation through TWO aliasing hops to the root; (d) two
+independent slices of the same array observing each other's writes THROUGH
+one of the slices, not the root (`s[0] = x; assert(u[0] == x);` where both
+`s` and `u` are `a[]`). All four were probed as scratch fixtures (built and
+run, not committed) and all four came back GREEN on Interpreter (and
+SystemLinker) with zero production changes -- no genuine red found.
+
+Reasoning why, confirmed by re-reading rather than assumed: `recordSliceAlias`
+already resolves every slice-of-a-slice to its ROOT source with a combined
+lower bound at record time (`if (auto alias_ = source in sliceAliases)
+sliceAliases[variable] = SliceAlias(alias_.source, alias_.lower + lower)`),
+so a `sliceAliases` entry never nests -- (c)'s `t` points directly at `a`
+with the correctly combined offset, and `promoteSliceArrayCell(t)` slices
+the SAME root cell `promoteSliceArrayCell(s)` already sliced, not a view of
+`s`'s own view. `arrayPointer`'s `&s[1]` (case (a)) resolves through the
+same one-hop `variable in sliceAliases` lookup and promotes/reads the root's
+cell using the boxed model's own `arrayAllocationOffset` bookkeeping for the
+index math, which already tracked slice offsets before any of this native
+work existed. Case (d) reduces to `NativeArray.slice`'s own documented
+contract -- a sub-range view over the SAME underlying bytes, not a copy --
+so a write through `s`'s cell view is a write to the identical bytes `u`'s
+cell view (of the same root) reads. No new call site needed to consult
+`arrayCells` for any of the four shapes; every one already routes through
+existing cell-priority read/write arms keyed by the root-resolved variable.
+
+Per the task's own fallback (do not fabricate a failure when saturated),
+kept case (a) as a genuine characterization fixture with NO production
+change: `pointer.
+arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+`SystemLinker` only (omitted elsewhere per the omit-don't-pin convention) --
+`int[] a = [one(), two(), three()]; int[] s = a[]; int* p = &s[1]; a[1] =
+ninetyNine(); assert(*p == 99);`, every value seeded from a runtime function
+call so DMD cannot fold it. Green on Interpreter and SystemLinker with no
+production change, characterizing rather than exposing a gap.
+
+What remains: array growth (`~=`, `.length = n`) on a chained/nested slice
+or its root, and a struct-field-rooted slice's own chaining, are still
+untouched, matching every prior slice's own scope notes -- unchanged by
+this slice, which made no production changes at all. No `interpreter.md`
+§9.10 shim is retired by this slice.
+
+Focused runs, all green: the new characterization fixture (green on
+Interpreter and SystemLinker, no production change); `bin/ut -s
+ut.backends.runner.ct.expressions` (369 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
+Progress 2026-07-14 (struct phase starts: scalar-field native cell, reverse
+propagation through `&s.field`): item 7's "Migration order" bullet moves to
+its second named phase -- "Structs second, reusing the same block/offset
+machinery" -- now that the array phase above is saturated. This is the
+FIRST struct-phase slice; it closes exactly one gap and leaves most struct
+cases boxed, precisely as the array phase's own first slice did for `&a[i]`.
+
+Confirmed red first: `struct S { int x; int y; } int f() { S s =
+S(one(), two()); int* p = &s.x; s.x = ninetyNine(); return *p; }` (all three
+values seeded from runtime function calls) returned `1` on the Interpreter
+-- `*p` still read the boxed snapshot `&s.x` took at address-of time, not
+`s`'s later direct write -- while SystemLinker's real aliasing gave `99`.
+Committed as `pointer.
+structFieldWrittenDirectlyIsVisibleThroughEarlierPointer` in `tests/ut/
+backends/runner/ct/expressions.d`, scoped to `Interpreter`/`SystemLinker`
+only.
+
+Production change, `source/quickbite/backends/interpreter/impl.d`: a new
+`NativeStruct[VarDeclaration] structCells` map, parallel to `arrayCells`,
+plus a reverse lookup (`structFieldPointerVariables`/
+`structFieldPointerFieldIndices`, `VarDeclaration`/`size_t` keyed by a
+`&s.field` pointer's existing `fieldSnapshotAllocationId`) mirroring
+`arrayAllocationVariables`. `addressOfExpression`'s `DotVarExp` arm --
+exactly where `&s.field`'s read-only snapshot has always been built -- now
+also calls the new `promoteStructFieldCell`: for a scalar field
+(`native_scalar.isNativeScalarType`) of a plain (non-dataseg) struct
+LOCAL resolved from a bare `VarExp` receiver, it promotes a `structCells`
+entry (`promoteStructCell`, seeded from the struct's current boxed field
+values via a new `writeStructCellScalarFields` helper that walks
+`NativeStruct.fieldCount`/`fieldDeclaration`/`field` and skips non-scalar
+fields) and records the pointer's id in the reverse lookup. Three read/write
+call sites now consult that cell ahead of the boxed fallback, mirroring the
+array phase's own three: `writeCelledLocal` (the direct-field-write path --
+`s.x = v` rewrites the WHOLE struct via `writeLocation`'s `DotVarExp` arm,
+which recurses into the `VarExp` arm this helper already owns, so it now
+also refreshes every scalar field's bytes in the cell, or drops the cell if
+the new boxed value is no longer a struct at all) and a new
+`structFieldPointerCellValue` helper (the counterpart of
+`arrayPointerCellValue`), consulted by both `runPointerExpression` (`*p` as
+an rvalue) and `pointerTargetValue` (compound-assignment/atomic/post-
+increment reads, for parity with the array cell even though no fixture in
+this slice exercises that path). `child.structCells = structCells.dup;`
+added at the same 7 child-frame-spawn sites that already dup
+`scalarCells`/`arrayCells`, so a nested call sees the promoted cell too
+(sharing its bytes by reference, exactly as `scalarCells`/`arrayCells` do --
+no pop-back merge is needed or added, matching those two). Writing THROUGH
+the pointer (`*p = v`) is deliberately left untouched: the id is still
+recorded in `fieldSnapshotAllocationIds` exactly as before, so
+`writeLocation`'s `PtrExp` arm continues to refuse it with "Unsupported
+interpreter assignment target." -- the existing pinned
+`pointer.addressOfStructFieldWriteThroughUpdatesField.Interpreter`
+fixture is unchanged and still green.
+
+What this slice does NOT do, to be precise about item 7's struct-phase
+state: only an address-taken SCALAR field of a plain, non-dataseg struct
+LOCAL gets a cell. Nested-struct fields, array fields, class fields, union
+fields, and any struct reached through anything other than a bare local
+variable (a class field, an array element, a `new`-allocated struct, a
+dataseg/`__gshared` struct) are all untouched and stay on the pre-existing
+boxed `locals` path. Writing THROUGH the pointer (`*p = v`) still throws
+rather than aliasing, as it did before this slice -- only the
+direct-write/reverse-read gap this slice's fixture named is closed. Cross-
+frame struct-field-pointer dereference (a pointer into a caller's struct,
+passed by argument into and dereferenced inside a callee) is unexercised:
+`structCells` itself is duped into child frames, but the reverse-lookup
+maps are not, matching the task's own bounded instruction; no fixture in
+this slice needs it. No `interpreter.md` §9.10 shim is retired by this
+slice.
+
+Focused runs, all green: the new fixture (green on Interpreter and
+SystemLinker); `bin/ut -s ut.backends.runner.ct.expressions` (371 run, 0
+failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.structs`
+(281 run, 0 failed); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0
+failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (struct field write-through-pointer: `*p = v` through
+`&s.field` now aliases via the native cell): the previous slice's own "What
+this slice does NOT do" named the gap directly -- writing THROUGH a
+`&s.field` pointer still threw "Unsupported interpreter assignment target."
+even after that slice gave the receiver a `structCells` entry. This slice
+closes exactly that gap for the same narrow, already-cell-supported case.
+
+The existing fixture `pointer.addressOfStructFieldWriteThroughUpdatesField`
+(`tests/ut/backends/runner/ct/expressions.d`) turned out to already BE that
+exact case: `struct Holder { int value; }`, `auto a = Holder(seed)` (a
+plain, non-dataseg struct LOCAL with one scalar field), `int* p =
+&a.value;` (address-of a scalar field via a bare `VarExp` receiver) -- so
+this was a promotion, not a new fixture. The two backend-split blocks (a
+`SystemLinker`-only real-value assertion, and an `Interpreter`-only
+`shouldThrowWithMessage("Unsupported interpreter assignment target.")`
+pinning the refusal) were merged into a single `AliasSeq!(Interpreter,
+SystemLinker)` block asserting the same `a.value == 5` both backends now
+agree on, matching the sibling
+`structFieldWrittenDirectlyIsVisibleThroughEarlierPointer` fixture's shape.
+Confirmed RED first: with only the test change applied (production code
+unchanged), `bin/ut -s ut.backends.runner.ct.expressions` reported exactly
+one new failure, `pointer.addressOfStructFieldWriteThroughUpdatesField.
+Interpreter` (still throwing, now wrongly so per the updated expectation).
+
+Production change, `source/quickbite/backends/interpreter/impl.d`: a new
+`writeThroughStructFieldPointer` helper, the write-through-pointer
+counterpart of the read-side `structFieldPointerCellValue` (and the
+struct-field analogue of `writeThroughArrayPointer`/`writeThroughArrayCell`
+for array elements). Given the pointer value, it looks the allocation id up
+in `structFieldPointerVariables`/`structFieldPointerFieldIndices` (the
+reverse lookup the previous slice populated) to find the receiver's
+`structCells` entry and field index; if any of that lookup misses, or the
+receiver's current boxed `locals` value is no longer a struct, it returns
+`false` and does nothing, leaving every other case exactly as refused as
+before. On a hit, it writes the value's bytes straight into the cell's
+field slice (`NativeStruct.field(index)` + `native_scalar.writeScalar`,
+sized by the field's own declared type) and re-derives the boxed `locals`
+mirror as `current.withStructField(index, value)`, mirroring
+`writeCelledLocal`'s cell-then-mirror discipline. `writeLocation`'s
+`PtrExp` arm now calls this helper right after `writeThroughArrayPointer`
+and before the existing `fieldSnapshotAllocationIds` refusal check, so only
+a field pointer WITHOUT a promoted cell still reaches that throw. No new
+side-table, no name-based shim: the write goes through the same
+block/offset machinery the previous slice already stood up.
+
+What remains: the refusal ("Unsupported interpreter assignment target.")
+still stands for every struct-field pointer without a `structCells` entry
+-- a nested-struct field, an array field, a class field, a union field, or
+any struct reached through anything other than a bare local variable (a
+class field, an array element, a `new`-allocated struct, a
+dataseg/`__gshared` struct) -- exactly item 7's struct-phase scope as
+stated by the previous slice. Cross-frame struct-field-pointer dereference
+(a pointer into a caller's struct, write-through-pointer from inside a
+callee) remains unexercised: the reverse-lookup maps are still not duped
+into child frames, matching the previous slice's own bounded instruction;
+no fixture in this slice needs it. No `interpreter.md` §9.10 shim is
+retired by this slice.
+
+Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (371
+run, 0 failed, 5/5 failing as expected); `bin/ut -s
+ut.backends.runner.ct.structs` (281 run, 0 failed); `bin/ut -s
+ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (review fixes: cell invalidation on fresh binding and
+array rebind): a Fable code review of the array/struct cell slices above
+found two blockers, both stale-cell correctness bugs distinct from anything
+those slices' own fixtures exercised.
+
+Finding 1: the 2026-07-13 scalar slice established that a FRESH declaration/
+parameter binding of a `VarDeclaration` must drop any stale cell inherited
+for it -- recursion reuses the same AST `VarDeclaration` at every call
+depth, a loop body re-executes the same `DeclarationExp` every iteration,
+and `child.scalarCells/arrayCells/structCells = ....dup` shares a promoted
+cell's underlying bytes into every child frame by reference -- but that
+rule (`scalarCells.remove(variable)` at the three fresh-binding sites:
+`runDeclarationExpression`, `bindFunctionParameters`, and
+`bindLazyFunctionParameter`) was applied to `scalarCells` only, never
+extended to the `arrayCells`/`structCells` maps the array and struct phases
+added afterward. Three new fixtures exposed this for real: (1a)
+`dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding`
+(`tests/ut/backends/runner/ct/arrays.d`) -- a nested `foreach` over an
+array-of-arrays, where dmd lowers the inner loop's slice temporary to a
+fresh `auto __r = row[];` every outer iteration and `promoteSliceArrayCell`
+promotes `row` itself eagerly (no address-of needed at all), so the second
+outer iteration's inner sum read back the first iteration's stale cell
+bytes -- confirmed red on Interpreter (`4 != 6`, the reviewer's own
+predicted wrong answer) and green on SystemLinker; (1b)
+`pointer.recursiveArrayDeclarationDropsStaleArrayCell`
+(`tests/ut/backends/runner/ct/expressions.d`) -- a recursive function
+re-declaring `int[] a` and taking `&a[0]` at each depth, confirmed red
+(`1001 != 1100`); (1c)
+`pointer.recursiveStructDeclarationDropsStaleStructCell` (same file) -- the
+struct sibling, a recursive function re-declaring `S s` and taking `&s.x` at
+each depth, confirmed red (`1001 != 1100`). Fixture 1c required one design
+correction found only by testing: an initial version computed `s`'s
+per-depth value with a ternary directly in the struct declaration
+(`S s = depth == 0 ? S(a) : S(b);`) and came back GREEN with no production
+change -- not because the bug was absent, but because dmd lowers a
+struct-typed ternary initializer to a default-init followed by a plain
+assignment (`s = ...;`), which routes through the EXISTING
+`writeLocation`/`writeCelledLocal` path and happens to refresh the stale
+cell as a side effect, masking exactly the gap under test. Moving the
+ternary into a plain scalar-returning helper (`valueForDepth`) so the struct
+declaration itself is a straightforward call-initializer restored the red
+result. Fix: `arrayCells.remove(variable)` added alongside the existing
+`scalarCells.remove(variable)` at all three fresh-binding sites; for
+`structCells`, a new `dropStructCell(variable)` helper (used at the same
+three sites in place of a bare `structCells.remove`) additionally walks
+`structFieldPointerVariables`/`structFieldPointerFieldIndices` (the `&s.
+field` reverse lookup) and removes every entry that pointed at `variable`,
+so a stale allocation id from a dropped cell cannot later resolve into
+whatever cell a subsequent, unrelated binding of the same `VarDeclaration`
+promotes next. All three fixtures confirmed green after, with no other
+production change.
+
+Finding 2: `writeCelledLocal`'s `arrayCells` branch treated ANY same-length
+whole-array value as an in-place byte mutation into the cell's existing
+storage -- correct for the ONE caller it was built for
+(`writeBackRefArguments`'s cross-frame `ref int[]` parameter writeback,
+where the callee's final value genuinely represents the SAME storage,
+mutated through the alias), but `writeLocation`'s plain-`VarExp` arm routes
+EVERY direct-variable write through the same helper, including a plain
+source-level `s = b;`, which REBINDS `s` to `b`'s storage rather than
+mutating whatever `s` used to alias. When `s` was a slice view sharing its
+cell with a root array `a` (`int[] s = a[];`), the buggy in-place refresh
+wrote `b`'s bytes into `a`'s own block. New fixture (confirmed red):
+`dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell`
+(`tests/ut/backends/runner/ct/arrays.d`) -- `int[] a = [one(), two()]; int[]
+s = a[]; int[] b = [eight(), nine()]; s = b; return a[0];` -- red on
+Interpreter (`8 != 1`: `a[0]` corrupted to `b`'s first element) and green on
+SystemLinker (a real rebind never touches `a`'s storage). Fix:
+`writeCelledLocal` gained an `arrayIsRefWriteback` parameter (default
+`false`); its `arrayCells` branch now only takes the same-length in-place-
+refresh path when that parameter is `true`, and drops the cell
+unconditionally otherwise (no length check -- a rebind is a rebind
+regardless of length). `writeLocation` gained a matching
+`arrayRefWriteback` parameter (default `false`, threaded through its own
+`CastExp` recursion and passed to `writeCelledLocal`), and
+`writeBackRefArguments`'s general write-back call
+(`writeLocation(argument, *value)`, the fallback reached for a bare
+`VarExp` cross-frame `ref` array argument) now passes `true` explicitly;
+every other `writeLocation` call in the codebase keeps the default `false`,
+so a plain assignment's cell handling did not change. Confirmed both the
+new fixture and the existing cross-frame `ref`-array fixture
+(`pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer`)
+are green together after the fix -- the ref-writeback path still refreshes
+in place, and a plain rebind no longer corrupts an aliased source. The
+STRUCT branch of `writeCelledLocal` was not touched: struct assignment
+genuinely copies into the receiver's storage in D, so its existing
+always-refresh-or-drop behaviour was already correct and remains unchanged.
+
+Focused runs, all green: all four new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (375 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (326 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
+Progress 2026-07-14 (review fixes: append and slice-assign cell coherence):
+a second Fable code review of the same array/struct cell slices found two
+more blockers, both in the same "a promoted `arrayCells` cell is
+READ-AUTHORITATIVE over the boxed `locals` mirror" family as the pair fixed
+immediately above, this time on the WRITE side of the two ops that change
+an array's contents wholesale rather than one element at a time.
+
+Finding 3: `runArrayAppendAssignExpression`'s plain-`VarExp` arm (`a ~= x`)
+grew `locals[variable]` (via `withAppendedArrayElement`) and dropped
+`sliceAliases`, but never touched a promoted `arrayCells` entry, which stays
+at its old, pre-append length -- a fixed-size `NativeArray` allocated once,
+at promotion time. A cell can be promoted with NO address-of at all: `int[]
+s = a[];` eagerly promotes `a`'s own cell via `promoteSliceArrayCell`. New
+fixture (pre-approved, confirmed red on Interpreter / green on
+SystemLinker): `dynamicArray.appendRefreshesSlicePromotedStaleCell`
+(`tests/ut/backends/runner/ct/arrays.d`) -- `int[] a = [one()]; int[] s =
+a[]; a ~= two(); return a[1];` -- red (`NativeArray.element: index out of
+range`: the plain read of the newly-appended index went through
+`readIndexExpression`'s cell arm against the stale, length-1 cell instead of
+the grown `locals` mirror). A sibling fixture with an explicit `&a[0]`
+address-of, `pointer.arrayAppendRefreshesStaleCellAfterAddressOf`
+(`tests/ut/backends/runner/ct/expressions.d`) -- `int[] a = [one()]; auto p
+= &a[0]; a ~= two(); a[1] = five(); return a[1];` -- confirmed the same
+failure mode via a different promotion path. Fix: `arrayCells.remove
+(variable)` added to the append arm, alongside the existing `sliceAliases.
+remove(variable)` -- matching D's own "append may reallocate, old pointers
+go stale" semantics (a cell cannot be resized in place; growth may have
+moved the storage even in real D), and the same decline-rather-than-corrupt
+choice `promoteSliceArrayCell`'s own drifted-length guard and
+`writeCelledLocal`'s length-mismatch arm already make. A later read falls
+through to the fresh, correctly-grown `locals` mirror.
+
+Finding 4: `runSliceAssignExpression` (`a[] = x` and `a[i .. j] = x`) wrote
+`locals[variable]` directly from a freshly-built `elements` array but never
+consulted `arrayCells` at all, so a promoted cell (again reachable with no
+address-of, via a slice) kept answering `readIndexExpression`'s cell-arm
+reads with its pre-assignment bytes. New fixture (pre-approved, confirmed
+red / green): `dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell`
+(`arrays.d`) -- `int[] a = [one(), two()]; int[] s = a[]; a[] =
+ninetyNine(); return a[0];` -- master (SystemLinker) `99`; Interpreter
+before any fix did not merely return the reviewer-predicted stale `1`, it
+threw `Expected array.` Writing this fixture surfaced a THIRD, pre-existing
+bug in the same function, not previously covered by any fixture:
+`isBlockSliceAssignment`'s non-`block` branch unconditionally treated the
+assignment as an array-to-array COPY (`value[index - lower]`), but a scalar
+FILL assignment (`a[] = scalar;`, where `rhs`'s type equals the slice's
+ELEMENT type rather than its own array type) evaluates `rhs` to a plain
+scalar `Value`, which is not indexable -- `value[index - lower]` threw
+"Expected array." Confirmed this crash reproduces even with NO cell
+involved at all (a plain `int[] a = [1, 2]; a[] = 99;` with no
+slice/pointer taken), i.e. scalar-element slice fill was never a tested,
+working path before this fix, independent of cell coherence. Fix, both in
+`runSliceAssignExpression`: (1) the elements loop now checks `value.isArray`
+to pick between indexing into a real array-copy RHS and reusing a
+scalar-fill RHS directly at every covered position, alongside the
+pre-existing `block` (nested-array-element fill, e.g. `matrix[] = row;`)
+branch, which is unchanged; (2) after the boxed `locals` write, a new loop
+over exactly the assigned range (`lower .. upper`) calls the existing
+`writeThroughArrayCell(variable, index, elements[index])` helper per index
+-- a no-op when no cell was ever promoted, so this is additive outside item
+7's narrow native-scalar-dynamic-array-element gating. A second fixture,
+`pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell`
+(`expressions.d`) -- `int[] a = [one(), two(), three()]; int* p = &a[0];
+a[0 .. 2] = ninetyNine(); return a[0] + a[1] + a[2];` -- exercises the
+BOUNDED (non-full) form promoted via address-of instead of a slice, and
+confirms `a[2]` (outside the assigned range) is left untouched. What
+remains: `runPointerSliceAssignExpression` and `runFieldSliceAssignExpression`
+share the same `block`-ternary shape and likely have the identical
+scalar-fill-vs-copy bug for a pointer- or struct-field-rooted slice target,
+but neither is exercised by any fixture yet -- untested, not fixed here.
+
+Both findings share a root cause with the one immediately above them in
+this file: the plan's own prior wording calling array growth (`~=`)
+"exactly as before" or "unaffected" (see the correction added in-place a
+few paragraphs up, at the "compound/post-increment gap" entry) undersold
+the real risk once a cell existed to strand -- growth's OWN code path was
+indeed unchanged by those earlier slices, but "unchanged" was not the same
+as "safe" the moment array-cell promotion became reachable with no
+address-of at all (a plain slice). Finding 3 above is the fix that wording
+was missing.
+
+Focused runs, all green: all four new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (379 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1
+failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed). The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.
+
+Progress 2026-07-14 (review fixes: slice-alias, struct compound-write,
+struct-field-alias cell refresh): a third Fable review of the same array/
+struct cell slices found three more blockers (findings 5-7), all still in
+the "a promoted `arrayCells`/`structCells` cell is READ-AUTHORITATIVE over
+the boxed `locals` mirror" family, this time in write paths that reach a
+promoted cell only indirectly -- through a slice-parameter alias, a
+compound assignment through a struct-field pointer, and a `ref`-local
+struct-field alias.
+
+Finding 5: `writeThroughSliceAlias`'s non-`hasFieldIndex` arm refreshed only
+the boxed `locals` mirror for the slice's source variable, never a promoted
+`arrayCells` entry the source might already have. Reachable with no cell of
+`s`'s own at all: a slice-expression parameter (`void bump(int[] s) { s[0]
+= ninetyNine(); }`) is bound via `recordParameterSliceAlias`, which never
+calls `promoteSliceArrayCell`, so `s` itself never gets a cell; but the
+caller's `a` (the slice's source, aliased via `sliceAliases`) can already
+have one from an earlier `&a[0]`. New fixture (pre-approved, confirmed red
+on Interpreter / green on SystemLinker):
+`pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf`
+(`tests/ut/backends/runner/ct/expressions.d`) -- `int[] a = [one(), two()];
+auto p = &a[0]; bump(a[]); return a[0];` -- SystemLinker `99`; Interpreter
+returned the stale `1` (`readIndexExpression`'s cell arm answered from the
+untouched cell). Fix: `writeThroughSliceAlias` now also calls
+`writeThroughArrayCell(alias_.source, alias_.lower + index, value)` after
+the `locals` write, exactly the treatment `writeThroughArrayElementAlias`
+already got in the prior review round -- a no-op when no cell was ever
+promoted for `alias_.source`.
+
+Finding 6: `writePointerTarget` (the compound-assignment/atomic/post-
+increment write-back path) called `writeThroughArrayPointer` but not
+`writeThroughStructFieldPointer`, so `(*p)++`/`*p += x`/atomics through a
+struct-field pointer read the promoted `structCells` entry (via
+`pointerTargetValue`/`structFieldPointerCellValue`, added earlier this
+session) but wrote only the pointer's own boxed snapshot back through the
+generic `writeLocation(expression, pointer.withPointerTarget(value))`
+fallback at the bottom. New fixture (confirmed red/green):
+`pointer.structFieldPointerCompoundIncrementWritesThroughCell`
+(`expressions.d`) -- `S s = S(one(), two()); auto p = &s.x; (*p)++; return
+*p;` -- SystemLinker `2`; Interpreter returned the stale `1` (the increment
+never reached the cell, so the next `*p` re-read it unchanged). Fix: call
+`writeThroughStructFieldPointer(pointer, value)` right after
+`writeThroughArrayPointer` in `writePointerTarget`, mirroring
+`writeLocation`'s own `PtrExp` arm, which already calls both in that order.
+
+Finding 7: `writeThroughStructFieldAlias` -- reached only via a `ref` LOCAL
+bound directly to a struct field (`ref int r = s.x;`, recorded by
+`recordStructFieldAlias`; a `ref` PARAMETER bound to `s.x` is not tracked by
+this alias table at all, so the local form is the only reachable case)
+-- refreshed only the boxed `locals` mirror for the receiver, never a
+promoted `structCells` entry. New fixture (confirmed red/green):
+`pointer.structFieldRefLocalWriteThroughRefreshesCellAfterAddressOf`
+(`expressions.d`) -- `S s = S(one(), two()); auto p = &s.x; ref int r =
+s.x; r = ninetyNine(); return *p;` -- SystemLinker `99`; Interpreter
+returned the stale `1` (`*p` read through
+`pointerTargetValue`/`structFieldPointerCellValue`, which is authoritative
+over the boxed mirror `r`'s write had already updated). Fix:
+`writeThroughStructFieldAlias` now also calls `writeScalar` into
+`cell.field(alias_.index)` (typed via
+`cell.fieldDeclaration(alias_.index).type`) when the receiver has a
+`structCells` entry, mirroring `writeThroughArrayCell`'s treatment of the
+array sibling -- a no-op when no cell was ever promoted for the receiver.
+
+All three share the same root cause as every finding in this family: a
+write reachable only through an ALIAS table (slice, array-element, or
+struct-field) must independently remember to refresh whichever native cell
+its ultimate target variable holds, because the read side always checks
+the cell first and never consults the alias tables at all.
+
+Focused runs, all green: all three new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (385 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full `bin/ut
+--random` was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (struct cross-frame pointer coherence): the struct
+starter slice's own scope note named this gap directly -- "cross-frame
+struct-field pointer dereference... is unexercised: `structCells` itself is
+duped into child frames, but the reverse-lookup maps are not". This slice
+closes it for a callee that writes THROUGH a pointer a caller took before
+the call.
+
+Candidate (a) (`struct S{int x;int y;} void put(int* p,int v){ *p=v; } int
+f(){ S s=S(one(),two()); int* p=&s.x; put(p, ninetyNine()); return *p +
+s.x; }`, expecting `198`) was confirmed red first: the Interpreter threw
+`Unsupported interpreter assignment target.` from inside `put`'s `*p = v;`
+-- `writeThroughStructFieldPointer` looked `pointer.pointerAllocation` up
+in ITS OWN frame's `structFieldPointerVariables`/
+`structFieldPointerFieldIndices`, which the caller's `&s.x` had populated
+but no child-frame spawn site ever duped (unlike `arrayAllocationVariables`,
+the array phase's own reverse lookup, which every spawn site already
+dupes), so the lookup missed and the write fell through to the
+`fieldSnapshotAllocationIds` refusal check (which WAS duped) instead of
+aliasing. SystemLinker returned `198` as expected (real aliasing). Committed
+as `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller` in
+`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`Interpreter`/`SystemLinker` only.
+
+Merely duping the reverse-lookup maps turned out not to be enough on its
+own, for a reason worth recording precisely: `put` is an ordinary
+(non-nested, non-`ref`) free function, so its child `Walker`'s `locals`
+starts as `datasegLocals` (dataseg variables only) -- `s`, a plain local of
+the CALLER `f`, is never present in the callee's own `locals` at all, only
+`p`/`v` (its actual parameters) are. `writeThroughStructFieldPointer`'s
+existing `current = *variable in locals` guard (needed to re-derive the
+boxed mirror in the SAME-frame case) would therefore still see `current is
+null` and bail, even with the reverse-lookup dupe alone. Worse, unlike an
+array element read (`a[i]`, which `runIndexExpression` already checks
+`arrayCells` for FIRST), a direct struct-field read (`s.x`, via
+`runDotVarExpression` -> generic `VarExp` handling) never consults
+`structCells` at all -- only a `*pointer` deref does (`structCells` was
+deliberately scoped that way from the struct phase's first slice onward).
+So even a cell write with perfectly shared bytes would leave a later direct
+`s.x` read in the CALLER's own frame seeing the pre-call value once `put`
+returns, unless something explicitly re-syncs the caller's boxed
+`locals[s]` mirror after the call.
+
+Production changes, `source/quickbite/backends/interpreter/impl.d`:
+1. `structFieldPointerVariables`/`structFieldPointerFieldIndices` are now
+   duped into a child `Walker` at all 7 child-frame spawn sites (the same
+   ones that already dupe `structCells`), mirroring `arrayAllocationVariables`.
+2. A new `bool[VarDeclaration] structFieldPointerWritebacks` map (the
+   struct counterpart of `arrayPointerWritebacks`), duped at the same 7
+   sites: `writeThroughStructFieldPointer` now flags the receiver
+   `variable` in it after every successful cell write, whether or not
+   `variable` was present in the writing frame's own `locals`.
+3. `writeThroughStructFieldPointer` no longer requires `current` (`variable
+   in locals`) to be non-null to proceed -- only to decline (as before) when
+   `current` IS present but is no longer a struct (a genuine rebind). When
+   `current` is present it still refreshes `locals[*variable]` immediately,
+   exactly as before (needed for a same-frame later direct read); when
+   absent (the cross-frame case), the cell write alone is applied and the
+   boxed-mirror refresh is deferred.
+4. A new `writeBackStructFieldPointerTargets(ref Walker child)`, the struct
+   counterpart of `writeBackArrayPointerTargets`, called from
+   `writeBackFunctionState` and `writeBackMemberFunctionState` (the two
+   merge points every ordinary/member call funnels through) right after
+   `writeBackArrayPointerTargets`. For each `variable` in
+   `child.structFieldPointerVariables` flagged in
+   `child.structFieldPointerWritebacks`, it re-derives the OWNING frame's
+   (here, the caller's) `locals[variable]` from the shared, already-updated
+   `structCells[variable]` cell via a new `structValueFromCell(current,
+   cell)` helper -- the read-side mirror of `writeStructCellScalarFields`,
+   overlaying every `native_scalar.isNativeScalarType` field's cell bytes
+   onto the variable's existing boxed value and leaving any non-scalar
+   field exactly as it was. `structFieldPointerVariables`/
+   `structFieldPointerFieldIndices`/`structFieldPointerWritebacks` are also
+   merged back (plain assignment, not `.dup`) alongside
+   `arrayAllocationVariables`'s own merge-back, so a NEW cell/pointer the
+   callee itself promoted survives past return, matching that map's
+   existing discipline.
+
+`runDestructor` and the `new`-with-user-ctor child (the 2 of the 7 spawn
+sites that do not fold into `writeBackFunctionState`/
+`writeBackMemberFunctionState`, and where `arrayAllocationVariables`
+itself is either not duped or not merged back through
+`writeBackArrayPointerTargets` either) get the same DUPE-IN for
+consistency with `structCells`'s own duping, but no merge-back wiring --
+matching the array reverse-lookup's own precedent at those two sites
+exactly, not a new asymmetry this slice introduces.
+
+What this slice does NOT do: candidates (b) (`&s.x` taken INSIDE a callee
+on a `ref S` parameter) and (c) (a `ref S` parameter's field written
+directly, `s.x = v`, in the callee) were not exercised as new fixtures --
+both route entirely through the callee's OWN frame at write time (the
+`ref` parameter's address-of/write happen against the callee's own
+`structCells`/`locals`, never the caller's), then rely on the PRE-EXISTING
+`writeBackRefArguments` -> `writeLocation` -> `writeCelledLocal` whole-
+struct writeback (which already refreshes the caller's own `structCells`
+entry, per this track's 2026-07-13 review-round work) to reconcile the
+caller's pointer and direct read once the `ref` argument's final value is
+written back; no cross-frame reverse-lookup gap applies to either. Nested-
+struct fields, array fields, class fields, union fields, and any struct
+reached through anything other than a bare local variable remain exactly
+as scoped by the struct phase's first slice -- unchanged by this slice.
+
+Focused runs, all green: the new fixture (confirmed red on Interpreter /
+green on SystemLinker before the fix, green on both after); `bin/ut -s
+ut.backends.runner.ct.expressions` (387 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0 failed);
+`bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
+ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-14 (whole-struct assignment field-cell coherence):
+checked whether `writeCelledLocal`'s existing struct branch (landed in the
+previous slice above) already keeps a promoted `structCells` entry coherent
+across a whole-struct assignment (`s = S(...)`), as opposed to only a
+single-field write (`s.x = v`). Tried, in order, per the plan's candidates:
+(a) `int* p = &s.x; s = S(eight(), nine()); return *p;` (expect `8`), (b)
+assigning from another struct variable (`a = b;`) with a pointer into `a`
+taken beforehand, and (c) two independent field pointers (`&s.x`, `&s.y`)
+observing one whole-struct assignment. All three were run as fixtures
+against both `Interpreter` and `SystemLinker`: every one was GREEN on both
+backends already, with zero production changes -- characterization only.
+
+Why this is coherent by construction, not luck: `s = S(...)` is a plain
+`VarExp` assignment target, so `runAssignExpression` routes it through
+`writeLocation`'s `VarExp` arm exactly like any other rebind, which calls
+`writeCelledLocal(variable, storageValue(...), false)` unconditionally. That
+helper's struct branch (`if (auto cell = variable in structCells) { if
+(value.isStruct) writeStructCellScalarFields(*cell, value); ... }`) does not
+distinguish a whole-struct assignment from a single-field
+`DotVarExp`-triggered rewrite -- both arrive here as a full boxed struct
+`Value`, and the branch refreshes every `native_scalar.isNativeScalarType`
+field's cell bytes from it either way. So the SAME code path that keeps
+`s.x = v` coherent (closed in the "struct field write-through-pointer"
+slice) already keeps `s = S(...)` coherent for free: there is no separate
+"whole-struct assignment" code path to have missed.
+`structFieldPointerCellValue` (the `*p` deref-read) then reads the freshly-
+written cell bytes regardless
+of which assignment shape produced them. Candidate (b) (assigning from
+another struct variable) and (c) (two independent field pointers) exercise
+no additional machinery beyond (a): `runExpression` on `S(eight(), nine())`
+or the `b` variable's boxed value both simply become the RHS `Value` handed
+to the identical `writeCelledLocal` call, and `writeStructCellScalarFields`
+already loops over every scalar field index, not just one.
+
+Kept only fixture (a),
+`pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer`, scoped to
+`Interpreter`/`SystemLinker`, in
+`tests/ut/backends/runner/ct/expressions.d` -- (b) and (c) were probed
+as temporary fixtures to confirm the "all green" conclusion, observed green
+with 0 failures, then removed rather than kept as duplicative coverage of
+the same already-shared code path. No production change this slice. Focused
+runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (389 run, 0
+failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.structs`
+(281 run, 0 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed); `bin/ut -s ut.backends.evaluator.eval` (71 run, 0 failed).
+
+What remains: nested-struct fields, array fields, class fields, union
+fields, and any struct reached through anything other than a bare local
+variable remain out of `structCells`' scope entirely, unchanged by this
+slice, per the struct phase's original boundary.
+
+Progress 2026-07-14 (final-review fixes: struct-field-alias scalar guard,
+member struct-array-field cell write): a final Fable review of the
+arrayCells/structCells work above raised two BLOCKERs, both fixed here.
+
+Finding 1: `recordStructFieldAlias` records ANY `DotVarExp` initializer
+bound to a `ref` local, including a non-scalar (array/nested-struct) field,
+but `writeThroughStructFieldAlias`'s `structCells` refresh (the "struct
+field write-through-pointer" slice above) called `native_scalar.
+writeScalar` unconditionally, with no scalar guard -- once `&s.x` had
+promoted `s`'s cell, a later `ref int[] r = s.arr; r = [...];` reached the
+same unguarded write and threw ("unsupported native scalar type"). Fix:
+guard the write with `isNativeScalarType(cell.fieldDeclaration(alias_.
+index).type)`, matching `writeStructCellScalarFields`'s own per-field
+guard; a non-scalar aliased field now skips the cell write entirely and
+falls through to the boxed mirror write just above it, unchanged.
+
+Finding 2: once a plain array local has a promoted `arrayCells` entry
+(needing no address-of at all -- `foreach (v; a)` promotes it via
+`promoteSliceArrayCell`), a member-function write to that same array
+reached through a struct field (`Holder(a).bump()`, funnelled through
+`writeThroughThisStructArrayFieldAlias`) updated only the boxed `locals`
+mirror, never the source variable's `arrayCells` entry, so a later
+cell-authoritative index read kept answering with stale bytes. Fix:
+`writeThroughThisStructArrayFieldAlias` now also calls
+`writeThroughArrayCell(*sourceVariable, index, value)` -- the same helper
+every other array-cell write-through call site already uses -- right after
+its existing `locals` write. This runs in the callee's child `Walker`
+frame, whose `arrayCells` was duped from the caller (`child.arrayCells =
+arrayCells.dup`) sharing the same underlying `NativeArray` bytes by
+reference, so the caller's own cell is refreshed with no separate
+write-back needed.
+
+New fixtures (pre-approved, one per finding): `pointer.
+structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell` in `tests/ut/
+backends/runner/ct/expressions.d` and `struct.
+memberFunctionArrayFieldWriteRefreshesSourceArrayCell` in `tests/ut/
+backends/runner/ct/structs.d`, both scoped to `Interpreter`/`SystemLinker`
+only (omit-don't-pin convention), every value seeded from a runtime
+function call so DMD cannot fold it. Both confirmed red on Interpreter
+before any production change (finding 1: throws "unsupported native scalar
+type"; finding 2: `1 != 100`, the stale pre-`bump` value) and green on
+SystemLinker; green on both after.
+
+Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (391
+run, 0 failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.
+structs` (283 run, 0 failed); `bin/ut -s ut.backends.runner.ct.arrays` (330
+run, 0 failed); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0
+failed, 1/1 failing as expected); `bin/ut -s ut.backends.interpreter` (218
+run, 0 failed). The full `bin/ut --random` was left to the orchestrator per
+the usual long-suite handoff.
+
+Progress 2026-07-14 (final-review fixes: binding-aware cell resolution
+across recursion): a final Fable review of the arrayCells/structCells work
+above raised one BLOCKER (finding 3) and one SHOULD-FIX (finding 4), both
+fixed here.
+
+Finding 3 (BLOCKER): `allocationId`/`fieldSnapshotAllocationId` memoize
+their id per `VarDeclaration` and are never removed -- every fresh-binding
+site (`runDeclarationExpression`, `bindFunctionParameters`,
+`bindLazyFunctionParameter`) already drops the CELL (`scalarCells`/
+`arrayCells`/`structCells`, since the review round above) but left the ID
+memo (`arrayAllocations`/`arrayAllocationVariables`,
+`fieldAddressAllocations`) untouched. Recursion reuses the same
+`VarDeclaration` at every call depth: a pointer minted at an OUTER depth,
+passed DOWN into a call that re-declares the same variable, still carries
+the OLD id -- which, in the inner frame, resolves (via
+`arrayAllocationVariables`/`structFieldPointerVariables`, unchanged) into
+whatever cell the inner re-declaration just promoted for ITSELF, instead of
+declining. Depending on the inner binding's value/length this reads the
+WRONG frame's bytes or indexes past a shorter re-declared array
+(`NativeArray.element: index out of range`). Three new fixtures in
+`tests/ut/backends/runner/ct/expressions.d`, all scoped to
+`Interpreter`/`SystemLinker` (omit-don't-pin convention), every value seeded
+from a runtime function call: `pointer.
+recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue` (a recursive
+`f(depth, p)` taking `&a[0]` at each depth and passing it down, expecting
+`f(2, null) == 207`, confirmed red on Interpreter -- `107 != 207`, the inner
+depth's own value -- and green on SystemLinker); the struct sibling,
+`pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue`
+(`&s.x` instead of `&a[0]`, identical red/green); and the crash twin,
+`pointer.recursiveArrayPointerPassedAcrossShorterRebindDoesNotCrash` (outer
+`&a[3]` on a 4-element array, inner `a` re-declared with length 1 and its
+own `&a[0]` taken to promote its own short cell, confirmed red on
+Interpreter -- `NativeArray.element: index out of range` -- and green on
+SystemLinker, expecting `4`).
+
+Chosen fix, of the two directions the reviewer offered: mint a FRESH id per
+binding (rather than tag cells/pointers with a separate generation and leave
+the id memo untouched). Two new/extended helpers, called from the SAME
+three fresh-binding sites that already drop the cell, right alongside the
+existing `scalarCells.remove`/`dropStructCell`: (1) a new `dropArrayCell
+(variable)`, the array sibling of `dropStructCell`, removes `arrayCells
+[variable]` together with `arrayAllocations[variable]` and the matching
+`arrayAllocationVariables[id]` reverse entry; (2) `dropStructCell` itself
+gained one more line, `fieldAddressAllocations.remove(variable)` --
+`fieldSnapshotAllocationId`'s own forward memo, which the existing reverse-
+map cleanup never touched, so a fresh `&s.field` after a rebind was still
+reusing the OLD id even after finding 1's original fix (the round-2 review
+above only closed the reverse half of this same gap for structs). Once the
+id memo is gone, the NEXT `&a[i]`/`&s.field` in the fresh binding mints a
+genuinely new id (`++allocationCount`); a pointer already minted under the
+OLD id then fails `arrayPointerVariable`/`structFieldPointerVariables`'s
+reverse lookup in the rebound frame and `pointerTargetValue` falls through
+to the pointer's own frozen boxed snapshot (`pointer.pointerTarget`, taken
+at address-of time) -- which is exactly PRE-cell-machinery master
+semantics, and provably the correct value for every fixture above: nothing
+mutates the OUTER binding's storage between the outer `&a[i]`/`&s.field` and
+the inner rebind, so the frozen snapshot and the outer cell's live bytes
+still agree. This was chosen over a separate generation tag because it
+needs no `Value`/`NativeArray`/`NativeStruct` schema change -- the
+allocation id already travels inside the pointer `Value` and already serves
+as the cross-frame identity token everything else keys off -- and it slots
+directly into the fresh-binding-drop pattern the prior review rounds already
+established, rather than adding a second, parallel invalidation mechanism.
+Verified this does not regress boxed (non-celled) pointer identity: within
+one still-live binding (no fresh re-declaration in between), the id is
+minted once, lazily, and never touched again, so repeated `&a[i]`/`&a[j]`
+calls keep returning the SAME id exactly as before -- the invalidation only
+ever fires at the three fresh-binding call sites, never on an ordinary
+address-of. Worth noting: this incidentally closes the identical, previously
+untested latent bug in the plain BOXED reverse-lookup paths
+(`readPointerElement`, `writeThroughArrayPointer`,
+`canWriteThroughArrayPointer`) that share the same `arrayAllocationVariables`
+map -- those never had a cell at all, but were exposed to the exact same
+stale-id-resolves-into-the-wrong-frame's-`locals` bug; no separate fixture
+was written for the boxed-only case since the three fixtures above already
+exercise the shared reverse-lookup map, cell or not.
+
+Finding 4 (SHOULD-FIX), and its array-symmetric risk this slice had to avoid
+introducing: `structFieldPointerVariables`/`FieldIndices`/`Writebacks` were
+copied back wholesale (`= child.X`) at every call-return merge point.
+`dropStructCell`'s reverse-map cleanup (existing since the round-2 review)
+means a callee's OWN fresh re-declaration of a shared `VarDeclaration`
+removes an id->variable entry from the CALLEE's own (duped) copy -- even
+when the callee never itself re-takes the field's address -- and the
+wholesale replace then adopts the callee's (now-missing-the-entry) map,
+discarding the CALLER's own still-live entry for the SAME id. New fixture,
+`pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn`
+(`expressions.d`, `Interpreter`/`SystemLinker`): a two-level recursion where
+`f(1)` takes `&s.x`, calls `f(0)` (which re-declares its own `S s = ...;`
+but never takes `&s.x`), then does `*p = 42; return *p + s.x;` after `f(0)`
+returns -- confirmed red on Interpreter (`Unsupported interpreter assignment
+target.`, the write silently failing to resolve) and green on SystemLinker
+(`84`). Extending finding 3's id-invalidation to `arrayAllocations`/
+`arrayAllocationVariables` (this slice's own new `dropArrayCell`) would
+introduce the IDENTICAL class of bug for arrays' own wholesale array-map
+copy-back, which had never been destructively mutated before this slice and
+so never needed this treatment until now.
+
+Fix, both struct and array: replaced every wholesale `= child.X` copy-back
+of these maps with a non-destructive MERGE, via three new helpers next to
+`mergeNativeThrowableRoots` (`writeBackFunctionState`,
+`writeBackMemberFunctionState`, `runDestructor`'s tail, and -- for
+`fieldAddressAllocations` only, matching those two sites' existing narrower
+scope -- the `new`-with-user-ctor struct/class child tails).
+`mergeArrayAllocationMaps`/`mergeStructFieldPointerVariableMaps` union the
+REVERSE (id-keyed) maps unconditionally: every id is minted from one shared,
+monotonically increasing `allocationCount` (already merged back
+separately), so two frames never disagree about what a given id names --
+adding every entry the callee still has can never destroy an entry only
+THIS frame has, since a plain union never removes a key.
+`mergeArrayAllocationMaps`/`mergeFieldAddressAllocations` also merge the
+FORWARD (variable-keyed) maps, but with THIS frame's own existing entry
+winning on conflict: a variable this frame already has an id for keeps it
+(so a deeper frame's own rebind, which only ever mints a NEW id for ITS OWN
+copy, cannot clobber this frame's mapping for the same variable); a
+variable this frame has never seen adopts the callee's entry (needed for
+e.g. a nested function first taking a shared enclosing local's address).
+Confirmed safe for every pre-existing (already-green) fixture: before
+finding 3's `dropArrayCell`, the array forward/reverse maps were NEVER
+destructively mutated, so parent's and child's copies were always identical
+anyway -- this merge only changes behaviour in the NEW recursion-rebind
+scenario finding 3 introduced, where "this frame's own entry wins" is
+exactly the derived-correct semantics.
+
+Documented residue, precisely: (1) the frozen-boxed-snapshot fallback this
+fix relies on is correct only because nothing mutates the OUTER binding's
+storage between its own `&a[i]`/`&s.field` and a callee's later rebind of
+the same `VarDeclaration` -- if the outer binding's own cell WERE mutated in
+that window (e.g. `a[0] = x;` right before the recursive call), the frozen
+snapshot the decline falls back to would not reflect that later write; no
+fixture (old or new) exercises this narrower corner, and it is a real,
+un-closed gap, not a hidden success. (2) `runNewClassExpression`'s child
+`Walker` still neither dupes nor merges `arrayAllocations`/
+`arrayAllocationVariables`/`structFieldPointerVariables`/`FieldIndices` at
+all -- a pre-existing asymmetry predating this slice (noted in the "struct
+cross-frame pointer coherence" progress entry above); only its
+`fieldAddressAllocations` copy-back was given the same merge treatment,
+matching that site's own existing narrower scope rather than introducing a
+new asymmetry. (3) `promoteSliceArrayCell`'s own internal `arrayCells.remove
+(variable)` (a slice-temporary's fresh binding, e.g. a `foreach` loop's
+per-iteration slice) was left unchanged -- it drops `variable`'s own cell
+only and never mints or memoizes an id itself (ids are minted solely by
+`arrayPointer`, keyed off `source`, already covered by the three call sites
+this slice changed), so there was no id memo there to invalidate.
+
+Focused runs, all green: all four new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (399 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (283 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
+Progress 2026-07-14 (final-review nits: union guard, slice-assign range,
+writeback flag clear; whole-value-read staleness documented): a further
+Fable review of the arrayCells/structCells work above raised four items
+(one SHOULD-FIX, three NITs); this slice addresses all four.
+
+Finding 5 (SHOULD-FIX, documented only): after `int[] s = a[]; a[0] =
+ninetyNine();`, an INDEX read `s[0]` is cell-authoritative (99), but a
+WHOLE-value read of `s` (`return s;`, `s == [...]`, `s.dup`, passing `s` by
+value) still reads the stale boxed `[1, 2]` mirror -- `writeCelledLocal`'s
+byte write refreshes `a`'s cell (and `s`'s, sharing storage), but never
+touches `s`'s own boxed `locals` entry, which whole-value reads still
+consult directly instead of re-deriving from the cell. Symmetric case:
+after a `ref int[]` writeback in-place-refreshes a slice-view cell, the
+ROOT variable's boxed mirror is not touched either, so the root's own
+whole-value reads stay stale while its index reads (which do consult the
+cell) are fresh. Neither is a master regression -- master was consistently
+stale for both index and whole-value reads through an aliased variable --
+but the split between a fresh index read and a stale whole-value read
+through the SAME variable, in the SAME statement sequence, is new,
+introduced by the cell machinery's read side becoming index-read-only.
+Not fixed this slice: closing it needs re-deriving the aliased variable's
+boxed mirror from its cell on every reverse write (mirroring
+`structValueFromCell`'s struct-side re-derivation), which is unbounded in
+this narrow slice's scope -- it would need to walk every `sliceAliases`
+entry (and the reverse array-cell direction) on every scalar
+write-through, not just the one variable directly touched. Documented
+here as the precise, known boundary instead: a whole-value read of an
+aliased variable remains boxed-stale after any write reaches the SAME
+storage through a DIFFERENT aliased variable's cell; only reads through
+the variable whose OWN write triggered the refresh, and index reads
+through any aliasing variable, are cell-fresh.
+
+Finding 6 (NIT, fixed): `promoteStructCell` didn't exclude unions, though
+an earlier "What remains" note above claimed union fields are untouched --
+a `union` is itself a `TypeStruct` (`structType.sym` an
+`UnionDeclaration`), so a union local would get a `structCells` entry the
+same as any other struct, and `writeStructCellScalarFields` would then
+seed every field at its own overlapping byte range with no
+union-vs-struct branch, corrupting `&u.a`'s later deref with whatever
+field was seeded last. Fix: `promoteStructCell` now declines (returns, no
+cell, boxed path unchanged) when `structType.sym.isUnionDeclaration !is
+null`, making the "unions untouched" claim true by construction. No
+fixture: no existing suite exercises `&union.field` on Interpreter
+(`ct.structs` has no union coverage at all), and the boxed fallback path
+is unchanged pre-existing behaviour, so there is nothing new to
+characterize.
+
+Finding 7 (NIT, fixed): `runSliceAssignExpression`'s cell-refresh loop
+indexed `lower .. upper` against `elements` (built with only
+`current.length` entries) with no bounds check, so an out-of-bounds guest
+`a[0 .. 5] = x` on a 2-element array indexed `elements` past its own
+length and died with a HOST `core.exception.RangeError` -- even when
+`variable` had no promoted cell at all, since `elements[index]` is built
+as the call argument before `writeThroughArrayCell`'s own no-op check
+ever runs. Fix: reject `upper > current.length` up front, before
+`elements` is built or `rhs` is even evaluated (matching compiled D's own
+evaluation order, verified separately), throwing the interpreter's
+guest-visible `RangeError` with the exact wording druntime's
+`ArraySliceError` uses for the identical slice assignment (verified
+against a real compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`), so
+`SystemLinker` agrees exactly. New fixture (pre-approved),
+`dynamicArray.sliceAssignPastLengthThrowsRangeError` in `tests/ut/
+backends/runner/ct/arrays.d`, scoped to `Interpreter`/`SystemLinker`,
+runtime-seeded: confirmed red on Interpreter before the fix (uncaught
+host `core.exception.ArrayIndexError`, indexing `elements` itself) and
+green on SystemLinker; green on both after.
+
+Finding 8 (NIT, hardening, fixed): `structFieldPointerWritebacks` flags
+were set (`writeThroughStructFieldPointer`) but never cleared, and the
+map is dup'd into every further child frame and merged back wholesale --
+a latent trap where a stale flag from an already-processed call could
+survive into an unrelated later frame that never itself wrote through a
+struct-field pointer, and get re-applied against whatever cell exists for
+that variable then. Harmless today (re-deriving `locals[variable]` from a
+still-current cell is idempotent), but a future missed-write path could
+turn it into a stale-cell clobber. Fix: `writeBackStructFieldPointerTargets`
+now removes the processed variable's entry from `child.
+structFieldPointerWritebacks` right after re-deriving `locals[variable]`
+from the cell, so the flag cannot outlive the writeback it was raised
+for. No behavioural change today; no new fixture. Confirmed the existing
+cross-frame struct fixtures (`ct.structs`, `ct.expressions`) stay green.
+
+Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions`
+(399 run, 0 failed, 5/5 failing as expected); `bin/ut -s
+ut.backends.runner.ct.structs` (283 run, 0 failed); `bin/ut -s
+ut.backends.runner.ct.arrays` (332 run, 0 failed -- +2 for finding 7's new
+fixture); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed,
+1/1 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
+failed). The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.
+
+Progress 2026-07-14 (re-review fixes: id dies with the cell at
+rebind/append, wrong-frame merge guard, revert unsafe writeback-flag
+clear): a further Fable review of the arrayCells/structCells work above
+raised three new BLOCKERs, all introduced by the two final-review rounds
+directly above; this slice fixes all three.
+
+Finding 1 (BLOCKER, revert): the previous round's finding 8 added
+`child.structFieldPointerWritebacks.remove(variable)` in
+`writeBackStructFieldPointerTargets`, calling it "behaviour-neutral
+hardening" for a hypothetical stale-flag hazard. It was not neutral: an
+intermediate member-function frame (e.g. `Poker.poke` calling a free
+function `deposit` that writes through a struct-field pointer) dups
+`locals`/`structCells` from its own `this`-bound child `Walker`, passes the
+writeback check at the inner call's return, and clears the flag on ITS OWN
+throwaway duped copy -- so the flag never reaches the frame that actually
+owns the struct local. A member-function frame has no
+`writeBackNestedLocals` of its own, so the refresh died with the frame
+instead of propagating up to the caller. New fixture,
+`struct.memberFunctionForwardsPointerWriteToOwningFrame`
+(`tests/ut/backends/runner/ct/structs.d`, `Interpreter`/`SystemLinker`):
+confirmed red on Interpreter before the fix (`3 != 42`, the pre-write
+value) and green on SystemLinker; green on both after. Fix: reverted the
+`structFieldPointerWritebacks.remove(variable)` clear (and its comment)
+entirely -- the hazard it guarded against was explicitly hypothetical, and
+removing it restores the flag's cross-frame survival.
+
+Finding 2 (BLOCKER): `writeCelledLocal`'s array rebind arm (a plain `a =
+<new array>;`, no recursion involved) dropped `arrayCells[variable]` via a
+bare `arrayCells.remove(variable)` but never the memoized
+`arrayAllocations`/`arrayAllocationVariables` id -- the same per-binding
+fresh-id principle finding 3 of the round above established for
+`runDeclarationExpression`/`bindFunctionParameters`/
+`bindLazyFunctionParameter`, applied incompletely to this same-frame rebind
+arm. A pointer taken BEFORE the rebind kept resolving, via the still-live
+reverse map, into the REBOUND array's own freshly-promoted cell instead of
+declining to its own frozen snapshot. New fixture,
+`pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue`
+(`expressions.d`, `Interpreter`/`SystemLinker`): confirmed red on
+Interpreter (`7 != 1`, the rebound array's own value) and green on
+SystemLinker; green on both after. Crash twin,
+`pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash`
+(outer pointer at index 1, rebound array with only one element): confirmed
+red on Interpreter (host `NativeArray.element: index out of range`) and
+green on SystemLinker; green on both after. Fix: the rebind arm now calls
+`dropArrayCell(variable)` (drops the cell AND the id together) instead of
+the bare `arrayCells.remove(variable)`.
+
+The append site (`runArrayAppendAssignExpression`'s plain-`VarExp` arm,
+`~=`) had the identical drop-cell-keep-id shape, for the same reason (`a`
+itself is never re-declared by an append, so nothing else invalidated its
+id either). New fixture,
+`pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue` (`expressions.d`,
+`Interpreter`/`SystemLinker`): a three-element array literal is appended
+to once (verified separately, against a standalone compiled program, that
+a 3-element literal's GC block has exactly enough spare capacity for 3
+elements and forces a real reallocation on a 4th), then a pointer taken
+after the append writes a new value, and a pointer taken BEFORE the append
+is read back; confirmed red on Interpreter (`99 != 1`, the post-append
+write leaking backward through the shared stale id) and green on
+SystemLinker (real reallocated storage keeps the pre-append pointer
+stale); green on both after. Fix: the append site now also calls
+`dropArrayCell(variable)` instead of the bare `arrayCells.remove
+(variable)` -- append may reallocate, so minting a fresh id for the next
+address-of is the correct D-matching choice, even though it changes `p is
+q` identity for the (empirically far more common) case where the append
+happens not to reallocate; declining to the pre-append frozen snapshot
+still yields the correct value either way.
+
+Finding 3 (BLOCKER): `mergeArrayAllocationMaps`'s reverse-map merge unioned
+every child `arrayAllocationVariables` entry into the parent
+unconditionally. A child's OWN fresh rebind of a shared `VarDeclaration`
+mints a FRESH id for its own cell (finding 3 of the round above), and
+dynamic-array elements are GC-allocated, so a pointer into that fresh child
+cell may legally escape upward (returned from the child) -- the reverse
+map is keyed by `VarDeclaration`, not by binding, so routing that
+child-minted id into the PARENT frame, which holds its OWN live cell for a
+DIFFERENT binding of the SAME `VarDeclaration`, resolved the escaped
+pointer through the parent's bytes instead of declining to its own frozen
+snapshot. New fixture,
+`pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell`
+(`expressions.d`, `Interpreter`/`SystemLinker`): confirmed red on
+Interpreter (`111 != 11`, the outer frame's own value instead of the
+escaped pointer's inner-frame value) and green on SystemLinker; green on
+both after. Fix: `mergeArrayAllocationMaps` now skips a child reverse
+entry whose variable THIS frame's forward map (`arrayAllocations`) already
+binds to a DIFFERENT id -- precisely the "same `VarDeclaration`, different
+binding" condition -- while an entry for a variable this frame has no
+binding for at all keeps merging unconditionally, since the cross-frame
+writeback machinery still needs those. Applied the analogous guard to
+`mergeStructFieldPointerVariableMaps`, keyed on (variable, field index)
+rather than just variable since a struct can have several independently-
+addressed fields; verified it does not regress any existing cross-frame
+struct fixture. No fixture exercises the struct guard directly -- escaping
+a pointer to a local struct field upward is UB in real D (a struct field,
+unlike a dynamic array element, is not GC-allocated) -- so it is symmetric
+hardening only.
+
+Focused runs, all green: all five new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+`bin/ut -s ut.backends.runner.ct.expressions` (407 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (285 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (332 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
+full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
+Progress 2026-07-14 (re-review fix: cross-frame writebacks reconcile the
+parent's array cell): `runIndexExpression`'s cell arm makes a promoted
+`arrayCells` entry READ-AUTHORITATIVE over the boxed `locals` mirror, but
+`writeBackNestedLocals` and `writeBackArrayPointerTargets` only ever
+refreshed the mirror with a bare assignment, never the parent's own cell.
+A nested function mutating a captured array, or a recursive call sharing a
+non-`ref` array parameter's backing storage, are both supported, tested
+Interpreter features, so the parent's stale cell kept answering `a[0]`
+reads with the pre-call value after `child` returned -- or, when the
+callee's mutation grew the array (`~=`), indexed a too-short cell and
+crashed the host with `NativeArray.element: index out of range` instead of
+seeing the grown length. Three new fixtures (pre-approved, runtime-seeded
+so DMD cannot fold them), all `Interpreter`/`SystemLinker` only: `pointer.
+nestedFunctionArrayRebindIsVisibleThroughParentCell` (a nested function
+rebinding a captured array to a same-length new array; confirmed red on
+Interpreter, `1 != 7`, green on SystemLinker, before any production
+change), `pointer.nestedFunctionArrayAppendGrowsArrayVisibleThroughParent
+Cell` (a nested function appending to a captured array; confirmed red on
+Interpreter -- the host `NativeArray.element: index out of range` crash,
+not a wrong-value assertion -- green on SystemLinker), and `pointer.
+recursiveArrayParameterElementWriteIsVisibleThroughCallerCell` (no
+nesting: a plain, non-`ref` array parameter mutated in place one recursion
+level down; confirmed red on Interpreter, `1 != 5`, green on SystemLinker).
+
+Fix: both writeback functions now route an array-typed variable's final
+value through `writeCelledLocal(variable, value, arrayIsRefWriteback:
+true)` -- the same reconciliation `writeBackRefArguments` already uses for
+a `ref` array parameter's callee-side mutation -- instead of a bare
+`locals[variable] = value;`. `writeCelledLocal` refreshes a same-length
+cell's bytes in place (the recursion/capture-mutation case) or
+`dropArrayCell`s a changed-length one (the rebind/append case, so the next
+read falls through to the freshly-refreshed boxed mirror instead of
+indexing stale/too-short cell bytes), and is already a plain mirror write
+-- unchanged from before -- for any variable with no cell at all, or a
+scalar/struct variable (those reconcile through `writeCelledLocal`'s own
+pre-existing, untouched `scalarCells`/`structCells` branches).
+
+This did not apply uniformly, though, and the reason is worth recording
+precisely rather than glossing over: `writeBackArrayPointerTargets` also
+covers plain recursion over a LOCAL declaration reusing the same
+`VarDeclaration` at every call depth (`pointer.
+recursiveArrayDeclarationDropsStaleArrayCell`, an existing fixture --
+depth 1's `a` is `[one(), two()]`, depth 0's fresh redeclaration of the
+same AST-node `a` is the unrelated, shorter `[hundred()]`). That is NOT
+aliasing -- each depth's `int[] a = ...;` is an independent array that only
+coincidentally shares the AST node -- yet `bindFunctionParameters` and
+`runDeclarationExpression` both call `dropArrayCell` at every depth the
+exact same way a genuine recursive parameter-passthrough does, so cell/id
+state alone cannot tell the two cases apart: both mint a fresh, mutually
+non-matching allocation id per depth, regardless of whether the value
+flowing in is really the same storage. Routing every dynamic-array
+variable in `writeBackArrayPointerTargets` through `writeCelledLocal`
+unconditionally (matching `writeBackNestedLocals`) made this existing
+fixture red (`100100 != 1100`): the deeper, unrelated recursive
+redeclaration's shorter final value caused THIS frame's own still-valid,
+different-length cell to be dropped, and the already-latent (previously
+harmless, because a live cell always shadowed it) bug of the bare mirror
+copy-back overwriting the boxed `locals` mirror with the unrelated child's
+value became directly observable once nothing masked it anymore.
+
+The fix distinguishes the two cases the one way the language actually
+does: `variable.storage_class & STC.parameter` (a new `isParameterVariable`
+helper, `parameterIsLazy`'s sibling). Only a genuine function PARAMETER
+routes through `writeCelledLocal`'s cell reconciliation in
+`writeBackArrayPointerTargets`; every other variable (a plain local
+redeclared at a deeper recursion depth) keeps the pre-existing plain
+mirror copy, leaving this frame's own cell -- and its read-authoritative
+answer -- untouched. `writeBackNestedLocals` needed no such gate: a
+captured local is never independently redeclared inside the nested
+function itself (a shadowing declaration would parse to a distinct
+`VarDeclaration`), so `child.locals` containing an entry for a variable
+this frame also has never represents the "same AST node, unrelated
+binding" ambiguity recursion creates for `writeBackArrayPointerTargets`.
+
+This is a heuristic, not a full fix, and the residual gap is worth naming:
+a recursive call passing an actually-different array through the SAME
+formal parameter (rather than forwarding the same array unchanged) would
+still wrongly reconcile the cell if the two arrays' lengths happened to
+match, because nothing in the current data model records array-value
+provenance across a parameter rebind -- `arrayAllocationAliases`/
+`sliceAliases` only ever get populated for a slice- or pointer-derived
+argument, never a plain by-value array forward. No fixture in this repo
+exercises that gap, and closing it for real would need genuine storage-
+identity tracking through parameter binding, out of this slice's bounded
+scope.
+
+Focused runs, all green: all three new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after,
+matching the exact failures above); `bin/ut -s
+ut.backends.runner.ct.expressions` (413 run, 0 failed, 5/5 failing as
+expected -- the same pre-existing `@ShouldFail` count as the 407-run
+baseline before these fixtures were added, confirmed by re-running the
+baseline unchanged); `bin/ut -s ut.backends.runner.ct.structs` (285 run, 0
+failed); `bin/ut -s ut.backends.runner.ct.arrays` (332 run, 0 failed);
+`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
+`bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff.
+
+Progress 2026-07-15 (re-review fix: cross-frame whole-array rebind drops
+the parent cell instead of corrupting a slice view): round 4's BLOCKER
+finding 1 on the previous note's fix: `writeBackRefArguments` and
+`writeBackNestedLocals` route a cross-frame array writeback through
+`writeCelledLocal(..., arrayIsRefWriteback: true)`, whose same-length arm
+refreshes the parent's promoted `arrayCells` entry bytes IN PLACE. That is
+correct when the callee MUTATED elements of shared storage, but wrong when
+the callee REBOUND its `ref int[]` parameter (or a captured array) to a
+NEW same-length array: the in-place refresh then overwrites the OLD
+storage's bytes, corrupting any separate, still-live alias of that OLD
+storage (e.g. a slice view taken before the call) even though real D gives
+the rebound variable entirely fresh storage and leaves the earlier view
+untouched. Two new fixtures (pre-approved, runtime-seeded), Interpreter/
+SystemLinker only: `pointer.refParameterRebindDoesNotCorruptPreexisting
+SliceView` (confirmed red on Interpreter, `7 != 1`, green on SystemLinker,
+before any production change) and `pointer.nestedFunctionArrayRebindDoes
+NotCorruptPreexistingSliceView`, which asserts `a[0] * 10 + s[0]` rather
+than either value alone -- checking only one side passes "by accident"
+depending on `locals` associative-array iteration order in
+`writeBackNestedLocals`'s own walk (the parent's rebound `a` and the
+untouched `s` are both written back through that same walk, so whichever
+is processed last currently wins the shared block's bytes); combining both
+into one result exposed the corruption regardless of that order (confirmed
+red, `77 != 71`, on the exact build these fixtures landed against).
+
+Fix: a new per-frame `arrayRebinds` marker, set by `writeCelledLocal`
+itself the moment it replaces a variable's array value wholesale (a plain,
+non-writeback assignment, or a ref-writeback whose length changed) rather
+than mutating one in place -- covering both the case where a promoted
+`arrayCells` entry existed and was dropped, and the case where none existed
+at all (a `ref int[]` parameter rebound without ever having its own address
+taken, which promotes no cell of its own, so cell presence alone cannot
+tell a rebind apart from an element-level mutation that similarly promoted
+none). A new `arrayWritebackIsMutation(childVariable, child)` helper reads
+the CHILD's own `arrayRebinds` entry for `childVariable` (absent means
+every write the child made was a same-storage mutation, present means it
+rebound at some point) and is now what `writeBackNestedLocals`,
+`writeBackArrayPointerTargets`, and `writeBackRefArguments` pass to
+`writeCelledLocal` instead of a hardcoded `true`: a genuine mutation still
+refreshes the parent's cell in place (unchanged from the previous note's
+fix), a rebind now drops it instead of corrupting it. Because the
+propagating `writeCelledLocal` call itself marks `arrayRebinds` on ITS OWN
+frame when it drops, the marker also cascades correctly through multiple
+levels of nesting without any extra bookkeeping. The two overclaiming
+comments this finding was reported against (`writeBackRefArguments`'s
+"genuinely represents the SAME storage ... not a rebind" and
+`writeLocation`'s matching claim about `arrayRefWriteback`) are corrected
+to state the rebind case is now handled, rather than asserted away.
+
+Reconciled with the existing `pointer.nestedFunctionArrayRebindIsVisible
+ThroughParentCell` fixture (a nested rebind observed through the PARENT's
+OWN `a`, not a separate view): dropping the parent's cell on rebind still
+answers `a[0]` correctly, because `runIndexExpression`'s cell-priority read
+falls through to the boxed `locals` mirror once no cell exists, and that
+mirror is unconditionally refreshed with the rebound value at the end of
+`writeCelledLocal` regardless of which branch ran. So `a` itself sees the
+fresh `[7, 8, 9]` (via the mirror, cell gone) while a separate `s = a[];`
+taken before the call keeps reading its own, still-present cell over the
+untouched OLD block -- both verified together in the new fixture above.
+Also verified unaffected: `pointer.recursiveArrayParameterElementWriteIs
+VisibleThroughCallerCell`, `pointer.nestedFunctionArrayAppendGrowsArray
+VisibleThroughParentCell`, `pointer.arrayElementWrittenThroughRefParameter
+PointerVisibleToEarlierCallerPointer`, and the foreach-ref/post-increment
+pointer fixtures -- none of these ever reach a plain whole-array
+`writeCelledLocal` call for the aliased variable, so `arrayRebinds` is
+never set for it and the existing in-place-refresh behaviour is untouched.
+
+Focused runs, all green: both new fixtures (each confirmed red on
+Interpreter / green on SystemLinker before the fix, green on both after);
+the full set of previously-landed cross-frame array-cell fixtures named
+above; `bin/ut -s ut.backends.runner.ct.expressions` (429 run, 0 failed,
+5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (335
+run, 0 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed).
+`bin/ut -s ut.backends.runner.ct.structs` still exits 139 in isolation on
+this branch (the pre-existing Bytecode teardown segfault noted in the
+previous session's handoff, unrelated to this change) -- every named test
+case inside it ran and none failed before that teardown crash. The full
+`bin/ut --random` was left to the orchestrator per the usual long-suite
+handoff.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

@@ -981,7 +981,11 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+// Bytecode omitted: the Bytecode VM null-derefs at machine.d:2396
+// (readHeapElement) on this static-array-of-structs postblit/dtor case.
+// Omitted per the omit-don't-pin convention until the Bytecode VM supports
+// static-array-of-structs postblit/dtor heap element copies.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1692,6 +1696,115 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
             unittest {
                 assert(readField() == 42);
+            }
+        });
+    }
+}
+
+// value.md final review (finding 2): once `foreach (v; a)` has promoted an
+// `arrayCells` entry for `a` (`promoteSliceArrayCell` needs no address-of at
+// all), a member-function write to that same array reached through a
+// struct field (`Holder(a).bump()`, funnelled through
+// `writeThroughThisStructArrayFieldAlias`) updated only the boxed mirror,
+// never `a`'s promoted cell. `a[0]` reads through the cell-authoritative
+// path and so kept answering with the stale, pre-`bump` value.
+// `SystemLinker` is the oracle (dynamic arrays share backing storage, so
+// `Holder(a).values` aliases `a` and `bump`'s write is visible through
+// `a[0]`); other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.memberFunctionArrayFieldWriteRefreshesSourceArrayCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            struct Holder {
+                int[] values;
+
+                void bump() {
+                    values[0] += ninetyNine();
+                }
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int total;
+                foreach (v; a)
+                    total += v;
+                auto h = Holder(a);
+                h.bump();
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 100);
+            }
+        });
+    }
+}
+
+// New finding 1 (BLOCKER, re-review 2026-07-14): `ff93e303` added
+// `child.structFieldPointerWritebacks.remove(variable)` in
+// `writeBackStructFieldPointerTargets` as "behaviour-neutral hardening" --
+// it is not neutral. An intermediate member-function frame (`Poker.poke`,
+// which dups `locals`/`structCells` from its own `this`-bound child
+// `Walker`) passes the writeback check at `deposit`'s return and clears the
+// flag on ITS OWN throwaway duped copy, so the flag never reaches the frame
+// that owns `s` -- a member-function frame has no `writeBackNestedLocals` of
+// its own, so the refresh dies with the frame instead of propagating up to
+// `f`. Before any production change, Interpreter's `s.x` read 3 (the
+// pre-write value) instead of 42. SystemLinker is the oracle; other
+// backends omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("struct.memberFunctionForwardsPointerWriteToOwningFrame." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int three() {
+                return 3;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            struct S {
+                int x;
+            }
+
+            struct Poker {
+                void poke(int* p) {
+                    deposit(p);
+                }
+            }
+
+            void deposit(int* p) {
+                *p = fortyTwo();
+            }
+
+            int f() {
+                S s = S(three());
+                int* p = &s.x;
+                Poker k;
+                k.poke(p);
+                return s.x;
+            }
+
+            unittest {
+                assert(f() == 42);
             }
         });
     }

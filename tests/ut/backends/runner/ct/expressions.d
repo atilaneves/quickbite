@@ -1675,6 +1675,260 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+// value.md item 7's array-native-storage guest call site: `&a[0]` takes a
+// pointer into a dynamic array local, then the array is written DIRECTLY
+// (`a[0] = ...`, not through the pointer). SystemLinker's `p` aliases `a`'s
+// real storage, so the direct write is visible through `*p`. Other backends
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                a[0] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
+// value.md item 7's write-side counterpart of the fixture above: a write
+// THROUGH one pointer into a dynamic array element must be visible through a
+// SECOND, independently-taken pointer into the same element. SystemLinker's
+// `p`/`q` both alias `a`'s real storage, so a write through `p` is visible
+// through `q`. Other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                int* q = &a[0];
+                *p = ninetyNine();
+                assert(*q == 99);
+            }
+        });
+    }
+}
+
+// value.md item 7 candidate slice: `foreach (ref e; a)` mutation must be
+// visible through an earlier-taken pointer into `a`. SystemLinker's `p`
+// aliases `a`'s real storage, so the loop's writes are visible through `*p`.
+// Other backends omitted per the omit-don't-pin convention (unconfirmed
+// there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                foreach (ref e; a)
+                    e = e + ninetyNine();
+                assert(*p == 1 + 99);
+            }
+        });
+    }
+}
+
+// value.md item 7 candidate slice: a compound/post-increment write THROUGH an
+// array-element pointer (`(*p)++`) must be visible both through the pointer
+// itself and directly on the array. SystemLinker's `p` aliases `a`'s real
+// storage, so the increment is visible both ways. Other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                (*p)++;
+                assert(a[0] == 2 && *p == 2);
+            }
+        });
+    }
+}
+
+// value.md item 7's cross-frame array-pointer aliasing candidate: a callee
+// takes `&a[i]` of a caller's array passed by `ref` and writes through it.
+// SystemLinker's `ref` parameter aliases the caller's real storage, so `p`
+// (taken in the caller BEFORE the call, into the SAME backing array) must
+// see the write too. Other backends omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void bump(ref int[] a) {
+                int* q = &a[0];
+                *q = ninetyNine();
+            }
+
+            unittest {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                bump(a);
+                assert(*p == 99 && a[0] == 99);
+            }
+        });
+    }
+}
+
+// value.md item 7 candidate: a pointer taken into a SLICE (not the source
+// array itself) must still see a later direct write to the source. This is
+// a genuine characterization test, not a gap fixture: `promoteSliceArrayCell`
+// already gives a slice local an `arrayCells` entry sharing the SAME
+// `NativeArray` bytes as its root source's own cell (`promoteArrayCell`
+// keyed by the slice-alias-resolved root, exactly as `arrayPointer`'s own
+// `&a[i]` resolution already does), so `&s[1]` promotes/reads that shared
+// cell directly -- confirmed green on Interpreter with no production change
+// alongside this fixture. SystemLinker's `p` aliases `a`'s real storage, so
+// the direct write is visible through `*p`. Other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[] a = [one(), two(), three()];
+                int[] s = a[];
+                int* p = &s[1];
+                a[1] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
+// value.md item 7's struct phase, first guest call site: `&s.x` snapshotted
+// the field's value at address-of time instead of aliasing `s`'s own
+// storage, so a later direct write to the field (`s.x = ninetyNine()`) was
+// invisible through the earlier pointer -- the same snapshot gap the array
+// phase closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so
+// the direct write is visible through `*p`. Other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S s = S(one(), two());
+                int* p = &s.x;
+                s.x = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
@@ -1816,7 +2070,19 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // throwaway value snapshot instead of `s`'s storage, losing the write with
 // no diagnostic. SystemLinker pins real D's actual (aliasing) write-through
 // behaviour.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+//
+// Promoted 2026-07-14 (value.md item 7's struct phase, write-through-pointer
+// slice): `Holder` has exactly one scalar field of a plain struct LOCAL,
+// address-taken via `&a.value` -- precisely the case the `structCells`
+// native cell (already promoted at address-of time) now supports end to
+// end. The Interpreter used to refuse this write outright
+// (`shouldThrowWithMessage("Unsupported interpreter assignment target.")`,
+// characterizing the pre-cell limitation); now it writes through the same
+// cell exactly like SystemLinker's real aliasing. Bytecode was promoted
+// onto this same fixture independently on master (bytecode struct field
+// address write-through), so all three backends now share one fixture
+// asserting the SAME value rather than a throw pinned only for Interpreter.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
     @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1841,32 +2107,321 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
     }
 }
 
-// The interpreter cannot yet write through an arbitrary field address (its
-// `&s.field` value is a read-only snapshot, not an alias to the field), so
-// it must refuse loudly instead of the silent wrong answer above. Same
-// fixture, pinned against the Interpreter's honest refusal.
-static foreach (backend; AliasSeq!(Interpreter)) {
-    @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
+// value.md item 7 review, finding 1, extended to arrays: the same
+// stale-cell bug `pointer.recursiveDeclarationDropsStaleScalarCell` names
+// for `scalarCells`, but for `arrayCells`. Recursion reuses the same AST
+// `VarDeclaration` for `a` at every call depth, and `child.arrayCells =
+// arrayCells.dup` hands the inner frame the outer frame's already-promoted
+// cell (shared by reference); without dropping it on `a`'s fresh
+// re-declaration at the inner depth, `&a[0]` there resurrects the outer
+// depth's stale cell instead of getting a fresh one for its own (shorter,
+// differently-valued) array. SystemLinker is the oracle; other backends
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.recursiveArrayDeclarationDropsStaleArrayCell." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            struct Holder {
-                int value;
+            int one() {
+                return 1;
             }
 
-            int seed() {
-                return 7;
+            int two() {
+                return 2;
+            }
+
+            int hundred() {
+                return 100;
+            }
+
+            int rec(int depth) {
+                int[] a = depth == 0 ? [hundred()] : [one(), two()];
+                int* p = &a[0];
+                if (depth == 0)
+                    return *p;
+                const inner = rec(depth - 1);
+                return a[0] * 1000 + inner;
             }
 
             unittest {
-                auto a = Holder(seed);
-                int* p = &a.value;
-                *p = 5;
-
-                assert(a.value == 5);
+                assert(rec(1) == 1100);
             }
-        }).shouldThrowWithMessage("Unsupported interpreter assignment target.");
+        });
+    }
+}
+
+// Struct sibling of the fixture above: the same stale-cell bug for
+// `structCells`. Recursion reuses the same AST `VarDeclaration` for `s` at
+// every call depth, and `child.structCells = structCells.dup` hands the
+// inner frame the outer frame's already-promoted cell; without dropping it
+// on `s`'s fresh re-declaration at the inner depth, `&s.x` there resurrects
+// the outer depth's stale cell instead of getting a fresh one for its own
+// struct value. The per-depth value is computed by a helper (`valueForDepth`)
+// rather than a ternary directly in the struct initializer, since dmd lowers
+// a struct-typed ternary initializer to a default-init-then-assignment,
+// which happens to route through the existing in-place `writeCelledLocal`
+// refresh and masks this particular gap. SystemLinker is the oracle; other
+// backends omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.recursiveStructDeclarationDropsStaleStructCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int hundred() {
+                return 100;
+            }
+
+            int valueForDepth(int depth) {
+                return depth == 0 ? hundred() : one();
+            }
+
+            int rec(int depth) {
+                S s = S(valueForDepth(depth));
+                int* p = &s.x;
+                if (depth == 0)
+                    return *p;
+                const inner = rec(depth - 1);
+                return s.x * 1000 + inner;
+            }
+
+            unittest {
+                assert(rec(1) == 1100);
+            }
+        });
+    }
+}
+
+// Final-review finding 3 (BLOCKER): `allocationId`/`fieldSnapshotAllocationId`
+// memoize their id per `VarDeclaration` and were never removed alongside the
+// cell drop the two fixtures above already exercise, so a pointer minted at
+// an OUTER recursion depth and passed DOWN into a call that re-declares the
+// same `VarDeclaration` still carries the OLD id -- which, in the inner
+// frame, now resolves (via `arrayAllocationVariables`) into whatever cell
+// the inner re-declaration just promoted for ITSELF, instead of declining to
+// the outer pointer's own frozen snapshot. SystemLinker (real aliased
+// storage) returns 207; before any production change Interpreter returned
+// 107, the inner depth's own unrelated value. SystemLinker is the oracle;
+// other backends omitted per the omit-don't-pin convention (unconfirmed
+// there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seven() {
+                return 7;
+            }
+
+            int zero() {
+                return 0;
+            }
+
+            int f(int depth, int* p) {
+                int[] a = [depth * 100 + seven(), zero()];
+                int* q = &a[0];
+                if (depth == 2)
+                    return f(1, q);
+                return *p;
+            }
+
+            unittest {
+                assert(f(2, null) == 207);
+            }
+        });
+    }
+}
+
+// Struct sibling of the fixture above: the same stale-id bug for
+// `fieldSnapshotAllocationId`/`structFieldPointerVariables`.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int g(int depth, int* p) {
+                S s = S(depth * 100 + seven());
+                int* q = &s.x;
+                if (depth == 2)
+                    return g(1, q);
+                return *p;
+            }
+
+            unittest {
+                assert(g(2, null) == 207);
+            }
+        });
+    }
+}
+
+// Crash twin of the same finding: the outer pointer indexes past the END of
+// the inner (shorter) re-declared array. Before any production change,
+// Interpreter resolved the stale outer id into the inner frame's own
+// (shorter) cell and threw `NativeArray.element: index out of range`
+// instead of declining to the outer pointer's own frozen (in-range)
+// snapshot.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.recursiveArrayPointerPassedAcrossShorterRebindDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int four() {
+                return 4;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int h(int depth, int* p) {
+                int[] a = depth == 2
+                    ? [one(), two(), three(), four()]
+                    : [ninetyNine()];
+                int* q = &a[depth == 2 ? 3 : 0];
+                if (depth == 2)
+                    return h(1, q);
+                return *p;
+            }
+
+            unittest {
+                assert(h(2, null) == 4);
+            }
+        });
+    }
+}
+
+// Final-review finding 4 (SHOULD-FIX): `structFieldPointerVariables`/
+// `FieldIndices` are copied back wholesale after a call returns. A
+// recursive callee's own fresh `S s = ...;` re-declaration drops the
+// reverse-lookup entry for `s` from the CALLEE's own (duped) copy via
+// `dropStructCell` -- even though the callee here never itself re-takes
+// `&s.x` -- and the wholesale replace then adopts the callee's
+// (now-missing-the-entry) map wholesale, discarding the CALLER's own
+// still-live entry for its own `s`/`p`. Before any production change,
+// Interpreter's `*p = 42;` after the call returns did not take effect (the
+// write silently declined), so `*p + s.x` read back the pre-write value
+// instead of the correct post-write one.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            int f(int depth) {
+                S s = S(depth == 1 ? seven() : three());
+                if (depth == 1) {
+                    int* p = &s.x;
+                    f(0);
+                    *p = fortyTwo();
+                    return *p + s.x;
+                }
+                return 0;
+            }
+
+            unittest {
+                assert(f(1) == 84);
+            }
+        });
+    }
+}
+
+// value.md item 7's struct phase left cross-frame struct-field-pointer
+// write-through unexercised: the caller takes `&s.x` (promoting a
+// `structCells` entry and a `structFieldPointerVariables`/
+// `structFieldPointerFieldIndices` reverse-lookup entry in the CALLER's own
+// frame), then passes the pointer into a callee that writes through it. The
+// callee's own child `Walker` dupes `structCells` (so the cell's bytes are
+// shared) but never dupes the reverse-lookup maps themselves, so the
+// callee's `writeThroughStructFieldPointer` reverse-lookup misses and the
+// write falls through to the `fieldSnapshotAllocationIds` refusal check
+// (also duped) instead of aliasing. SystemLinker is the oracle; other
+// backends omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                S s = S(one(), two());
+                int* p = &s.x;
+                put(p, ninetyNine());
+                return *p + s.x;
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
     }
 }
 
@@ -2147,6 +2702,768 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
                 assert(b ^^ e == 81);
                 assert(b ^^ 0 == 1);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, finding 3: `a ~= x` grew the boxed array but left
+// a promoted `arrayCells` entry (here promoted by `&a[0]`) at its OLD
+// length. A subsequent in-bounds write to the newly-appended element
+// (`a[1] = five();`) is unaffected -- `writeThroughArrayCell` is a silent
+// no-op past the cell's own length -- but `readIndexExpression`'s cell arm
+// still answers the following read from the stale, too-short cell, which
+// used to throw a spurious out-of-range error before the fix. SystemLinker
+// is the oracle; other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayAppendRefreshesStaleCellAfterAddressOf." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int five() {
+                return 5;
+            }
+
+            int f() {
+                int[] a = [one()];
+                auto p = &a[0];
+                a ~= two();
+                a[1] = five();
+                return a[1];
+            }
+
+            unittest {
+                assert(f() == 5);
+            }
+        });
+    }
+}
+
+// value.md item 7 review, finding 4: `runSliceAssignExpression`'s bounded
+// form (`a[i .. j] = x`) writes `locals[variable]` directly but never
+// refreshes a promoted `arrayCells` entry -- here promoted by `&a[0]` --
+// which `readIndexExpression`'s cell arm reads in preference to the boxed
+// mirror. Only indices `0 .. 2` are assigned; `a[2]` must stay untouched.
+// See the sibling `dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell`
+// fixture in arrays.d for the full-slice-fill variant. SystemLinker is the
+// oracle; other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                int[] a = [one(), two(), three()];
+                int* p = &a[0];
+                a[0 .. 2] = ninetyNine();
+                return a[0] + a[1] + a[2];
+            }
+
+            unittest {
+                assert(f() == 99 + 99 + 3);
+            }
+        });
+    }
+}
+
+// value.md review (finding 5): `bump(int[] s)` binds `s` via
+// `recordParameterSliceAlias` -- a slice-expression argument never calls
+// `promoteSliceArrayCell`, so `s` itself never gets an `arrayCells` entry --
+// while `a`, the slice's source, already has one (promoted here by
+// `&a[0]`). `s[0] = ninetyNine();` reached `writeThroughSliceAlias`, which
+// refreshed only the boxed `locals` mirror for `a`, never `a`'s own
+// promoted cell; the following `return a[0];` reads through
+// `readIndexExpression`'s cell arm, which is authoritative over the boxed
+// mirror and so kept answering with the stale, pre-write value.
+// SystemLinker is the oracle; other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void bump(int[] s) {
+                s[0] = ninetyNine();
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                auto p = &a[0];
+                bump(a[]);
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 99);
+            }
+        });
+    }
+}
+
+// value.md review (finding 6): `writePointerTarget` called
+// `writeThroughArrayPointer` but not `writeThroughStructFieldPointer`, so
+// `(*p)++` through a struct-field pointer read the promoted `structCells`
+// entry (via `pointerTargetValue`/`structFieldPointerCellValue`) but wrote
+// only the pointer's own boxed snapshot back through the fallback
+// `writeLocation` call at the bottom of `writePointerTarget` -- the next
+// `*p` re-read the stale cell instead of the freshly-incremented value.
+// SystemLinker is the oracle; other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structFieldPointerCompoundIncrementWritesThroughCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int f() {
+                struct S {
+                    int x;
+                    int y;
+                }
+
+                S s = S(one(), two());
+                auto p = &s.x;
+                (*p)++;
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 2);
+            }
+        });
+    }
+}
+
+// value.md review (finding 7): once `&s.x` has promoted a `structCells`
+// entry for `s`, a `ref` LOCAL bound directly to `s.x` (recorded via
+// `recordStructFieldAlias`/`structFieldAliases`, the only reachable path to
+// `writeThroughStructFieldAlias`) writes `ninetyNine()` through
+// `writeThroughStructFieldAlias`, which refreshed only the boxed `locals`
+// mirror for `s`, never `s`'s own promoted cell. The following `return *p;`
+// reads through `pointerTargetValue`/`structFieldPointerCellValue`, which is
+// authoritative over the boxed mirror and so kept answering with the stale,
+// pre-write value. SystemLinker is the oracle; other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structFieldRefLocalWriteThroughRefreshesCellAfterAddressOf." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                struct S {
+                    int x;
+                    int y;
+                }
+
+                S s = S(one(), two());
+                auto p = &s.x;
+                ref int r = s.x;
+                r = ninetyNine();
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 99);
+            }
+        });
+    }
+}
+
+// Whole-struct assignment (`s = S(...)`) is a genuine in-place copy into
+// `s`'s existing storage in D -- unlike an array rebind, `s` keeps denoting
+// the SAME storage after the assignment. An earlier `int* p = &s.x` must
+// therefore observe the new field value afterward: `writeCelledLocal`'s
+// struct branch refreshes the promoted `structCells` entry's scalar-field
+// bytes (`writeStructCellScalarFields`) whenever the assigned value is still
+// a struct, so a later deref-read through `p`
+// (`structFieldPointerCellValue`) sees the new value rather than a stale
+// cell.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                S s = S(one(), two());
+                int* p = &s.x;
+                s = S(eight(), nine());
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 8);
+            }
+        });
+    }
+}
+
+// value.md final review (finding 1): `recordStructFieldAlias` records ANY
+// `DotVarExp` initializer bound to a `ref` local -- including a non-scalar
+// (array/nested-struct) field -- so `writeThroughStructFieldAlias` reached a
+// promoted `structCells` entry for a field it cannot represent as a native
+// scalar. Once `&s.x` has promoted `s`'s cell, a later `ref int[] r = s.arr;
+// r = [...]` write walked into the same unguarded `writeScalar` call the
+// scalar sibling uses, which throws on a non-scalar field type. Expect the
+// unrelated `s.x` field to still read `1`: the array-field write must skip
+// the cell write entirely and leave the boxed mirror path (unaffected by
+// this finding) as the sole record for a non-scalar aliased field.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            struct S {
+                int x;
+                int[] arr;
+            }
+
+            int f() {
+                S s = S(one(), [two()]);
+                int* p = &s.x;
+                ref int[] r = s.arr;
+                r = [three()];
+                return s.x;
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}
+
+// Re-review finding 2 (BLOCKER, 2026-07-14): `writeCelledLocal`'s plain
+// rebind arm (`a = [...]`, no recursion involved at all) dropped
+// `arrayCells[variable]` but never the memoized `arrayAllocations`/
+// `arrayAllocationVariables` id -- the same per-binding fresh-id principle
+// finding 3 above established, applied incompletely to this arm. A pointer
+// taken BEFORE the rebind (`p`) kept resolving, via the still-live reverse
+// map, into the REBOUND array's own freshly-promoted cell instead of
+// declining to its own frozen snapshot. Before any production change,
+// Interpreter returned 7 (the rebound array's first element) instead of the
+// pre-rebind value 1. SystemLinker is the oracle; other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int* p = &a[0];
+                a = [seven(), eight()];
+                int* q = &a[0];
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}
+
+// Crash twin of the same finding: the outer pointer indexes past the END of
+// the rebound (shorter) array. Before any production change, Interpreter
+// resolved the stale outer id into the rebound array's own (shorter) cell
+// and threw `NativeArray.element: index out of range` instead of declining
+// to the outer pointer's own frozen (in-range) snapshot.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int* p = &a[1];
+                a = [nine()];
+                int* q = &a[0];
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 2);
+            }
+        });
+    }
+}
+
+// Append twin of the same finding: `runArrayAppendAssignExpression` (`~=`)
+// has the identical drop-cell-keep-id shape as the plain-rebind arm above --
+// `arrayCells.remove(variable)` alone, without also invalidating the
+// memoized id, means a pointer re-taken AFTER the append (`q`) mints the
+// SAME id as one taken BEFORE it (`p`), because `a` itself was never
+// re-declared, so a write through `q` into the post-append cell became
+// visible through `p` too. A three-element array literal's GC block has
+// exactly enough spare capacity for 3 elements and none for a 4th (verified
+// separately against a standalone compiled program), so appending a 4th
+// here deterministically reallocates in real D -- `p`, taken before the
+// append, no longer aliases `a`'s post-append storage at all, and keeps
+// reading its own pre-append snapshot even after a write through `q`.
+// SystemLinker is the oracle for this exact value; other backends omitted
+// per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                int[] a = [one(), two(), three()];
+                int* p = &a[0];
+                a ~= seven();
+                int* q = &a[0];
+                *q = ninetyNine();
+                return *p;
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}
+
+// New finding 3 (BLOCKER, re-review 2026-07-14): `mergeArrayAllocationMaps`
+// unconditionally unions a child's reverse (`arrayAllocationVariables`)
+// entries into the parent. A child's OWN fresh rebind of a shared
+// `VarDeclaration` mints a FRESH id for its own cell (finding 3 above), and
+// dynamic-array elements are GC-allocated, so a pointer into that fresh
+// child cell may legally escape upward (returned from the child). The
+// reverse map is keyed by `VarDeclaration`, not by binding, so routing that
+// child-minted id into the PARENT frame -- which holds its OWN live cell for
+// a DIFFERENT binding of the SAME `VarDeclaration` -- resolves the escaped
+// pointer through the parent's bytes instead of declining to its own frozen
+// snapshot. Before any production change, Interpreter's `*leak(1)` returned
+// 111 (`leak(1)`'s own outer `a`, resolved through the wrongly-merged id)
+// instead of 11 (`leak(0)`'s inner `a`, the value the escaped pointer
+// actually names). SystemLinker is the oracle; other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int eleven() {
+                return 11;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int* leak(int depth) {
+                int[] a = [depth * 100 + eleven(), two()];
+                int* p = &a[0];
+                if (depth == 0)
+                    return p;
+                int* q = leak(0);
+                return (*q == 11) ? q : null;
+            }
+
+            unittest {
+                assert(*leak(1) == 11);
+            }
+        });
+    }
+}
+
+// Re-review BLOCKER (2026-07-14, cross-frame cell staleness): the parent's
+// promoted `arrayCells` entry is READ-AUTHORITATIVE (`runIndexExpression`'s
+// cell arm shadows the boxed `locals` mirror), but `writeBackNestedLocals`
+// only ever refreshed the parent's boxed `locals` mirror with a bare
+// assignment, never reconciling the parent's own `arrayCells` entry. Once a
+// nested function rebinds a captured array (`a = [...]`, same length), the
+// parent's stale cell kept answering `a[0]` with the pre-call value even
+// though the boxed mirror was correctly refreshed. SystemLinker is the
+// oracle.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.nestedFunctionArrayRebindIsVisibleThroughParentCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                int[] a = [one(), two(), three()];
+                int* p = &a[0];
+                void g() {
+                    a = [seven(), eight(), nine()];
+                }
+                g();
+                return a[0];
+            }
+
+            unittest {
+                assert(f() == 7);
+            }
+        });
+    }
+}
+
+// Crash twin of the BLOCKER above: a nested function GROWING a captured
+// array (`a ~= x`) changes its length, so the parent's stale `arrayCells`
+// entry -- never reconciled by `writeBackNestedLocals` -- is not merely
+// wrong but too SHORT for the post-append index, and
+// `runIndexExpression`'s bounds check consults the (correctly refreshed)
+// boxed `locals` mirror's length, not the cell's, so the out-of-range cell
+// read crashes the host instead of throwing a `RangeError`. SystemLinker is
+// the oracle.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.nestedFunctionArrayAppendGrowsArrayVisibleThroughParentCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int four() {
+                return 4;
+            }
+
+            int f() {
+                int[] a = [one(), two(), three()];
+                int* p = &a[0];
+                void g() {
+                    a ~= four();
+                }
+                g();
+                return a[3];
+            }
+
+            unittest {
+                assert(f() == 4);
+            }
+        });
+    }
+}
+
+// Recursion twin of the BLOCKER above, with no nesting at all: a dynamic-
+// array PARAMETER (not `ref`) shares its backing storage across recursive
+// calls exactly like real D. `writeBackArrayPointerTargets` -- the
+// `writeBackNestedLocals` counterpart for a variable whose address was
+// taken via `arrayAllocationVariables` rather than capture -- has the same
+// bare-assignment gap, so a same-length in-place element write made by the
+// recursive callee never reconciled the caller's own stale cell.
+// SystemLinker is the oracle.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.recursiveArrayParameterElementWriteIsVisibleThroughCallerCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int five() {
+                return 5;
+            }
+
+            int f(int[] a, int depth) {
+                int* p = &a[0];
+                if (depth == 0) {
+                    a[0] = five();
+                    return 0;
+                }
+                f(a, 0);
+                return a[0];
+            }
+
+            unittest {
+                assert(f([one(), two()], 1) == 5);
+            }
+        });
+    }
+}
+
+// Cross-frame sibling of the same-frame `s = b;` rebind fixture (value.md
+// item 7 review round 2, finding 2): a `ref int[]` parameter REBOUND to a
+// new same-length array inside the callee must give the caller's own
+// variable fresh storage WITHOUT corrupting a pre-existing slice VIEW of
+// the caller's OLD storage. `writeBackRefArguments` routes the parameter's
+// final value through `writeCelledLocal(..., arrayIsRefWriteback: true)`,
+// whose same-length arm refreshes the caller's cell bytes IN PLACE -- correct
+// for a genuine element mutation flowing through shared storage, but wrong
+// here: `s`'s own `arrayCells` entry shares the SAME `NativeArray` block as
+// `a`'s (via `promoteSliceArrayCell`), so the in-place refresh overwrites
+// `s`'s view with the REBOUND array's bytes even though real D gives `a`
+// entirely new storage and leaves `s`'s old view untouched. SystemLinker is
+// the oracle.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.refParameterRebindDoesNotCorruptPreexistingSliceView." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            void g(ref int[] p) {
+                p = [seven(), eight()];
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                g(a);
+                return s[0];
+            }
+
+            unittest {
+                assert(f() == 1);
+            }
+        });
+    }
+}
+
+// Nested-capture twin of the fixture above: a nested function rebinding a
+// CAPTURED array to a new same-length array must not corrupt a pre-existing
+// slice view of the captured array's OLD storage, via
+// `writeBackNestedLocals`'s own use of the same `writeCelledLocal(...,
+// arrayIsRefWriteback: true)` reconciliation. SystemLinker is the oracle.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.nestedFunctionArrayRebindDoesNotCorruptPreexistingSliceView." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int eight() {
+                return 8;
+            }
+
+            int f() {
+                int[] a = [one(), two()];
+                int[] s = a[];
+                void g() {
+                    a = [seven(), eight()];
+                }
+                g();
+                // Both must hold at once: `a` sees the REBIND (fresh
+                // storage), `s` keeps its pre-existing view of the OLD
+                // storage untouched. Checking only one of the two would pass
+                // "by accident" depending on `locals` AA iteration order (the
+                // parent's own `a` and the untouched `s` are BOTH written
+                // back through the same `child.locals` walk in
+                // `writeBackNestedLocals`, so whichever is processed last
+                // currently wins the shared block's bytes) -- combining both
+                // into one result makes the corruption observable regardless
+                // of that order.
+                return a[0] * 10 + s[0];
+            }
+
+            unittest {
+                assert(f() == 71);
             }
         });
     }

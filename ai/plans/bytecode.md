@@ -5637,3 +5637,16 @@ focused Bytecode row and `ninja bin/ut` passed. `bin/ut --random` failed in
 the unrelated Interpreter `dependencyImage.externDRefReturn` row (seed
 `610107794`); its mandated replay instead exposed pre-existing SystemLinker
 temporary-library races.
+
+`struct.staticArrayCopyRunsPostblitAndDtors` Bytecode row reverted, 2026-07-15:
+the prior day's promotion was premature. Running the full suite in isolation
+(`bin/ut -s ut.backends.runner.ct.structs`) crashes the Bytecode row with a
+null dereference in `readHeapElement` at
+`source/quickbite/backends/bytecode/core/machine.d:2396`, not a passing
+result. The focused single-row run in the prior entry did not exercise the
+same static-array-of-structs postblit/dtor path in full and missed the crash.
+Bytecode has been removed from this fixture's `AliasSeq` per the
+omit-don't-pin convention (a backend that cannot run a test is left out of
+its matrix, not pinned to a known-bad result). Re-add Bytecode once the VM's
+`readHeapElement` handles static-array-of-structs postblit/dtor heap element
+copies.
