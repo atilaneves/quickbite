@@ -327,12 +327,31 @@ running tests in-process unchanged, so `version (LDC)` is the only switch. The
 boundary is a *process*, not an *ABI*, boundary: the DMD-built executor's
 druntime/extern(D) ABI matches the DMD-codegen'd `.so` (finding 3 above).
 
-**LLVMJit stays unavailable under the LDC build.** Its value is the *in-process*
-ORC JIT, which produces no `.so` to hand the executor and whose JIT'd DMD-codegen
-would mismatch the LDC host's extern(D) ABI. The cli drops it from the defaults
-with a note and rejects an explicit `-b llvmjit` with a message pointing at the
-DMD build or `system-linker`. So Phase 2′'s LLVMJit clause is intentionally not
-met: `system-linker` is the working native post-parse backend under LDC.
+**LLVMJit now runs under the LDC build too (2026-07-14).** Its value is the
+*in-process* ORC JIT, whose JIT'd DMD-codegen cannot execute in the LDC host
+(extern(D) ABI mismatch) — so it crosses the same process boundary as
+`system-linker`, handing its **object files** (plus static archives and
+dependency images) to `bench-exec`, which performs the ORC link and runs the
+tests there. `bench-exec` builds the frontend-free `orc` package and links
+LLVM; the request wire (`bench-exec/run_wire.d`) carries a `kind`
+(`sharedLibrary` | `orcObjects`). This landed with SystemLinker-peer parity
+slice 3 (see `llvm-jit.md`); the cli no longer drops `llvmjit` from the
+defaults or rejects `-b llvmjit`. **Phase 2′'s LLVMJit clause is now met.**
+
+Both native rows now pay the executor spawn, so the cross-backend delta still
+isolates link strategy. Measured 2026-07-14 (LDC `-O`, executor path):
+
+| fixture set        | llvmjit post-parse | system-linker post-parse |
+| ------------------ | ------------------ | ------------------------ |
+| corpus (`example`) | ~38.0 ms (46/46)   | ~77.2 ms (46/46)         |
+| `--dub cerealed`   | ~1264 ms (156/156) | ~1013 ms (156/156)       |
+
+The direction flips with fixture shape, and honestly so: LLVMJit wins on the
+corpus, where many tiny fixtures make `system-linker`'s per-test `dmd -shared`
+spawn dominate, and loses on `cerealed`, one large package where a single
+`dmd -shared` link is cheaper than the in-process ORC link of the whole object
+set. LLVMJit exists to kill the per-test spawn; that pays off with many small
+tests, not one big link. Both are correct (`156/156`, no "JIT child died").
 
 ### The fix
 
