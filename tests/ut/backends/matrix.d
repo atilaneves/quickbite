@@ -48,3 +48,8 @@ static assert(is(WithIR[5] == IR));
 // - `Omit!(IR, Because.unconfirmed)` fails: "`IR` is not in
 //   `LangBackends` - typo?" (IR is opt-in via `Plus`, never a member of
 //   `LangBackends`, so it can never be omitted from one).
+// - `Matrix!(Ctfe)` (a bare backend, not wrapped in `Omit!`/`Plus!`)
+//   fails: "`Ctfe` is neither `Omit!(...)` nor `Plus!(...)`" - a bare
+//   backend would be silently ignored rather than adjust the matrix.
+// - `Matrix!(Plus!(Ctfe))` fails: "`Ctfe` is already in `LangBackends`
+//   - `Plus!` would duplicate it in the matrix".

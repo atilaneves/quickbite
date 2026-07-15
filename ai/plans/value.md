@@ -1638,7 +1638,7 @@ Focused runs, all green: `bin/ut -s ut.backends.interpreter.native_scalar`,
 ut.backends.runner.lang.expressions ut.backends.runner.lang.cerealed
 ut.backends.runner.lang.structs ut.backends.evaluator.eval` (all
 pre-existing `@ShouldFail` rows still fail as expected), and `bin/ut -s
-ut.backends.runner.sys.cstdlib ut.backends.runner.rt.dependency_image`. The
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image`. The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
 
@@ -1736,7 +1736,7 @@ ut.backends.interpreter`, `bin/ut -s ut.backends.runner.lang.expressions ut.
 backends.runner.lang.cerealed ut.backends.runner.lang.structs ut.backends.
 evaluator.eval` (identical to the pre-change baseline, pre-existing
 `@ShouldFail` rows still fail as expected), and `bin/ut -s
-ut.backends.runner.sys.cstdlib ut.backends.runner.rt.dependency_image`
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image`
 (identical to baseline). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
@@ -1829,10 +1829,10 @@ No test was added or modified; the proof for this commit is the existing
 FFI/runtime suites staying green end to end. Focused runs, all unchanged
 from baseline: `bin/ut -s ut.backends.interpreter`, `bin/ut -s
 ut.backends.interpreter.native_scalar`, `bin/ut -s ut.backends.runner.sys.
-cstdlib ut.backends.runner.rt.dependency_image`, `bin/ut -s ut.backends.
+cstdlib ut.backends.ffi.dependency_image`, `bin/ut -s ut.backends.
 runner.sys.concurrency ut.backends.runner.sys.file ut.backends.runner.sys.
-random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf ut.
-backends.runner.rt.llvm_jit`, and `bin/ut -s ut.
+random ut.backends.native.inline_asm ut.orc.elf ut.
+backends.native.llvm_jit`, and `bin/ut -s ut.
 backends.runner.lang.expressions ut.backends.runner.lang.cerealed ut.backends.
 runner.lang.structs ut.backends.evaluator.eval` (identical to the pre-change
 baseline, pre-existing `@ShouldFail` rows still fail as expected). The
@@ -1914,10 +1914,10 @@ computation would -- the handle reads the exact same DMD objects and numbers
 the old code did). Focused runs, all green and unchanged from baseline
 except where noted: `bin/ut -s ut.backends.interpreter`, `bin/ut -s
 ut.backends.interpreter.native_struct ut.backends.interpreter.native_array`,
-`bin/ut -s ut.backends.runner.sys.cstdlib ut.backends.runner.sys.
-dependency_image`, `bin/ut -s ut.backends.runner.sys.concurrency ut.
-backends.runner.sys.file ut.backends.runner.sys.random ut.backends.runner.sys.
-inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.llvm_jit`, and
+`bin/ut -s ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image`,
+`bin/ut -s ut.backends.runner.sys.concurrency ut.
+backends.runner.sys.file ut.backends.runner.sys.random
+ut.backends.native.inline_asm ut.orc.elf ut.backends.native.llvm_jit`, and
 `bin/ut -s ut.backends.runner.lang.expressions ut.backends.runner.lang.
 cerealed ut.backends.runner.lang.structs ut.backends.evaluator.eval`
 (identical to the pre-change baseline, pre-existing `@ShouldFail` rows
@@ -2023,10 +2023,10 @@ staying green, plus the structural stride/offset-identity argument above.
 Focused runs, all green and unchanged from baseline: `bin/ut -s
 ut.backends.interpreter`, `bin/ut -s ut.backends.interpreter.native_array
 ut.backends.interpreter.native_struct`, `bin/ut -s ut.
-backends.runner.sys.cstdlib ut.backends.runner.rt.dependency_image ut.
+backends.runner.sys.cstdlib ut.backends.ffi.dependency_image ut.
 backends.runner.sys.concurrency ut.backends.runner.sys.file ut.backends.
-runner.sys.random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf
-ut.backends.runner.rt.llvm_jit`, and `bin/ut -s
+runner.sys.random ut.backends.native.inline_asm ut.orc.elf
+ut.backends.native.llvm_jit`, and `bin/ut -s
 ut.backends.runner.lang.expressions ut.backends.runner.lang.cerealed
 ut.backends.runner.lang.structs ut.backends.evaluator.eval` (identical to
 the pre-change baseline, pre-existing `@ShouldFail` rows still fail as
@@ -2097,10 +2097,10 @@ Focused runs, all green and unchanged from baseline: `bin/ut -s
 ut.backends.interpreter`, `bin/ut -s ut.backends.interpreter.native_scalar
 ut.backends.interpreter.native_array ut.backends.interpreter.native_struct
 ut.backends.interpreter.layout`, `bin/ut -s ut.backends.runner.sys.cstdlib
-ut.backends.runner.rt.dependency_image ut.backends.runner.sys.concurrency
+ut.backends.ffi.dependency_image ut.backends.runner.sys.concurrency
 ut.backends.runner.sys.file ut.backends.runner.sys.random ut.backends.
-runner.rt.inline_asm ut.backends.runner.rt.elf ut.backends.runner.sys.
-llvm_jit`, and `bin/ut -s ut.backends.runner.lang.expressions ut.backends.
+native.inline_asm ut.orc.elf ut.backends.native.llvm_jit`, and `bin/ut -s
+ut.backends.runner.lang.expressions ut.backends.
 runner.lang.cerealed ut.backends.runner.lang.structs ut.backends.
 evaluator.eval` (identical to the pre-change baseline, pre-existing
 `@ShouldFail` rows still fail as expected). The full `bin/ut --random` was
@@ -2277,7 +2277,7 @@ behavior change. The `index * elementSize` / `new ubyte[](length *
 elementSize)` element walks at both sites are deliberately left alone --
 out of scope for this commit. No test was added or modified. Focused
 run: `bin/ut -s ut.backends.interpreter ut.backends.runner.sys.cstdlib
-ut.backends.runner.rt.dependency_image ut.backends.runner.lang.expressions
+ut.backends.ffi.dependency_image ut.backends.runner.lang.expressions
 ut.backends.evaluator.eval` -- 746 run, 0 failed, 5/5 failing as expected
 (the same pre-existing expected failures as prior progress notes). The
 full `bin/ut --random` was left to the orchestrator per the usual
@@ -2320,7 +2320,7 @@ its own, so it does not violate the guardrail -- but it remains
 hand-rolled, and routing it through `NativeArray` too is a future
 cleanup, not something this commit did. No test was added or modified.
 Focused run: `bin/ut -s ut.backends.interpreter
-ut.backends.runner.sys.cstdlib ut.backends.runner.rt.dependency_image
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image
 ut.backends.runner.sys.file ut.backends.runner.sys.random
 ut.backends.evaluator.eval` -- 441 run, 0 failed. The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
@@ -2489,8 +2489,8 @@ Focused runs, all green except that one known pre-existing failure:
 `bin/ut -s ut.backends.runner.lang.expressions` (314 run, 0 failed, 5/5
 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
-`bin/ut -s ut.backends.runner.sys.cstdlib ut.backends.runner.sys.
-dependency_image` (148 run, 0 failed); `bin/ut -s ut.backends.runner.lang.
+`bin/ut -s ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image` (148
+run, 0 failed); `bin/ut -s ut.backends.runner.lang.
 arrays` (302 run, 1 failed -- the known `sliceAssignmentWritesArrayStorage.
 Bytecode`); `bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
@@ -2803,7 +2803,7 @@ ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (70 run, 0 failed); `bin/ut -s
 ut.backends.runner.lang.arrays` (302 run, 1 failed -- the known
 `sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
-ut.backends.runner.sys.cstdlib ut.backends.runner.rt.dependency_image
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image
 ut.backends.runner.sys.concurrency` (151 run, 0 failed);
 `ut.backends.runner.lang.structs.struct.staticArrayCopyRunsPostblitAndDtors`
 `.Interpreter`/`.SystemLinker` (2 run, 0 failed); `bin/ut -s ut.bin.repl`
@@ -2869,7 +2869,7 @@ before the fix, green -- or throwing, for the diagnostic fixture -- after);
 `bin/ut -s ut.backends.runner.lang.expressions`; `bin/ut -s
 ut.backends.interpreter`; `bin/ut -s ut.backends.evaluator.eval`;
 `bin/ut -s ut.backends.runner.lang.arrays`; `bin/ut -s
-ut.backends.runner.sys.cstdlib ut.backends.runner.rt.dependency_image`;
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image`;
 `bin/ut -s ut.bin.repl`; `bin/ut -s ut.backends.runner.lang.imports
 ut.backends.runner.lang.pollution`. The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.

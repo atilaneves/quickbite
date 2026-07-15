@@ -1576,7 +1576,7 @@ static foreach (backend; Matrix!()) {
 // Bytecode must preserve this one postblit while its `emplaceRef` wrapper
 // writes the indexed destination.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.inexpressible, "shim writes via raw writeLocation, skipping the postblit entirely"),
+    Omit!(Interpreter, Because.unconfirmed, "diverges pending value.md native-layout track; no characterization pin yet"),
 )) {
     @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
     @Tags(backend.stringof)

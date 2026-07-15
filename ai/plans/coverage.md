@@ -243,7 +243,7 @@ or mutation work flags as thin (e.g. `arrayop`, `switch`, `bitops`,
 | math intrinsics | `math.d` |
 | boolean / short-circuit logic | `logic.d` |
 | assert/diagnostic messages | `diagnostics.d` |
-| needs the runtime environment (libc/OS) | `../sys/` (today only `cstdlib`) |
+| needs the runtime environment (libc/OS) | `../sys/` (today `cstdlib`, `file`, `random`, `concurrency`) |
 | struct/null value round-trip | REPL driver, `tests/ut/bin/repl.d` |
 
 The fixture helper is `runBackendSourceFixtureTests!backend(q{...})`

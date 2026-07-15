@@ -25,7 +25,7 @@ static foreach (backend; Matrix!()) {
 // Reinterpreting a signed-byte slice as `ubyte[]` exposes its stored bits,
 // rather than converting each signed value.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.inexpressible,
+    Omit!(Interpreter, Because.unconfirmed,
         "native-layout/value-representation frontier (ai/plans/value.md); no raw byte view of array storage"),
 )) {
     @("dynamicArray.castSignedBytesToUbytesPreservesRawBits." ~
@@ -2049,10 +2049,11 @@ static foreach (backend; Matrix!(
 // against a real `dmd`-compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`).
 // SystemLinker is the oracle; other backends omitted per the omit-don't-pin
 // convention (unconfirmed there).
-// Ctfe omitted: DMD's CTFE engine rejects the out-of-bounds slice assignment
-// with its own compile-time diagnostic wording ("slice `[0..5]` exceeds
-// array bounds `[0..2]`") rather than the runtime `RangeError` message this
-// fixture pins.
+// Ctfe omitted (unconfirmed, no sibling pin yet): DMD's CTFE engine is
+// expected to reject the out-of-bounds slice assignment with its own
+// compile-time diagnostic wording ("slice `[0..5]` exceeds array bounds
+// `[0..2]`") rather than the runtime `RangeError` message this fixture pins,
+// but that has not been characterized with a dedicated test.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed,
         "DMD's CTFE engine reports its own compile-time diagnostic wording here, but no sibling pin test captures it"),

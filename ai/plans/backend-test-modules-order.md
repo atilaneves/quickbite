@@ -50,10 +50,14 @@ Within the selected module:
 - Make the smallest honest backend change that turns the promoted test green.
 
 There is no global `backends` matrix any more (`backendsWith!` is gone). In
-its place: `tests/ut/backends/package.d` defines per-directory *default*
-matrices, `LangBackends` and `SysBackends`, and each test block opts into
-one via `static foreach (backend; Matrix!(...))`. A mature backend is
-included by default and opts *out* with a reason
+its place: `tests/ut/backends/package.d` defines `LangBackends` (every
+mature backend); each test block builds its matrix via
+`static foreach (backend; Matrix!(...))`. `lang/` blocks use `Matrix!()`
+directly (= `LangBackends`); `sys/` blocks have no automatic default and
+instead omit `Ctfe` explicitly (`Omit!(Ctfe, Because.…, "note")`) since
+host-env behaviour isn't CTFE-evaluable — `SysBackends` names the resulting
+set (`LangBackends` minus `Ctfe`) but is not itself passed to `Matrix!`. A
+mature backend is included by default and opts *out* with a reason
 (`Omit!(B, Because.…, "note")`); an in-development backend (e.g. `IR`) is
 excluded by default and opts *in* per fixture (`Plus!(IR)`). Promoting a
 test means deleting that backend's `Omit!(B, Because.unconfirmed)` (or,
@@ -192,7 +196,8 @@ on `Ctfe`/`Interpreter` rather than `Ctfe` alone.
 
 `tests/ut/backends/package.d` is promotion plumbing, not a behavior target: it
 defines `newBackend`, the `runBackend*Fixture*` helpers, and the `Matrix!`
-helper (`LangBackends`/`SysBackends` defaults, `Omit!`/`Plus!`). It does not
+helper (`LangBackends` default, `Omit!`/`Plus!`; `SysBackends` names the
+expected `sys/` result but is not itself a `Matrix!` default). It does not
 execute any test itself. This is not the old, removed `backends`/
 `backendsWith!` global matrix: that gave every test block the same backend
 list; `Matrix!` gives each block a *default* (mature backends in, in-

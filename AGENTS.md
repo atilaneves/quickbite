@@ -54,17 +54,21 @@ in the fixture's matrix, not the directory. Every backend except `Ctfe` is a
 promotion candidate. Adding a new test or changing test behaviour still
 requires approval.
 
-A fixture's backend list is `Matrix!(...)` (`tests/ut/backends/package.d`),
-defaulting to every mature backend (`LangBackends`/`SysBackends`). A mature
-backend opts out with a reason: `Matrix!(Omit!(B, Because.inexpressible,
-"..."))`, `Because.diverges`, or `Because.refusal` (see
-`ai/plans/interpreter.md` §8) — each carries a required `note` explaining why
-except `Because.unconfirmed`, which marks the promotion backlog. Promoting a
-backend is deleting its `Omit!(B, Because.unconfirmed)`. Hand-written
-`AliasSeq!(...)` is reserved for characterization pins that never carry a
-`SystemLinker`-oracle expectation (e.g. pinning `Ctfe`'s actual, divergent
-behaviour). Backend-mechanism tests (native JIT internals, FFI dependency
-images, ORC/ELF plumbing) live with their subsystem, not under `runner/`.
+A fixture's backend list is `Matrix!(...)` (`tests/ut/backends/package.d`).
+`lang/` blocks default to every mature backend via `Matrix!()` (=
+`LangBackends`); `sys/` blocks have no automatic default and instead omit
+`Ctfe` explicitly with `Omit!(Ctfe, ...)` since host-env behaviour isn't
+CTFE-evaluable, and `SysBackends` names the resulting set (`LangBackends`
+minus `Ctfe`). A mature backend opts out with a reason: `Matrix!(Omit!(B,
+Because.inexpressible, "..."))`, `Because.diverges`, or `Because.refusal`
+(see `ai/plans/interpreter.md` §8) — each carries a required `note`
+explaining why except `Because.unconfirmed`, which marks the promotion
+backlog. Promoting a backend is deleting its `Omit!(B, Because.unconfirmed)`.
+Hand-written `AliasSeq!(...)` is reserved for characterization pins that
+never carry a `SystemLinker`-oracle expectation (e.g. pinning `Ctfe`'s
+actual, divergent behaviour). Backend-mechanism tests (native JIT internals,
+FFI dependency images, ORC/ELF plumbing) live with their subsystem, not
+under `runner/`.
 
 Test behaviours, not implementations.
 

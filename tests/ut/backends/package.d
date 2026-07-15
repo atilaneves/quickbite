@@ -36,7 +36,7 @@ public alias SysBackends = AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJi
 +/
 public enum Because {
     inexpressible, // engine can never run the construct (permanent; note required)
-    diverges,      // pinned in a sibling hand-listed characterization block
+    diverges,      // pinned in a sibling hand-listed characterization block (note required)
     refusal,       // documented refusal (ai/plans/interpreter.md §8; note = verbatim red)
     unconfirmed,   // never tried: the promotion backlog (note optional)
 }
@@ -47,8 +47,8 @@ public enum Because {
     have been in the matrix to begin with) and must not be
     `SystemLinker` — the oracle can never be omitted from a `Matrix`;
     hand-written `AliasSeq!` characterization pins are unaffected. A
-    `Because.inexpressible` or `Because.refusal` omission requires a
-    non-empty `note`.
+    `Because.inexpressible`, `Because.refusal`, or `Because.diverges`
+    omission requires a non-empty `note`.
 +/
 public struct Omit(B, Because why, string note = "") {
     static assert(staticIndexOf!(B, LangBackends) != -1,
@@ -58,9 +58,10 @@ public struct Omit(B, Because why, string note = "") {
         "Omit!(SystemLinker, ...): the oracle can never be omitted from a " ~
         "Matrix; use a hand-written `AliasSeq!` characterization pin " ~
         "instead");
-    static assert(note.length > 0 || (why != Because.inexpressible && why != Because.refusal),
-        "Omit!(" ~ B.stringof ~ ", Because.inexpressible|refusal, ...): " ~
-        "a non-empty `note` is required for this reason");
+    static assert(note.length > 0 || (why != Because.inexpressible
+            && why != Because.refusal && why != Because.diverges),
+        "Omit!(" ~ B.stringof ~ ", Because.inexpressible|refusal|diverges, " ~
+        "...): a non-empty `note` is required for this reason");
 
     public alias Backend = B;
     public enum reason = why;
@@ -90,6 +91,19 @@ private template BackendsOf(alias Spec, specs...) {
     `static foreach (backend; Matrix!(...))`.
 +/
 public template Matrix(specs...) {
+    static foreach (spec; specs) {
+        static assert(isInstanceOf!(Omit, spec) || isInstanceOf!(Plus, spec),
+            "Matrix!(...): `" ~ spec.stringof ~ "` is neither `Omit!(...)` " ~
+            "nor `Plus!(...)` - a bare backend (or a typo, e.g. `Matrix!(IR)` " ~
+            "instead of `Matrix!(Plus!(IR))`) is silently ignored rather than " ~
+            "added to or omitted from the matrix");
+        static if (isInstanceOf!(Plus, spec))
+            static assert(staticIndexOf!(spec.Backend, LangBackends) == -1,
+                "Matrix!(Plus!(" ~ spec.Backend.stringof ~ "), ...): `" ~
+                spec.Backend.stringof ~ "` is already in `LangBackends` - " ~
+                "`Plus!` would duplicate it in the matrix");
+    }
+
     private enum bool notOmitted(B) = staticIndexOf!(B, BackendsOf!(Omit, specs)) == -1;
 
     public alias Matrix = AliasSeq!(

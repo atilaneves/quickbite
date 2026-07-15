@@ -2407,8 +2407,9 @@ Matrix: `dependencyImage.nativeChainedErrorSubclass.Interpreter` and
 convention of an inline `SystemLinker` oracle rather than a
 `static foreach` backend matrix — other backends have no dlopen'd
 dependency-image FFI machinery to exercise). Full regression sweep after the
-fix: `lang/exceptions.d`, `lang/cerealed.d`, and `rt/dependency_image.d` together
-— 314 tests, 0 failed, 1 expected failure.
+fix: `lang/exceptions.d`, `lang/cerealed.d`, and
+`backends/ffi/dependency_image.d` together — 314 tests, 0 failed, 1 expected
+failure.
 
 **Owed fixtures (work item, 2026-07-09).** #386 landed its fixes without the
 §8 red-first fixtures; the drafts and reconstruction procedure are in the
@@ -2967,7 +2968,7 @@ unrelated, order-sensitive `LLVMJit` test:
 The same test passed when rerun focused. The required seed check was then
 run with `bin/ut --seed 3098732115`; it failed a different unrelated runner
 path,
-`ut.backends.runner.rt.dependency_image.dependencyImage.pointerGlobalRead`
+`ut.backends.ffi.dependency_image.dependencyImage.pointerGlobalRead`
 `.Interpreter`, with `SystemLinker` reporting
 `unittest symbol not found in shared library` during that test's setup.
 

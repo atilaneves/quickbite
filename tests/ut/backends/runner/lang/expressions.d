@@ -2511,14 +2511,14 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // legitimate write through it was wrongly refused as an aliasing write.
 // Ctfe/Bytecode omitted: `new`-with-user-ctor pointer indirection through a
 // class field is not exercised on those backends yet (unrelated gaps, not
-// this fix). LLVMJit omitted: allocation ids are an Interpreter-only
-// bookkeeping detail with no compiled-code analogue to pin.
+// this fix). LLVMJit omitted: allocation ids are Interpreter-only
+// bookkeeping with no compiled-code analogue, so promoting LLVMJit here
+// would trivially pass without pinning anything meaningful.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed, "not exercised on this backend yet"),
     Omit!(Bytecode, Because.unconfirmed, "not exercised on this backend yet"),
-    Omit!(LLVMJit, Because.inexpressible,
-        "allocation ids are Interpreter-only bookkeeping; no " ~
-        "compiled-code analogue to pin"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "vacuous on LLVMJit; promotion would trivially pass"),
 )) {
     @("pointer.newCtorPointerWriteNotRefusedAfterFieldAddress." ~
         backend.stringof)
