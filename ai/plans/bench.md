@@ -1132,6 +1132,172 @@ diverged from the plan above in instructive ways; corrections, in order:
    multi-backend agreement (no second backend runs automem today). A package
    without such UDAs (cerealed) already produces a clean timed row.
 
+## Run Dub Packages Through Their Declared Test Program
+
+Self-contained work item, planned 2026-07-14. This supersedes the two proposed
+solutions in the open follow-on immediately above. It is not implemented.
+
+### Problem
+
+`bin/bench.sh --dub automem -b system-linker` builds and runs every raw D
+`unittest` declaration. That is not how automem's tests normally run. Its
+`unittest` dub configuration declares `tests/ut_main.d` as its main source, and
+that module mixes in unit-threaded's runner. The runner skips `@HiddenTest`
+tests and inverts the result of `@ShouldFail` tests. Quickbite bypasses that
+runner, treats both expected failures as ordinary failures, and therefore
+refuses to time automem.
+
+Recognising those two UDAs inside Quickbite would fix this package but establish
+the wrong boundary. Unit-threaded also has other runner semantics, and another
+package may use Silly or a custom test program. Quickbite must not become a
+partial implementation of every test framework it encounters.
+
+### Decision
+
+For a dub package with a test program, run the program declared by the selected
+dub test configuration. Dub and the program's test framework own test
+discovery, filtering, setup, execution, and result interpretation. Quickbite
+must not recognise unit-threaded, Silly, their UDAs, or their generated code as
+special cases.
+
+Keep raw `UnitTestDeclaration` execution for Quickbite's existing language
+fixtures and backend-matrix tests. They need structured per-test
+`TestResult[]`, and they do not declare an external framework runner. The new
+path is specifically the program-shaped dub test target.
+
+The first implementation supports `system-linker` only. Other backends report
+that test-program execution is unsupported until they can execute a program
+entry point correctly. Do not weaken their existing raw-unittest behaviour or
+invent framework-specific fallbacks.
+
+### Result Contract And Reporting
+
+An arbitrary test program has only a framework-neutral aggregate contract:
+exit success or failure plus its diagnostics. It does not have a portable
+per-test result protocol. Represent its result separately from `TestResult[]`,
+conceptually:
+
+```d
+struct ProgramResult {
+    bool passed;
+    int status;
+    string output;
+}
+```
+
+The concrete interface and fields should be driven by the first approved test;
+the sketch is not an API commitment.
+
+The preparation report may continue to state how many raw unittest declarations
+were found, because that is a mechanically observed frontend fact. The timed row
+must not render that number as `N/N` tests checked: framework filtering means it
+is not necessarily the number executed. Render an honest aggregate label such
+as `test target passed`. Capturing a structured per-test count is a possible
+future framework integration, not part of this framework-neutral slice.
+
+For multiple backends that eventually support program execution, agreement is
+on aggregate pass/fail. Exit statuses and diagnostics may differ for the same
+failure and are evidence to print, not portable equality keys.
+
+### Build And Execution Model
+
+1. Ask dub for the selected test configuration's complete build description,
+   including source files, generated sources after its normal generation step,
+   compiler flags, import paths, dependency link inputs, target kind, and main
+   source file. Relay that information; do not identify a framework or discover
+   an entry point with source-text heuristics.
+
+2. Prepare dependencies and any dub-declared source-generation step outside
+   the timed region, consistently with the cold/hot model in `dub-deps.md`.
+   Generation is package preparation, not work caused by an ordinary edit to
+   the project source.
+
+3. Parse the project sources as the existing `--dub` path does, retaining the
+   declared main entry point as part of the benchmark unit.
+
+4. Add a program-running capability distinct from `Runner.runTests`. For the
+   first slice, `system-linker` code-generates and links the package test
+   executable, then executes it as a child process. This provides normal D
+   runtime initialisation, module constructors, framework `main`, and process
+   shutdown instead of approximating them through a loaded shared library.
+
+5. One process represents one execution of the whole test target. This is not
+   per-test process spawning. Its startup and shutdown are part of the normal
+   test-program result latency and therefore part of the post-parse timing. The
+   dependency preparation and frontend parse remain excluded as documented.
+
+6. Capture output during warmup and measurement so framework output does not
+   bury benchmark rows. Print captured diagnostics when the untimed check fails;
+   discard successful warmup/measurement output unless a diagnostic mode is
+   deliberately added later.
+
+7. Run the test program once before timing. Time it only when that check exits
+   successfully. `--skip-check` retains its existing meaning and bypasses the
+   untimed check, but the timed invocation must still fail the row honestly if
+   the program exits unsuccessfully.
+
+### TDD And Approval Gates
+
+No test may be added or changed without showing the exact proposed test and
+receiving approval first.
+
+The first red test should use a small local dub fixture with a custom test
+program, not unit-threaded or another dependency. Its `main` must apply two
+runner-owned policies: omit one body and accept one deliberately failing body.
+The test should prove that the benchmark delegates to that declared program and
+gets aggregate success. It must fail on the current raw-unittest path, which
+would execute the deliberately failing body directly.
+
+After approval, proceed in strict cycles:
+
+1. Add only that delegation test and demonstrate red.
+2. Add the smallest program-result and `system-linker` execution path that makes
+   it green.
+3. Propose a second test in which the declared program returns failure; after
+   approval, make the pre-timing check skip the row and surface its diagnostic.
+4. Propose a reporting test; after approval, ensure the row says that the test
+   target passed and does not claim a raw `N/N` executed count.
+5. Once all tests are green, refactor the capability boundary so raw unittest
+   and program execution remain separate. Stop and ask for feedback after this
+   refactoring step as required by `AGENTS.md`.
+
+Do not use the installed automem package as a unit-test fixture: that would add
+repeated dependency resolution and couple the suite to external package state.
+Automem is an integration smoke test after the dependency-free behaviour is
+covered.
+
+### Verification
+
+After every editing session:
+
+```sh
+ninja bin/ut
+bin/ut --random
+```
+
+On a random failure, reproduce first with the seed printed by that exact run.
+After the focused implementation is green, verify the integration behaviour:
+
+```sh
+bin/bench.sh --dub automem -b system-linker
+bin/bench.sh --dub cerealed -b system-linker
+```
+
+Expected outcomes:
+
+- automem's unit-threaded runner, rather than Quickbite's raw unittest loop,
+  decides the package result;
+- automem produces a timed `system-linker` row with an aggregate
+  `test target passed`-style check label;
+- cerealed continues to produce a timed row through its declared test program;
+- successful framework output does not pollute the benchmark report;
+- no Quickbite module imports or names unit-threaded, Silly, `ShouldFail`, or
+  `HiddenTest` for this feature.
+
+Run `ci.sh` before creating a PR. If a backend cannot run this program-shaped
+benchmark, report the unsupported capability explicitly; do not route it back
+through raw unittest execution to make the benchmark appear green.
+
 ## Set The Predefined `unittest` Version Identifier (`--dub dlib` fails to prepare)
 
 Self-contained work item (planned 2026-06-23). Complete on its own; the only
