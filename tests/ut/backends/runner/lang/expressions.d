@@ -2919,7 +2919,7 @@ static foreach (backend; Matrix!()) {
 // used to throw a spurious out-of-range error before the fix. SystemLinker
 // is the oracle; other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.arrayAppendRefreshesStaleCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)

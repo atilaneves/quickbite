@@ -5815,3 +5815,15 @@ focused SystemLinker oracle green and Bytecode red; focused
 Bytecode/SystemLinker regression green; and all four prior member ref-return
 Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
 `463451710`, 3397 tests, 0 failed, 6/6 failing as expected).
+
+`pointer.arrayAppendRefreshesStaleCellAfterAddressOf` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that appending after taking an element address does
+not leave the typed-frame array descriptor stale for a subsequent direct
+index write and read. No production change was needed. This does not add
+capacity guarantees, pointer validity across reallocation, or broader stale
+cell reconciliation. Verification: passing baseline `ninja bin/ut` and
+`bin/ut --random` (seed `2372427440`), then the focused Bytecode row and
+`ninja bin/ut` passed after promotion. The final `bin/ut --random` passed
+with seed `2248053155` (3398 tests, 0 failed, 6/6 failing as expected).
