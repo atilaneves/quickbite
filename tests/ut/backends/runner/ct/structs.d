@@ -1712,7 +1712,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // `Holder(a).values` aliases `a` and `bump`'s write is visible through
 // `a[0]`); other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.memberFunctionArrayFieldWriteRefreshesSourceArrayCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1767,7 +1767,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `f`. Before any production change, Interpreter's `s.x` read 3 (the
 // pre-write value) instead of 42. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.memberFunctionForwardsPointerWriteToOwningFrame." ~
         backend.stringof)
     @Tags(backend.stringof)
