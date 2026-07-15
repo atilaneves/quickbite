@@ -171,6 +171,12 @@ private struct Compiler {
         ushort elementSize;
     }
 
+    private static struct StructPointerRefWriteBack {
+        ushort valueOffset;
+        ushort pointerOffset;
+        ushort valueSize;
+    }
+
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
         // compiled callee is an ordinary function.
@@ -1536,6 +1542,14 @@ private struct Compiler {
 
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _locals) {
+                    if (declaration in _structPointerLocals)
+                        return Operand(
+                            *existing,
+                            ScalarType.ulong_,
+                            false,
+                            true,
+                            ScalarType.void_,
+                        );
                     if (auto element = declaration in _refLocalPointers)
                         return loadThroughPointer(
                             Operand(
@@ -2730,6 +2744,34 @@ private struct Compiler {
         if (index is null)
             return false;
 
+        if (index.type.toBasetype.ty == TY.Tstruct) {
+            // The associative array stores mutable DMD declaration pointers.
+            auto declaration = structDeclarationOf(index.type);
+            auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+            if (descriptor is null)
+                return false;
+
+            const indexSlot = compileExpression(index.e2);
+            const pointer =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy,
+                pointer,
+                descriptor.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            const scaled =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            const stride = compileSizeConstant(
+                dynamicArrayElementSize(index.e1.type, ScalarType.void_),
+            );
+            _code ~= Instruction(Op.mulInt8, scaled, indexSlot.offset, stride);
+            _code ~= Instruction(Op.addInt8, pointer, pointer, scaled);
+            _locals[variable] = pointer;
+            _structPointerLocals[variable] = declaration;
+            return true;
+        }
+
         auto pointer = tryPointerToElement(index);
         if (pointer is null)
             return false;
@@ -3876,7 +3918,11 @@ private struct Compiler {
         if (auto deref = base.isPtrExp)
             base = deref.e1;
 
-        if (structPointerDeclaration(base.type) is null)
+        auto variable = base.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (structPointerDeclaration(base.type) is null &&
+            (declaration is null || declaration !in _structPointerLocals))
             return null;
 
         const pointer = compileExpression(base);
@@ -7911,6 +7957,7 @@ private struct Compiler {
                 }
 
         DynamicArrayRefWriteBack[] dynamicArrayRefWriteBacks;
+        StructPointerRefWriteBack[] structPointerRefWriteBacks;
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
@@ -7921,6 +7968,13 @@ private struct Compiler {
                         slot,
                         (*call.arguments)[argumentIndex],
                         dynamicArrayRefWriteBacks,
+                    ))
+                        continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitStructPointerRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        structPointerRefWriteBacks,
                     ))
                         continue;
                 emitCallArgument(
@@ -7956,6 +8010,13 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.descriptorOffset,
                 writeBack.indexOffset,
+            );
+        foreach (writeBack; structPointerRefWriteBacks)
+            _code ~= Instruction(
+                pointerStoreOp(writeBack.valueSize),
+                writeBack.valueOffset,
+                writeBack.pointerOffset,
+                compileSizeConstant(0),
             );
         if (isPointerType(call.type))
             return Operand(
@@ -8748,6 +8809,38 @@ private struct Compiler {
             descriptor.offset,
             indexOffset,
             cast(ushort) elementSize,
+        );
+        return true;
+    }
+
+    private bool emitStructPointerRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref StructPointerRefWriteBack[] writeBacks,
+    ) {
+        auto variable = argument.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null || declaration !in _structPointerLocals)
+            return false;
+
+        const pointerOffset = _locals[declaration];
+        const valueSize = cast(ushort) staticArraySize(argument.type);
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        _code ~= Instruction(
+            pointerLoadOp(valueSize),
+            valueOffset,
+            pointerOffset,
+            compileSizeConstant(0),
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= StructPointerRefWriteBack(
+            valueOffset, pointerOffset, valueSize,
         );
         return true;
     }

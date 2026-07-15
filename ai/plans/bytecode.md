@@ -5674,3 +5674,21 @@ ref aliases of array elements. Verification: focused Bytecode red then green
 and `ninja bin/ut` passed. `bin/ut --random` exited with signal 11 under seed
 `1923927317`; the required replay reproduced the crash after the complete
 promoted backend matrix row had passed.
+
+`struct.foreachRefOverFieldArrayPersistsElementWrites` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+because the foreach-lowered `ref Item` local was not represented as a pointer
+into the dynamic array's backing block, and forwarding that local to another
+`ref` parameter could not use the frame-offset call ABI directly. Struct
+element ref locals now retain their backing pointer; a forwarded ref call
+copies the struct to a frame temporary and writes it through the pointer after
+return. This does not add ref aliases of static-array elements, non-local ref
+returns, or structs larger than the VM's existing pointer load/store widths.
+Verification: focused Bytecode red then green, focused five-backend matrix,
+and `ninja bin/ut` passed. `bin/ut --random` exited with signal 11 under seed
+`1300728544` after this promoted row had passed. Before this promotion,
+replaying seed `1923927317` reproduced the recorded signal 11 only after the
+promoted row and multiple subsequent
+struct matrices; a focused sequence from that row through the crash-boundary
+matrix passed, so no causal link to commit `1ae75308` was established.

@@ -1586,11 +1586,8 @@ static foreach (backend; Matrix!()) {
 // (a struct field, here `val.units`) left `__r` untracked as a slice alias:
 // writes to `e`'s fields updated the interpreter's local snapshot of `__r`
 // but never propagated back to `val.units`, so the caller's array element
-// silently kept its default value. interpreter.md §9.7. `Bytecode` omitted:
-// it segfaults on this fixture (under active development, omit-don't-pin).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed, "segfaults on this fixture (under active development)"),
-)) {
+// silently kept its default value. interpreter.md §9.7.
+static foreach (backend; Matrix!()) {
     @("struct.foreachRefOverFieldArrayPersistsElementWrites." ~
         backend.stringof)
     @Tags(backend.stringof)
