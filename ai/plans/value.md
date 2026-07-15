@@ -6728,6 +6728,83 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    `bin/ut --random` was left to the orchestrator per the usual long-suite
    handoff.
 
+   Progress 2026-07-15 (union write-through-one-member visible through
+   another): probed whether `promoteStructCell`'s union guard (2026-07-14,
+   Finding 6 -- a union local never gets a `structCells` entry, staying on
+   the boxed `Value.Struct` path) leaves a real `SystemLinker` divergence,
+   as item 7's introduction names unions among the cases boxing "cannot
+   pass at any speed." It does, but NOT through the pointer/cell-promotion
+   path the guard protects -- a plain, address-free `U u; u.i = x;`
+   already diverges, because `Value.Struct` stores each member in its own
+   independent `Field[]` slot (`withStructField`/`structFieldAt`, keyed by
+   declaration index): writing `u.i` never touches `u.f`'s own slot, while
+   real D's `union` overlaps every member on the same bytes. RED confirmed
+   on Interpreter before any production change, with the exact scenario
+   value.md's task brief suggested: `union U { int i; float f; }`, `u.i =
+   1065353216;` (a runtime local, not a literal, per `ai/mistakes.md`),
+   `assert(u.f == 1.0f);` -- `object.Exception: nan != 1` (`u.f`'s own
+   independent `float.init` slot, untouched by the `u.i` write). Green on
+   `SystemLinker` throughout. A second, related divergence was also found
+   and deliberately left OUT of this slice's fix (see below).
+
+   Fix, in `impl.d`: a new `withUnionFieldWrite`, called only from
+   `writeLocation`'s `DotVarExp` write arm when `dot.e1`'s resolved
+   `TypeStruct.sym.isUnionDeclaration` is non-null (every other struct
+   write is completely unchanged, so no existing non-union test path is
+   touched). It writes the assigned field's raw bytes into a transient
+   `ubyte[]` buffer sized to `layout.typeByteSize(unionType)` via the
+   existing `native_scalar.writeScalar`, then re-derives every OTHER
+   native-scalar sibling field's boxed value by `native_scalar.readScalar`
+   reinterpreting those same bytes -- the identical byte-level machinery
+   `NativeStruct` cells already use elsewhere (`writeStructCellScalarFields`
+   et al.), but as a one-shot scratch buffer rather than a persisted cell.
+   This deliberately does NOT touch `promoteStructCell`, its guard, or any
+   pointer/cross-frame aliasing map: the address-taken (`&u.i`) case named
+   in the task brief stays exactly as guarded before this slice, on the
+   boxed fallback. A non-scalar sibling member (aggregate/array/class) is
+   left on its own prior boxed value, matching `writeStructCellScalarFields`'s
+   identical scalar-only scope; value.md already names a union member that
+   is itself an aggregate as a separately open case.
+
+   New fixture `union.writeThroughOneMemberIsVisibleThroughAnother.
+   {Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/structs.d`
+   -- the first union coverage in that file (previously none at all, per
+   the 2026-07-14 note). Scoped to the `Interpreter`/`SystemLinker` oracle
+   pair only, matching this slice's brief; `Ctfe`/`Bytecode`/`LLVMJit`
+   union support is untested and out of scope here.
+
+   No §9.10 shim retired -- unrelated to this write-through fix.
+
+   Second divergence found, NOT fixed this slice: `U u;` (no write at
+   all) already disagrees too -- `SystemLinker` zero-initializes the
+   union's WHOLE block from its FIRST declared member's own default value
+   (verified with a compiled probe: a union with `float` declared first
+   reports its `int` sibling as the NaN bit pattern, not `0`), while the
+   interpreter's `structDefaultValue` (`frontend/dmd/values.d`, shared
+   with the `Ctfe` backend's module graph, NOT interpreter-only) computes
+   each field's boxed default independently via `defaultValue(field.type)`
+   -- `int.init == 0`, `float.init == NaN` -- so an untouched union field
+   reads its own type's default, not the first member's reinterpreted
+   bytes. Not fixed here because, unlike the write-through case above,
+   there is no single call site to patch: `defaultValue`/`structDefaultValue`
+   is called from roughly twenty sites across `impl.d` for every kind of
+   default (locals, struct-literal missing fields, function returns,
+   parameters), and `structDefaultValue` itself lives in the frontend-
+   shared `values.d`, not the interpreter backend, so union-reinterpret
+   logic does not belong there without a broader design decision about
+   where it belongs. Left as an open, precisely-described follow-up rather
+   than forced into this surgical slice.
+
+   Focused suites all green: ct.expressions 559/0 (5 failing as expected,
+   pre-existing `@ShouldFail` characterizations, unchanged from before this
+   slice), ct.structs 293/0 (291 + this slice's 2 new backend instances),
+   ct.arrays 346/0, ct.exceptions 130/0, interpreter 218/0, bin.repl 228/0,
+   evaluator.eval 71/0; also ran rt.cstdlib 89/0 and rt.dependency_image
+   119/0 since both carry pre-existing union FFI fixtures (`pthread`
+   `mutexattr`, extern(C) union return/out-param), unaffected by this
+   change. The full `bin/ut --random` was left to the orchestrator per the
+   usual long-suite handoff.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

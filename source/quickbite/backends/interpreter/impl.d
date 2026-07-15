@@ -7261,7 +7261,12 @@ private struct Walker {
                 return;
             }
 
-            writeLocation(dot.e1, receiver.withStructField(structFieldIndex(dot), value));
+            const fieldIndex = structFieldIndex(dot);
+            auto unionType = receiverStructType(dot.e1);
+            const updated = unionType !is null && unionType.sym.isUnionDeclaration !is null
+                ? withUnionFieldWrite(receiver, unionType, fieldIndex, value)
+                : receiver.withStructField(fieldIndex, value);
+            writeLocation(dot.e1, updated);
             return;
         }
 
@@ -8299,6 +8304,55 @@ private struct Walker {
                 return index;
 
         throw new Exception("Unsupported interpreter field access.");
+    }
+
+    // A D `union`'s members share one block of bytes in real D, but the
+    // boxed `Value.Struct` representation (`withStructField`/
+    // `structFieldAt`) stores each member independently in its own
+    // `Field[]` slot -- `promoteStructCell`'s union guard deliberately
+    // keeps a union local on this boxed path (see its comment), so a plain
+    // `u.i = x;` write left every sibling member's own slot untouched,
+    // diverging from `SystemLinker`'s overlapping-bytes behaviour (writing
+    // `u.i` must be visible, reinterpreted, through `u.f`). This overlays
+    // every OTHER native-scalar sibling field by reinterpreting the
+    // just-written value's own bytes as that field's type, using the same
+    // `writeScalar`/`readScalar` byte-level machinery `NativeStruct` cells
+    // already use elsewhere -- a transient byte buffer, not a persisted
+    // cell, so `promoteStructCell`'s own guard (and its pointer/cross-frame
+    // aliasing machinery) is untouched by this. A non-scalar sibling field
+    // (aggregate/array/class) is left on its own prior boxed value,
+    // matching `writeStructCellScalarFields`'s identical scalar-only scope
+    // -- value.md item 7 still names a union member that is itself an
+    // aggregate as an open case.
+    private Value withUnionFieldWrite(
+        in Value receiver,
+        imported!"dmd.mtype".TypeStruct unionType,
+        in size_t fieldIndex,
+        in Value value,
+    ) {
+        import quickbite.backends.interpreter.layout: structFields, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, readScalar, writeScalar;
+
+        auto updated = receiver.withStructField(fieldIndex, value);
+
+        auto fields = structFields(unionType);
+        if (fieldIndex >= fields.length || !isNativeScalarType(fields[fieldIndex].type))
+            return updated;
+
+        auto bytes = new ubyte[](typeByteSize(unionType));
+        writeScalar(fields[fieldIndex].type,
+            bytes[0 .. typeByteSize(fields[fieldIndex].type)], value);
+
+        foreach (siblingIndex, sibling; fields) {
+            if (siblingIndex == fieldIndex || !isNativeScalarType(sibling.type))
+                continue;
+
+            updated = updated.withStructField(siblingIndex,
+                readScalar(sibling.type, bytes[0 .. typeByteSize(sibling.type)]));
+        }
+
+        return updated;
     }
 
     private size_t classFieldIndex(imported!"dmd.expression".DotVarExp dot) {

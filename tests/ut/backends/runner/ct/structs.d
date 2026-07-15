@@ -1809,3 +1809,24 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("union.writeThroughOneMemberIsVisibleThroughAnother." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int i;
+                float f;
+            }
+
+            unittest {
+                U u;
+                int bits = 1065353216;
+                u.i = bits;
+                assert(u.f == 1.0f);
+            }
+        });
+    }
+}
