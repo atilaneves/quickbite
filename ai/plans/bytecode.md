@@ -5661,3 +5661,16 @@ around the index expression, matching the dynamic-array read and address paths.
 This does not add `$` outside array indices or change array-resize semantics.
 Verification: focused Bytecode red then green; `ninja bin/ut`; and
 `bin/ut --random` (seed `3401576571`).
+
+`struct.postfixLengthIncrementGrowsRefParamArrayField` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+because dmd lowers postfix `.length++` through a synthetic `ref T[]` local,
+which the core copied into an independent descriptor; resizing it therefore
+left the original struct field empty. Ref dynamic-array locals now reuse the
+initializer's existing descriptor, preserving the lvalue alias and its
+pointer writeback metadata. This does not add general ref-local aliases or
+ref aliases of array elements. Verification: focused Bytecode red then green
+and `ninja bin/ut` passed. `bin/ut --random` exited with signal 11 under seed
+`1923927317`; the required replay reproduced the crash after the complete
+promoted backend matrix row had passed.

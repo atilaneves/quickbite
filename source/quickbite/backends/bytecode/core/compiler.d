@@ -2712,12 +2712,20 @@ private struct Compiler {
     }
 
     private bool compileRefLocalDeclaration(VarDeclaration variable) {
+        import dmd.astenums: TY;
+
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
         if (initializer is null)
             return false;
 
         auto expression = initializerExpression(initializer.exp);
+        if (variable.type.toBasetype.ty == TY.Tarray)
+            if (auto descriptor = dynamicArrayDescriptorOrNull(expression)) {
+                _dynamicArrayLocals[variable] = *descriptor;
+                return true;
+            }
+
         auto index = expression.isIndexExp;
         if (index is null)
             return false;

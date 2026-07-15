@@ -1421,11 +1421,7 @@ static foreach (backend; Matrix!()) {
 // (`Walker.runIndexAssignExpression`'s `DotVarExp` branch) affects
 // `h.arr[$ - 1] = ...` and is tracked separately in interpreter.md §9.7,
 // not fixed here, to keep this fixture pinned to the one root it exposes.
-// `Bytecode` omitted: still red there (under active development), per
-// interpreter.md §8's omit-don't-pin rule for matrix width.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed, "still red there (under active development)"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.postfixLengthIncrementGrowsRefParamArrayField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
