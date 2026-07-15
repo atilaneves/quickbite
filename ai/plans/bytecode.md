@@ -5988,3 +5988,17 @@ change was needed. This does not add slice rebinding, append-reallocation
 aliases, or broader stale-array reconciliation. Verification: focused Bytecode
 row, `ninja bin/ut`, and final `bin/ut --random` passed (seed `3679512546`;
 the quiet seed replay also passed).
+
+`dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode candidate was red with
+`Unsupported type in bytecode core: int[]` because
+the outer literal is a static array of dynamic-array slice descriptors. Static
+array literals now copy dynamic-array elements as complete descriptors, static
+array indexing exposes such an element as a descriptor block, and a dynamic
+array initialized from that index copies the descriptor. This does not add
+nested array mutation, row rebinding, or broader stale-cell reconciliation.
+Verification: passing baseline `ninja bin/ut` and `bin/ut --random` (seed
+`3793291738`), focused Bytecode red then green, and passing focused
+five-backend matrix; final `ninja bin/ut` and `bin/ut --random` (seed
+`1453010754`).

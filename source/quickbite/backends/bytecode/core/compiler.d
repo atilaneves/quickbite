@@ -4589,6 +4589,18 @@ private struct Compiler {
             return;
         }
 
+        if (source.isIndexExp !is null &&
+            source.type.toBasetype.ty == TY.Tarray) {
+            const value = compileExpression(source);
+            _code ~= Instruction(
+                Op.copy,
+                destination,
+                value.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
+            return;
+        }
+
         if (auto string_ = stringLiteralOf(source)) {
             compileStringBytesArrayInto(destination, elementType, string_);
             return;
@@ -7645,7 +7657,8 @@ private struct Compiler {
             (baseOffset + indexInteger.toInteger * elementSize);
         // A sub-array or struct element has no scalar type; callers that handle
         // those use only the offset (a static-array index chain, a struct base).
-        const elementType = index.type.toBasetype.ty == TY.Tsarray ||
+        const elementType = index.type.toBasetype.ty == TY.Tarray ||
+            index.type.toBasetype.ty == TY.Tsarray ||
             index.type.toBasetype.ty == TY.Tstruct
                 ? ScalarType.void_
                 : scalarType(index.type);
@@ -7901,6 +7914,7 @@ private struct Compiler {
         Type arrayType,
         ArrayLiteralExp literal,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         if (literal.elements is null)
@@ -7910,6 +7924,22 @@ private struct Compiler {
             ));
 
         auto elementType = arrayType.toBasetype.nextOf;
+        if (elementType.toBasetype.ty == TY.Tarray) {
+            foreach (elementIndex; 0 .. literal.elements.length) {
+                const value = compileExpression(
+                    (*literal.elements)[elementIndex],
+                );
+                _code ~= Instruction(
+                    Op.copy,
+                    cast(ushort) (offset +
+                        elementIndex * sliceDescriptorSize),
+                    value.offset,
+                    cast(ushort) sliceDescriptorSize,
+                );
+            }
+            return;
+        }
+
         if (isStringType(elementType)) {
             const elementSize = cast(uint) staticArraySize(elementType);
             foreach (elementIndex; 0 .. literal.elements.length) {

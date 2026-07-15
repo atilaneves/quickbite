@@ -1867,11 +1867,8 @@ static foreach (backend; Matrix!()) {
 // and, without dropping that stale cell on `row`'s own fresh re-declaration
 // each outer iteration, the second outer iteration's inner loop reads back
 // the FIRST iteration's stale cell bytes instead of its own row's values.
-// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
-// convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding." ~
         backend.stringof)
     @Tags(backend.stringof)
