@@ -10976,9 +10976,17 @@ private struct Walker {
         if (alias_.hasFieldIndex) {
             const updatedField = source.structFieldAt(alias_.fieldIndex)
                 .withArrayElement(alias_.lower + index, value);
-            locals[alias_.source] =
-                source.withStructField(alias_.fieldIndex, updatedField);
-            uninitializedLocals.remove(alias_.source);
+            // value.md item 7's struct-static-array-field foreach-ref
+            // follow-up: `alias_.source` (the struct owning the field) may
+            // already have a `structCells` entry (an earlier `&s.arr[0]` in
+            // the same frame) -- `writeCelledLocal` is the SAME whole-struct
+            // refresh a direct `s.arr[i] = v` write reaches via
+            // `writeLocation`, so a later deref-read through that cell
+            // (`structArrayFieldPointerCellValue`) sees this slice-routed
+            // write too instead of stale bytes. A no-op when no cell was
+            // ever promoted for `alias_.source`.
+            writeCelledLocal(alias_.source,
+                source.withStructField(alias_.fieldIndex, updatedField));
             return;
         }
 

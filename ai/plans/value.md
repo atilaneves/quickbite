@@ -7639,6 +7639,79 @@ this slice's own four maps; (5) deeper nesting (2+ levels) or a class
 receiver/class-typed inner field composed with an array element, all out of
 this narrow slice's scope.
 
+Progress 2026-07-16 (struct static-array field, foreach-ref write-through:
+`foreach (ref e; s.arr) e = ...;` now visible through an earlier
+`&s.arr[0]`): probed a menu of distinct native-storage behaviours
+(struct-static-array-field `foreach (ref e; ...)` mutation, a runtime-
+variable array index for `&a[i]`, a by-value-returned struct's field
+address-taken and written, `s.arr[i] += v`/`s.arr[i]++` compound ops
+through a cell, a pointer threaded through two levels of function calls,
+and a slice of a struct's static-array field mutated then read through an
+earlier pointer) against the `Interpreter`/`SystemLinker` oracle pair.
+Confirmed a real divergence for the `foreach`-ref shape (and its slice-
+mutation sibling, the same root cause): RED on `Interpreter`, green on
+`SystemLinker`. Every other probed shape already matched (compound ops,
+cross-call pointer threading, by-value-return field address-taking, and
+the runtime-variable index all passed on both backends already).
+
+Root cause: dmd's own `foreach`-to-`for` rewrite (`statementsem.d`) lowers
+`foreach (ref e; s.arr)` to `T[] __r = s.arr[]; ... ref T e = __r[__key];`
+-- the write reaches `s` through a SLICE alias of the field
+(`writeThroughSliceAlias`'s `hasFieldIndex` branch, added for exactly this
+lowering shape), not through the direct `s.arr[i] = ...` assignment path
+(`writeIndexLocation`) that already refreshes a promoted `structCells`
+entry via `writeLocation`/`writeCelledLocal`. `writeThroughSliceAlias`'s
+field-index branch only updated the boxed `locals[alias_.source]` mirror
+and returned -- it never refreshed `alias_.source`'s `structCells` entry,
+so a pointer taken before the loop (`&s.arr[0]`) kept answering with the
+pre-loop byte snapshot instead of the loop's writes.
+
+Fixture `pointer.
+structStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer.
+{Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/expressions.d`,
+immediately after `pointer.
+structStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+(the direct-write sibling): `struct S { int[3] arr; } S s; s.arr[0] =
+one(); int* p = &s.arr[0]; foreach (ref e; s.arr) e = e + ninetyNine();
+assert(*p == 1 + 99);`. RED confirmed on `Interpreter` before any
+production change: `1 != 100`. Green on `SystemLinker` throughout.
+`Ctfe`/`LLVMJit` omitted per the omit-don't-pin convention (unconfirmed
+there) -- unlike the direct-write sibling fixture, not yet probed against
+those two backends.
+
+Fix, in `impl.d`'s `writeThroughSliceAlias` only: the `hasFieldIndex`
+branch now calls the EXISTING `writeCelledLocal(alias_.source, ...)` with
+the updated whole-struct value, instead of writing only `locals[alias_.
+source]` and returning. This is the SAME whole-struct refresh a direct
+`s.arr[i] = v` write already reaches (`writeIndexLocation` ->
+`writeLocation`'s `VarExp` arm -> `writeCelledLocal`), which in turn calls
+the existing `writeStructCellScalarFields` -- already widened to handle a
+scalar-element static-array field -- to refresh the `structCells` entry's
+bytes when one exists (a no-op otherwise). No new byte-reinterpretation
+machinery, and no change to `writeCelledLocal`, `writeStructCellScalarFields`,
+or `writeIndexLocation`. This also fixes the sibling slice-mutation shape
+(`int[] sl = s.arr[]; sl[0] = v;`) probed alongside it, since both route
+through this same branch; no separate fixture added for that shape
+(same root cause, same fix, avoiding a near-duplicate test).
+
+No `interpreter.md` §9.10 shim retired -- unrelated to this slice-alias
+write-through widening.
+
+Focused suites all green (run together): ct.expressions 571/0 (5 failing
+as expected, unchanged, plus this slice's own 2 new backend instances),
+ct.structs 305/0, ct.arrays 346/0, ct.exceptions 130/0, ct.control_flow
+336/0, interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0 -- 2205 run,
+0 failed, 5/5 failing as expected. The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff.
+
+Remaining follow-up: (1) `Ctfe`/`LLVMJit` behaviour for this fixture is
+unconfirmed (never probed), unlike its direct-write sibling which already
+covers all four backends; (2) a dynamic-array or class-typed field sliced
+the same way (`c.arr[]`/a dynamic-array field's own `foreach (ref e;
+...)`) is untried; (3) other slice-alias write-through shapes composed
+with this one (e.g. a nested struct field's static-array field sliced via
+`foreach`) are untried.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

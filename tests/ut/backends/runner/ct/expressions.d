@@ -3968,6 +3968,44 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// value.md item 7's struct-static-array-field follow-up, foreach-ref
+// mutation shape: `foreach (ref e; s.arr) e = ...;` lowers (dmd's own
+// foreach-to-for rewrite) to `T[] __r = s.arr[]; ... ref T e = __r[__key];`,
+// so the write lands through a SLICE alias of the field, not a direct
+// `s.arr[i] = ...` assignment -- the write-through path the fixture above
+// exercises. SystemLinker's `p` aliases `s`'s real storage, so the write is
+// visible through `*p`. `Ctfe`/`LLVMJit` omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.structStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S s;
+                s.arr[0] = one();
+                int* p = &s.arr[0];
+                foreach (ref e; s.arr)
+                    e = e + ninetyNine();
+                assert(*p == 1 + 99);
+            }
+        });
+    }
+}
+
 // Class sibling of the struct-static-array-field fixture above (value.md
 // item 7 decomposition item 4, aggregate composition): `&c.arr[i]` where
 // `arr` is a scalar-element static-array field of a plain class local `c`.
