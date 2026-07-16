@@ -6982,7 +6982,9 @@ private struct Compiler {
             }
 
         // `box.field = rhs` through a class reference: write the scalar rhs at
-        // `class pointer + field.offset`.
+        // `class pointer + field.offset`. A string field's slice descriptor is
+        // sized separately from `scalarType`, which reports `void_`/0 for it
+        // (matching the constructor-less class-init path in `storeClassField`).
         if (auto dot = assign.e1.isDotVarExp)
             if (auto field = tryClassPointerField(dot)) {
                 const value = compileExpression(assign.e2);
@@ -6993,8 +6995,11 @@ private struct Compiler {
                         expressionChars(assign),
                     ));
                 const fieldPointer = classFieldAddress(*field);
+                const fieldSize = isStringType(field.type)
+                    ? stringSliceSize
+                    : size(fieldScalar);
                 _code ~= Instruction(
-                    pointerStoreOp(size(fieldScalar)),
+                    pointerStoreOp(fieldSize),
                     value.offset,
                     fieldPointer,
                     compileSizeConstant(0),
@@ -13228,22 +13233,41 @@ private void appendMemberFunctions(
 private bool supportedVirtualSignature(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
-    import dmd.astenums: TY;
-
     if (function_.type is null || function_.type.nextOf is null)
         return false;
-    if (function_.type.nextOf.toBasetype.ty == TY.Tclass)
+    if (unsupportedVirtualSignatureType(function_.type.nextOf))
         return false;
 
-    if (function_.parameters is null)
+    // A function whose body was never bound to local `VarDeclaration`s (true
+    // for a druntime member no fixture calls, such as `Throwable.opApply`)
+    // has a null `parameters` list; its parameter types still live on the
+    // underlying `TypeFunction`, matching `parameterLayout`'s own fallback.
+    if (function_.parameters !is null) {
+        foreach (parameter; *function_.parameters)
+            if (parameter.type is null ||
+                unsupportedVirtualSignatureType(parameter.type))
+                return false;
+        return true;
+    }
+
+    auto type = function_.type.toBasetype.isTypeFunction;
+    auto parameters = type is null ? null : type.parameterList.parameters;
+    if (parameters is null)
         return true;
 
-    foreach (parameter; *function_.parameters)
+    foreach (parameter; *parameters)
         if (parameter.type is null ||
-            parameter.type.toBasetype.ty == TY.Tclass)
+            unsupportedVirtualSignatureType(parameter.type))
             return false;
 
     return true;
+}
+
+private bool unsupportedVirtualSignatureType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.toBasetype.ty == TY.Tclass ||
+        type.toBasetype.ty == TY.Tdelegate;
 }
 
 private imported!"dmd.func".FuncDeclaration overridingFunction(
