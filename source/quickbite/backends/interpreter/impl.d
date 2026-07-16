@@ -7446,6 +7446,32 @@ private struct Walker {
         if (auto slice = assign.e1.isSliceExp)
             return runSliceAssignExpression(slice, assign.e2);
 
+        // dmd's semantic3 merges a synthesized `BlitExp(VarExp(param), 0)`
+        // into a function's own body for every `out` parameter of a
+        // zero-init struct type (the literal's `.type` is retyped to the
+        // struct type as a "memset" marker; semantic3.d's own comment:
+        // "Must do same check in interpreter"). This exact shape is already
+        // special-cased for a plain local declaration in
+        // `runDeclarationExpression` (`isBlitExp` with an `IntegerExp` e2),
+        // materializing the struct's real default value instead of writing
+        // the literal through naively -- but a synthesized out-parameter
+        // initializer is a bare top-level assignment, not wrapped in a
+        // `DeclarationExp`, so it never reached that check and instead fell
+        // through to `runExpression(assign.e2)` below, which evaluated the
+        // `IntegerExp` as a scalar `Value(0)` and clobbered the parameter's
+        // boxed struct value with a bare int.
+        if (auto blit = assign.isBlitExp) {
+            import quickbite.frontend.dmd.types: isStructType;
+
+            if (blit.e2.isIntegerExp !is null && isStructType(assign.e1.type))
+                if (auto var = assign.e1.isVarExp)
+                    if (auto variable = var.var.isVarDeclaration) {
+                        const value = defaultValue(variable);
+                        writeLocation(assign.e1, value);
+                        return value;
+                    }
+        }
+
         const value = runExpression(assign.e2);
         writeLocation(assign.e1, value);
 

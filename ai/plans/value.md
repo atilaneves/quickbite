@@ -7785,6 +7785,92 @@ slice-alias branch (`recordSliceAlias`'s final `VarExp` arm) never
 propagates `hasFieldIndex`/`isClassField` at all -- unchanged, pre-existing
 gap shared with the struct sibling slice, out of this narrow slice's scope.
 
+Progress 2026-07-16 (`out` struct parameter field write no longer corrupts
+the parameter to a bare int): probed a fresh menu of distinct
+native-storage-adjacent behaviours (a 2D static array's `&m[i][j]`, a
+`string` struct field's address-of/read coherence through a cell, an `out`
+struct parameter, a `with (structInstance) { field = v; }` write's
+coherence with an earlier pointer, and a struct static-array field's
+element address taken then the whole field slice-filled) against the
+`Interpreter`/`SystemLinker` oracle pair. The `with`-statement and
+slice-fill-field probes already matched. The 2D static array and `string`
+field probes are real divergences too (RED on `Interpreter`) but both need
+a genuinely new mechanism -- flattening nested static arrays down to their
+scalar leaf elements for pointer arithmetic, and a slice-valued struct-field
+cell primitive, respectively -- not a surgical single-function fix, so
+neither was picked. The `out` struct parameter probe was the first
+divergence with a small, well-understood root cause and no new mechanism.
+
+Root cause: dmd's own `semantic3.d` ("Merge in initialization of 'out'
+parameters") synthesizes a zero-init statement for every `out` parameter of
+a zero-init struct type and merges it as the FIRST statement of the
+callee's own body: `BlitExp(VarExp(param), IntegerExp(0))`, with the
+literal's own `.type` retyped to the struct type as a "memset" marker for
+codegen (`dsymbolsem.d`'s own comment on this exact shape: "Must do same
+check in interpreter"). `runDeclarationExpression` already special-cases
+this identical shape for a plain LOCAL declaration (`S s = 0;` materializes
+the struct's real default value instead of writing the literal through
+naively) -- but the synthesized out-parameter statement is a bare top-level
+assignment, never wrapped in a `DeclarationExp`, so it never reached that
+check. It fell through `runAssignExpression`'s generic
+`runExpression(assign.e2)` path instead, which evaluated the `IntegerExp`
+as a scalar `Value(0)` and clobbered the parameter's boxed struct value
+with a bare int. The following `s.x = one();` field write then threw
+("Expected struct.") from `Value.withStructField`, which requires a
+`Value.Struct` receiver -- an exception, not merely a wrong value.
+
+Fixture `function.outStructParameterFieldWriteIsVisibleToCaller.
+{Ctfe,Interpreter,SystemLinker,LLVMJit}` in
+`tests/ut/backends/runner/ct/control_flow.d`, immediately after
+`function.refSizeTParameter`: `struct S { int x; int y; } void makeS(out S
+s) { s.x = one(); s.y = two(); } unittest { S s; makeS(s); assert(s.x ==
+1); assert(s.y == 2); }`. RED confirmed on `Interpreter` before any
+production change: `object.Exception ... "Expected struct."`. Green on
+`Ctfe`, `SystemLinker`, and `LLVMJit` throughout. `Bytecode` omitted per
+the "never pin an in-development backend's refusal, omit instead"
+convention: it throws its own unrelated `"Unsupported assignment in
+bytecode core: s = 0"` for this shape, a separate, actively-developed
+backend's own gap, not a wrong value.
+
+Fix, in `impl.d`'s `runAssignExpression` only: before the existing generic
+`runExpression(assign.e2)` write, a new check detects the synthesized
+zero-init shape (`assign.isBlitExp`, `blit.e2.isIntegerExp !is null`, and
+`isStructType(assign.e1.type)`) with a plain `VarExp` target, and writes
+the target variable's real `defaultValue(variable)` instead -- the exact
+same fallback `runDeclarationExpression`'s own sibling check already uses
+for a local declaration. No new byte-reinterpretation machinery, no new
+map; reuses the existing `defaultValue`/`writeLocation` calls verbatim.
+Every other `BlitExp`/`ConstructExp`/`AssignExp` shape (including a
+zero-init static array, already handled solely by
+`runDeclarationExpression`'s own pre-existing check) is unaffected: the new
+check's three guards (`isBlitExp`, integer-literal RHS, struct-typed LHS)
+all must hold, and only a plain-`VarExp` target takes the new branch at
+all.
+
+Focused suites all green (run together): ct.expressions, ct.structs,
+ct.arrays, ct.exceptions, ct.control_flow, interpreter, bin.repl,
+evaluator.eval -- 2211 run, 0 failed, 5/5 failing as expected (the same
+pre-existing ct.expressions failures, unchanged count; ct.control_flow grew
+by this slice's own 4 new backend instances). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
+Remaining follow-up: (1) the 2D static-array `&m[i][j]` divergence found
+during this same probe (`symbolOffsetLocalValue`'s constant-folded
+`SymOffExp` arm divides the raw byte offset by the IMMEDIATE element
+type's size -- `int[2]` for `int[2][3]`, not the innermost scalar's -- so
+`arrayPointerElements`' un-flattened top-level elements list resolves to
+the wrong, non-scalar element entirely) is real but needs a genuine
+flattening mechanism, not fixed here; (2) the `string`/dynamic-array
+struct-field address-of/write coherence gap found in the same probe
+(`promoteStructFieldCell`'s `isNativeScalarType(dot.type)` gate declines
+any non-scalar field, matching every prior slice's own documented "dynamic
+array field... is untried" follow-up) needs a slice-valued struct-field
+cell primitive, not fixed here; (3) a NON-zero-init struct's synthesized
+`out`-parameter initializer (a user-defined default constructor or a
+non-all-zero field default) takes a different dmd-synthesized shape
+(`ConstructExp`/a real call) entirely untried by this narrow fix, which
+only recognises the `BlitExp`-with-`IntegerExp` zero-memset shape.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
