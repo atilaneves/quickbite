@@ -6248,3 +6248,23 @@ After promotion, the focused Bytecode row, focused five-backend matrix, and
 final `ninja bin/ut` passed. The final randomized suite crashed with the
 pre-existing signal 11 under seed `809806776`; its required quiet seed replay
 reproduced exit code 139.
+
+`pointer.recursiveArrayParameterElementWriteIsVisibleThroughCallerCell`
+promoted to Bytecode, 2026-07-16: pre-approved promotion of the existing
+direct SystemLinker-backed fixture. The focused Bytecode row passed on its
+first candidate run, confirming that an element write through a recursively
+passed dynamic-array descriptor updates the same native backing storage seen
+by the caller after an earlier element address was taken. No production
+change was needed. This does not add recursive parameter rebinding, append
+across recursive frames, or broader dynamic-array cell reconciliation. The
+adjacent `pointer.newCtorPointerWriteNotRefusedAfterFieldAddress` candidate
+was attempted first and left unpromoted: Bytecode does not execute the user
+class constructor, so `q` remains null and pointer-field assignment crashes;
+that constructor gap is wider than this promotion. Before promotion,
+`ninja bin/ut` passed; `bin/ut --random --quiet` crashed with the pre-existing
+signal 11 under seed `3663986118`, and its required
+`bin/ut --seed 3663986118 --quiet` replay reproduced exit code 139. After
+promotion, the focused Bytecode row and focused five-backend matrix passed.
+Final `ninja bin/ut` passed. The final `bin/ut --random --quiet` crashed with
+the pre-existing signal 11 under seed `871162504`; its required
+`bin/ut --seed 871162504 --quiet` replay reproduced exit code 139.

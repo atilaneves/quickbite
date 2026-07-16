@@ -3527,7 +3527,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // bare-assignment gap, so a same-length in-place element write made by the
 // recursive callee never reconciled the caller's own stale cell.
 // SystemLinker is the oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveArrayParameterElementWriteIsVisibleThroughCallerCell." ~
         backend.stringof)
     @Tags(backend.stringof)
