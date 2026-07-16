@@ -1886,6 +1886,9 @@ private struct Compiler {
                 return *pointer;
             if (auto pointer = tryAddressOfLocal(address))
                 return *pointer;
+            if (auto symbol = address.e1.isSymOffExp)
+                if (auto pointer = tryAddressOfSymbol(symbol))
+                    return *pointer;
             if (auto pointer = tryAddressOfRefParameterCall(address))
                 return *pointer;
             // `&f` of a free or static nested function: the function-pointer
@@ -2297,6 +2300,9 @@ private struct Compiler {
                                 offset,
                                 dynamicArrayElementType(declaration.type),
                             );
+                            result.writeBackThroughFrame = true;
+                            result.frameIndexOffset =
+                                capturedFrameIndex(*captured);
                             return result;
                         }
 
@@ -2740,6 +2746,12 @@ private struct Compiler {
                 return true;
             }
 
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot)) {
+                _locals[variable] = field.offset;
+                return true;
+            }
+
         auto index = expression.isIndexExp;
         if (index is null)
             return false;
@@ -3067,6 +3079,7 @@ private struct Compiler {
         // `_locals`: the scalar VarExp/assignment paths must not treat its
         // inline block as a scalar slot.
         _staticArrayLocals[variable] = offset;
+        _capturedOffsets[variable] = offset;
 
         if (variable._init !is null &&
             variable._init.isVoidInitializer !is null)
@@ -4580,6 +4593,18 @@ private struct Compiler {
             return;
         }
 
+        if (source.isIndexExp !is null &&
+            source.type.toBasetype.ty == TY.Tarray) {
+            const value = compileExpression(source);
+            _code ~= Instruction(
+                Op.copy,
+                destination,
+                value.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
+            return;
+        }
+
         if (auto string_ = stringLiteralOf(source)) {
             compileStringBytesArrayInto(destination, elementType, string_);
             return;
@@ -5395,6 +5420,9 @@ private struct Compiler {
         auto existing = declaration in _locals;
         auto staticArray = declaration in _staticArrayLocals;
         if (existing is null && staticArray is null) {
+            if (auto pointer = tryAddressOfCaptured(
+                    declaration, symOff.type.toBasetype.nextOf))
+                return pointer;
             auto moduleVariable = moduleScalarVariableOrNull(declaration);
             if (moduleVariable is null || symOff.offset != 0)
                 return null;
@@ -5492,8 +5520,12 @@ private struct Compiler {
                     return result;
                 } else {
                     auto staticArray = declaration in _staticArrayLocals;
-                    if (staticArray is null)
-                        return null;
+                    if (staticArray is null) {
+                        return tryAddressOfCaptured(
+                            declaration,
+                            address.type.toBasetype.nextOf,
+                        );
+                    }
                     slot = *staticArray;
                     pointedType = address.type.toBasetype.nextOf;
                 }
@@ -5521,6 +5553,28 @@ private struct Compiler {
             pointedType.toBasetype.ty == TY.Tstruct
                 ? ScalarType.void_
                 : scalarType(pointedType),
+        );
+        return result;
+    }
+
+    private Operand* tryAddressOfCaptured(
+        VarDeclaration declaration,
+        Type pointedType,
+    ) {
+        auto captured = declaration in _capturedOffsets;
+        if (!_hasNestedContext || captured is null)
+            return null;
+
+        const sourceIndex = capturedFrameIndex(*captured);
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameIndexAddress, pointer, sourceIndex);
+        auto result = new Operand;
+        *result = Operand(
+            pointer,
+            ScalarType.ulong_,
+            false,
+            true,
+            scalarType(pointedType),
         );
         return result;
     }
@@ -6580,6 +6634,23 @@ private struct Compiler {
         if (slot is null && _hasNestedContext && declaration !is null)
             if (auto captured = declaration in _capturedOffsets)
                 return compileCapturedAssign(declaration, *captured, assign);
+        if (declaration !is null)
+            if (auto destination = declaration in _structLocals) {
+                bool resolved;
+                const source = structBaseOffsetOrMaterialise(
+                    assign.e2,
+                    resolved,
+                );
+                if (resolved) {
+                    _code ~= Instruction(
+                        Op.copy,
+                        destination.offset,
+                        source,
+                        cast(ushort) staticArraySize(declaration.type),
+                    );
+                    return Operand(destination.offset, ScalarType.void_);
+                }
+            }
         if (slot !is null)
             if (auto element = declaration in _refLocalPointers)
                 return storeThroughPointer(
@@ -7295,6 +7366,14 @@ private struct Compiler {
     private void writeBackDynamicArrayDescriptor(
         in DynamicArrayLocal descriptor,
     ) {
+        if (descriptor.writeBackThroughFrame)
+            _code ~= Instruction(
+                Op.frameStore,
+                descriptor.offset,
+                descriptor.frameIndexOffset,
+                cast(ushort) sliceDescriptorSize,
+            );
+
         if (!descriptor.writeBackThroughPointer)
             return;
 
@@ -7611,7 +7690,8 @@ private struct Compiler {
             (baseOffset + indexInteger.toInteger * elementSize);
         // A sub-array or struct element has no scalar type; callers that handle
         // those use only the offset (a static-array index chain, a struct base).
-        const elementType = index.type.toBasetype.ty == TY.Tsarray ||
+        const elementType = index.type.toBasetype.ty == TY.Tarray ||
+            index.type.toBasetype.ty == TY.Tsarray ||
             index.type.toBasetype.ty == TY.Tstruct
                 ? ScalarType.void_
                 : scalarType(index.type);
@@ -7768,6 +7848,17 @@ private struct Compiler {
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileSliceInto(destination, elementType, slice);
 
+        if (size(elementType) == uint.sizeof &&
+            rhs.type !is null &&
+            rhs.type.toBasetype.isTypeBasic !is null) {
+            const value = compileExpression(rhs);
+            _code ~= Instruction(Op.sliceFill4, destination, value.offset);
+
+            auto result = new Operand;
+            *result = Operand.init;
+            return result;
+        }
+
         const source = compileSourceSlice(elementType, rhs);
         _code ~= Instruction(
             sliceCopyOp(size(elementType)),
@@ -7856,6 +7947,7 @@ private struct Compiler {
         Type arrayType,
         ArrayLiteralExp literal,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         if (literal.elements is null)
@@ -7865,6 +7957,22 @@ private struct Compiler {
             ));
 
         auto elementType = arrayType.toBasetype.nextOf;
+        if (elementType.toBasetype.ty == TY.Tarray) {
+            foreach (elementIndex; 0 .. literal.elements.length) {
+                const value = compileExpression(
+                    (*literal.elements)[elementIndex],
+                );
+                _code ~= Instruction(
+                    Op.copy,
+                    cast(ushort) (offset +
+                        elementIndex * sliceDescriptorSize),
+                    value.offset,
+                    cast(ushort) sliceDescriptorSize,
+                );
+            }
+            return;
+        }
+
         if (isStringType(elementType)) {
             const elementSize = cast(uint) staticArraySize(elementType);
             foreach (elementIndex; 0 .. literal.elements.length) {
@@ -8272,6 +8380,14 @@ private struct Compiler {
                 classReceiver.offset,
                 cast(ushort) size_t.sizeof,
             );
+        }
+
+        if (layout.hasNestedContext) {
+            const context = cast(ushort)
+                (argumentArea + layout.nestedContextOffset);
+            _code ~= Instruction(Op.frameBaseIndex, context);
+            const one = compileSizeConstant(1);
+            _code ~= Instruction(Op.addInt8, context, context, one);
         }
 
         size_t nextArgumentIndex;
@@ -11145,6 +11261,8 @@ private struct DynamicArrayLocal {
     bool elementIsArray;
     bool writeBackThroughPointer;
     ushort pointerOffset;
+    bool writeBackThroughFrame;
+    ushort frameIndexOffset;
     bool isStaticArrayView;
     ushort staticArrayOffset;
 }

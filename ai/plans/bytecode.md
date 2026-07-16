@@ -5815,3 +5815,36 @@ focused SystemLinker oracle green and Bytecode red; focused
 Bytecode/SystemLinker regression green; and all four prior member ref-return
 Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
 `463451710`, 3397 tests, 0 failed, 6/6 failing as expected).
+
+### Current aggregate and aliasing constraints
+
+The next slices should extend the typed-frame implementation without
+generalising beyond an oracle-backed fixture:
+
+- Scalar slice fill currently supports only 4-byte basic elements. Other
+  widths, aggregate elements, and static-array slice fills remain.
+- Dynamic-array sub-slices reject an upper bound beyond the source length.
+  Pointer-slice bounds checks and more complete lower-bound diagnostics remain.
+- Captured static arrays support taking their address through the enclosing
+  frame. General captured-array reads, writes, slices, and closure lowering
+  remain.
+- Captured dynamic-array mutation can write its descriptor back through the
+  enclosing frame. Nested append, slice-view preservation, and broader
+  captured-cell reconciliation remain.
+- Struct ref locals can reuse resolvable inline field storage, and whole
+  assignment to an existing local copies native-layout bytes. Heap fields,
+  pointer-receiver fields, captured structs, postblit, and `opAssign` remain.
+- Static arrays of dynamic arrays copy complete slice descriptors. Nested
+  array mutation and broader stale-cell reconciliation remain.
+
+Useful next promotion candidates include the adjacent recursive-array fixture,
+which still needs ternary dynamic-array initializer support, and
+`pointer.newCtorPointerWriteNotRefusedAfterFieldAddress`, which still needs
+user class-constructor execution before its pointer-field assignment is
+meaningful.
+
+The randomized suite has an unresolved order-dependent failure in
+`repl.backend.displaysStaticStringArrayResults.Bytecode`: an `ArraySliceError`
+at `bytecode/core/machine.d:437` can be followed by exit code 139. Focused
+runs and some randomized orders pass, so investigate this independently
+instead of treating a new aggregate promotion as its cause.

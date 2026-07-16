@@ -1742,9 +1742,8 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // value.md item 7's array-native-storage guest call site: `&a[0]` takes a
 // pointer into a dynamic array local, then the array is written DIRECTLY
 // (`a[0] = ...`, not through the pointer). SystemLinker's `p` aliases `a`'s
-// real storage, so the direct write is visible through `*p`. Other backends
-// omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// real storage, so the direct write is visible through `*p`.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1776,9 +1775,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // THROUGH one pointer into a dynamic array element must be visible through a
 // SECOND, independently-taken pointer into the same element. SystemLinker's
 // `p`/`q` both alias `a`'s real storage, so a write through `p` is visible
-// through `q`. Other backends omitted per the omit-don't-pin convention
-// (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// through `q`.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1810,9 +1808,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // value.md item 7 candidate slice: `foreach (ref e; a)` mutation must be
 // visible through an earlier-taken pointer into `a`. SystemLinker's `p`
 // aliases `a`'s real storage, so the loop's writes are visible through `*p`.
-// Other backends omitted per the omit-don't-pin convention (unconfirmed
-// there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// The mature backend matrix now confirms the same aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1844,9 +1841,9 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // value.md item 7 candidate slice: a compound/post-increment write THROUGH an
 // array-element pointer (`(*p)++`) must be visible both through the pointer
 // itself and directly on the array. SystemLinker's `p` aliases `a`'s real
-// storage, so the increment is visible both ways. Other backends omitted per
-// the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// storage, so the increment is visible both ways. The mature backend matrix
+// now confirms the same aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1874,9 +1871,9 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // takes `&a[i]` of a caller's array passed by `ref` and writes through it.
 // SystemLinker's `ref` parameter aliases the caller's real storage, so `p`
 // (taken in the caller BEFORE the call, into the SAME backing array) must
-// see the write too. Other backends omitted per the omit-don't-pin
-// convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// see the write too. The mature backend matrix now confirms the same
+// cross-frame aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1918,9 +1915,9 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // `&a[i]` resolution already does), so `&s[1]` promotes/reads that shared
 // cell directly -- confirmed green on Interpreter with no production change
 // alongside this fixture. SystemLinker's `p` aliases `a`'s real storage, so
-// the direct write is visible through `*p`. Other backends omitted per the
-// omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// the direct write is visible through `*p`. The mature backend matrix now
+// confirms the same aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1958,9 +1955,9 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // storage, so a later direct write to the field (`s.x = ninetyNine()`) was
 // invisible through the earlier pointer -- the same snapshot gap the array
 // phase closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so
-// the direct write is visible through `*p`. Other backends omitted per the
-// omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// the direct write is visible through `*p`. The mature backend matrix now
+// confirms the same aliasing behavior.
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2237,9 +2234,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // rather than a ternary directly in the struct initializer, since dmd lowers
 // a struct-typed ternary initializer to a default-init-then-assignment,
 // which happens to route through the existing in-place `writeCelledLocal`
-// refresh and masks this particular gap. SystemLinker is the oracle; other
-// backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// refresh and masks this particular gap. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveStructDeclarationDropsStaleStructCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2320,7 +2316,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 
 // Struct sibling of the fixture above: the same stale-id bug for
 // `fieldSnapshotAllocationId`/`structFieldPointerVariables`.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2409,7 +2405,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // Interpreter's `*p = 42;` after the call returns did not take effect (the
 // write silently declined), so `*p + s.x` read back the pre-write value
 // instead of the correct post-write one.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2458,9 +2454,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // shared) but never dupes the reverse-lookup maps themselves, so the
 // callee's `writeThroughStructFieldPointer` reverse-lookup misses and the
 // write falls through to the `fieldSnapshotAllocationIds` refusal check
-// (also duped) instead of aliasing. SystemLinker is the oracle; other
-// backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// (also duped) instead of aliasing. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2917,9 +2912,8 @@ static foreach (backend; Matrix!()) {
 // no-op past the cell's own length -- but `readIndexExpression`'s cell arm
 // still answers the following read from the stale, too-short cell, which
 // used to throw a spurious out-of-range error before the fix. SystemLinker
-// is the oracle; other backends omitted per the omit-don't-pin convention
-// (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayAppendRefreshesStaleCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2959,9 +2953,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // mirror. Only indices `0 .. 2` are assigned; `a[2]` must stay untouched.
 // See the sibling `dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell`
 // fixture in arrays.d for the full-slice-fill variant. SystemLinker is the
-// oracle; other backends omitted per the omit-don't-pin convention
-// (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3006,9 +2999,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // promoted cell; the following `return a[0];` reads through
 // `readIndexExpression`'s cell arm, which is authoritative over the boxed
 // mirror and so kept answering with the stale, pre-write value.
-// SystemLinker is the oracle; other backends omitted per the
-// omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3051,9 +3043,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // only the pointer's own boxed snapshot back through the fallback
 // `writeLocation` call at the bottom of `writePointerTarget` -- the next
 // `*p` re-read the stale cell instead of the freshly-incremented value.
-// SystemLinker is the oracle; other backends omitted per the
-// omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldPointerCompoundIncrementWritesThroughCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3094,9 +3085,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // mirror for `s`, never `s`'s own promoted cell. The following `return *p;`
 // reads through `pointerTargetValue`/`structFieldPointerCellValue`, which is
 // authoritative over the boxed mirror and so kept answering with the stale,
-// pre-write value. SystemLinker is the oracle; other backends omitted per
-// the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// pre-write value. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldRefLocalWriteThroughRefreshesCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3143,7 +3133,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // a struct, so a later deref-read through `p`
 // (`structFieldPointerCellValue`) sees the new value rather than a stale
 // cell.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3194,7 +3184,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // unrelated `s.x` field to still read `1`: the array-field write must skip
 // the cell write entirely and leave the boxed mirror path (unaffected by
 // this finding) as the sole record for a non-scalar aliased field.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3241,9 +3231,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // map, into the REBOUND array's own freshly-promoted cell instead of
 // declining to its own frozen snapshot. Before any production change,
 // Interpreter returned 7 (the rebound array's first element) instead of the
-// pre-rebind value 1. SystemLinker is the oracle; other backends omitted per
-// the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// pre-rebind value 1. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3285,7 +3274,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // resolved the stale outer id into the rebound array's own (shorter) cell
 // and threw `NativeArray.element: index out of range` instead of declining
 // to the outer pointer's own frozen (in-range) snapshot.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3330,9 +3319,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // here deterministically reallocates in real D -- `p`, taken before the
 // append, no longer aliases `a`'s post-append storage at all, and keeps
 // reading its own pre-append snapshot even after a write through `q`.
-// SystemLinker is the oracle for this exact value; other backends omitted
-// per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// SystemLinker is the oracle for this exact value.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3387,9 +3375,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // snapshot. Before any production change, Interpreter's `*leak(1)` returned
 // 111 (`leak(1)`'s own outer `a`, resolved through the wrongly-merged id)
 // instead of 11 (`leak(0)`'s inner `a`, the value the escaped pointer
-// actually names). SystemLinker is the oracle; other backends omitted per
-// the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+// actually names). SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3428,7 +3415,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // parent's stale cell kept answering `a[0]` with the pre-call value even
 // though the boxed mirror was correctly refreshed. SystemLinker is the
 // oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.nestedFunctionArrayRebindIsVisibleThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3530,7 +3517,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // bare-assignment gap, so a same-length in-place element write made by the
 // recursive callee never reconciled the caller's own stale cell.
 // SystemLinker is the oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveArrayParameterElementWriteIsVisibleThroughCallerCell." ~
         backend.stringof)
     @Tags(backend.stringof)

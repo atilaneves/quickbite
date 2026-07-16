@@ -438,11 +438,8 @@ static foreach (backend; Matrix!()) {
 // write to `a` is visible through `s` too -- the opposite direction from
 // `nestedSliceWritesPropagateToOriginalArray` above (a write through the
 // slice, visible in the source). SystemLinker's `s` aliases `a`'s real
-// storage, so the direct write to `a` is visible through `s`. Other backends
-// omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+// storage, so the direct write to `a` is visible through `s`.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1589,7 +1586,6 @@ enum pointerSliceArgumentEvaluatesPointerOnceSource = q{
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("pointer.sliceArgumentEvaluatesPointerOnce." ~ backend.stringof)
@@ -1870,11 +1866,8 @@ static foreach (backend; Matrix!()) {
 // and, without dropping that stale cell on `row`'s own fresh re-declaration
 // each outer iteration, the second outer iteration's inner loop reads back
 // the FIRST iteration's stale cell bytes instead of its own row's values.
-// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
-// convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1913,11 +1906,8 @@ static foreach (backend; Matrix!(
 // plain source-level `s = b;` REBINDS `s` to `b`'s storage; it must not
 // write `b`'s bytes into whatever `s` used to alias. Here `s` is a slice
 // view over `a`'s cell, so the buggy in-place refresh corrupted `a` itself.
-// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
-// convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1959,11 +1949,8 @@ static foreach (backend; Matrix!(
 // its OLD length -- a slice (`int[] s = a[];`) eagerly promotes `a`'s cell via
 // `promoteSliceArrayCell`, with no address-of needed at all. A later read of
 // the newly-appended element then goes through `readIndexExpression`'s cell
-// arm against the stale, too-short cell. SystemLinker is the oracle; other
-// backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+// arm against the stale, too-short cell. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.appendRefreshesSlicePromotedStaleCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1999,11 +1986,8 @@ static foreach (backend; Matrix!(
 // a later `a[0]` read returns the stale cell's original value instead. See
 // the sibling `pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell`
 // fixture in expressions.d for the bounded/`&a[0]` variant. SystemLinker is
-// the oracle; other backends omitted per the omit-don't-pin convention
-// (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+// the oracle.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2057,7 +2041,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed,
         "DMD's CTFE engine reports its own compile-time diagnostic wording here, but no sibling pin test captures it"),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("dynamicArray.sliceAssignPastLengthThrowsRangeError." ~ backend.stringof)
     @Tags(backend.stringof)

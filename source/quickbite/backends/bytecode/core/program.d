@@ -258,6 +258,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // indexLoad/indexStore split.
     sliceCopy1,
     sliceCopy4,
+    // Fill every 4-byte element of the destination slice descriptor at frame
+    // offset a with the scalar value at frame offset b.
+    sliceFill4,
     // Compare the two slice descriptors at frame offsets b and c, writing one
     // boolean byte to frame offset a: true iff their lengths and all element
     // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
@@ -366,6 +369,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // the stack's reserved capacity keeps the address stable across the calls
     // that grow the stack before the pointer is dereferenced.
     frameAddress,
+    // Write the native address of the absolute stack index held in frame slot b
+    // into frame slot a. Backs `.ptr` of a captured static array.
+    frameIndexAddress,
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend2to4, // a: destination frame offset, b: source frame offset
