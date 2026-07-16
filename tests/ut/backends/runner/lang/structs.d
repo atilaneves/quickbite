@@ -1746,7 +1746,6 @@ static foreach (backend; Matrix!()) {
 // `a[0]`); other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("struct.memberFunctionArrayFieldWriteRefreshesSourceArrayCell." ~
         backend.stringof)
