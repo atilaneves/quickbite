@@ -2314,6 +2314,7 @@ private struct Compiler {
         if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1))
             return loadDynamicArrayElement(
                 descriptor.offset, descriptor.elementType, index.e2, index.type,
+                descriptor.elementIsArray,
             );
 
         // `makeArray(...)[i]`: the indexed expression is an array-valued call,
@@ -2322,7 +2323,7 @@ private struct Compiler {
         if (auto descriptorOffset = indexedArrayDescriptor(index.e1))
             return loadDynamicArrayElement(
                 descriptorOffset.offset, descriptorOffset.elementType, index.e2,
-                index.type,
+                index.type, descriptorOffset.elementIsArray,
             );
 
         return null;
@@ -2346,12 +2347,16 @@ private struct Compiler {
     }
 
     // Read element `indexExpr` of the dynamic-array descriptor at frame offset
-    // `descriptorOffset`, returning the loaded scalar element.
+    // `descriptorOffset`, returning the loaded element. `elementIsArray` marks
+    // an array-of-arrays descriptor whose element is itself a 16-byte slice
+    // descriptor rather than the `elementType` scalar (which then names only
+    // the innermost element for further indexing).
     private Operand* loadDynamicArrayElement(
         in ushort descriptorOffset,
         in ScalarType elementType,
         Expression indexExpr,
         Type resultType,
+        in bool elementIsArray = false,
     ) {
         import dmd.astenums: TY;
 
@@ -2364,9 +2369,13 @@ private struct Compiler {
         _activeDollarLength = savedDollarLength;
         const elementSize = resultType.toBasetype.ty == TY.Tstruct
             ? cast(uint) staticArraySize(resultType)
+            : elementIsArray
+            ? sliceDescriptorSize
             : size(elementType);
         const alignment = resultType.toBasetype.ty == TY.Tstruct
             ? staticArrayAlign(resultType)
+            : elementIsArray
+            ? size_t.sizeof
             : elementSize;
         const offset = allocateBytes(elementSize, alignment);
         _code ~= Instruction(
@@ -2377,7 +2386,7 @@ private struct Compiler {
         );
 
         auto result = new Operand;
-        *result = resultType.toBasetype.ty == TY.Tstruct
+        *result = resultType.toBasetype.ty == TY.Tstruct || elementIsArray
             ? Operand(offset, ScalarType.void_)
             : isPointerType(resultType)
             ? Operand(
@@ -2471,10 +2480,11 @@ private struct Compiler {
 
         if (auto staticArray = staticArrayOffsetOf(expression)) {
             const elementType = dynamicArrayElementType(expression.type);
+            const elementIsArray = arrayElementIsArray(expression.type);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileStaticArrayAsDynamicInto(offset, elementType, expression);
             auto result = new DynamicArrayLocal;
-            *result = DynamicArrayLocal(offset, elementType);
+            *result = DynamicArrayLocal(offset, elementType, elementIsArray);
             result.isStaticArrayView = true;
             result.staticArrayOffset = *staticArray;
             return result;
@@ -5039,7 +5049,13 @@ private struct Compiler {
         auto sourceElementType = source.type.toBasetype.nextOf;
         const sourceElementSize =
             cast(uint) staticArraySize(sourceElementType);
-        const elementSize = elementType == ScalarType.void_
+        // A dynamic-array element (`int[][2]`'s `int[]` elements) is a
+        // 16-byte slice descriptor; `elementType` names its innermost scalar
+        // for indexing further in, not its own native width, so its byte
+        // stride must come from DMD's size of the element type, the same as
+        // the struct/static-array blob case, never from `size(elementType)`.
+        const elementSize = elementType == ScalarType.void_ ||
+                arrayElementIsArray(source.type)
             ? sourceElementSize
             : cast(uint) size(elementType);
         if (sourceElementSize < elementSize)

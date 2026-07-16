@@ -339,12 +339,6 @@ the compiled-D oracle. In particular, the existing `div`/`ldiv` struct-return
 characterization remains future native-bridge work even though it is not an
 `unconfirmed` row.
 
-Before declaring the baseline stable, reproduce and eliminate the known
-order-dependent failure in
-`repl.backend.displaysStaticStringArrayResults.Bytecode`: an
-`ArraySliceError` at `bytecode/core/machine.d:437` may be followed by exit code
-139. Focused success does not discharge this blocker; repeated random runs do.
-
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
 
@@ -357,8 +351,9 @@ row reaches them:
   view-preservation, and closure combination.
 - Struct aliases and whole-local assignment do not yet cover all heap fields,
   pointer receivers, captured structs, postblits, and `opAssign` semantics.
-- Static arrays of dynamic arrays can copy slice descriptors, but nested
-  mutation and general stale-cell reconciliation remain incomplete.
+- Static arrays of dynamic arrays copy each element's full 16-byte slice
+  descriptor; nested mutation and general stale-cell reconciliation remain
+  incomplete.
 
 ### TDD and handoff discipline
 
