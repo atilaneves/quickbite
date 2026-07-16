@@ -10875,9 +10875,7 @@ private struct Walker {
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
             allocationCount = child.allocationCount;
-            mergeFieldAddressAllocations(child);
-            mergeNestedFieldAddressAllocations(child);
-            fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+            mergePointerCellState(child);
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             import quickbite.backends.interpreter.layout: structFields;
