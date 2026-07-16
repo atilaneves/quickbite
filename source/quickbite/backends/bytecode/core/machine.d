@@ -857,6 +857,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case bitAndInt8:
+                const ubyte[long.sizeof] andBits8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) &
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = andBits8;
+                ++ip;
+                break;
+
             case bitXorInt4:
                 const ubyte[int.sizeof] xorBits = scalarBytes(
                     scalarValue!int(stack, base + instruction.b) ^

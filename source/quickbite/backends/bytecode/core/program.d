@@ -414,6 +414,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     shrInt8, // a: destination frame offset, b: lhs, c: rhs (signed shift)
     ushrInt8, // a: destination frame offset, b: lhs, c: rhs (zero-fill shift)
     bitAndInt4, // a: destination frame offset, b: lhs, c: rhs
+    bitAndInt8, // a: destination frame offset, b: lhs, c: rhs
     bitXorInt4, // a: destination frame offset, b: lhs, c: rhs
     bitNotInt4, // a: destination frame offset, b: source
     notBool, // a: destination (one boolean byte), b: source (inner == 0 ? 1 : 0)

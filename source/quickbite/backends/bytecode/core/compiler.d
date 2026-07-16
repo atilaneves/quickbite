@@ -4328,6 +4328,22 @@ private struct Compiler {
         return fieldPointer;
     }
 
+    // `box.field = value`: write `value` (already in a frame slot) through the
+    // class pointer at `ptr + field.offset`.
+    private void storeClassPointerField(
+        ClassPointerField field,
+        in ushort valueSlot,
+    ) {
+        const elementSize = size(scalarType(field.type));
+        const fieldPointer = classFieldAddress(field);
+        _code ~= Instruction(
+            pointerStoreOp(elementSize),
+            valueSlot,
+            fieldPointer,
+            compileSizeConstant(0),
+        );
+    }
+
     private void emitNullClassReferenceCheck(
         in ushort pointerSlot,
         in string message,
@@ -6133,6 +6149,10 @@ private struct Compiler {
     private Operand compileAndExpression(BinExp and) {
         const lhs = compileExpression(and.e1);
         const rhs = compileExpression(and.e2);
+        if (isEightByteInteger(lhs.type) &&
+            isEightByteInteger(rhs.type))
+            return emitBinary(Op.bitAndInt8, lhs, rhs, scalarType(and.type));
+
         return compileInt4BinaryResult(
             and,
             lhs,
@@ -6660,6 +6680,18 @@ private struct Compiler {
                 return Operand(current.offset, lvalueType);
             }
 
+        // `p += n` on a local pointer variable (e.g. `Throwable.next`'s own
+        // `++newTail`): DMD pre-scales `n` to a byte offset for pointer
+        // arithmetic (see `compilePointerAdd`), so a plain 8-byte add into the
+        // pointer's own slot advances it correctly.
+        if (auto declaration = compoundAssignLocalDeclaration(addAssign.e1))
+            if (auto element = declaration in _pointerLocals)
+                if (auto slot = compoundAssignLocalSlot(declaration)) {
+                    const rhs = compileExpression(addAssign.e2);
+                    _code ~= Instruction(Op.addInt8, *slot, *slot, rhs.offset);
+                    return Operand(*slot, ScalarType.ulong_, false, true, *element);
+                }
+
         // `base.field += rhs` on an inline struct field (e.g. a `with (subject)`
         // body's `(*__withSym).field`): add into the field's own frame slot.
         if (auto dot = compoundAssignDotVar(addAssign.e1))
@@ -6706,6 +6738,56 @@ private struct Compiler {
                         cast(ushort) size(lvalueType),
                     );
                 return Operand(field.offset, lvalueType);
+            }
+
+        // `box.field += rhs` through a class reference (e.g. `Throwable.next`'s
+        // `++tail._refcount`): load the field, add the rhs, and store the
+        // result back through the class pointer. Tried only after the inline
+        // struct-field case above, so a struct method's own `this.field += rhs`
+        // (`this` is not a class reference there) is handled first.
+        if (auto dot = compoundAssignDotVar(addAssign.e1))
+            if (auto field = tryClassPointerField(dot)) {
+                const current = loadClassPointerField(*field);
+                const rhsValue = compileExpression(addAssign.e2);
+                const lvalueType = scalarType(field.type);
+                if (!isCompoundIntegerScalar(lvalueType) ||
+                    !isCompoundIntegerScalar(rhsValue.type))
+                    throw new Exception(text(
+                        "Unsupported compound assignment in bytecode core: ",
+                        expressionChars(addAssign),
+                    ));
+
+                if (isEightByteInteger(lvalueType) !=
+                    isEightByteInteger(rhsValue.type))
+                    throw new Exception(text(
+                        "Unsupported compound assignment in bytecode core: ",
+                        expressionChars(addAssign),
+                    ));
+
+                const operationType = isEightByteInteger(lvalueType)
+                    ? lvalueType
+                    : ScalarType.int_;
+                const lhs = integerOperationOperand(current, operationType);
+                const rhs = integerOperationOperand(rhsValue, operationType);
+                const destination = size(lvalueType) == size(operationType)
+                    ? current.offset
+                    : allocate(operationType);
+                const addOp = lvalueType == ScalarType.long_ ||
+                    lvalueType == ScalarType.ulong_
+                        ? Op.addInt8
+                        : Op.addInt4;
+                _code ~= Instruction(
+                    addOp, destination, lhs.offset, rhs.offset,
+                );
+                storeClassPointerField(*field, destination);
+                if (destination != current.offset)
+                    _code ~= Instruction(
+                        Op.copy,
+                        current.offset,
+                        destination,
+                        cast(ushort) size(lvalueType),
+                    );
+                return Operand(current.offset, lvalueType);
             }
 
         // `++x`/`x += n` on an integer local: 4-byte and 8-byte integer widths
@@ -8652,6 +8734,17 @@ private struct Compiler {
     }
 
     private Operand extend(in Operand source, in ScalarType target) {
+        // No single opcode spans a 1- or 2-byte source straight to an 8-byte
+        // target (e.g. `cast(long) someBool`, or a pointer-arithmetic offset
+        // scaled from a `bool`-returning call): widen through `int`/`uint`
+        // first, keeping the source's own signedness for both hops.
+        if (size(source.type) < int.sizeof && size(target) > int.sizeof) {
+            const intermediate = isSigned(source.type)
+                ? ScalarType.int_
+                : ScalarType.uint_;
+            return extend(extend(source, intermediate), target);
+        }
+
         const offset = allocate(target);
         _code ~= Instruction(
             extendOp(size(source.type), size(target), isSigned(source.type)),
@@ -8928,6 +9021,15 @@ private struct Compiler {
             return Operand(
                 destination, ScalarType.ulong_, false, true,
                 pointerElementScalar(call.type),
+            );
+        // A class-typed return (e.g. `Throwable.next`'s getter, called from
+        // its own setter as `auto n = next;`) yields a class reference, which
+        // callers such as `compileClassPointerDeclaration` recognise only via
+        // the pointer flag; the pointed-at class comes from the assignment
+        // target's own declared type, not from this operand.
+        if (call.type !is null && call.type.toBasetype.ty == TY.Tclass)
+            return Operand(
+                destination, ScalarType.ulong_, false, true, ScalarType.void_,
             );
         return Operand(destination, returnType.scalar, returnType.isString);
     }
