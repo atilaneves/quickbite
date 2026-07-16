@@ -5838,7 +5838,7 @@ generalising beyond an oracle-backed fixture:
   array mutation and broader stale-cell reconciliation remain.
 
 The next promotion candidate is
-`pointer.refParameterRebindDoesNotCorruptPreexistingSliceView`.
+`pointer.nestedFunctionArrayRebindDoesNotCorruptPreexistingSliceView`.
 
 The randomized suite has an unresolved order-dependent failure in
 `repl.backend.displaysStaticStringArrayResults.Bytecode`: an `ArraySliceError`

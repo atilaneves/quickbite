@@ -3564,7 +3564,7 @@ static foreach (backend; Matrix!()) {
 // `s`'s view with the REBOUND array's bytes even though real D gives `a`
 // entirely new storage and leaves `s`'s old view untouched. SystemLinker is
 // the oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.refParameterRebindDoesNotCorruptPreexistingSliceView." ~
         backend.stringof)
     @Tags(backend.stringof)
