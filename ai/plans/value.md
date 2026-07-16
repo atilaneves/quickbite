@@ -709,6 +709,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      field-cell primitive); nested static arrays need scalar-leaf
      flattening for pointer arithmetic (`&m[i][j]` currently scales by
      the immediate element type's size, not the innermost scalar's);
+     dynamic-array casts reinterpret same-width native-scalar elements
+     through ABI bytes, but unequal-width casts still need byte-stream
+     length and element regrouping;
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and

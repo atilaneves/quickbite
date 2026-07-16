@@ -24,10 +24,7 @@ static foreach (backend; Matrix!()) {
 
 // Reinterpreting a signed-byte slice as `ubyte[]` exposes its stored bits,
 // rather than converting each signed value.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "native-layout/value-representation frontier (ai/plans/value.md); no raw byte view of array storage"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.castSignedBytesToUbytesPreservesRawBits." ~
         backend.stringof)
     @Tags(backend.stringof)

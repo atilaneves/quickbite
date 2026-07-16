@@ -9620,8 +9620,12 @@ private struct Walker {
                 return value;
         }
 
-        if (isTransparentArrayCastTarget(type))
+        if (isTransparentArrayCastTarget(type)) {
+            Value reinterpreted;
+            if (reinterpretScalarArrayCast(cast_, reinterpreted))
+                return reinterpreted;
             return runExpression(cast_.e1);
+        }
 
         if (type.ty == TY.Tbool)
             return boolCastValue(cast_);
@@ -9640,6 +9644,43 @@ private struct Walker {
             }
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
+    }
+
+    private bool reinterpretScalarArrayCast(
+        imported!"dmd.expression".CastExp cast_,
+        out Value result,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, readScalar, writeScalar;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        auto sourceType = cast_.e1.type.toBasetype;
+        auto targetType = cast_.to.toBasetype;
+        if (!isDynamicArrayType(sourceType) || !isDynamicArrayType(targetType))
+            return false;
+
+        sourceType = sourceType.nextOf.toBasetype;
+        targetType = targetType.nextOf.toBasetype;
+        if (
+            !isNativeScalarType(sourceType) ||
+            !isNativeScalarType(targetType) ||
+            typeByteSize(sourceType) != typeByteSize(targetType)
+        )
+            return false;
+
+        const source = runExpression(cast_.e1);
+        auto bytes = NativeBlock.allocate(
+            typeByteSize(sourceType),
+            NativeBlock.Scan.no,
+        );
+        Value[] elements;
+        foreach (index; 0 .. source.length) {
+            writeScalar(sourceType, bytes.bytes, source[index]);
+            elements ~= readScalar(targetType, bytes.bytes);
+        }
+        result = Value.arrayValue(elements);
+        return true;
     }
 
     private Value boolCastValue(imported!"dmd.expression".CastExp cast_) {
