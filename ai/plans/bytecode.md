@@ -6217,3 +6217,19 @@ promotion, the focused Bytecode row, focused five-backend matrix, and final
 `ninja bin/ut` passed. The final randomized suite reported the same
 pre-existing REPL failure under seed `1851098009`; its required quiet seed
 replay passed.
+
+`pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn`
+promoted to Bytecode, 2026-07-16: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a pointer into a caller's struct field remains
+a live alias after a sibling recursive call redeclares the same struct local.
+No production change was needed. This does not add heap structs, dynamic-array
+aliases, or broader cross-frame aggregate reconciliation. Before promotion,
+`ninja bin/ut` passed; `bin/ut --random --quiet` crashed with the pre-existing
+signal 11 under seed `3682306241`, and its required quiet seed replay
+reproduced exit code 139. After promotion, the focused Bytecode row, focused
+five-backend matrix, and final `ninja bin/ut` passed. The final randomized
+suite reported the pre-existing
+`repl.backend.displaysStaticStringArrayResults.Bytecode` `ArraySliceError`
+before crashing with signal 11 under seed `710236760`; its required quiet seed
+replay reproduced exit code 139.

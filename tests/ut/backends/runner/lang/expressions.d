@@ -2407,7 +2407,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // Interpreter's `*p = 42;` after the call returns did not take effect (the
 // write silently declined), so `*p + s.x` read back the pre-write value
 // instead of the correct post-write one.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn." ~
         backend.stringof)
     @Tags(backend.stringof)
