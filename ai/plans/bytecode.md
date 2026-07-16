@@ -5851,6 +5851,10 @@ Keep `lazyArgumentReadsCallerDynamicArray` reserved as the next independent
 language-feature investigation. It needs lazy-parameter thunk/frame semantics;
 do not promote it as a stale-coverage change before that work is scoped.
 
+Do not schedule `stdConvTextRendersCharArrayExpressionRaw` independently: it
+belongs with the broader indirect-allocation-call prerequisite for Phobos
+array materialisation.
+
 The randomized suite has an unresolved order-dependent failure in
 `repl.backend.displaysStaticStringArrayResults.Bytecode`: an `ArraySliceError`
 at `bytecode/core/machine.d:437` can be followed by exit code 139. Focused
