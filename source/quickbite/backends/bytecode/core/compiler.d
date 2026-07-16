@@ -5534,12 +5534,14 @@ private struct Compiler {
 
         const target = scalarType(cast_.to);
 
-        // `cast(bool)` on a pointer or an integral type is `source != 0` at
-        // the source's own width (DMD folds `x && true`/`x || false`-shaped
-        // `LogicalExp`s into exactly this cast); a float/double/real source
-        // falls through to the generic numeric conversion below.
+        // `cast(bool)` on a pointer, integral, or floating source is
+        // `source != 0` at the source's own width (DMD folds `x && true`/
+        // `x || false`-shaped `LogicalExp`s into exactly this cast);
+        // `compileTruthValue` already knows every source kind's zero
+        // comparison.
         if (target == ScalarType.bool_ &&
-            (source.isPointer || isCompoundIntegerScalar(source.type)))
+            (source.isPointer || isCompoundIntegerScalar(source.type) ||
+                isFloating(source.type)))
             return compileTruthValue(source);
 
         // Crossing the int/float boundary needs a numeric conversion, not a
@@ -6433,12 +6435,16 @@ private struct Compiler {
     }
 
     // Normalise an expression to a one-byte bool condition. Dynamic-array
-    // truthiness is its length; every other operand goes through
-    // `compileTruthValue`.
+    // truthiness is `ptr !is null` (D's actual rule: a non-null zero-length
+    // slice is still true), so the descriptor's pointer word — not its
+    // length — feeds `compileTruthValue`'s pointer branch. Every other
+    // operand goes through `compileTruthValue` directly.
     private Operand compileBoolCondition(Expression expression) {
         if (isDynamicArrayArgument(expression)) {
             const descriptor = dynamicArrayDescriptor(expression);
-            return Operand(sliceLengthSlot(descriptor), ScalarType.ulong_);
+            return compileTruthValue(
+                Operand(descriptor.offset, ScalarType.void_, false, true),
+            );
         }
 
         return compileTruthValue(compileExpression(expression));
@@ -6448,11 +6454,14 @@ private struct Compiler {
     // pointers compare at 8 bytes, integral types narrower than `int` widen
     // first so the comparison opcode's fixed read width matches the slot's
     // actual layout (mirrors `==`/`!=`'s operand preparation). A bool
-    // operand is already canonical. Any other operand (float/double/real,
-    // which use a separate constant-loading opcode) is returned unchanged.
+    // operand is already canonical. A floating operand goes through
+    // `compileFloatingTruthValue` (`operand != 0.0`); it cannot share this
+    // path because its zero constant and comparison opcode are type-specific.
     private Operand compileTruthValue(Operand operand) {
         if (operand.type == ScalarType.bool_)
             return operand;
+        if (isFloating(operand.type))
+            return compileFloatingTruthValue(operand);
         if (!operand.isPointer && !isCompoundIntegerScalar(operand.type))
             return operand;
 
@@ -6472,6 +6481,35 @@ private struct Compiler {
         const op = operand.isPointer
             ? Op.notEqual8 : comparisonNotEqualOp(operand.type);
         _code ~= Instruction(op, result, operand.offset, zero);
+        return Operand(result, ScalarType.bool_);
+    }
+
+    // A `float`/`double` operand's truthiness is `operand != 0.0`, compared
+    // against an all-zero-bits constant-pool entry (the IEEE-754 bit pattern
+    // for 0.0) at the operand's own width via `comparisonNotEqualOp`'s
+    // floating branch. `real_` cannot reuse that constant pool: its width
+    // exceeds the pool's 8-byte `ulong` payload, so its zero goes through the
+    // dedicated real-constant table and `Op.loadRealConstant`, matching how
+    // `real` literals are already loaded.
+    private Operand compileFloatingTruthValue(Operand operand) {
+        const result = allocate(ScalarType.bool_);
+        if (operand.type == ScalarType.real_) {
+            const zero = allocate(ScalarType.real_);
+            _code ~= Instruction(
+                Op.loadRealConstant, zero, zeroRealConstantIndex,
+            );
+            _code ~= Instruction(Op.notEqualReal, result, operand.offset, zero);
+            return Operand(result, ScalarType.bool_);
+        }
+
+        const width = size(operand.type);
+        const zero = allocate(operand.type);
+        _code ~= Instruction(
+            Op.loadConstant, zero, constantIndex(0), cast(ushort) width,
+        );
+        _code ~= Instruction(
+            comparisonNotEqualOp(operand.type), result, operand.offset, zero,
+        );
         return Operand(result, ScalarType.bool_);
     }
 
@@ -8284,11 +8322,19 @@ private struct Compiler {
                 expressionChars(rhs),
             ));
 
+        // A scalar element's width is the opcode type's fixed size; a
+        // non-scalar element (struct, e.g. `S[2] arr; arr[1] = S(3, 4);`) has
+        // no opcode scalar type at all (`element.type` is `void_`), so its
+        // width must come from DMD's own `Type.size()` for the value actually
+        // being written, never guessed from the (absent) scalar type.
+        const elementSize = element.type == ScalarType.void_
+            ? cast(uint) staticArraySize(rhs.type)
+            : size(element.type);
         _code ~= Instruction(
             Op.copy,
             element.offset,
             value.offset,
-            cast(ushort) size(element.type),
+            cast(ushort) elementSize,
         );
         return Operand(element.offset, element.type);
     }
@@ -11440,6 +11486,19 @@ private struct Compiler {
             throw new Exception("Too many real constants in bytecode core");
 
         _program.realConstants ~= realBytes(real_);
+        return cast(ushort) index;
+    }
+
+    // A `real` zero constant with no source `RealExp` to hand `realBytes`
+    // (e.g. the implicit zero in a `real` truthiness comparison): an
+    // all-zero byte pattern is `0.0L` for extended precision too (sign,
+    // exponent, and mantissa all zero).
+    private ushort zeroRealConstantIndex() @safe {
+        const index = _program.realConstants.length;
+        if (index > ushort.max)
+            throw new Exception("Too many real constants in bytecode core");
+
+        _program.realConstants ~= (ubyte[real.sizeof]).init;
         return cast(ushort) index;
     }
 
