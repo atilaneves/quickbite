@@ -6447,11 +6447,7 @@ private struct Walker {
         child.runStatement(function_.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
         allocationCount = child.allocationCount;
-        arrayAllocationAliases = child.arrayAllocationAliases;
-        mergeArrayAllocationMaps(child);
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+        mergePointerCellState(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
     }

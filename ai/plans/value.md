@@ -620,7 +620,7 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      and parameters dispatch through `Walker.dropNonClassCells`; declarations
      dispatch all families through `Walker.dropDeclarationCells`, preserving
      class cells only for parameter aliasing. Allocation and field-pointer
-     cell state shared by free, member, struct-constructor, and
+     cell state shared by free, member, destructor, struct-constructor, and
      class-constructor calls merges through `Walker.mergePointerCellState`.
 
    **Design sketch** (the frame for all of this work). A *native block*
