@@ -1857,7 +1857,14 @@ static foreach (backend; Matrix!(
 // through overlapped field 'i' is not allowed in CTFE` -- a genuine
 // Ctfe/SystemLinker divergence in DMD itself, not something this repo's
 // backends can or should paper over.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"reinterpretation through overlapped field 'i' is not allowed " ~
+        "in CTFE\""),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct initializer in bytecode core: u\""),
+)) {
     @("union.untouchedSiblingDefaultsFromFirstMemberBits." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1876,7 +1883,12 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"reinterpretation through overlapped field 'f' is not allowed " ~
+        "in CTFE\""),
+)) {
     @("union.writeThroughOneMemberIsVisibleThroughAnother." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1897,7 +1909,12 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"reinterpretation through overlapped field 'f' is not allowed " ~
+        "in CTFE\""),
+)) {
     @("union.addressTakenFieldSeesWriteThroughSiblingMember." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1919,7 +1936,14 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"cannot read uninitialized variable 'a' in CTFE\""),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported left shift in bytecode core: " ~
+        "cast(long)high << 32\""),
+)) {
     @("union.writeThroughScalarMemberIsVisibleThroughStructMember." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1947,7 +1971,14 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"'u.a[0]' is used before initialized\""),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported left shift in bytecode core: " ~
+        "cast(long)high << 32\""),
+)) {
     @("union.writeThroughScalarMemberIsVisibleThroughArrayMember." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1976,7 +2007,14 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `withUnionFieldWrite` only handles a scalar-or-struct WRITTEN member, so
 // `u.a = [...]` fell through its `!writtenScalar && !writtenStruct` decline
 // and left `u.l` on its stale prior value.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"reinterpretation through overlapped field 'l' is not allowed " ~
+        "in CTFE\""),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported type in bytecode core: int[2]\""),
+)) {
     @("union.writeThroughArrayMemberIsVisibleThroughScalarMember." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2009,7 +2047,14 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // read back as zero. `Ctfe` is omitted (omit-don't-pin, `ai/mistakes.md`):
 // real DMD's own CTFE engine refuses this overlapped-field read exactly as
 // the other write-then-read-a-sibling union fixtures above already found.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this overlapped-field read " ~
+        "exactly as the other write-then-read-a-sibling union fixtures " ~
+        "above already found"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported type in bytecode core: int[2]\""),
+)) {
     @("union.writeThroughScalarMemberPreservesWiderArraySiblingTail." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2053,7 +2098,15 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // DMD's own CTFE engine refuses this exact read with the same
 // `reinterpretation through overlapped field 'i' is not allowed in CTFE`
 // diagnostic as the scalar-first-member sibling fixture.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with the " ~
+        "same \"reinterpretation through overlapped field 'i' is not " ~
+        "allowed in CTFE\" diagnostic as the scalar-first-member " ~
+        "sibling fixture"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct initializer in bytecode core: u\""),
+)) {
     @("union.untouchedSiblingDefaultsFromStructFirstMemberBits." ~
         backend.stringof)
     @Tags(backend.stringof)

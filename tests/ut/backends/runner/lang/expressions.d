@@ -1787,7 +1787,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // pointer. SystemLinker's `p` aliases `a`'s real storage, so the direct
 // write is visible through `*p`. Other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.staticArrayLocalElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2038,7 +2038,10 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // alias the SAME storage a later direct field write updates. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there), matching
 // the struct fixture's own backend set.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
+)) {
     @("pointer.classFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2080,7 +2083,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `pointer.addressOfStructFieldWriteThroughUpdatesField`. Other backends
 // omitted per the omit-don't-pin convention, matching the direct-write class
 // fixture's own backend set.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
+)) {
     @("pointer.classFieldWriteThroughPointerUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2123,7 +2129,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller`. Other
 // backends omitted per the omit-don't-pin convention, matching the other
 // class fixtures' own backend set.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
+)) {
     @("pointer.classFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2176,7 +2185,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // silently dropped the write. Only Interpreter and SystemLinker (the
 // oracle) are pinned here per the omit-don't-pin convention; the other
 // backends are untouched by this slice.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("class.aliasedVariableWriteIsVisibleThroughOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2211,7 +2220,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // alias, with no `&`/pointer involved, still sees the stale independent copy.
 // Only Interpreter and SystemLinker (the oracle) are pinned here per the
 // omit-don't-pin convention.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c2.arr[0] = ninetyNine()\" for this shape, not a wrong value"),
+)) {
     @("class.aliasedVariableArrayFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2246,7 +2258,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // involved, still sees the stale independent copy. Only Interpreter and
 // SystemLinker (the oracle) are pinned here per the omit-don't-pin
 // convention.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
+)) {
     @("class.aliasedVariableStructFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2287,7 +2302,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // own frame still sees the stale, independently-boxed copy bound for `a`.
 // Only Interpreter and SystemLinker (the oracle) are pinned here per the
 // omit-don't-pin convention.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("class.sameObjectPassedAsTwoParametersSharesIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2324,7 +2339,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // inside the method's own frame, before that writeback ever runs. Only
 // Interpreter and SystemLinker (the oracle) are pinned here per the
 // omit-don't-pin convention.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("class.methodMutatingThisIsVisibleThroughAliasedParameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2354,7 +2369,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `c` at `b`'s own cell right afterwards: the damage to the shared cell already
 // happened before that re-point ran. Only Interpreter and SystemLinker (the
 // oracle) are pinned here per the omit-don't-pin convention.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("class.reassigningAliasedVariableDoesNotCorruptOriginalObject." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2391,7 +2406,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `writeClassCellFieldIfPresent` had already correctly landed in the cell.
 // Only Interpreter and SystemLinker (the oracle) are pinned here per the
 // omit-don't-pin convention.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("class.aliasedFieldWriteSurvivesUnrelatedFieldWriteThroughOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2433,7 +2448,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // AA order that loses either side (the aliased original OR the child's own
 // final value) fails. Only Interpreter and SystemLinker (the oracle) are
 // pinned here per the omit-don't-pin convention.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c = null\" for this shape, not a wrong value"),
+)) {
     @("class.nestedFunctionRebindOfCapturedAliasedVariableDoesNotCorruptOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2769,7 +2787,10 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // Interpreter returned 100100 -- depth 0's own value corrupting depth 1's
 // read twice over. SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
+)) {
     @("pointer.recursiveClassDeclarationDropsStaleClassCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4216,7 +4237,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // `&a[i]` was taken was therefore invisible through the earlier pointer.
 // Before any production change, Interpreter returned 1 (the pre-write
 // snapshot) instead of 99. SystemLinker is the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.structArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4254,7 +4275,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // Before any production change, Interpreter returned 1 (the pre-write
 // snapshot) instead of 99. SystemLinker is the oracle. Ctfe/Bytecode/LLVMJit
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "computes a wrong value for this shape (`1 != 99`), not a refusal"),
+)) {
     @("pointer.arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4301,7 +4325,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // first iteration's value, read through the pointer saved back then).
 // SystemLinker is the oracle; other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("pointer.loopRedeclaredArrayNestedStructFieldPointerKeepsPreRebindValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4355,7 +4379,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so the
 // direct write is visible through `*p`. Other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.structStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4392,7 +4416,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // exercises. SystemLinker's `p` aliases `s`'s real storage, so the write is
 // visible through `*p`. `Ctfe`/`LLVMJit` omitted per the omit-don't-pin
 // convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("pointer.structStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4434,7 +4458,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `p` aliases `c`'s real storage, so the direct write is visible through
 // `*p`. Other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
+)) {
     @("pointer.classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4480,7 +4507,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // aliases `c`'s real storage, so the write is visible through `*p`.
 // `Ctfe`/`LLVMJit` omitted per the omit-don't-pin convention (unconfirmed
 // there), matching the struct sibling fixture's own backend set.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
+)) {
     @("pointer.classStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4518,7 +4548,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // of the nested-struct-field one. Other backends omitted per the
 // omit-don't-pin convention, matching the other class fixtures' own backend
 // set.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
+)) {
     @("pointer.classArrayFieldElementWrittenThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4557,7 +4590,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // fell through to the `fieldSnapshotAllocationIds` refusal check (also duped)
 // instead of aliasing. SystemLinker is the oracle; Bytecode omitted per the
 // omit-Bytecode convention.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
+)) {
     @("pointer.classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4606,7 +4642,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `s`'s real storage, so the write through `*p` is visible via `s.inner.x`.
 // Other backends omitted per the omit-don't-pin convention (unconfirmed
 // there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.addressOfNestedStructFieldWriteThroughUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4645,7 +4681,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // deferred gap ("the full field-PATH generalization"). SystemLinker is the
 // oracle; Ctfe/Bytecode/LLVMJit omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("pointer.addressOfNestedStructFieldIsStableAcrossReEvaluation." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4685,7 +4721,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // outer function and a nested function closing over its locals, so the two
 // addresses must compare equal. SystemLinker is the oracle; Ctfe/Bytecode/
 // LLVMJit omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &s.inner.x\" for this shape, not a wrong value"),
+)) {
     @("pointer.addressOfNestedStructFieldIsStableAcrossNestedFunctionCall." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4735,7 +4774,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // snapshot) instead of 99; confirmed via an unnamed scratch probe with the
 // identical body before the fixture was given its real name and committed.
 // SystemLinker is the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "computes a wrong value for this shape (`-1849532000 != 99`), not a refusal"),
+)) {
     @("pointer.staticArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4772,7 +4814,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // fell through to the `fieldSnapshotAllocationIds` refusal check (also
 // duped) instead of aliasing. SystemLinker is the oracle; Bytecode omitted
 // per the omit-Bytecode convention.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4823,7 +4865,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `fieldSnapshotAllocationIds` refusal check (also duped) instead of
 // aliasing. SystemLinker is the oracle; Bytecode omitted per the
 // omit-Bytecode convention.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.nestedStructFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4871,7 +4913,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // FIELD of class `C`, and `x` is a scalar field of `inner`. Other backends
 // omitted per the omit-don't-pin convention, matching the other class
 // fixtures' own backend set.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
+)) {
     @("pointer.nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4917,7 +4962,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // with a class RECEIVER instead of a struct one. Other backends omitted per
 // the omit-don't-pin convention, matching the other class fixtures' own
 // backend set.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
+)) {
     @("pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4960,7 +5008,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // and the write fell through to the `fieldSnapshotAllocationIds` refusal
 // check (also duped) instead of aliasing. SystemLinker is the oracle;
 // Bytecode omitted per the omit-Bytecode convention.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
+)) {
     @("pointer.nestedClassStructFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -5011,7 +5062,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // call, once again building the snapshot. SystemLinker's `p` aliases real
 // storage and evaluates the index expression exactly once. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("pointer.arrayNestedStructFieldIndexWithSideEffectEvaluatedOnce." ~
         backend.stringof)
     @Tags(backend.stringof)

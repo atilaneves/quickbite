@@ -150,7 +150,11 @@ static foreach (backend; Matrix!()) {
 // developed backend) is omitted per the "never pin an in-development
 // backend's refusal" convention: it throws its own unrelated "Unsupported
 // assignment in bytecode core: s = 0" for this shape, not a wrong value.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode " ~
+        "core: s = 0\" for this shape, not a wrong value"),
+)) {
     @("function.outStructParameterFieldWriteIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
