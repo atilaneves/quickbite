@@ -683,7 +683,6 @@ enum pthreadMutexattrUnionSource = q{
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("pthread.mutexattr.unionOutPointer." ~ backend.stringof)
     @Tags(backend.stringof)

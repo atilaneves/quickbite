@@ -5465,17 +5465,18 @@ private struct Compiler {
     // slot (or a struct field's inline slot), yielding an `int*`-style pointer
     // operand over the pointed-at element type. Null if the operand is not a
     // scalar local or struct field.
-    // `&local` as a SymOffExp (`symbolOffset`): the address of a scalar local's
-    // frame slot plus the symbol's byte offset, yielding an `int*`-style pointer
+    // `&local` as a SymOffExp (`symbolOffset`): the address of a local's frame
+    // slot plus the symbol's byte offset, yielding an `int*`-style pointer
     // operand over the pointed-at element type. Null if the symbol is not a
-    // scalar or static-array local.
+    // scalar, static-array, or inline-struct local.
     private Operand* tryAddressOfSymbol(SymOffExp symOff) {
         auto declaration = symOff.var.isVarDeclaration;
         if (declaration is null)
             return null;
         auto existing = declaration in _locals;
         auto staticArray = declaration in _staticArrayLocals;
-        if (existing is null && staticArray is null) {
+        auto struct_ = declaration in _structLocals;
+        if (existing is null && staticArray is null && struct_ is null) {
             if (auto pointer = tryAddressOfCaptured(
                     declaration, symOff.type.toBasetype.nextOf))
                 return pointer;
@@ -5503,16 +5504,22 @@ private struct Compiler {
             return result;
         }
 
-        const base = existing is null ? *staticArray : *existing;
+        const base = existing !is null
+            ? *existing
+            : staticArray !is null
+                ? *staticArray
+                : struct_.offset;
         const slot = cast(ushort) (base + symOff.offset);
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameAddress, pointer, slot);
         auto result = new Operand;
         *result = Operand(
             pointer, ScalarType.ulong_, false, true,
-            scalarType(existing is null
-                ? symOff.type.toBasetype.nextOf
-                : declaration.type),
+            struct_ is null
+                ? scalarType(existing is null
+                    ? symOff.type.toBasetype.nextOf
+                    : declaration.type)
+                : ScalarType.void_,
         );
         return result;
     }
@@ -8668,7 +8675,13 @@ private struct Compiler {
         auto declaration = variable is null
             ? null
             : variable.var.isVarDeclaration;
-        return declaration is null ? null : declaration in _locals;
+        if (declaration is null)
+            return null;
+        if (auto local = declaration in _locals)
+            return local;
+        if (auto struct_ = declaration in _structLocals)
+            return &struct_.offset;
+        return null;
     }
 
     // Emit a string literal's bytes plus a NUL terminator into the data

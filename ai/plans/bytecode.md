@@ -5837,8 +5837,19 @@ generalising beyond an oracle-backed fixture:
 - Static arrays of dynamic arrays copy complete slice descriptors. Nested
   array mutation and broader stale-cell reconciliation remain.
 
-The next promotion candidate is
-`dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate`.
+### Dynamic-capacity blocker
+
+`dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate` remains
+blocked at the current `Unsupported expression: &arr` lowering frontier. Do
+not retry or reserve this promotion until a separately scoped dynamic-array
+descriptor-address design can support that expression and the required
+capacity semantics together.
+
+### Reserved future work
+
+Keep `lazyArgumentReadsCallerDynamicArray` reserved as the next independent
+language-feature investigation. It needs lazy-parameter thunk/frame semantics;
+do not promote it as a stale-coverage change before that work is scoped.
 
 The randomized suite has an unresolved order-dependent failure in
 `repl.backend.displaysStaticStringArrayResults.Bytecode`: an `ArraySliceError`
