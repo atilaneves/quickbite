@@ -2285,7 +2285,7 @@ static foreach (backend; Matrix!()) {
 // 107, the inner depth's own unrelated value. SystemLinker is the oracle;
 // other backends omitted per the omit-don't-pin convention (unconfirmed
 // there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue." ~
         backend.stringof)
     @Tags(backend.stringof)
