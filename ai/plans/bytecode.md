@@ -316,20 +316,18 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace.Bytecode`:
-   interior-slice `.ptr`, used-capacity tracking, and in-place append.
-2. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
+1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
    `std.conv.text` dependency path over an exception message character array.
-3. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
+2. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
    lazy evaluation over a mutating struct-typed caller local.
-4. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
+3. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
-5. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
+4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-6. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: imported
+5. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: imported
    Phobos module initialization and the host entropy path.
-7. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.

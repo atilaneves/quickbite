@@ -4755,6 +4755,9 @@ private struct Compiler {
                 compileDynamicArrayInto(
                     destination, elementType, cast_.e1, elementIsArray,
                 );
+                rescaleReinterpretedSliceLength(
+                    destination, elementType, elementIsArray, cast_.e1.type,
+                );
                 return;
             }
 
@@ -4916,6 +4919,50 @@ private struct Compiler {
                 index,
             );
         }
+    }
+
+    // `cast(T2[])x`: D reinterprets `x`'s backing bytes as `T2` elements, so an
+    // element-size-changing cast rescales the copied descriptor's element
+    // count by the byte-size ratio (`newLength = oldLength * oldElementSize /
+    // newElementSize`); the pointer word is untouched. A same-size cast (the
+    // common qualifier-only case, e.g. `const(int)[]` to `int[]`) is a no-op
+    // here. `void` is a real one-byte D array element
+    // (`void.sizeof == 1`), not the bytecode core's "no value" scalar tag, so
+    // it is special-cased rather than routed through `size(ScalarType.void_)`.
+    // Scoped to a plain scalar-element destination; an array-of-arrays or
+    // struct-blob destination (`elementIsArray`, or `elementType == void_`
+    // marking a struct/static-array element) keeps the existing pass-through,
+    // unaffected by this rescale.
+    private void rescaleReinterpretedSliceLength(
+        in ushort destination,
+        in ScalarType destinationElementType,
+        in bool destinationElementIsArray,
+        Type sourceType,
+    ) {
+        import dmd.astenums: TY;
+
+        if (destinationElementIsArray ||
+            destinationElementType == ScalarType.void_)
+            return;
+
+        auto sourceElement = sourceType.toBasetype.nextOf.toBasetype;
+        const sourceElementSize = sourceElement.ty == TY.Tvoid
+            ? 1
+            : dynamicArrayElementSize(
+                sourceType, dynamicArrayElementType(sourceType));
+        const destinationElementSize = size(destinationElementType);
+        if (sourceElementSize == destinationElementSize)
+            return;
+
+        const lengthOffset = cast(ushort) (destination + size_t.sizeof);
+        const numerator = compileSizeConstant(sourceElementSize);
+        const denominator = compileSizeConstant(destinationElementSize);
+        _code ~= Instruction(
+            Op.mulInt8, lengthOffset, lengthOffset, numerator,
+        );
+        _code ~= Instruction(
+            Op.divUnsignedInt8, lengthOffset, lengthOffset, denominator,
+        );
     }
 
     private bool tryStackArrayLiteralSliceInto(
@@ -8846,7 +8893,7 @@ private struct Compiler {
              returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
              returnTy != TY.Tuns64 &&
              returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
-             returnTy != TY.Tpointer) ||
+             returnTy != TY.Tpointer && returnTy != TY.Tarray) ||
             call.arguments is null || call.arguments.length == 0)
             return null;
 
@@ -9008,8 +9055,16 @@ private struct Compiler {
         // `auto`, not `const`: `pointerElementScalar` below needs a mutable
         // `Type` and DMD's `toBasetype`/`nextOf` are non-const methods.
         auto returnType = function_.type.toBasetype.nextOf;
-        const returnScalar = scalarType(returnType.toBasetype);
-        const destination = allocate(returnScalar);
+        // A dynamic-array return (e.g. `gc_getArrayUsed`'s `void[]`) has no
+        // scalar tag; it is a 16-byte {ptr, length} slice descriptor, the same
+        // shape every other array-typed frame slot uses.
+        const isArrayReturn = returnType.toBasetype.ty == TY.Tarray;
+        const returnScalar = isArrayReturn
+            ? ScalarType.void_
+            : scalarType(returnType.toBasetype);
+        const destination = isArrayReturn
+            ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
+            : allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
         _program.nativeCalls ~=
             NativeCall(function_, argumentTypes, outParameterOffsets.dup);

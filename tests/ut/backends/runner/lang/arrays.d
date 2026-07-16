@@ -1769,13 +1769,11 @@ static foreach (backend; Matrix!(
 // loops the full backing-block length, so it overruns and throws for any
 // interior pointer (a representation gap in the shim). Ctfe omitted:
 // `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at all.
-// Bytecode omitted: same `.ptr`-of-array gap as above.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "gc_getArrayUsed has no D source, so Ctfe cannot intercept it at all"),
     Omit!(Interpreter, Because.unconfirmed,
         "gc_getArrayUsed overruns for interior pointers; representation debt, retires with value.md's native-layout track"),
-    Omit!(Bytecode, Because.unconfirmed, "same `.ptr`-of-array gap as above"),
 )) {
     @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~
         backend.stringof)
