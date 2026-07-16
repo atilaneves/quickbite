@@ -1591,7 +1591,7 @@ pre-existing gap this call site does not attempt to close). Every other
 pair -- an aggregate, a pointer, `real`, or a widening read -- returns the
 boxed value unchanged exactly as before. The two previously-hardcoded pairs
 (`float`->`uint`, `double`->`ulong`) now produce their pinned results
-(`ut.backends.runner.ct.expressions` `pointer.
+(`ut.backends.runner.lang.expressions` `pointer.
 floatBitsThroughUintPointerAreRawBits`/`pointer.
 doubleBitsThroughUlongPointerAreRawBits`) through real bytes instead of a
 name match; both stayed green. The private `floatBits`/`doubleBits` helpers
@@ -1611,7 +1611,7 @@ read agree numerically for this pair (a `dchar`'s code-point value already
 equals its raw bits for values in this range). Grepped the whole test suite
 for every `cast(T*) &expr` shape before writing any code (`tests/ut`, no
 `tests/ct`/`tests/rt` top-level trees in this repo) and traced each hit;
-`ut.backends.runner.ct.cerealed.encodeFloatReinterpretsBytes` is the other
+`ut.backends.runner.lang.cerealed.encodeFloatReinterpretsBytes` is the other
 live pointer-reinterpret fixture and is the same, already-covered
 `float`->`uint` pair through a function parameter rather than a plain
 local. No test pinned an old wrong answer for a newly-handled pair, so
@@ -1620,7 +1620,7 @@ case (target strictly narrower than source, e.g. a `uint` local read
 through a `ushort*`) also newly takes this byte-level path rather than
 the untouched passthrough -- the narrowing behaviour is correct (it reads
 the leading bytes, matching compiled D) but, unlike the `dchar`/`uint`
-pair above, no `ct/`/`rt/` fixture exercises a strict-narrowing
+pair above, no `lang/`/`sys/` fixture exercises a strict-narrowing
 reinterpret today; it is pinned only at the codec level, by
 `native_scalar.d`'s own narrowing unit test.
 
@@ -1635,10 +1635,10 @@ and compared against `writeScalar`+`readScalar`'s result), a wrong
 `dest`/`src` length throwing, and an unsupported type (`void*`) throwing.
 Focused runs, all green: `bin/ut -s ut.backends.interpreter.native_scalar`,
 `bin/ut -s ut.backends.interpreter`, `bin/ut -s
-ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
-ut.backends.runner.ct.structs ut.backends.evaluator.eval` (all
+ut.backends.runner.lang.expressions ut.backends.runner.lang.cerealed
+ut.backends.runner.lang.structs ut.backends.evaluator.eval` (all
 pre-existing `@ShouldFail` rows still fail as expected), and `bin/ut -s
-ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`. The
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image`. The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
 
@@ -1717,7 +1717,7 @@ handle `Tfloat32`/`Tfloat64` via `Value.asReal`, not `asLong`, so both
 `scalarBytes` and `scalarFromBytes` now succeed for float/double locals
 through this path, matching the `SystemLinker` oracle. This is verified as
 *unpinned* (nothing in `tests/` depended on the old throw), not *proven* by
-a new `ct/`/`rt/` fixture -- no such fixture was added, per this task's
+a new `lang/`/`sys/` fixture -- no such fixture was added, per this task's
 scope (adding one needs separate TDD approval). Every other previously-
 handled type (`bool`, `char`/`wchar`/`dchar`, every integral width, and an
 `enum` with an integral base, which reaches the codec via `Value.EnumValue`
@@ -1732,11 +1732,11 @@ private, untestable-in-isolation bodies) for a 4-byte integral type, and
 the same composition for `float`/`double` -- the newly-succeeding case.
 Focused runs, all green with the new cases added and nothing else changed:
 `bin/ut -s ut.backends.interpreter.native_scalar`, `bin/ut -s
-ut.backends.interpreter`, `bin/ut -s ut.backends.runner.ct.expressions ut.
-backends.runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
+ut.backends.interpreter`, `bin/ut -s ut.backends.runner.lang.expressions ut.
+backends.runner.lang.cerealed ut.backends.runner.lang.structs ut.backends.
 evaluator.eval` (identical to the pre-change baseline, pre-existing
 `@ShouldFail` rows still fail as expected), and `bin/ut -s
-ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image`
 (identical to baseline). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
@@ -1828,13 +1828,13 @@ argued.
 No test was added or modified; the proof for this commit is the existing
 FFI/runtime suites staying green end to end. Focused runs, all unchanged
 from baseline: `bin/ut -s ut.backends.interpreter`, `bin/ut -s
-ut.backends.interpreter.native_scalar`, `bin/ut -s ut.backends.runner.rt.
-cstdlib ut.backends.runner.rt.dependency_image`, `bin/ut -s ut.backends.
-runner.rt.concurrency ut.backends.runner.rt.file ut.backends.runner.rt.
-random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf ut.
-backends.runner.rt.llvm_jit`, and `bin/ut -s ut.
-backends.runner.ct.expressions ut.backends.runner.ct.cerealed ut.backends.
-runner.ct.structs ut.backends.evaluator.eval` (identical to the pre-change
+ut.backends.interpreter.native_scalar`, `bin/ut -s ut.backends.runner.sys.
+cstdlib ut.backends.ffi.dependency_image`, `bin/ut -s ut.backends.
+runner.sys.concurrency ut.backends.runner.sys.file ut.backends.runner.sys.
+random ut.backends.native.inline_asm ut.orc.elf ut.
+backends.native.llvm_jit`, and `bin/ut -s ut.
+backends.runner.lang.expressions ut.backends.runner.lang.cerealed ut.backends.
+runner.lang.structs ut.backends.evaluator.eval` (identical to the pre-change
 baseline, pre-existing `@ShouldFail` rows still fail as expected). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
@@ -1871,8 +1871,8 @@ Three things were proven, not assumed, before touching a line:
   calls `.toBasetype` explicitly before recursing (for the array sites, once,
   since the same resolved `elementType` local is reused both to build the
   handle and to dispatch), reproducing the exact old dispatch. No enum-typed
-  struct field or array element exists in the `rt/` FFI fixtures to exercise
-  this at runtime (grepped `tests/ut/backends/runner/rt/` for a struct with
+  struct field or array element exists in the `sys/` FFI fixtures to exercise
+  this at runtime (grepped `tests/ut/backends/runner/sys/` for a struct with
   an `enum`-typed field; none), so this is proven structurally instead: DMD's
   own `size(Type, Loc)` (`dmd/compiler/src/dmd/typesem.d`) has `case Tenum:
   return t.isTypeEnum().sym.getMemtype(loc).size(loc);` -- an enum's declared-
@@ -1914,12 +1914,12 @@ computation would -- the handle reads the exact same DMD objects and numbers
 the old code did). Focused runs, all green and unchanged from baseline
 except where noted: `bin/ut -s ut.backends.interpreter`, `bin/ut -s
 ut.backends.interpreter.native_struct ut.backends.interpreter.native_array`,
-`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
-dependency_image`, `bin/ut -s ut.backends.runner.rt.concurrency ut.
-backends.runner.rt.file ut.backends.runner.rt.random ut.backends.runner.rt.
-inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.llvm_jit`, and
-`bin/ut -s ut.backends.runner.ct.expressions ut.backends.runner.ct.
-cerealed ut.backends.runner.ct.structs ut.backends.evaluator.eval`
+`bin/ut -s ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image`,
+`bin/ut -s ut.backends.runner.sys.concurrency ut.
+backends.runner.sys.file ut.backends.runner.sys.random
+ut.backends.native.inline_asm ut.orc.elf ut.backends.native.llvm_jit`, and
+`bin/ut -s ut.backends.runner.lang.expressions ut.backends.runner.lang.
+cerealed ut.backends.runner.lang.structs ut.backends.evaluator.eval`
 (identical to the pre-change baseline, pre-existing `@ShouldFail` rows
 still fail as expected). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
@@ -2006,7 +2006,7 @@ Two things were confirmed, not assumed, before touching a line:
   slice whose element type carries pointers now gets a conservatively
   scanned block, where the old `new ubyte[]` -- typed as `ubyte[]`, which
   itself carries no pointers -- would always have been allocated `NO_SCAN`
-  regardless of what the bytes inside it actually held. No `rt/` fixture
+  regardless of what the bytes inside it actually held. No `sys/` fixture
   exercises a pointer-carrying slice element type today, so this is not
   proven by a passing test, only by reading `NativeArray.allocate`'s own
   scan-policy logic against the old `new ubyte[]`'s inferred one.
@@ -2023,12 +2023,12 @@ staying green, plus the structural stride/offset-identity argument above.
 Focused runs, all green and unchanged from baseline: `bin/ut -s
 ut.backends.interpreter`, `bin/ut -s ut.backends.interpreter.native_array
 ut.backends.interpreter.native_struct`, `bin/ut -s ut.
-backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image ut.
-backends.runner.rt.concurrency ut.backends.runner.rt.file ut.backends.
-runner.rt.random ut.backends.runner.rt.inline_asm ut.backends.runner.rt.elf
-ut.backends.runner.rt.llvm_jit`, and `bin/ut -s
-ut.backends.runner.ct.expressions ut.backends.runner.ct.cerealed
-ut.backends.runner.ct.structs ut.backends.evaluator.eval` (identical to
+backends.runner.sys.cstdlib ut.backends.ffi.dependency_image ut.
+backends.runner.sys.concurrency ut.backends.runner.sys.file ut.backends.
+runner.sys.random ut.backends.native.inline_asm ut.orc.elf
+ut.backends.native.llvm_jit`, and `bin/ut -s
+ut.backends.runner.lang.expressions ut.backends.runner.lang.cerealed
+ut.backends.runner.lang.structs ut.backends.evaluator.eval` (identical to
 the pre-change baseline, pre-existing `@ShouldFail` rows still fail as
 expected). The full `bin/ut --random` was left to the orchestrator per the
 usual long-suite handoff.
@@ -2096,12 +2096,12 @@ this is purely internal call routing. No test was added or modified.
 Focused runs, all green and unchanged from baseline: `bin/ut -s
 ut.backends.interpreter`, `bin/ut -s ut.backends.interpreter.native_scalar
 ut.backends.interpreter.native_array ut.backends.interpreter.native_struct
-ut.backends.interpreter.layout`, `bin/ut -s ut.backends.runner.rt.cstdlib
-ut.backends.runner.rt.dependency_image ut.backends.runner.rt.concurrency
-ut.backends.runner.rt.file ut.backends.runner.rt.random ut.backends.
-runner.rt.inline_asm ut.backends.runner.rt.elf ut.backends.runner.rt.
-llvm_jit`, and `bin/ut -s ut.backends.runner.ct.expressions ut.backends.
-runner.ct.cerealed ut.backends.runner.ct.structs ut.backends.
+ut.backends.interpreter.layout`, `bin/ut -s ut.backends.runner.sys.cstdlib
+ut.backends.ffi.dependency_image ut.backends.runner.sys.concurrency
+ut.backends.runner.sys.file ut.backends.runner.sys.random ut.backends.
+native.inline_asm ut.orc.elf ut.backends.native.llvm_jit`, and `bin/ut -s
+ut.backends.runner.lang.expressions ut.backends.
+runner.lang.cerealed ut.backends.runner.lang.structs ut.backends.
 evaluator.eval` (identical to the pre-change baseline, pre-existing
 `@ShouldFail` rows still fail as expected). The full `bin/ut --random` was
 left to the orchestrator per the usual long-suite handoff.
@@ -2126,11 +2126,11 @@ existing imports, none of which referenced the removed `.dim.
 toInteger` expression. No layout number, offset walk, or aggregate-
 handling behaviour changed; this is purely internal call routing. No
 test was added or modified. Focused run: `bin/ut -s
-ut.backends.interpreter ut.backends.runner.ct.expressions
-ut.backends.runner.ct.structs ut.backends.runner.ct.arrays
+ut.backends.interpreter ut.backends.runner.lang.expressions
+ut.backends.runner.lang.structs ut.backends.runner.lang.arrays
 ut.backends.evaluator.eval` -- 1139 run, 1 failed, 5/5 failing as
 expected; the 1 failure
-(`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+(`ut.backends.runner.lang.arrays.pointer.sliceAssignmentWritesArrayStorage.
 Bytecode`) is pre-existing and unrelated (Bytecode backend, "Expression
 did not throw"), confirmed identical on a stashed pre-change rebuild.
 The full `bin/ut --random` was left to the orchestrator per the usual
@@ -2157,10 +2157,10 @@ existing imports; no import was orphaned. `structLiteralField`'s
 it reads a `StructDeclaration`'s fields, not a `TypeStruct`'s, so
 `layout.structFields` does not apply there. No test was added or
 modified. Focused run: `bin/ut -s ut.backends.interpreter
-ut.backends.runner.ct.expressions ut.backends.runner.ct.structs
-ut.backends.runner.ct.arrays ut.backends.evaluator.eval` -- 1139 run, 1
+ut.backends.runner.lang.expressions ut.backends.runner.lang.structs
+ut.backends.runner.lang.arrays ut.backends.evaluator.eval` -- 1139 run, 1
 failed, 5/5 failing as expected; the 1 failure
-(`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+(`ut.backends.runner.lang.arrays.pointer.sliceAssignmentWritesArrayStorage.
 Bytecode`, "Expression did not throw") is the same pre-existing,
 unrelated Bytecode-track pin noted above. The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff. This is
@@ -2179,8 +2179,8 @@ new local `import quickbite.backends.interpreter.layout:
 fieldByteOffset;` was added inside `nativeClassFieldValue`, alongside
 its existing local import; no import was orphaned. No test was added or
 modified. Focused run: `bin/ut -s ut.backends.interpreter
-ut.backends.runner.ct.expressions ut.backends.runner.ct.structs
-ut.backends.evaluator.eval` (`ut.backends.runner.ct.classes` does not
+ut.backends.runner.lang.expressions ut.backends.runner.lang.structs
+ut.backends.evaluator.eval` (`ut.backends.runner.lang.classes` does not
 exist as a suite) -- 838 run, 0 failed, 5/5 failing as expected. The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff. This is consolidation only: no new guest call site
@@ -2204,8 +2204,8 @@ quickbite.backends.interpreter.layout: classFields;`, added alongside each
 site's existing local imports (or as the site's first local import, where
 none existed). No import was orphaned by the deletion. No test was added
 or modified. Focused run: `bin/ut -s ut.backends.interpreter
-ut.backends.interpreter.layout ut.backends.runner.ct.expressions
-ut.backends.runner.ct.structs ut.backends.evaluator.eval` -- 838 run, 0
+ut.backends.interpreter.layout ut.backends.runner.lang.expressions
+ut.backends.runner.lang.structs ut.backends.evaluator.eval` -- 838 run, 0
 failed, 5/5 failing as expected (the same pre-existing expected failures
 as the prior progress note's focused run). The full `bin/ut --random` was
 left to the orchestrator per the usual long-suite handoff. This is
@@ -2235,11 +2235,11 @@ above/below it in `impl.d`) operate on already-valid pointer types, so
 is the same "silent `SIZE_INVALID` cast -> loud layout throw" hardening
 the 2026-07-10 note applied to the other eleven sites, not a behavior
 change. No test was added or modified. Focused run: `bin/ut -s
-ut.backends.interpreter ut.backends.runner.ct.expressions
-ut.backends.runner.ct.structs ut.backends.runner.ct.arrays
+ut.backends.interpreter ut.backends.runner.lang.expressions
+ut.backends.runner.lang.structs ut.backends.runner.lang.arrays
 ut.backends.evaluator.eval` -- 1139 run, 1 failed, 5/5 failing as expected;
 the one failure is the known pre-existing, unrelated
-`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+`ut.backends.runner.lang.arrays.pointer.sliceAssignmentWritesArrayStorage.
 Bytecode` ("Expression did not throw"), a stale bytecode-track pin on
 master, not caused by this change. The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff. No §9.10 shim was
@@ -2276,8 +2276,8 @@ identical `size_t` bits, so this is a pure rename of the read, not a
 behavior change. The `index * elementSize` / `new ubyte[](length *
 elementSize)` element walks at both sites are deliberately left alone --
 out of scope for this commit. No test was added or modified. Focused
-run: `bin/ut -s ut.backends.interpreter ut.backends.runner.rt.cstdlib
-ut.backends.runner.rt.dependency_image ut.backends.runner.ct.expressions
+run: `bin/ut -s ut.backends.interpreter ut.backends.runner.sys.cstdlib
+ut.backends.ffi.dependency_image ut.backends.runner.lang.expressions
 ut.backends.evaluator.eval` -- 746 run, 0 failed, 5/5 failing as expected
 (the same pre-existing expected failures as prior progress notes). The
 full `bin/ut --random` was left to the orchestrator per the usual
@@ -2320,8 +2320,8 @@ its own, so it does not violate the guardrail -- but it remains
 hand-rolled, and routing it through `NativeArray` too is a future
 cleanup, not something this commit did. No test was added or modified.
 Focused run: `bin/ut -s ut.backends.interpreter
-ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image
-ut.backends.runner.rt.file ut.backends.runner.rt.random
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image
+ut.backends.runner.sys.file ut.backends.runner.sys.random
 ut.backends.evaluator.eval` -- 441 run, 0 failed. The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 Still the FFI seam, not the tree-walker's core representation: no §9.10
@@ -2349,7 +2349,7 @@ ahead of the `locals` lookup; (3) `applyNativeWritebacks` (FFI `&local`
 out-parameters, e.g. `strtol`'s `endptr` or `pthread_mutexattr_gettype`'s
 `int* kind`) got the same cell-then-mirror-refresh treatment -- discovered
 not from the spec but because the full focused-suite pass caught
-`ut.backends.runner.rt.cstdlib.pthread.mutexattr.unionOutPointer.
+`ut.backends.runner.sys.cstdlib.pthread.mutexattr.unionOutPointer.
 Interpreter` regressing from green to red (`-1 != 1`): the FFI writeback
 wrote the correct value into `locals` but left the promoted cell stale,
 and the new VarExp-read hook then preferred the stale cell over the fresh
@@ -2379,7 +2379,7 @@ cell its caller promoted. The eighth `Walker child` site
 dup `locals`/`localPointers` either, so it is left without `scalarCells`
 too, consistent with the existing pattern.
 
-New fixture (pre-approved): `tests/ut/backends/runner/ct/expressions.d`
+New fixture (pre-approved): `tests/ut/backends/runner/lang/expressions.d`
 `pointer.uintBitsWrittenThroughPointerReadBackAsFloat`, scoped to
 `Interpreter`/`SystemLinker` only (Bytecode/LLVMJit/Ctfe omitted per the
 omit-don't-pin convention, unconfirmed there) -- writes `0x3F800000`
@@ -2408,21 +2408,21 @@ cell directly -- correct only because every write hook above keeps the
 Verification surfaced two pre-existing, unrelated failures, confirmed via
 `git stash` against this same worktree's baseline (both fail identically
 with the stash applied, i.e. before any of this commit's changes):
-`ut.backends.runner.ct.arrays.pointer.sliceAssignmentWritesArrayStorage.
+`ut.backends.runner.lang.arrays.pointer.sliceAssignmentWritesArrayStorage.
 Bytecode` ("Expression did not throw", already flagged by a prior progress
-note above) and `ut.backends.runner.ct.structs.struct.
+note above) and `ut.backends.runner.lang.structs.struct.
 staticArrayCopyRunsPostblitAndDtors.Bytecode`, which segfaults
-(`bin/ut -s ut.backends.runner.ct.structs` exits 139) -- a Bytecode-track
+(`bin/ut -s ut.backends.runner.lang.structs` exits 139) -- a Bytecode-track
 issue, not touched by or related to this Interpreter-only change. Both are
 excluded from the focused runs below by naming every other test
 explicitly; neither was fixed or weakened.
 
 Focused runs, all green except the two pre-existing failures above:
-`bin/ut -s ut.backends.runner.ct.expressions` (312 run, 0 failed, 5/5
+`bin/ut -s ut.backends.runner.lang.expressions` (312 run, 0 failed, 5/5
 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
-`ut.backends.runner.ct.structs`/`ut.backends.runner.ct.arrays`/
-`ut.backends.runner.rt.cstdlib` run explicitly by name minus the two
+`ut.backends.runner.lang.structs`/`ut.backends.runner.lang.arrays`/
+`ut.backends.runner.sys.cstdlib` run explicitly by name minus the two
 pre-existing failures above (631 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
@@ -2430,7 +2430,7 @@ Progress 2026-07-13 (cross-frame scalar `&local`: shared cell already
 coherent, redundant writeback retired): item 7's guest-level call site
 continues -- the CROSS-FRAME case, where a called function writes through
 a pointer to a caller's scalar local. New fixture (pre-approved):
-`tests/ut/backends/runner/ct/expressions.d`
+`tests/ut/backends/runner/lang/expressions.d`
 `pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat`, scoped
 to `Interpreter`/`SystemLinker`, mirroring the prior slice's same-frame
 fixture but through a helper `void writeBits(uint* p, uint bits) { *p =
@@ -2482,15 +2482,15 @@ call-site coherence fix inside the existing `scalarCells`/`locals` split
 from the previous slice, not a representation change; `localPointerTarget`
 and the FFI `applyNativeWritebacks` path are unchanged. The known,
 pre-existing `sliceAssignmentWritesArrayStorage.Bytecode` failure (see the
-prior progress note) persists in `ut.backends.runner.ct.arrays` and is
+prior progress note) persists in `ut.backends.runner.lang.arrays` and is
 untouched.
 
 Focused runs, all green except that one known pre-existing failure:
-`bin/ut -s ut.backends.runner.ct.expressions` (314 run, 0 failed, 5/5
+`bin/ut -s ut.backends.runner.lang.expressions` (314 run, 0 failed, 5/5
 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
-`bin/ut -s ut.backends.runner.rt.cstdlib ut.backends.runner.rt.
-dependency_image` (148 run, 0 failed); `bin/ut -s ut.backends.runner.ct.
+`bin/ut -s ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image` (148
+run, 0 failed); `bin/ut -s ut.backends.runner.lang.
 arrays` (302 run, 1 failed -- the known `sliceAssignmentWritesArrayStorage.
 Bytecode`); `bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
@@ -2508,7 +2508,7 @@ newValue` reassignment (not a write through a pointer) -- only updated
 updated `locals` but the stale cell value resurfaced on the next direct
 read of `f`, diverging from SystemLinker.
 
-New fixture (pre-approved): `tests/ut/backends/runner/ct/expressions.d`
+New fixture (pre-approved): `tests/ut/backends/runner/lang/expressions.d`
 `pointer.directWriteToAddressTakenScalarUpdatesCell`, scoped to
 `Interpreter`/`SystemLinker`. It takes `&f` (promoting a cell), then
 reassigns `f` directly to a second runtime value, and asserts both a
@@ -2538,17 +2538,17 @@ is still populated and still authoritative for every code path that isn't
 the two `VarExp` arms and the `PtrExp` write arm. Class objects are
 completely untouched. No §9.10 shim moved. The known, pre-existing
 `sliceAssignmentWritesArrayStorage.Bytecode` failure persists in
-`ut.backends.runner.ct.arrays` and is untouched;
+`ut.backends.runner.lang.arrays` and is untouched;
 `staticArrayCopyRunsPostblitAndDtors.Bytecode` (segfaults) was left alone
 per standing instruction.
 
 Focused runs, all green except the one known pre-existing failure:
-`bin/ut -s ut.backends.runner.ct.expressions` (316 run, 0 failed, 5/5
+`bin/ut -s ut.backends.runner.lang.expressions` (316 run, 0 failed, 5/5
 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
+`bin/ut -s ut.backends.runner.lang.arrays` (302 run, 1 failed -- the known
 `sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
-ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
+ut.backends.runner.sys.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
 (228 run, 0 failed). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
@@ -2558,7 +2558,7 @@ guest-level call site was a `ref` scalar parameter -- a guest takes
 `&f` of a `ref` parameter, writes reinterpreted bytes through that
 pointer, and the CALLER's own variable (bound to `f`) must observe the
 write after the call returns. New fixture (pre-approved): `tests/ut/
-backends/runner/ct/expressions.d`
+backends/runner/lang/expressions.d`
 `pointer.reinterpretWriteThroughRefParameterPointerReachesCaller`,
 scoped to `Interpreter`/`SystemLinker`, mirroring the surrounding
 `pointer.*ThroughPointer*` fixtures' form.
@@ -2601,16 +2601,16 @@ are unchanged from the previous note: non-scalar aggregates and raw-
 pointer locals still rely on `writeBackLocalPointerTargets`'s copy-back,
 non-address-taken scalars never get a cell, and class objects are
 untouched. The known, pre-existing `sliceAssignmentWritesArrayStorage.
-Bytecode` failure persists in `ut.backends.runner.ct.arrays` and is
+Bytecode` failure persists in `ut.backends.runner.lang.arrays` and is
 untouched.
 
 Focused runs, all green except the one known pre-existing failure:
-`bin/ut -s ut.backends.runner.ct.expressions` (318 run, 0 failed, 5/5
+`bin/ut -s ut.backends.runner.lang.expressions` (318 run, 0 failed, 5/5
 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
+`bin/ut -s ut.backends.runner.lang.arrays` (302 run, 1 failed -- the known
 `sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
-ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
+ut.backends.runner.sys.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
 (228 run, 0 failed). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
@@ -2632,7 +2632,7 @@ still made pass; it never exercised the deref-read arm's separate bug, so
 it validated half the claim and missed the other half.
 
 This surfaced as a real regression in the pre-existing, already-approved
-matrix test `ut.backends.runner.ct.structs.struct.
+matrix test `ut.backends.runner.lang.structs.struct.
 staticArrayCopyRunsPostblitAndDtors.Interpreter`: an address-taken `int
 postblits` counter, incremented via `++*postblits` inside a struct's
 postblit, expected `2` after a two-element static-array copy but read
@@ -2661,14 +2661,14 @@ for every arm. See the review-fix note below for what is now actually
 verified.)
 
 Focused runs, all green except the one known pre-existing failure:
-`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`ut.backends.runner.lang.structs.struct.staticArrayCopyRunsPostblitAndDtors`
 `.Interpreter`/`.Ctfe`/`.SystemLinker`/`.LLVMJit` (4 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.expressions` (318 run, 0 failed, 5/5
+`bin/ut -s ut.backends.runner.lang.expressions` (318 run, 0 failed, 5/5
 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed); `bin/ut -s ut.backends.evaluator.eval` (70 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
+`bin/ut -s ut.backends.runner.lang.arrays` (302 run, 1 failed -- the known
 `sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
-ut.backends.runner.rt.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
+ut.backends.runner.sys.cstdlib` (88 run, 0 failed); `bin/ut -s ut.bin.repl`
 (228 run, 0 failed). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
 
@@ -2676,7 +2676,7 @@ Progress 2026-07-13 (review fixes: cell invalidation on re-bind, two more
 stale mirror-only read/write arms, sub-word reinterpret-write no longer
 throws): a code review of the guest-level call site's four prior slices
 above found four real gaps; all four are fixed by this commit, each with
-its own red-then-green fixture in `tests/ut/backends/runner/ct/
+its own red-then-green fixture in `tests/ut/backends/runner/lang/
 expressions.d`, scoped `Interpreter`/`SystemLinker` like the surrounding
 `pointer.*` fixtures.
 
@@ -2798,14 +2798,14 @@ over-claimed the way the two retracted notes above were:
 Focused runs, all green except the one known pre-existing failure: the
 five new fixtures above (5/5, all confirmed red on Interpreter and green
 on SystemLinker before the fix, green on both after); `bin/ut -s
-ut.backends.runner.ct.expressions` (328 run, 0 failed); `bin/ut -s
+ut.backends.runner.lang.expressions` (328 run, 0 failed); `bin/ut -s
 ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (70 run, 0 failed); `bin/ut -s
-ut.backends.runner.ct.arrays` (302 run, 1 failed -- the known
+ut.backends.runner.lang.arrays` (302 run, 1 failed -- the known
 `sliceAssignmentWritesArrayStorage.Bytecode`); `bin/ut -s
-ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image
-ut.backends.runner.rt.concurrency` (151 run, 0 failed);
-`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image
+ut.backends.runner.sys.concurrency` (151 run, 0 failed);
+`ut.backends.runner.lang.structs.struct.staticArrayCopyRunsPostblitAndDtors`
 `.Interpreter`/`.SystemLinker` (2 run, 0 failed); `bin/ut -s ut.bin.repl`
 (228 run, 0 failed). The full `bin/ut --random` was left to the
 orchestrator per the usual long-suite handoff.
@@ -2866,12 +2866,12 @@ pre-existing failures (Bytecode's `sliceAssignmentWritesArrayStorage`
 and `staticArrayCopyRunsPostblitAndDtors`, neither touched): the two new
 fixtures above (confirmed red on Interpreter / green on SystemLinker
 before the fix, green -- or throwing, for the diagnostic fixture -- after);
-`bin/ut -s ut.backends.runner.ct.expressions`; `bin/ut -s
+`bin/ut -s ut.backends.runner.lang.expressions`; `bin/ut -s
 ut.backends.interpreter`; `bin/ut -s ut.backends.evaluator.eval`;
-`bin/ut -s ut.backends.runner.ct.arrays`; `bin/ut -s
-ut.backends.runner.rt.cstdlib ut.backends.runner.rt.dependency_image`;
-`bin/ut -s ut.bin.repl`; `bin/ut -s ut.backends.runner.ct.imports
-ut.backends.runner.ct.pollution`. The full `bin/ut --random` was left to
+`bin/ut -s ut.backends.runner.lang.arrays`; `bin/ut -s
+ut.backends.runner.sys.cstdlib ut.backends.ffi.dependency_image`;
+`bin/ut -s ut.bin.repl`; `bin/ut -s ut.backends.runner.lang.imports
+ut.backends.runner.lang.pollution`. The full `bin/ut --random` was left to
 the orchestrator per the usual long-suite handoff.
 
 Progress 2026-07-14 (array-native storage's first guest call site: shared
@@ -2913,7 +2913,7 @@ mirroring `scalarCells`' own cross-frame sharing.
 
 New fixture (pre-approved):
 `pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer` in
-`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`tests/ut/backends/runner/lang/expressions.d`, scoped to
 `Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
 convention) -- `int[] a = [one(), two()]; int* p = &a[0]; a[0] =
 ninetyNine(); assert(*p == 99);`, every value seeded from a runtime function
@@ -2947,14 +2947,14 @@ No `interpreter.md` §9.10 shim is retired by this slice.
 
 Focused runs, all green: the new fixture (confirmed red on Interpreter /
 green on SystemLinker before the fix, green on both after); `bin/ut -s
-ut.backends.runner.ct.expressions` (360 run, 0 failed); `bin/ut -s
-ut.backends.runner.ct.arrays` (320 run, 0 failed -- the previously-known
+ut.backends.runner.lang.expressions` (360 run, 0 failed); `bin/ut -s
+ut.backends.runner.lang.arrays` (320 run, 0 failed -- the previously-known
 `sliceAssignmentWritesArrayStorage.Bytecode`/
 `staticArrayCopyRunsPostblitAndDtors.Bytecode` failures noted in the round
 above are gone, from unrelated master merges, not this slice); `bin/ut -s
 ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed); `bin/ut -s
-ut.backends.runner.ct.structs` (281 run, 0 failed). The full `bin/ut
+ut.backends.runner.lang.structs` (281 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
 Progress 2026-07-14 (array-native storage's write-side closure: a write
@@ -2969,7 +2969,7 @@ wrote `locals`' detached, `.dup`'d array copy, never the promoted
 `arrayCells` entry a deref-read (`runPointerExpression`) or a later direct
 write (`writeIndexLocation`) actually consult. New fixture (pre-approved):
 `pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer` in
-`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`tests/ut/backends/runner/lang/expressions.d`, scoped to
 `Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
 convention) -- `int[] a = [one(), two()]; int* p = &a[0]; int* q = &a[0];
 *p = ninetyNine(); assert(*q == 99);`, every value seeded from a runtime
@@ -3002,8 +3002,8 @@ paths. No `interpreter.md` §9.10 shim is retired by this slice.
 
 Focused runs, all green: the new fixture (confirmed red on Interpreter /
 green on SystemLinker before the fix, green on both after); `bin/ut -s
-ut.backends.runner.ct.expressions` (361 run, 0 failed); `bin/ut -s
-ut.backends.runner.ct.arrays` (320 run, 0 failed); `bin/ut -s
+ut.backends.runner.lang.expressions` (361 run, 0 failed); `bin/ut -s
+ut.backends.runner.lang.arrays` (320 run, 0 failed); `bin/ut -s
 ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
@@ -3019,7 +3019,7 @@ reached `s`'s own `locals` entry, a detached `.dup` snapshot taken at slice-
 creation time, because a slice is not a real aliasing view in the boxed
 model at all. New fixture (pre-approved):
 `dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice` in
-`tests/ut/backends/runner/ct/arrays.d`, scoped to `Interpreter`/
+`tests/ut/backends/runner/lang/arrays.d`, scoped to `Interpreter`/
 `SystemLinker` only (omitted elsewhere per the omit-don't-pin convention)
 -- `int[] a = [one(), two()]; int[] s = a[]; a[0] = ninetyNine(); assert(
 s[0] == 99);`, every value seeded from a runtime function call so DMD
@@ -3081,15 +3081,15 @@ retired by this slice.
 
 Focused runs, all green: the new fixture (confirmed red on Interpreter /
 green on SystemLinker before the fix, green on both after); `bin/ut -s
-ut.backends.runner.ct.expressions` (361 run, 0 failed, 5/5 failing as
-expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+ut.backends.runner.lang.expressions` (361 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.lang.arrays` (322 run, 0 failed);
 `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
 
 Progress 2026-07-14 (slice-cell promotion guard: fixing a regression the
 above slice introduced): the cerealed matrix test
-`ut.backends.runner.ct.cerealed.multidimensionalArrayWritesNestedLengths`,
+`ut.backends.runner.lang.cerealed.multidimensionalArrayWritesNestedLengths`,
 GREEN on master before the slice-aliasing work above, went RED on
 Interpreter: `NativeArray.slice: end > length`, thrown from the last line of
 `promoteSliceArrayCell`. Root cause: the fixture's `encode(int[][] values)`
@@ -3127,10 +3127,10 @@ Confirmed red before the fix (`end > length`) and green after on the exact
 regressed test, and confirmed slice 3's own fixture
 (`dynamicArray.directArrayWriteIsVisibleThroughEarlierFullSlice`) still
 green (its full-slice case has `lower == 0, length == cell.length` and still
-promotes). Focused runs, all green: `bin/ut -s ut.backends.runner.ct.cerealed`
+promotes). Focused runs, all green: `bin/ut -s ut.backends.runner.lang.cerealed`
 (164 run, 0 failed, 1/1 failing as expected); `bin/ut -s
-ut.backends.runner.ct.arrays` (322 run, 0 failed); `bin/ut -s
-ut.backends.runner.ct.expressions` (361 run, 0 failed, 5/5 failing as
+ut.backends.runner.lang.arrays` (322 run, 0 failed); `bin/ut -s
+ut.backends.runner.lang.expressions` (361 run, 0 failed, 5/5 failing as
 expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full
 `bin/ut --random` was left to the orchestrator per the usual long-suite
 handoff.
@@ -3150,7 +3150,7 @@ never consulted `arrayCells` at all, so a write through `e` never reached a
 cell an earlier-taken pointer's deref-read (`runPointerExpression`) actually
 consults. New fixture (pre-approved):
 `pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer` in
-`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`tests/ut/backends/runner/lang/expressions.d`, scoped to
 `Interpreter`/`SystemLinker` only (omitted elsewhere per the omit-don't-pin
 convention) -- `int[] a = [one(), two()]; int* p = &a[0]; foreach (ref e; a)
 e = e + ninetyNine(); assert(*p == 1 + 99);`, every value seeded from a
@@ -3189,9 +3189,9 @@ retired by this slice.
 
 Focused runs, all green: the new fixture (confirmed red on Interpreter /
 green on SystemLinker before the fix, green on both after); `bin/ut -s
-ut.backends.runner.ct.expressions` (363 run, 0 failed, 5/5 failing as
-expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+ut.backends.runner.lang.expressions` (363 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.lang.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed, 1/1 failing
 as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
 `bin/ut -s ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
@@ -3219,7 +3219,7 @@ its `arrayCells` entry.
 
 New fixture (pre-approved):
 `pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly` in
-`tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+`tests/ut/backends/runner/lang/expressions.d`, scoped to `Interpreter`/
 `SystemLinker` only (omitted elsewhere per the omit-don't-pin convention) --
 `int[] a = [one(), two()]; int* p = &a[0]; (*p)++; assert(a[0] == 2 && *p ==
 2);`, every value seeded from a runtime function call so DMD cannot fold it.
@@ -3278,9 +3278,9 @@ No `interpreter.md` §9.10 shim is retired by this slice.
 
 Focused runs, all green: the new fixture (confirmed red on Interpreter /
 green on SystemLinker before the fix, green on both after); `bin/ut -s
-ut.backends.runner.ct.expressions` (365 run, 0 failed, 5/5 failing as
-expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+ut.backends.runner.lang.expressions` (365 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.lang.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed, 1/1 failing
 as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
@@ -3338,7 +3338,7 @@ red on Interpreter before any production change and green on SystemLinker
 
 New fixture (pre-approved):
 `pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer`
-in `tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+in `tests/ut/backends/runner/lang/expressions.d`, scoped to `Interpreter`/
 `SystemLinker` only (omitted elsewhere per the omit-don't-pin convention).
 
 Fix, one production change in `impl.d`: `writeCelledLocal` gained an
@@ -3368,8 +3368,8 @@ candidate the prior slice's "What remains" flagged as untested.
 
 Focused runs, all green: the new fixture (confirmed red on Interpreter /
 green on SystemLinker before the fix, green on both after); `bin/ut -s
-ut.backends.runner.ct.expressions` (367 run, 0 failed, 5/5 failing as
-expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
+ut.backends.runner.lang.expressions` (367 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.lang.arrays` (322 run, 0 failed);
 `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
@@ -3411,7 +3411,7 @@ Per the task's own fallback (do not fabricate a failure when saturated),
 kept case (a) as a genuine characterization fixture with NO production
 change: `pointer.
 arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice` in
-`tests/ut/backends/runner/ct/expressions.d`, scoped to `Interpreter`/
+`tests/ut/backends/runner/lang/expressions.d`, scoped to `Interpreter`/
 `SystemLinker` only (omitted elsewhere per the omit-don't-pin convention) --
 `int[] a = [one(), two(), three()]; int[] s = a[]; int* p = &s[1]; a[1] =
 ninetyNine(); assert(*p == 99);`, every value seeded from a runtime function
@@ -3426,9 +3426,9 @@ this slice, which made no production changes at all. No `interpreter.md`
 
 Focused runs, all green: the new characterization fixture (green on
 Interpreter and SystemLinker, no production change); `bin/ut -s
-ut.backends.runner.ct.expressions` (369 run, 0 failed, 5/5 failing as
-expected); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+ut.backends.runner.lang.expressions` (369 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.lang.arrays` (322 run, 0 failed);
+`bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed, 1/1 failing
 as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
@@ -3447,7 +3447,7 @@ values seeded from runtime function calls) returned `1` on the Interpreter
 `s`'s later direct write -- while SystemLinker's real aliasing gave `99`.
 Committed as `pointer.
 structFieldWrittenDirectlyIsVisibleThroughEarlierPointer` in `tests/ut/
-backends/runner/ct/expressions.d`, scoped to `Interpreter`/`SystemLinker`
+backends/runner/lang/expressions.d`, scoped to `Interpreter`/`SystemLinker`
 only.
 
 Production change, `source/quickbite/backends/interpreter/impl.d`: a new
@@ -3503,9 +3503,9 @@ this slice needs it. No `interpreter.md` §9.10 shim is retired by this
 slice.
 
 Focused runs, all green: the new fixture (green on Interpreter and
-SystemLinker); `bin/ut -s ut.backends.runner.ct.expressions` (371 run, 0
-failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.structs`
-(281 run, 0 failed); `bin/ut -s ut.backends.runner.ct.arrays` (322 run, 0
+SystemLinker); `bin/ut -s ut.backends.runner.lang.expressions` (371 run, 0
+failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.lang.structs`
+(281 run, 0 failed); `bin/ut -s ut.backends.runner.lang.arrays` (322 run, 0
 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
@@ -3518,7 +3518,7 @@ even after that slice gave the receiver a `structCells` entry. This slice
 closes exactly that gap for the same narrow, already-cell-supported case.
 
 The existing fixture `pointer.addressOfStructFieldWriteThroughUpdatesField`
-(`tests/ut/backends/runner/ct/expressions.d`) turned out to already BE that
+(`tests/ut/backends/runner/lang/expressions.d`) turned out to already BE that
 exact case: `struct Holder { int value; }`, `auto a = Holder(seed)` (a
 plain, non-dataseg struct LOCAL with one scalar field), `int* p =
 &a.value;` (address-of a scalar field via a bare `VarExp` receiver) -- so
@@ -3530,7 +3530,7 @@ SystemLinker)` block asserting the same `a.value == 5` both backends now
 agree on, matching the sibling
 `structFieldWrittenDirectlyIsVisibleThroughEarlierPointer` fixture's shape.
 Confirmed RED first: with only the test change applied (production code
-unchanged), `bin/ut -s ut.backends.runner.ct.expressions` reported exactly
+unchanged), `bin/ut -s ut.backends.runner.lang.expressions` reported exactly
 one new failure, `pointer.addressOfStructFieldWriteThroughUpdatesField.
 Interpreter` (still throwing, now wrongly so per the updated expectation).
 
@@ -3568,9 +3568,9 @@ into child frames, matching the previous slice's own bounded instruction;
 no fixture in this slice needs it. No `interpreter.md` §9.10 shim is
 retired by this slice.
 
-Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (371
+Focused runs, all green: `bin/ut -s ut.backends.runner.lang.expressions` (371
 run, 0 failed, 5/5 failing as expected); `bin/ut -s
-ut.backends.runner.ct.structs` (281 run, 0 failed); `bin/ut -s
+ut.backends.runner.lang.structs` (281 run, 0 failed); `bin/ut -s
 ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
@@ -3592,7 +3592,7 @@ rule (`scalarCells.remove(variable)` at the three fresh-binding sites:
 extended to the `arrayCells`/`structCells` maps the array and struct phases
 added afterward. Three new fixtures exposed this for real: (1a)
 `dynamicArray.nestedForeachDropsStaleArrayCellOnFreshRowBinding`
-(`tests/ut/backends/runner/ct/arrays.d`) -- a nested `foreach` over an
+(`tests/ut/backends/runner/lang/arrays.d`) -- a nested `foreach` over an
 array-of-arrays, where dmd lowers the inner loop's slice temporary to a
 fresh `auto __r = row[];` every outer iteration and `promoteSliceArrayCell`
 promotes `row` itself eagerly (no address-of needed at all), so the second
@@ -3600,7 +3600,7 @@ outer iteration's inner sum read back the first iteration's stale cell
 bytes -- confirmed red on Interpreter (`4 != 6`, the reviewer's own
 predicted wrong answer) and green on SystemLinker; (1b)
 `pointer.recursiveArrayDeclarationDropsStaleArrayCell`
-(`tests/ut/backends/runner/ct/expressions.d`) -- a recursive function
+(`tests/ut/backends/runner/lang/expressions.d`) -- a recursive function
 re-declaring `int[] a` and taking `&a[0]` at each depth, confirmed red
 (`1001 != 1100`); (1c)
 `pointer.recursiveStructDeclarationDropsStaleStructCell` (same file) -- the
@@ -3639,7 +3639,7 @@ mutating whatever `s` used to alias. When `s` was a slice view sharing its
 cell with a root array `a` (`int[] s = a[];`), the buggy in-place refresh
 wrote `b`'s bytes into `a`'s own block. New fixture (confirmed red):
 `dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell`
-(`tests/ut/backends/runner/ct/arrays.d`) -- `int[] a = [one(), two()]; int[]
+(`tests/ut/backends/runner/lang/arrays.d`) -- `int[] a = [one(), two()]; int[]
 s = a[]; int[] b = [eight(), nine()]; s = b; return a[0];` -- red on
 Interpreter (`8 != 1`: `a[0]` corrupted to `b`'s first element) and green on
 SystemLinker (a real rebind never touches `a`'s storage). Fix:
@@ -3665,10 +3665,10 @@ always-refresh-or-drop behaviour was already correct and remains unchanged.
 
 Focused runs, all green: all four new fixtures (each confirmed red on
 Interpreter / green on SystemLinker before the fix, green on both after);
-`bin/ut -s ut.backends.runner.ct.expressions` (375 run, 0 failed, 5/5
-failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (326 run, 0
-failed); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+`bin/ut -s ut.backends.runner.lang.expressions` (375 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.lang.arrays` (326 run, 0
+failed); `bin/ut -s ut.backends.runner.lang.structs` (281 run, 0 failed);
+`bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed, 1/1 failing
 as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
@@ -3688,13 +3688,13 @@ at promotion time. A cell can be promoted with NO address-of at all: `int[]
 s = a[];` eagerly promotes `a`'s own cell via `promoteSliceArrayCell`. New
 fixture (pre-approved, confirmed red on Interpreter / green on
 SystemLinker): `dynamicArray.appendRefreshesSlicePromotedStaleCell`
-(`tests/ut/backends/runner/ct/arrays.d`) -- `int[] a = [one()]; int[] s =
+(`tests/ut/backends/runner/lang/arrays.d`) -- `int[] a = [one()]; int[] s =
 a[]; a ~= two(); return a[1];` -- red (`NativeArray.element: index out of
 range`: the plain read of the newly-appended index went through
 `readIndexExpression`'s cell arm against the stale, length-1 cell instead of
 the grown `locals` mirror). A sibling fixture with an explicit `&a[0]`
 address-of, `pointer.arrayAppendRefreshesStaleCellAfterAddressOf`
-(`tests/ut/backends/runner/ct/expressions.d`) -- `int[] a = [one()]; auto p
+(`tests/ut/backends/runner/lang/expressions.d`) -- `int[] a = [one()]; auto p
 = &a[0]; a ~= two(); a[1] = five(); return a[1];` -- confirmed the same
 failure mode via a different promotion path. Fix: `arrayCells.remove
 (variable)` added to the append arm, alongside the existing `sliceAliases.
@@ -3756,9 +3756,9 @@ was missing.
 
 Focused runs, all green: all four new fixtures (each confirmed red on
 Interpreter / green on SystemLinker before the fix, green on both after);
-`bin/ut -s ut.backends.runner.ct.expressions` (379 run, 0 failed, 5/5
-failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0
-failed); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1
+`bin/ut -s ut.backends.runner.lang.expressions` (379 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.lang.arrays` (330 run, 0
+failed); `bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed, 1/1
 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed). The full `bin/ut --random` was left to the orchestrator per the
 usual long-suite handoff.
@@ -3782,7 +3782,7 @@ caller's `a` (the slice's source, aliased via `sliceAliases`) can already
 have one from an earlier `&a[0]`. New fixture (pre-approved, confirmed red
 on Interpreter / green on SystemLinker):
 `pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf`
-(`tests/ut/backends/runner/ct/expressions.d`) -- `int[] a = [one(), two()];
+(`tests/ut/backends/runner/lang/expressions.d`) -- `int[] a = [one(), two()];
 auto p = &a[0]; bump(a[]); return a[0];` -- SystemLinker `99`; Interpreter
 returned the stale `1` (`readIndexExpression`'s cell arm answered from the
 untouched cell). Fix: `writeThroughSliceAlias` now also calls
@@ -3833,9 +3833,9 @@ the cell first and never consults the alias tables at all.
 
 Focused runs, all green: all three new fixtures (each confirmed red on
 Interpreter / green on SystemLinker before the fix, green on both after);
-`bin/ut -s ut.backends.runner.ct.expressions` (385 run, 0 failed, 5/5
-failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0
-failed); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0 failed);
+`bin/ut -s ut.backends.runner.lang.expressions` (385 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.lang.structs` (281 run, 0
+failed); `bin/ut -s ut.backends.runner.lang.arrays` (330 run, 0 failed);
 `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The full `bin/ut
 --random` was left to the orchestrator per the usual long-suite handoff.
 
@@ -3859,7 +3859,7 @@ dupes), so the lookup missed and the write fell through to the
 `fieldSnapshotAllocationIds` refusal check (which WAS duped) instead of
 aliasing. SystemLinker returned `198` as expected (real aliasing). Committed
 as `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller` in
-`tests/ut/backends/runner/ct/expressions.d`, scoped to
+`tests/ut/backends/runner/lang/expressions.d`, scoped to
 `Interpreter`/`SystemLinker` only.
 
 Merely duping the reverse-lookup maps turned out not to be enough on its
@@ -3942,8 +3942,8 @@ as scoped by the struct phase's first slice -- unchanged by this slice.
 
 Focused runs, all green: the new fixture (confirmed red on Interpreter /
 green on SystemLinker before the fix, green on both after); `bin/ut -s
-ut.backends.runner.ct.expressions` (387 run, 0 failed, 5/5 failing as
-expected); `bin/ut -s ut.backends.runner.ct.structs` (281 run, 0 failed);
+ut.backends.runner.lang.expressions` (387 run, 0 failed, 5/5 failing as
+expected); `bin/ut -s ut.backends.runner.lang.structs` (281 run, 0 failed);
 `bin/ut -s ut.backends.interpreter` (218 run, 0 failed); `bin/ut -s
 ut.backends.evaluator.eval` (71 run, 0 failed). The full `bin/ut --random`
 was left to the orchestrator per the usual long-suite handoff.
@@ -3985,12 +3985,12 @@ already loops over every scalar field index, not just one.
 Kept only fixture (a),
 `pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer`, scoped to
 `Interpreter`/`SystemLinker`, in
-`tests/ut/backends/runner/ct/expressions.d` -- (b) and (c) were probed
+`tests/ut/backends/runner/lang/expressions.d` -- (b) and (c) were probed
 as temporary fixtures to confirm the "all green" conclusion, observed green
 with 0 failures, then removed rather than kept as duplicative coverage of
 the same already-shared code path. No production change this slice. Focused
-runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (389 run, 0
-failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.structs`
+runs, all green: `bin/ut -s ut.backends.runner.lang.expressions` (389 run, 0
+failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.lang.structs`
 (281 run, 0 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed); `bin/ut -s ut.backends.evaluator.eval` (71 run, 0 failed).
 
@@ -4033,19 +4033,19 @@ write-back needed.
 
 New fixtures (pre-approved, one per finding): `pointer.
 structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell` in `tests/ut/
-backends/runner/ct/expressions.d` and `struct.
+backends/runner/lang/expressions.d` and `struct.
 memberFunctionArrayFieldWriteRefreshesSourceArrayCell` in `tests/ut/
-backends/runner/ct/structs.d`, both scoped to `Interpreter`/`SystemLinker`
+backends/runner/lang/structs.d`, both scoped to `Interpreter`/`SystemLinker`
 only (omit-don't-pin convention), every value seeded from a runtime
 function call so DMD cannot fold it. Both confirmed red on Interpreter
 before any production change (finding 1: throws "unsupported native scalar
 type"; finding 2: `1 != 100`, the stale pre-`bump` value) and green on
 SystemLinker; green on both after.
 
-Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions` (391
-run, 0 failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.
-structs` (283 run, 0 failed); `bin/ut -s ut.backends.runner.ct.arrays` (330
-run, 0 failed); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0
+Focused runs, all green: `bin/ut -s ut.backends.runner.lang.expressions` (391
+run, 0 failed, 5/5 failing as expected); `bin/ut -s ut.backends.runner.lang.
+structs` (283 run, 0 failed); `bin/ut -s ut.backends.runner.lang.arrays` (330
+run, 0 failed); `bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0
 failed, 1/1 failing as expected); `bin/ut -s ut.backends.interpreter` (218
 run, 0 failed). The full `bin/ut --random` was left to the orchestrator per
 the usual long-suite handoff.
@@ -4070,7 +4070,7 @@ whatever cell the inner re-declaration just promoted for ITSELF, instead of
 declining. Depending on the inner binding's value/length this reads the
 WRONG frame's bytes or indexes past a shorter re-declared array
 (`NativeArray.element: index out of range`). Three new fixtures in
-`tests/ut/backends/runner/ct/expressions.d`, all scoped to
+`tests/ut/backends/runner/lang/expressions.d`, all scoped to
 `Interpreter`/`SystemLinker` (omit-don't-pin convention), every value seeded
 from a runtime function call: `pointer.
 recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue` (a recursive
@@ -4197,10 +4197,10 @@ this slice changed), so there was no id memo there to invalidate.
 
 Focused runs, all green: all four new fixtures (each confirmed red on
 Interpreter / green on SystemLinker before the fix, green on both after);
-`bin/ut -s ut.backends.runner.ct.expressions` (399 run, 0 failed, 5/5
-failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (283 run, 0
-failed); `bin/ut -s ut.backends.runner.ct.arrays` (330 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+`bin/ut -s ut.backends.runner.lang.expressions` (399 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.lang.structs` (283 run, 0
+failed); `bin/ut -s ut.backends.runner.lang.arrays` (330 run, 0 failed);
+`bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed, 1/1 failing
 as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
@@ -4267,7 +4267,7 @@ guest-visible `RangeError` with the exact wording druntime's
 against a real compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`), so
 `SystemLinker` agrees exactly. New fixture (pre-approved),
 `dynamicArray.sliceAssignPastLengthThrowsRangeError` in `tests/ut/
-backends/runner/ct/arrays.d`, scoped to `Interpreter`/`SystemLinker`,
+backends/runner/lang/arrays.d`, scoped to `Interpreter`/`SystemLinker`,
 runtime-seeded: confirmed red on Interpreter before the fix (uncaught
 host `core.exception.ArrayIndexError`, indexing `elements` itself) and
 green on SystemLinker; green on both after.
@@ -4287,11 +4287,11 @@ from the cell, so the flag cannot outlive the writeback it was raised
 for. No behavioural change today; no new fixture. Confirmed the existing
 cross-frame struct fixtures (`ct.structs`, `ct.expressions`) stay green.
 
-Focused runs, all green: `bin/ut -s ut.backends.runner.ct.expressions`
+Focused runs, all green: `bin/ut -s ut.backends.runner.lang.expressions`
 (399 run, 0 failed, 5/5 failing as expected); `bin/ut -s
-ut.backends.runner.ct.structs` (283 run, 0 failed); `bin/ut -s
-ut.backends.runner.ct.arrays` (332 run, 0 failed -- +2 for finding 7's new
-fixture); `bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed,
+ut.backends.runner.lang.structs` (283 run, 0 failed); `bin/ut -s
+ut.backends.runner.lang.arrays` (332 run, 0 failed -- +2 for finding 7's new
+fixture); `bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed,
 1/1 failing as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0
 failed). The full `bin/ut --random` was left to the orchestrator per the
 usual long-suite handoff.
@@ -4315,7 +4315,7 @@ owns the struct local. A member-function frame has no
 `writeBackNestedLocals` of its own, so the refresh died with the frame
 instead of propagating up to the caller. New fixture,
 `struct.memberFunctionForwardsPointerWriteToOwningFrame`
-(`tests/ut/backends/runner/ct/structs.d`, `Interpreter`/`SystemLinker`):
+(`tests/ut/backends/runner/lang/structs.d`, `Interpreter`/`SystemLinker`):
 confirmed red on Interpreter before the fix (`3 != 42`, the pre-write
 value) and green on SystemLinker; green on both after. Fix: reverted the
 `structFieldPointerWritebacks.remove(variable)` clear (and its comment)
@@ -4395,10 +4395,10 @@ hardening only.
 
 Focused runs, all green: all five new fixtures (each confirmed red on
 Interpreter / green on SystemLinker before the fix, green on both after);
-`bin/ut -s ut.backends.runner.ct.expressions` (407 run, 0 failed, 5/5
-failing as expected); `bin/ut -s ut.backends.runner.ct.structs` (285 run, 0
-failed); `bin/ut -s ut.backends.runner.ct.arrays` (332 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+`bin/ut -s ut.backends.runner.lang.expressions` (407 run, 0 failed, 5/5
+failing as expected); `bin/ut -s ut.backends.runner.lang.structs` (285 run, 0
+failed); `bin/ut -s ut.backends.runner.lang.arrays` (332 run, 0 failed);
+`bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed, 1/1 failing
 as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed). The
 full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
@@ -4492,12 +4492,12 @@ scope.
 Focused runs, all green: all three new fixtures (each confirmed red on
 Interpreter / green on SystemLinker before the fix, green on both after,
 matching the exact failures above); `bin/ut -s
-ut.backends.runner.ct.expressions` (413 run, 0 failed, 5/5 failing as
+ut.backends.runner.lang.expressions` (413 run, 0 failed, 5/5 failing as
 expected -- the same pre-existing `@ShouldFail` count as the 407-run
 baseline before these fixtures were added, confirmed by re-running the
-baseline unchanged); `bin/ut -s ut.backends.runner.ct.structs` (285 run, 0
-failed); `bin/ut -s ut.backends.runner.ct.arrays` (332 run, 0 failed);
-`bin/ut -s ut.backends.runner.ct.cerealed` (164 run, 0 failed, 1/1 failing
+baseline unchanged); `bin/ut -s ut.backends.runner.lang.structs` (285 run, 0
+failed); `bin/ut -s ut.backends.runner.lang.arrays` (332 run, 0 failed);
+`bin/ut -s ut.backends.runner.lang.cerealed` (164 run, 0 failed, 1/1 failing
 as expected); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed);
 `bin/ut -s ut.bin.repl` (228 run, 0 failed). The full `bin/ut --random` was
 left to the orchestrator per the usual long-suite handoff.
@@ -4572,10 +4572,10 @@ never set for it and the existing in-place-refresh behaviour is untouched.
 Focused runs, all green: both new fixtures (each confirmed red on
 Interpreter / green on SystemLinker before the fix, green on both after);
 the full set of previously-landed cross-frame array-cell fixtures named
-above; `bin/ut -s ut.backends.runner.ct.expressions` (429 run, 0 failed,
-5/5 failing as expected); `bin/ut -s ut.backends.runner.ct.arrays` (335
+above; `bin/ut -s ut.backends.runner.lang.expressions` (429 run, 0 failed,
+5/5 failing as expected); `bin/ut -s ut.backends.runner.lang.arrays` (335
 run, 0 failed); `bin/ut -s ut.backends.interpreter` (218 run, 0 failed).
-`bin/ut -s ut.backends.runner.ct.structs` still exits 139 in isolation on
+`bin/ut -s ut.backends.runner.lang.structs` still exits 139 in isolation on
 this branch (the pre-existing Bytecode teardown segfault noted in the
 previous session's handoff, unrelated to this change) -- every named test
 case inside it ran and none failed before that teardown crash. The full
@@ -5656,7 +5656,7 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    - The benchmark suite never crosses the FFI seam: `bin/bench`'s fixtures
      (`tests/example.d`, dub projects) have no native dependency, so the
      interpreter row is frontend + tree-walking with zero marshalling. A
-     marshaller swap is invisible to `ci.sh`/`bin/bench`; only the `rt/`
+     marshaller swap is invisible to `ci.sh`/`bin/bench`; only the `sys/`
      dependency-image suite exercises the seam.
    - The representation gap is real but lives off the seam. Construct +
      read-back micro-benchmark (1M iters): a boxed 4-long struct is ~26x a

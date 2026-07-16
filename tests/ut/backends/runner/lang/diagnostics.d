@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.diagnostics;
+module ut.backends.runner.lang.diagnostics;
 
 
 import ut.backends;
@@ -32,7 +32,7 @@ unittest {
     });
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -53,7 +53,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("intLessThanOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -71,7 +71,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("intLessOrEqualOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -89,7 +89,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("intGreaterThanOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -107,7 +107,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("intGreaterOrEqualOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -125,7 +125,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("intNotEqualOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -143,7 +143,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("ok." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -159,7 +159,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("oops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -175,7 +175,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("okFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -191,7 +191,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("localIntReturnOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -226,7 +226,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
 // Compiled `assert(0)` in a non-unittest function raises the plain _d_assert
 // message "Assertion failure" (checkaction=context adds no operands for a
 // literal condition); "`assert(0)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (`assert(0)` failed is CTFE-only)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin above (shares CTFE-style wording)"),
+)) {
     @("voidFunctionOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -242,14 +245,7 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
-    LLVMJit,
-)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("functionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -265,14 +261,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
-    LLVMJit,
-)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("tenFunctionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -300,14 +289,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
-    LLVMJit,
-)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("functionParameterOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -323,14 +305,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
-    LLVMJit,
-)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("ifElseOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -349,7 +324,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("refParameterOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -367,12 +342,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(
-    Ctfe,
-    Interpreter,
-    Bytecode,
-    IR,
-    SystemLinker,
+static foreach (backend; Matrix!(
+    Plus!(IR),
+    Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("inFunctionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -389,7 +361,7 @@ static foreach (backend; AliasSeq!(
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("refSizeTParameterOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -407,7 +379,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -432,7 +404,9 @@ static foreach (backend; AliasSeq!(Ctfe, IR)) {
 
 // Compiled `assert(false)` in a unittest body raises the plain _d_unittest
 // hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (`assert(false)` failed is CTFE-only)"),
+)) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -444,7 +418,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -460,7 +434,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -473,7 +447,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -486,7 +460,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -499,7 +473,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("assertMessageDoesNotEvaluateOnSuccess." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -515,7 +489,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("uintGreaterOrEqualUsesUnsignedComparison." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -606,7 +580,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
 // `trustedVoidInit`, which the interpreter previously rejected before reaching
 // any libc call. Bytecode supports this whole-aggregate path; IR does not yet
 // support it.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("voidInitializedStructReturnedWholeIsUsable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

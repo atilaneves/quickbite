@@ -3,7 +3,7 @@
 ## Current state / next action
 
 The backend works and is promoted alongside `SystemLinker` across the whole
-`SystemLinker`-oracle matrix, including `ct/archive.d` archive-backed imports.
+`SystemLinker`-oracle matrix, including `lang/archive.d` archive-backed imports.
 Archive link files are split by shape: shared images are still `dlopen`'d into
 the process, while static archives are attached to the ORC object layer with
 `LLVMOrcCreateStaticLibrarySearchGeneratorForPath` and lazily searched for
@@ -20,13 +20,13 @@ moved to full-matrix + benchmark parity.
 **Agent entry point.** The critique execution plan (slices A→F) and parity
 slices 1–4 are ✅ done: the full SystemLinker-oracle matrix runs `LLVMJit`, the
 LDC-built bench runs it via the `bench-exec` ORC path, and the
-`rt/dependency_image.d` `--random` isolation flake is fixed with per-backend
-unique module names (see Slice 4, 2026-07-14). The only remaining work is two
-**upstream JITLink minimal repros** (duplicate-`UND` zero-GOT-stub; hidden-weak
-`DW.ref.*` cross-graph externalization, both worked around in `orc/elf.d`,
-neither filed). Two unrelated pre-existing suite flakes surfaced during the
-Slice 4 gate (environmental `liblto_plugin.so`; a Bytecode `cerealed` flake) —
-neither is LLVMJit's, both out of scope here.
+`backends/ffi/dependency_image.d` `--random` isolation flake is fixed with
+per-backend unique module names (see Slice 4, 2026-07-14). The only remaining
+work is two **upstream JITLink minimal repros** (duplicate-`UND` zero-GOT-stub;
+hidden-weak `DW.ref.*` cross-graph externalization, both worked around in
+`orc/elf.d`, neither filed). Two unrelated pre-existing suite flakes surfaced
+during the Slice 4 gate (environmental `liblto_plugin.so`; a Bytecode
+`cerealed` flake) — neither is LLVMJit's, both out of scope here.
 
 ## Scope
 
@@ -293,7 +293,7 @@ promoted into the only surviving `rt/` SystemLinker-oracle block:
 - `tests/ut/backends/runner/rt/cstdlib.d` — the `malloc.` block (a real
   runtime libc `malloc` call through the in-process JIT).
 
-The Step 1 gate proofs in `tests/ut/backends/runner/rt/llvm_jit.d`
+The Step 1 gate proofs in `tests/ut/backends/native/llvm_jit.d`
 (`passingFixtureRuns`, `failingFixtureMessageMatchesSystemLinker`,
 `ehFrameProofNonAllocatingAssert`) remain `LLVMJit`-tagged and provide the
 core matrix coverage.
@@ -613,9 +613,9 @@ not one in two ways:
    with LDC (commit `84650dbe`), the standard benchmark path cannot measure
    the backend whose whole point is latency.
 2. **Two `rt/` matrix gaps.** ✅ RESOLVED by slice 1: `malloc.pointerRoundTrip`
-   (`rt/cstdlib.d`) and the inline-asm rejection pin (`rt/inline_asm.d`) both
-   run `LLVMJit` now. (Broader matrix gaps found later are slice E of the
-   critique execution plan.)
+   (`rt/cstdlib.d`) and the inline-asm rejection pin
+   (`backends/native/inline_asm.d`) both run `LLVMJit` now. (Broader matrix
+   gaps found later are slice E of the critique execution plan.)
 
 ## Design: extend the executor model, don't fight it
 
@@ -657,8 +657,8 @@ automatically once the runner is constructed.
 
 Both promotions are in the tree: `malloc.pointerRoundTrip` (`rt/cstdlib.d`)
 runs `AliasSeq!(Interpreter, SystemLinker, LLVMJit)` and the inline-asm
-rejection pin (`rt/inline_asm.d`) runs `AliasSeq!(SystemLinker, LLVMJit)`
-with the shared-codegen comment.
+rejection pin (`backends/native/inline_asm.d`) runs
+`AliasSeq!(SystemLinker, LLVMJit)` with the shared-codegen comment.
 
 ### Slice 2: extract the frontend-free ORC loader (pure refactor) ✅ DONE
 
@@ -743,9 +743,10 @@ direction flips by fixture shape (corpus favors LLVMJit's killed-spawn; the
 single big cerealed link favors system-linker) — both correct, no "JIT child
 died".
 
-**Gate finding — `rt/dependency_image.d` `--random` isolation flake (found
-2026-07-14, seed `1126153379`) — FIXED.** The first `ci.sh` was red: 8 fixtures
-in `rt/dependency_image.d` failed (`passed` asserts `true`, gets `false`) — 6
+**Gate finding — `backends/ffi/dependency_image.d` `--random` isolation flake
+(found 2026-07-14, seed `1126153379`) — FIXED.** The first `ci.sh` was red: 8
+fixtures in `backends/ffi/dependency_image.d` failed (`passed` asserts `true`,
+gets `false`) — 6
 `LLVMJit`, 2 `Interpreter`. Root cause: every fixture builds a distinct
 dependency-image `.so` but the `LLVMJit` and `Interpreter` variants of one
 fixture reused the *same* module name and symbol names, loaded
@@ -923,7 +924,7 @@ existing duplicate-`UND` upstream item.
    `normalizeDuplicateUndefinedGlobalsInFile`, which now does two transforms
    rather than one).
 2. Deterministic pin: `elf.unwindCellRelocationsUseSectionSymbol` in
-   `tests/ut/backends/runner/rt/elf.d` — a synthetic object whose `.rela` entry
+   `tests/ut/orc/elf.d` — a synthetic object whose `.rela` entry
    names a `DW.ref.*`; after the transform the entry must name the local
    `SECTION` symbol with the addend shifted by the symbol's value and the
    relocation type intact, while an undefined global and a hidden non-cell
@@ -1023,7 +1024,7 @@ name-coalescing only prevents the two-entries-one-zeroed split.)
    `GLOBAL` entry canonical.
 2. Fix `singleSectionOfType`'s error messages to derive from its `type`
    parameter (they hardcode "SHT_SYMTAB").
-3. Tests in `rt/elf.d`, reusing its synthetic builder (`writeSymbol(object,
+3. Tests in `orc/elf.d`, reusing its synthetic builder (`writeSymbol(object,
    index, name, symbolInfo(binding, type), sectionIndex)`; binding 1 =
    GLOBAL, 2 = WEAK). The first two must be observed red before the fix:
 
@@ -1317,9 +1318,9 @@ not complete when this increment was committed.
 ## Slice E — matrix promotions
 
 **Context.** Step 4's "every SystemLinker-oracle block" claim has uncommented
-gaps, and `rt/dependency_image.d` — the one file exercising extern-D/extern-C
-calls into a prebuilt dependency image — has no `LLVMJit` coverage at all,
-despite `LLVMJit` shipping dedicated dep-image machinery
+gaps, and `backends/ffi/dependency_image.d` — the one file exercising
+extern-D/extern-C calls into a prebuilt dependency image — has no `LLVMJit`
+coverage at all, despite `LLVMJit` shipping dedicated dep-image machinery
 (`loadDependencyImages`, the shared/static `linkFiles` split) with
 JIT-specific semantics: an `RTLD_GLOBAL` dep image's symbols participate in
 weak interposition over the JIT objects, a binding regime `SystemLinker`'s
@@ -1345,7 +1346,7 @@ static foreach (backend; AliasSeq!(
 )) {
 ```
 
-2. Promote `rt/dependency_image.d`'s fixtures:
+2. Promote `backends/ffi/dependency_image.d`'s fixtures:
 
 ```d
 // every extern-D/extern-C fixture also runs through the JIT's dep-image +
@@ -1366,9 +1367,9 @@ static foreach (backend; AliasSeq!(Interpreter, LLVMJit)) {
 SystemLinker-oracle rows: the three struct fixtures, pointer index assignment,
 explicit struct-field initialization, local-buffer `strlen`, file I/O, and the
 four adjacent parameter/control-flow diagnostics. All 11 new `LLVMJit` rows
-passed in a focused serial run. Converted `rt/dependency_image.d` mechanically
-to the `Interpreter`/`LLVMJit` matrix. Its two TLS rows exposed the parked
-interposition hazard: defining dlsym's per-thread TLS instance as an ORC
+passed in a focused serial run. Converted `backends/ffi/dependency_image.d`
+mechanically to the `Interpreter`/`LLVMJit` matrix. Its two TLS rows exposed the
+parked interposition hazard: defining dlsym's per-thread TLS instance as an ORC
 absolute symbol breaks the TLSGD protocol. LLVMJit now rewrites resolved TLSGD
 sequences in the child object to return that instance directly, removing the
 TLSGD and `__tls_get_addr` relocations before JITLink loads the object. The

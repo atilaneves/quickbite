@@ -313,19 +313,19 @@ The promoted logical-not group in `logic.d`
 `logicalNotFailureMessage.1.IR`, `logicalNotFailureMessage.0.IR`,
 `logicalNotCall.IR`, and `logicalNot.IR`) passed without new production code.
 Existing unary logical-not lowering, direct calls, bool locals, and bool
-diagnostics already covered that group. `tests/ut/backends/runner/ct/logic.d` is
+diagnostics already covered that group. `tests/ut/backends/runner/lang/logic.d` is
 complete for current IR coverage: no backend matrices in that module still
 exclude `IR`.
 
 The promoted `voidFunctionReturnsToCaller.IR` test in
-`tests/ut/backends/runner/ct/diagnostics.d` added narrow support for `void`
+`tests/ut/backends/runner/lang/diagnostics.d` added narrow support for `void`
 direct calls. `Call` now records whether it has a result, the compiler emits a
 result-less call for a DMD `void` call expression, the callee compiles to
 `ReturnVoid`, and the VM returns to the caller without writing a result slot.
 This is only direct void-call/return support for the observed shape; it is not
 general `void` expression handling, explicit `return;` coverage, or richer
 control flow.
-The rest of `tests/ut/backends/runner/ct/diagnostics.d` is now promoted for
+The rest of `tests/ut/backends/runner/lang/diagnostics.d` is now promoted for
 `IR`. That module forced the remaining narrow diagnostics support for integer
 `<=`, `>=`, and `!=`, explicit and dynamic assert messages, lazy assert
 message evaluation, simple `if`/`else`, scalar `ref` parameter writeback,
@@ -338,7 +338,7 @@ diagnostics shapes.
 ### Next Slice Handoff
 
 Continue with the next module in `ai/plans/backend-test-modules-order.md`,
-currently `tests/ut/backends/runner/ct/arrays.d`. Verify the current checkout
+currently `tests/ut/backends/runner/lang/arrays.d`. Verify the current checkout
 before editing, then promote the next smallest existing backend matrix that
 can honestly run through the current IR pipeline.
 
@@ -560,7 +560,7 @@ is added when a test requires control flow.
   fix needs signedness-aware comparison operations (LLVM-style `slt`/`ult`)
   threaded through `language.d`, `compiler.d`, and `vm.d`. Exposing fixture:
   `signedUnsignedComparisonIsUnsigned` in
-  `tests/ut/backends/runner/ct/integrals.d`, which omits `IR` from its
+  `tests/ut/backends/runner/lang/integrals.d`, which omits `IR` from its
   `AliasSeq` until this is fixed.
 
 - **Internal asserts instead of unsupported diagnostics.** The Tier 3
@@ -568,7 +568,7 @@ is added when a test requires control flow.
   (`compiler.d` `valueType` and `compileIntrinsicCall`) rather than an
   explicit unsupported diagnostic for: struct-typed call results
   (`struct.opCmpOrdersValues` and the other operator-overload tests in
-  `tests/ut/backends/runner/ct/structs.d`), float/real intrinsic
+  `tests/ut/backends/runner/lang/structs.d`), float/real intrinsic
   operands (`evaluatesRuntimeSqrtFloatInput` and the other float/real
   blocks in `math.d`), and the integer `^^` lowering
   (`int.powerOperatorRaisesRuntimeIntegers` in `expressions.d`). Per

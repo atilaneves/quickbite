@@ -74,8 +74,8 @@ DMD CTFE's diagnostic as if it were authoritative (§5).
 
 Per `AGENTS.md`: adding or changing a test needs approval first; promoting an
 existing oracle-backed matrix fixture to `Interpreter` is pre-approved. Fixtures
-live in `tests/ut/backends/runner/ct/` (pure interpretation) and `rt/` (runtime
-/ FFI). This plan's fixtures are almost all `ct/` — they exercise interpreter
+live in `tests/ut/backends/runner/lang/` (pure interpretation) and `sys/` (runtime
+/ FFI). This plan's fixtures are almost all `lang/` — they exercise interpreter
 execution, not the native boundary.
 
 ## 4. Relationship to the FFI and representation plans
@@ -186,7 +186,7 @@ the interpreter; it must be updated under the approval rule. This is the only
 behaviour change that is a *fix* rather than a *feature*, so it leads.
 
 **Phase 0 test status.** The approved test in
-`tests/ut/backends/runner/ct/diagnostics.d` now executes
+`tests/ut/backends/runner/lang/diagnostics.d` now executes
 `box.slot() = 42` where `slot` returns `ref int`, and asserts the assignment
 updates `box.value`. This removes one real source of the bad generic
 unsupported-assignment failure.
@@ -209,7 +209,7 @@ The probe is throwaway; a small permanent improvement is worth landing
 separately: a `--list-failures` / verbose bench mode so this is repeatable
 without patching. cerealed is the driving package because it is small,
 dependency-light, struct/serialisation-heavy (so it stresses field iteration and
-byte buffers), and already has a large `ct/cerealed.d` fixture to distil from.
+byte buffers), and already has a large `lang/cerealed.d` fixture to distil from.
 
 ## 7. The empirical gap inventory (cerealed, Interpreter)
 
@@ -254,9 +254,9 @@ silently severing aliasing for D pointers (mode 2, Rung 7 family), plus
 the `= void` sibling where taking `.ptr` of a still-void static array
 degraded to an untracked local pointer (mode 3, one of Rung 3's 5×
 `Unsupported interpreter assignment target`). Standalone fixtures:
-`realloc.sliceAssignWritesNativeMemory` (rt/cstdlib),
+`realloc.sliceAssignWritesNativeMemory` (sys/cstdlib),
 `pointer.sliceAssignmentWritesArrayStorage` and
-`pointer.indexAssignmentWritesVoidInitialisedArray` (ct/arrays). Audit
+`pointer.indexAssignmentWritesVoidInitialisedArray` (lang/arrays). Audit
 note: `writeBackSliceElements` (the array-op `+=` lowering's splice copy)
 still rebuilds a pointer-typed slice base as a detached local `Array` —
 same latent silent-lost-write class, needs its own exposing fixture.
@@ -275,7 +275,7 @@ address, so pre-return side effects run exactly once) and remaps a
 returned ref-parameter address onto the caller's argument lvalue so
 writes through the pointer stick. Standalone fixtures:
 `pointer.addressOfRefReturningCallAliasesArgument` and
-`pointer.refTernaryReturnLowersToAddressOfCall` (ct/expressions).
+`pointer.refTernaryReturnLowersToAddressOfCall` (lang/expressions).
 automem re-measure: 0× address of call (was 35×); the vector tests now
 run `setupThreadAllocator` for real and stop honestly at the next
 rungs — `pthread_mutexattr_init` FFI (no available source) and
@@ -300,7 +300,7 @@ first* return expression without executing the body — pre-return side
 effects silently skipped. `refReturnExpression` is gone. Standalone
 fixtures: `refCall.assignmentToRefReturningCallWritesArgument`,
 `refCall.assignmentToRefTernaryReturnWritesChosenBranch`,
-`refCall.assignmentToMemberRefReturnRunsCalleeBody` (ct/expressions;
+`refCall.assignmentToMemberRefReturnRunsCalleeBody` (lang/expressions;
 BytecodeNewCore stays red and is omitted). automem re-measure: the 10×
 `assignment target: call` mismatches **remain** — located diagnostics
 show all ten are `fakePureErrno() = errnosave` (druntime
@@ -312,7 +312,7 @@ return's ABI pointer is read as if it were the value — the read at
 memory.d:1060 yields the low bits of the errno address (a latent
 silent-wrong-answer for pure reads), and assignment has no path at
 all. Needs its own rung: ffi ref-return support (return the pointer,
-deref for rvalue reads, write through it for assignment), rt/ exposing
+deref for rvalue reads, write through it for assignment), sys/ exposing
 fixtures against a body-less `ref`-returning libc accessor.
 
 **2026-07-07 (bench-dub-corpus close-out).** `ai/plans/bench-dub-corpus.md`
@@ -446,7 +446,7 @@ at 91; the rest of the inventory is byte-identical to the table above
 (the `identifier` cluster — Rung 9/§9.9 — is untouched and remains 21×).
 
 **The goal is support, not pinned refusal** (user directive, 2026-07-07).
-The `rt/concurrency.d` `thisTid` fixture currently lets the Interpreter
+The `sys/concurrency.d` `thisTid` fixture currently lets the Interpreter
 leg pass on *either* oracle agreement *or* a structured unsupported
 diagnostic. That acceptance was crash-scoped triage (the item's target
 was "never dies"), not the end state: the goal is that the interpreter
@@ -467,21 +467,21 @@ writes a **standalone unit test that passes on `SystemLinker` and fails on
 `Interpreter`**. "Standalone" is load-bearing: the test must **not import,
 build, or otherwise depend on cerealed** (or any dub package). It is a minimal,
 hand-written reproduction of the construct — derived from *understanding* the
-cerealed failure, but self-contained — so it lives in `ct/`, runs with no
+cerealed failure, but self-contained — so it lives in `lang/`, runs with no
 package present, and stays meaningful long after cerealed changes. cerealed is
 the *discovery* instrument (§6); the regression suite that proves each fix is
 these independent fixtures, not the package.
 
 ```text
 1. Phase 0 (§5) lands first so the real interpreter errors are visible at all.
-2. For each reason in §7, write ONE standalone ct/ fixture (no cerealed
+2. For each reason in §7, write ONE standalone lang/ fixture (no cerealed
    dependency) reproducing that construct: green on SystemLinker (the oracle),
    red on Interpreter. Get it approved (AGENTS.md) before adding it. This is the
    red test that drives the rung.
 3. Fix the ROOT until the fixture is green on Interpreter too. Then re-measure
    §6 and let the cerealed frequency table collapse.
 4. A rung is "done" when: its standalone fixture passes on both backends, its
-   class is gone from the cerealed §7 inventory, and ct/ and rt/ show no
+   class is gone from the cerealed §7 inventory, and lang/ and sys/ show no
    regression.
 5. Re-run §6 between rungs: closing one class routinely reveals the next, deeper
    one previously hidden behind the first thrown error per unittest. Each newly
@@ -490,17 +490,19 @@ these independent fixtures, not the package.
 
 A single reason may need more than one fixture (e.g. read vs write, or per
 element width), but each fixture still pins exactly one construct and obeys the
-green-on-oracle / red-on-Interpreter rule. Fixtures follow the existing `ct/`
+green-on-oracle / red-on-Interpreter rule. Fixtures follow the existing `lang/`
 convention: a `static foreach (backend; AliasSeq!(Ctfe, Interpreter,
 BytecodeNewCore, SystemLinker, LLVMJit))` matrix wrapping
 `runBackendSourceFixtureTests!backend(q{ ... })` (see
-`tests/ut/backends/runner/ct/cerealed.d` for the style — that file is itself
+`tests/ut/backends/runner/lang/cerealed.d` for the style — that file is itself
 standalone distilled snippets, not a cerealed import).
 
 **Matrix width and refusals (user guidance, 2026-07-07).** Each fixture runs
 on the widest backend matrix it can express. A backend for which the fixture
 stays red after the rung's fix is *omitted* from the fixture's backend
-list — the omission is the documentation. Do **not** pin a structured
+list — the omission is the documentation, now spelled
+`Omit!(B, Because.refusal, "verbatim red")`
+(`tests/ut/backends/package.d`). Do **not** pin a structured
 unsupported diagnostic with `shouldThrowWithMessage`, especially for
 backends still in development (`BytecodeNewCore`): such pins turn every
 feature landing into a test-update chore, and per §7's
@@ -700,7 +702,7 @@ interpreter already handles individually.
 (`lowering.d` `lowerTupleExpression`): run `e0` if present, then each
 element in order, returning the last (the value is discarded in the
 statement-expression positions this arises in). Two standalone
-fixtures landed in ct/structs.d — the headline
+fixtures landed in lang/structs.d — the headline
 `struct.tupleConstructionFromLocals` (`Tuple!(int, int)(first, second)`)
 and the dependency-free distillation
 `struct.tupleofAssignmentCopiesFields`
@@ -776,7 +778,7 @@ before any provenance check, matching compiled D.
 **Proposed exposing fixture (awaits approval; verified red on
 `Interpreter` with `Unsupported interpreter assignment target: slice of
 dotVariable`, green on `SystemLinker`, via standalone `bin/bench` repro
-2026-07-08).** ct/arrays.d, pointer.* family:
+2026-07-08).** lang/arrays.d, pointer.* family:
 
 ```d
 struct Buffer {
@@ -806,7 +808,7 @@ determined at landing and omitted or characterized per
 now short-circuits an empty range (`upper == lower`) — after evaluating
 the rhs, before any provenance check — returning the rhs value, matching
 compiled D's no-op for a zero-length write. Standalone fixture
-`pointer.emptySliceAssignmentThroughNullPointerIsNoOp` (ct/arrays.d,
+`pointer.emptySliceAssignmentThroughNullPointerIsNoOp` (lang/arrays.d,
 the §9.3 `Buffer.put(empty)` shape) is green on
 `Ctfe, Interpreter, SystemLinker, LLVMJit` — `Ctfe` treats the
 null-pointer empty slice as the same no-op, so no divergence to
@@ -1299,7 +1301,7 @@ restore the fix on this branch.
 The interrupted worker left uncommitted draft work in this worktree for the
 next agent to inspect, not as completed work:
 
-- `tests/ut/backends/runner/ct/cerealed.d` draft fixtures:
+- `tests/ut/backends/runner/lang/cerealed.d` draft fixtures:
   `lazyForwardedAssertionThunkRunsExpression`,
   `gcReserveArrayCapacityHookReturnsRequestedBytes`,
   `emplaceRefWritesArrayElement`,
@@ -1330,7 +1332,7 @@ and underflowed to `size_t.max`. `runSliceExpression` already runs `e1`
 and seeds `lengthVar` before its bounds check, so `runIndexExpression`
 now matches that order. Exposing fixture
 `dynamicArray.dollarReflectsLengthAfterInPlaceGrowth`
-(`tests/ut/backends/runner/ct/arrays.d`), modelled on cerealed's
+(`tests/ut/backends/runner/lang/arrays.d`), modelled on cerealed's
 `val.length++; cereal.grain(val[$ - 1])` decode loop (grainRawArray /
 grainWithLengthInBytesAttr in cereal.d): red on `Interpreter` (`array
 index 18446744073709551615 is out of bounds` before the fix), green on
@@ -1396,7 +1398,7 @@ authority as every other assignment, including
 
 Exposing fixture
 `struct.postfixLengthIncrementGrowsRefParamArrayField`
-(`tests/ut/backends/runner/ct/structs.d`): a `Holder { int[] arr; }`,
+(`tests/ut/backends/runner/lang/structs.d`): a `Holder { int[] arr; }`,
 `ref Holder` parameter, `h.arr.length++` then `h.arr[h.arr.length - 1]
 = 7` (deliberately `$`-free — see below), asserting the caller's `h`
 sees both the grown length and the written element after the call
@@ -1457,7 +1459,7 @@ mirroring the read path's order.
 
 Exposing fixture
 `struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth`
-(`tests/ut/backends/runner/ct/structs.d`): `Holder { int[] arr; }`, a
+(`tests/ut/backends/runner/lang/structs.d`): `Holder { int[] arr; }`, a
 `ref Holder` parameter grows the field with plain `h.arr.length = 3`
 (not postfix `++`, to keep this pinned to the index-assign root and not
 the already-fixed postfix-length-increment one) then writes
@@ -1501,7 +1503,7 @@ for those write-back paths is now handled too, for free, by the same
 single-authority mechanism.
 
 Exposing fixture `dynamicArray.refParamWriteBackThroughIndexArgument`
-(`tests/ut/backends/runner/ct/arrays.d`): `void setTo(ref int x, int
+(`tests/ut/backends/runner/lang/arrays.d`): `void setTo(ref int x, int
 v) { x = v; }` called as `setTo(arr[1], 7)`, asserting the caller's
 `arr[1] == 7` afterwards. Confirmed red on `Interpreter` (`0 != 7`,
 i.e. the write silently never happened) before this fix, green on
@@ -1547,7 +1549,7 @@ returns, restoring the caller-visible value and clearing
 `uninitializedLocals` through the existing `writeLocation` path.
 
 Exposing fixture `refArgument.voidLocalIsReadableAfterNestedRefWrite`
-(`tests/ut/backends/runner/ct/structs.d`): `void writeByte(ref ubyte
+(`tests/ut/backends/runner/lang/structs.d`): `void writeByte(ref ubyte
 val) { val = 42; }`, `void grain(ref ubyte val) { writeByte(val); }`,
 `ubyte readGrain() { ubyte b = void; grain(b); return b; }`, asserting
 `readGrain() == 42`. Confirmed red on `Interpreter` (`cannot read
@@ -1607,7 +1609,7 @@ fields, `hasFieldIndex`/`fieldIndex`); `writeThroughSliceAlias` rebuilds
 treating `__r`'s source as a whole array local.
 
 Exposing fixture `struct.foreachRefOverFieldArrayPersistsElementWrites`
-(`tests/ut/backends/runner/ct/structs.d`): a `Container { Item[] items;
+(`tests/ut/backends/runner/lang/structs.d`): a `Container { Item[] items;
 }`, a `ref Container` parameter grows `items` then `foreach (ref item;
 container.items)` calls a helper writing `item`'s fields through one more
 `ref`-forwarding layer, asserting the caller sees both elements' fields
@@ -1671,7 +1673,7 @@ comparison (pointers, class references, floats) keeps its existing
 raw-value identity semantics.
 
 Exposing fixture `struct.equalityComparesEnumFieldByValueAcrossOrigin`
-(`tests/ut/backends/runner/ct/structs.d`): `enum Enum { Foo, Bar, Baz }`,
+(`tests/ut/backends/runner/lang/structs.d`): `enum Enum { Foo, Bar, Baz }`,
 `struct Holder { Enum e; }`, comparing a default-initialised `Holder` to a
 literal-constructed one holding the same member, asserting they're equal.
 Confirmed red on `Interpreter` (`Holder(0) != Holder(Enum.Foo)`, the same
@@ -1727,7 +1729,7 @@ address is a separate, deeper gap, not attempted.
 
 Exposing fixture
 `pointer.addressOfStructFieldIsDistinctAcrossInstances`
-(`tests/ut/backends/runner/ct/expressions.d`): a `Holder { int value; }`,
+(`tests/ut/backends/runner/lang/expressions.d`): a `Holder { int value; }`,
 two separately-constructed locals with equal field values, asserting
 `&a.value !is &b.value` and both dereference to the seeded value.
 Confirmed red on `Interpreter` (`Unsupported eval expression: address of
@@ -1805,7 +1807,7 @@ already had the argument `Value[]` in scope and now forwards it.
 
 Exposing fixture
 `refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten`
-(`tests/ut/backends/runner/ct/structs.d`): a `Decoder` struct whose
+(`tests/ut/backends/runner/lang/structs.d`): a `Decoder` struct whose
 `decodeNext()` pops one `int` off a slice and returns a freshly-allocated
 pointer to it (mirroring cerealed's decode-then-return-pointer shape,
 without cerealed), passed dereferenced as a `ref` argument to a `compare`
@@ -1865,7 +1867,7 @@ exercised by this fixture or by cerealed's disagreement, so it is left
 untouched — a candidate for the same fix if a future gap implicates it.
 
 Exposing fixture `pointer.newStructPointersWithEqualContentAreDistinct`
-(`tests/ut/backends/runner/ct/expressions.d`): a runtime-seeded `Inner`
+(`tests/ut/backends/runner/lang/expressions.d`): a runtime-seeded `Inner`
 struct `new`-allocated twice with equal field contents, asserting `a !is
 b` and `*a == *b`. Confirmed red on `Interpreter` before the fix
 (`const(Pointer)([Inner(7)], 0, 0) is const(Pointer)([Inner(7)], 0, 0)`,
@@ -1926,7 +1928,7 @@ outermost one.
 
 Exposing fixture
 `refArgument.voidStructLocalFieldWritableThroughNestedRefWrite`
-(`tests/ut/backends/runner/ct/structs.d`): a `Holder { ubyte i; }`,
+(`tests/ut/backends/runner/lang/structs.d`): a `Holder { ubyte i; }`,
 `writeByte(ref ubyte)` forwarded through `grainField(ref Holder val) {
 writeByte(val.i); }`, called from a `Holder val = void;` local,
 asserting the field is readable as 42 after the call. Confirmed red on
@@ -1995,7 +1997,7 @@ is not exercised by this class; it is left as its pre-existing
 construct ever reaches it uninitialized.
 
 Exposing fixture `staticArray.foreachRefWritesVoidInitialisedElements`
-(`tests/ut/backends/runner/ct/arrays.d`): a `void fillPair(ref int[2]
+(`tests/ut/backends/runner/lang/arrays.d`): a `void fillPair(ref int[2]
 val, int first)` writing both elements via `foreach (ref e; val)`, called
 from `int[2] result = void;`, asserting the caller's array holds both
 written values afterward. Confirmed red on `Interpreter` ("Expected
@@ -2035,7 +2037,7 @@ entry) found three defects, fixed together:
    resolved to a variable (e.g. `&call().field`) still gets a fresh id
    every time. Exposing fixture
    `pointer.addressOfStructFieldIsStableAcrossReEvaluation`
-   (`tests/ut/backends/runner/ct/expressions.d`).
+   (`tests/ut/backends/runner/lang/expressions.d`).
 
 2. Sibling defect: writing through a `&s.field` pointer silently wrote
    into the pointer's own throwaway value snapshot instead of `s`'s
@@ -2061,7 +2063,7 @@ entry) found three defects, fixed together:
    split by backend — `SystemLinker` pins the real aliasing
    write-through, a separate `Interpreter`-only block asserts the loud
    refusal via `shouldThrowWithMessage` (both in
-   `tests/ut/backends/runner/ct/expressions.d`).
+   `tests/ut/backends/runner/lang/expressions.d`).
 
 3. Unrelated defect in the same review, in `writeBackRefArguments`'s
    unchanged-parameter skip check (this section's 2026-07-14
@@ -2079,7 +2081,7 @@ entry) found three defects, fixed together:
    semantics for floats), everything else defers to plain `==`.
    Exposing fixture
    `refArgument.floatWriteBackSkipComparesBitPatternNotEquality`
-   (`tests/ut/backends/runner/ct/structs.d`); `Bytecode` omitted
+   (`tests/ut/backends/runner/lang/structs.d`); `Bytecode` omitted
    (floating-point division not implemented there yet, unrelated to
    this fix).
 
@@ -2126,7 +2128,7 @@ merging `allocationCount`/`fieldAddressAllocations`/
 `fieldSnapshotAllocationIds` at both sites, matching the established
 six-site pattern exactly. Exposing fixture
 `pointer.newCtorPointerWriteNotRefusedAfterFieldAddress`
-(`tests/ut/backends/runner/ct/expressions.d`): confirmed red on
+(`tests/ut/backends/runner/lang/expressions.d`): confirmed red on
 `Interpreter` (`Unsupported interpreter assignment target.`), green on
 `SystemLinker`, before this fix.
 
@@ -2134,9 +2136,9 @@ six-site pattern exactly. Exposing fixture
 
 **Contract.** `File(path, "w")`, `f.write(...)`, scope-exit close via the
 refcounted Impl, and `std.file.readText` agree with `SystemLinker`. Driven by
-the user-visible fixture `rt/file.d` (`file.createWriteRead`), with the
+the user-visible fixture `sys/file.d` (`file.createWriteRead`), with the
 per-root standalone fixtures `struct.voidInitialisedFieldSliceAssignment`
-(ct/) and `strlen.localBuffer` (rt/cstdlib.d).
+(lang/) and `strlen.localBuffer` (sys/cstdlib.d).
 
 **Landed 2026-07-06.** The chain of roots this exposed, each fixed at its
 seam:
@@ -2185,7 +2187,7 @@ the interpreter's dataseg materialization (impl.d ~1193, the §9.8
 bomTable path) evaluates it — `runExpression` then falls through with
 `Unsupported eval expression: identifier`. This is the module-variable
 sibling of the on-demand-semantic3 finding documented at the top of
-`tests/ut/backends/runner/ct/imports.d` for imported *function bodies*.
+`tests/ut/backends/runner/lang/imports.d` for imported *function bodies*.
 
 Concretely (triaged 2026-07-08, §7): std.internal.entropy's
 `static EntropySource _entropySource = defaultEntropySource;`, where
@@ -2206,7 +2208,7 @@ identifiers.
 **Proposed exposing fixture (awaits approval; the unpredictableSeed
 shape verified red on `Interpreter` at the exact entropy.d site, green
 on `SystemLinker`, via standalone `bin/bench` repro 2026-07-08).** New
-rt/random.d — rt/ because the green path reads the platform entropy
+sys/random.d — sys/ because the green path reads the platform entropy
 source (/dev/urandom via the §9.8 posix FFI machinery):
 
 ```d
@@ -2250,7 +2252,7 @@ scalar local's address as a `void[]` byte buffer to be filled by the
 `getrandom` fill + byte writeback), handed off to `ffi.md` §35.11, not
 fixed here.
 
-The exposing fixture landed as `rt/random.d`
+The exposing fixture landed as `sys/random.d`
 `random.unpredictableSeedReadsNonRootInitializer` on the widest **green**
 matrix — `SystemLinker` + `LLVMJit` — with `Interpreter` **omitted** per
 §8 (the omission is the documentation; no pinned refusal), pending
@@ -2329,7 +2331,7 @@ noted here (classifying `Error` vs `Exception` by name prefix
 list that jumps straight from the thrown class to its root, omitting
 intermediate bases) was fixed at the root.
 
-`errorIsNotCaughtByExceptionHandler` (`ct/exceptions.d`) does **not** cover
+`errorIsNotCaughtByExceptionHandler` (`lang/exceptions.d`) does **not** cover
 this: it does `throw new Error("fatal")` from interpreted code, which goes
 through `runNewClassExpression`/`classDefaultValue` using the real
 `ClassDeclaration` dmd already resolved for the `new` expression — it never
@@ -2354,7 +2356,7 @@ of its dynamic type: a native `Exception` (caught normally) chained to an
 `nativeExceptionBaseObject` when the interpreted code reads and rethrows
 `caught.next`.
 
-Red-first evidence (both added to `tests/ut/backends/runner/rt/
+Red-first evidence (both added to `tests/ut/backends/runner/sys/
 dependency_image.d`, `SystemLinker` oracle vs `Interpreter`, pre-fix):
 
 - `dependencyImage.nativeChainedErrorSubclass.Interpreter` (defect 1): a
@@ -2393,7 +2395,7 @@ genuinely does not know (e.g. one defined solely inside a loaded shared
 library with no corresponding import in the interpreted source).
 
 `throwRangeError` is not regressed:
-`decodeLazyForwardedRangeErrorSeesReaderState` (`ct/cerealed.d`) explicitly
+`decodeLazyForwardedRangeErrorSeesReaderState` (`lang/cerealed.d`) explicitly
 `import`s `core.exception : RangeError;` and `catch (RangeError)`s, so with
 this fix `core.exception.RangeError` now resolves via the new
 qualified-module search (previously it happened to be correctly classified
@@ -2405,8 +2407,9 @@ Matrix: `dependencyImage.nativeChainedErrorSubclass.Interpreter` and
 convention of an inline `SystemLinker` oracle rather than a
 `static foreach` backend matrix — other backends have no dlopen'd
 dependency-image FFI machinery to exercise). Full regression sweep after the
-fix: `ct/exceptions.d`, `ct/cerealed.d`, and `rt/dependency_image.d` together
-— 314 tests, 0 failed, 1 expected failure.
+fix: `lang/exceptions.d`, `lang/cerealed.d`, and
+`backends/ffi/dependency_image.d` together — 314 tests, 0 failed, 1 expected
+failure.
 
 **Owed fixtures (work item, 2026-07-09).** #386 landed its fixes without the
 §8 red-first fixtures; the drafts and reconstruction procedure are in the
@@ -2424,7 +2427,7 @@ they document what the shims get wrong and what native layout must re-earn):
 ```
 
 **Landed (2026-07-09).** `lazyForwardedAssertionThunkRunsExpression`
-(ct/cerealed.d) reconstructed red-first per the procedure above: applied
+(lang/cerealed.d) reconstructed red-first per the procedure above: applied
 alone on the parent of fix commit `7f09bd67` (parent `ee3594a9`, "interpreter:
 handle GC array capacity hooks"), it fails on `Interpreter` with the exact
 diagnostic `Unsupported eval call.` and passes on `SystemLinker`. Carried
@@ -2549,10 +2552,10 @@ overstated what `#386` had proven. It is superseded by the no-dup,
 shared-table design above and was not landed in any form.
 
 **Fixtures landed.**
-- `decodeLazyForwardedRangeErrorSeesReaderState` (ct/cerealed.d): the owed
+- `decodeLazyForwardedRangeErrorSeesReaderState` (lang/cerealed.d): the owed
   fixture, unchanged from the draft body. Green on `Interpreter,
   SystemLinker` after the fix above.
-- `lazyArgumentReadsCallerDynamicArray` (ct/cerealed.d): new, narrow
+- `lazyArgumentReadsCallerDynamicArray` (lang/cerealed.d): new, narrow
   standalone fixture for the dynamic-array-local read repro. Green on
   `Interpreter, SystemLinker`.
 
@@ -2560,12 +2563,12 @@ Both fixtures omit `BytecodeNewCore` (lazy parameters unsupported there —
 consistent with `lazyForwardedAssertionThunkRunsExpression` above) and
 `Ctfe`/`LLVMJit` (not exercised by this rung; the existing lazy fixture in
 this file already covers those backends for the simpler thunk-invocation
-case). Full `ct/` and `rt/` suites re-run clean after the change (2422
+case). Full `lang/` and `sys/` suites re-run clean after the change (2422
 tests, 0 failed, 6 pre-existing expected failures).
 
 **Landed (2026-07-09, owed-fixtures follow-up).** The char
 integer-compatibility and float/double reinterpret-load fixtures owed
-above were reconstructed red-first and landed in `ct/expressions.d`:
+above were reconstructed red-first and landed in `lang/expressions.d`:
 `pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible`,
 `pointer.floatBitsThroughUintPointerAreRawBits`, and
 `pointer.doubleBitsThroughUlongPointerAreRawBits`.
@@ -2640,7 +2643,7 @@ shim itself is deleted per its retirement condition.
 The remaining two owed ratchet fixtures,
 `appenderClearKeepsPointerSliceBackingAllocation` and
 `classReferencePassedByValueMutatesObject`, were reconstructed red-first
-(procedure per the 2026-07-09 handoff above) and landed in `ct/cerealed.d`.
+(procedure per the 2026-07-09 handoff above) and landed in `lang/cerealed.d`.
 
 `appenderClearKeepsPointerSliceBackingAllocation` uses `std.array.appender`
 (Phobos) rather than a hand-rolled pointer-slice snippet: the bug is
@@ -2719,7 +2722,7 @@ here per `AGENTS.md`'s cross-track rule, with a reference to
 `ai/plans/link-set-pollution.md` rather than an edit to it. Full-suite
 `bin/ut --random` measurements found this branch failing 3/7 runs versus
 master's 0/10, always as
-`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors.LLVMJit`,
+`ut.backends.runner.lang.structs.struct.staticArrayCopyRunsPostblitAndDtors.LLVMJit`,
 with a failed-to-materialize error naming
 `emplaceInitializer!(std.array.Appender!(ubyte[]).Data)` — a REPL
 eval-snippet symbol unrelated to the failing test. The root cause is
@@ -2741,7 +2744,7 @@ message together with this fixture being the suite's unique
 **Landed (2026-07-09, owed-fixtures follow-up).** The last owed §9.10
 `emplaceRef` fixtures — one ratchet, three gap — were reconstructed
 red-first (procedure per the 2026-07-09 handoff above) and landed in
-`ct/cerealed.d`. This discharges the `emplaceRefWritesArrayElement` line
+`lang/cerealed.d`. This discharges the `emplaceRefWritesArrayElement` line
 from §9.10's owed ratchet list, and the "emplaceRef with a postblit or
 copy-constructor struct element" line from the owed gap list — both
 lists above are now empty.
@@ -2809,7 +2812,7 @@ scratchpad proofs were originally run): every diagnostic above was
 re-confirmed verbatim by temporarily widening each fixture's matrix
 (adding `Interpreter` to the three gap fixtures, and `BytecodeNewCore` to
 all four) and running them focused — no deviation from the original
-proofs. Full `ct/cerealed.d` regression: 144 tests, 0 failed, 1 expected
+proofs. Full `lang/cerealed.d` regression: 144 tests, 0 failed, 1 expected
 failure (pre-existing, unrelated).
 
 These three gap fixtures are the acceptance criteria for deleting the
@@ -2820,7 +2823,7 @@ matrices, and `emplaceRefWritesArrayElement` must stay green throughout.
 **Landed (2026-07-09, owed-fixtures follow-up).** The last two owed §9.10
 gap fixtures — both naming the `tryGCArrayHook`/`runGCArrayHookCall` +
 `lastGCArrayUsedAllocation` shim — were reconstructed and landed in
-`ct/arrays.d`. This discharges both remaining lines from §9.10's owed gap
+`lang/arrays.d`. This discharges both remaining lines from §9.10's owed gap
 list, which is now empty:
 
 - `dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate`: asserts
@@ -2870,7 +2873,7 @@ with `ninja bin/ut`, then run focused (`SystemLinker`/`LLVMJit`, both
 green), then temporarily widened to add `Interpreter` and re-run to
 reconfirm the exact diagnostics above verbatim (no deviation from the
 prior investigation), then reverted to the landed `SystemLinker,
-LLVMJit` matrix. Full `ct/arrays.d` regression after landing: 293 tests,
+LLVMJit` matrix. Full `lang/arrays.d` regression after landing: 293 tests,
 0 failed.
 
 These two gap fixtures are, together with the three `emplaceRef` gap
@@ -2893,13 +2896,13 @@ Build generation and the bench needed escalation only because `~/.dub`
 writes are outside the sandbox.
 
 **Landed (2026-07-09, conditional array truthiness).** The approved
-`grainBitsBoolWritesScalar` fixture was added to `ct/cerealed.d` before
+`grainBitsBoolWritesScalar` fixture was added to `lang/cerealed.d` before
 production changes, but it did not reproduce the package failure: both
 oracle and interpreter were already green in focused runs:
 
 ```text
-bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.SystemLinker
-bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.Interpreter
+bin/ut ut.backends.runner.lang.cerealed.grainBitsBoolWritesScalar.SystemLinker
+bin/ut ut.backends.runner.lang.cerealed.grainBitsBoolWritesScalar.Interpreter
 ```
 
 The red signal for this rung therefore stayed the package bench above:
@@ -2922,7 +2925,7 @@ logical expressions, `assert`, and `?:` without adding a broad cast shim.
 so the follow-up fixture
 `dynamicArrayTruthinessControlsEnforceFallback` now exercises dynamic-array
 truthiness directly in interpreter control-flow contexts: `if`, `?:`, and
-`!`. It is standalone in `ct/cerealed.d`, backed by `SystemLinker`, and covers
+`!`. It is standalone in `lang/cerealed.d`, backed by `SystemLinker`, and covers
 compiled D's null/empty false and non-empty true rule.
 
 Red/green evidence:
@@ -2945,8 +2948,8 @@ Verification after the fix:
 
 ```text
 ninja bin/ut
-bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.SystemLinker
-bin/ut ut.backends.runner.ct.cerealed.grainBitsBoolWritesScalar.Interpreter
+bin/ut ut.backends.runner.lang.cerealed.grainBitsBoolWritesScalar.SystemLinker
+bin/ut ut.backends.runner.lang.cerealed.grainBitsBoolWritesScalar.Interpreter
 bin/bench.sh -b interpreter --dub cerealed
 ```
 
@@ -2960,18 +2963,18 @@ Expected: "Not enough bytes left to decerealise ubyte[] of 8 elements
 
 `bin/ut --random` was also attempted. It ran 2973 tests and failed one
 unrelated, order-sensitive `LLVMJit` test:
-`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`ut.backends.runner.lang.structs.struct.staticArrayCopyRunsPostblitAndDtors`
 `.LLVMJit`.
 The same test passed when rerun focused. The required seed check was then
 run with `bin/ut --seed 3098732115`; it failed a different unrelated runner
 path,
-`ut.backends.runner.rt.dependency_image.dependencyImage.pointerGlobalRead`
+`ut.backends.ffi.dependency_image.dependencyImage.pointerGlobalRead`
 `.Interpreter`, with `SystemLinker` reporting
 `unittest symbol not found in shared library` during that test's setup.
 
 **Landed (2026-07-09, `std.conv.text` string-array rendering).** The
 approved `arrayTooShortExceptionMessageIncludesBytes` fixture was added to
-`ct/cerealed.d` before production changes. Red-first evidence: `SystemLinker`
+`lang/cerealed.d` before production changes. Red-first evidence: `SystemLinker`
 passed, while `Interpreter` failed with quoted fragments in the message:
 
 ```text
@@ -3017,7 +3020,7 @@ Expected: [1, 3, 254, 5, 252]
 
 **Reviewer Finding 2 resolved (2026-07-09).** The standalone
 `stdConvTextRendersCharArrayExpressionRaw` fixture now pins the direct
-`e.msg.array.dup.text`-style call path in `ct/cerealed.d`. Red evidence from a
+`e.msg.array.dup.text`-style call path in `lang/cerealed.d`. Red evidence from a
 detached worktree at pre-fix commit `17a1dde7`: `SystemLinker` passed, while
 `Interpreter` failed with the rendered message
 `[c, e, r, e, a, l, e, d,  , b, y, t, e, s]`. Current HEAD green evidence:
@@ -3035,15 +3038,15 @@ passed 2822 tests, with 6 expected failures, using seed `1255702531`.
 
 `bin/ut --random` ran 2975 tests with seed `3364058692` and failed one
 unrelated order-sensitive `LLVMJit` struct test,
-`ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors`
+`ut.backends.runner.lang.structs.struct.staticArrayCopyRunsPostblitAndDtors`
 `.LLVMJit`. The required seed check, `bin/ut --seed 3364058692`, failed one
 unrelated `SystemLinker` struct test,
-`ut.backends.runner.ct.structs.struct.scalarFieldReadWrite.SystemLinker`,
+`ut.backends.runner.lang.structs.struct.scalarFieldReadWrite.SystemLinker`,
 because `mold` could not open a temporary object file under `/tmp`.
 
 **Landed (2026-07-10, signed-byte array reinterpretation frontier).** The
 approved standalone `dynamicArray.castSignedBytesToUbytesPreservesRawBits`
-fixture in `ct/arrays.d` pins compiled D's raw-bit view of a `byte[]` cast to
+fixture in `lang/arrays.d` pins compiled D's raw-bit view of a `byte[]` cast to
 `ubyte[]`: the stored `byte` values `-2` and `-4` read back as `254` and
 `252`. `SystemLinker` is green and remains the oracle. `Interpreter` is
 deliberately omitted under §8's representation-ceiling rule: its recursive
@@ -3063,7 +3066,7 @@ instances passed (0 failed); and `bin/ut --random` passed with seed
   above is still open and belongs to value.md's native-layout track.
 - Make `bin/bench.sh -b interpreter --dub cerealed` produce a post-parse row for
   the interpreter (no skip), with bin/ut --random green.
-- Leave an approved oracle-backed ct/ fixture for each rung, with no ct/ or rt/
+- Leave an approved oracle-backed lang/ fixture for each rung, with no lang/ or sys/
   regression.
 ```
 

@@ -1,4 +1,4 @@
-module ut.backends.runner.rt.inline_asm;
+module ut.backends.native.inline_asm;
 
 
 import ut.backends;

@@ -56,6 +56,8 @@ package(quickbite.backends.bytecode) RunResult run(
     size_t ip;
 
     while (true) {
+        if (frames.length != 0)
+            synchronizeRefAliases(stack, frames[$ - 1], base);
         const instruction = program.functions[functionIndex].code[ip];
         final switch (instruction.op) with (Op) {
             case loadConstant:
@@ -1383,8 +1385,14 @@ package(quickbite.backends.bytecode) RunResult run(
                     ] = stack[callerOffset .. callerOffset + valueSize];
                 }
 
+                // Mutable because execution advances each group's byte image.
+                auto refAliases = refAliasGroups(
+                    stack, refWritebacks, calleeBase,
+                );
+
                 frames ~= Frame(
-                    functionIndex, ip + 1, base, instruction.c, refWritebacks,
+                    functionIndex, ip + 1, base, instruction.c,
+                    refWritebacks, refAliases,
                 );
                 functionIndex = calleeIndex;
                 base = calleeBase;
@@ -2406,6 +2414,7 @@ private struct Frame {
     size_t base;
     ushort destination;
     RefWriteback[] refWritebacks; // empty unless the callee has ref parameters
+    RefAlias[] refAliases;
 }
 
 // An active catch handler: where to resume (the catch body's instruction index
@@ -2432,6 +2441,70 @@ private struct RefWriteback {
     size_t callerOffset; // absolute stack offset of the referenced caller slot
     ushort calleeOffset; // the parameter slot's offset within the callee frame
     uint size;
+}
+
+// Parameter slots that denote the same caller storage. The bytecode compiler
+// addresses parameters as frame slots, so keep aliased slots coherent between
+// instructions to give every parameter the identity of that shared storage.
+private struct RefAlias {
+    ushort[] calleeOffsets;
+    ubyte[] bytes;
+}
+
+private RefAlias[] refAliasGroups(
+    in ubyte[] stack,
+    in RefWriteback[] writebacks,
+    in size_t calleeBase,
+) {
+    RefAlias[] aliases;
+    foreach (writebackIndex, writeback; writebacks) {
+        ushort[] offsets;
+        foreach (candidateIndex, candidate; writebacks)
+            if (candidate.callerOffset == writeback.callerOffset &&
+                candidate.size == writeback.size &&
+                candidateIndex >= writebackIndex)
+                offsets ~= candidate.calleeOffset;
+        if (offsets.length < 2)
+            continue;
+
+        bool alreadyGrouped;
+        foreach (previousIndex; 0 .. writebackIndex)
+            if (writebacks[previousIndex].callerOffset ==
+                    writeback.callerOffset &&
+                writebacks[previousIndex].size == writeback.size)
+                alreadyGrouped = true;
+        if (alreadyGrouped)
+            continue;
+
+        aliases ~= RefAlias(
+            offsets,
+            stack[
+                calleeBase + writeback.calleeOffset
+                .. calleeBase + writeback.calleeOffset + writeback.size
+            ].dup,
+        );
+    }
+    return aliases;
+}
+
+private void synchronizeRefAliases(
+    ubyte[] stack,
+    ref Frame frame,
+    in size_t calleeBase,
+) {
+    foreach (ref group; frame.refAliases)
+        foreach (offset; group.calleeOffsets) {
+            const begin = calleeBase + offset;
+            if (stack[begin .. begin + group.bytes.length] == group.bytes)
+                continue;
+
+            group.bytes[] = stack[begin .. begin + group.bytes.length];
+            foreach (destination; group.calleeOffsets)
+                stack[
+                    calleeBase + destination
+                    .. calleeBase + destination + group.bytes.length
+                ] = group.bytes[];
+        }
 }
 
 private uint equalOperandSize(

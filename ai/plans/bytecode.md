@@ -462,50 +462,50 @@ on the new core before the engine default flips.
   supported them through its existing eval compiler, VM local/value-stack
   operations, scalar casts, floating arithmetic, and narrow `std.math`
   builtin bridge.
-- `evaluatesRuntimeSqrtInput` in `tests/ut/backends/runner/ct/math.d` now covers
+- `evaluatesRuntimeSqrtInput` in `tests/ut/backends/runner/lang/math.d` now covers
   `Bytecode`. The promotion exposed missing unary `std.math.sqrt` builtin
   support, so bytecode now recognizes DMD's `sqrt` builtin and executes it
   through the existing unary native-call path.
-- `evaluatesDifferentRuntimeSqrtInput` in `tests/ut/backends/runner/ct/math.d`
+- `evaluatesDifferentRuntimeSqrtInput` in `tests/ut/backends/runner/lang/math.d`
   now covers `Bytecode`. This was a stale coverage gap after the runtime
   `sqrt` builtin slice: the existing bytecode unary native-call path already
   executed a different runtime `sqrt` input correctly.
 - `evaluatesDifferentRuntimeSqrtInputFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` and floating equality-diagnostic
   slices: the existing bytecode unary native-call path and assertion
   diagnostics already report `4 != 5`.
 - `evaluatesDifferentRuntimeSqrtInputFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` and floating equality-diagnostic
   slices: the existing bytecode unary native-call path and assertion
   diagnostics already report `6 != 7`.
 - `evaluatesRuntimeNonIntegerSqrtInput` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
   unary native-call path already executed the non-integer runtime `sqrt` input
   correctly.
 - `evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` and floating equality-diagnostic
   slices: the existing bytecode unary native-call path and assertion
   diagnostics already report `1.5 != 2.5`.
 - `evaluatesRuntimeNonIntegerSqrtInputFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` and floating equality-diagnostic
   slices: the existing bytecode unary native-call path and assertion
   diagnostics already report `2.5 != 3.5`.
 - `evaluatesRuntimeNonPerfectSqrtInput` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
   unary native-call path already executed the non-perfect runtime `sqrt` input
   and comparison assertions correctly.
-- `evaluatesRuntimeFabsDoubleInput` in `tests/ut/backends/runner/ct/math.d` now
+- `evaluatesRuntimeFabsDoubleInput` in `tests/ut/backends/runner/lang/math.d` now
   covers `Bytecode`. This was a stale coverage gap: the existing bytecode
   unary native-call path already recognizes and executes DMD's `fabs` builtin
   for negative runtime `double` inputs.
 - `evaluatesRuntimeFabsPositiveDoubleInput` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `fabs` builtin slice: the existing bytecode
   unary native-call path already executes positive runtime `double` inputs
   correctly.
@@ -589,104 +589,104 @@ on the new core before the engine default flips.
   results with character-array display metadata, preserves wide string result
   suffixes through result-type element metadata, and handles static string
   array result bytes.
-- `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/runner/ct/math.d` now
+- `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/runner/lang/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
   through the existing unary native-call path.
 - `evaluatesRuntimeIsNaNDoubleInputFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `isNaN` builtin slice: the existing bytecode
   logical-not and bool equality assertion diagnostics already report
   `true == true`.
 - `evaluatesRuntimeIsNaNDoubleInputFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `isNaN` builtin slice: the existing bytecode
   `isNaN` builtin and bool equality assertion diagnostics already report
   `false != true`.
 - `doesNotTreatUserNamedIsNaNAsMathIntrinsic` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap: bytecode already calls the user-defined `isNaN` function
   instead of treating it as the `std.math.isNaN` builtin.
 - `doesNotTreatUserNamedPowAsMathIntrinsic` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap: bytecode already calls the user-defined `pow` function instead
   of treating it as the `std.math.pow` builtin.
 - `evaluatesRuntimePowDoubleInputsFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. The promotion exposed
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. The promotion exposed
   bytecode assertion diagnostics formatting floating operands through integer
   scalar access. Bytecode now keeps existing integer-compatible assertion
   messages but renders floating operands through `Value` so runtime `pow`
   equality failures report `16 != 17`.
 - `evaluatesRuntimePowDoubleInputsFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `pow` and floating assertion-diagnostic
   slices: the existing bytecode binary native-call path and comparison
   assertion diagnostics already report `3 <= 3.001`.
 - `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the user-defined `pow` and floating equality-diagnostic
   slices: bytecode already calls the user-defined function and reports
   `6 != 7`.
 - `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the user-defined `pow` and floating equality-diagnostic
   slices: bytecode already calls the user-defined function and reports
   `7 != 8`.
 - `evaluatesRuntimeSqrtInputFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` and floating equality-diagnostic
   slices: the existing bytecode unary native-call path and assertion
   diagnostics already report `3 != 4`.
 - `evaluatesRuntimeSqrtInputFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` and floating equality-diagnostic
   slices: the existing bytecode unary native-call path and assertion
   diagnostics already report `5 != 6`.
 - `evaluatesRuntimeIsInfinityDoubleInput` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. The promotion exposed
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. The promotion exposed
   missing `std.math.isInfinity` builtin support and non-runtime declaration
   expressions in the fixture, so bytecode now treats non-var declarations as
   no-ops and executes `isInfinity` through the existing unary native-call path.
 - `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `isInfinity` builtin slice: the existing
   bytecode logical-not and bool equality assertion diagnostics already report
   `true == true`.
 - `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `isInfinity` builtin slice: the existing
   bytecode `isInfinity` builtin and bool equality assertion diagnostics
   already report `false != true`.
 - `evaluatesRuntimeSignbitDoubleInput` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. The promotion exposed
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. The promotion exposed
   missing `std.math.signbit` builtin support, so bytecode now recognizes
   DMD's `signbit` helper by identifier and executes it through the existing
   unary native-call path.
 - `evaluatesRuntimeSignbitDoubleInputFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `signbit` builtin slice: the existing bytecode
   integer equality assertion diagnostics already report `1 != 0` for negative
   zero.
 - `evaluatesRuntimeSignbitDoubleInputFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `signbit` builtin slice: the existing bytecode
   integer equality assertion diagnostics already report `0 == 0` for positive
   zero.
-- `evaluatesRuntimeSignbitNanInput` in `tests/ut/backends/runner/ct/math.d` now
+- `evaluatesRuntimeSignbitNanInput` in `tests/ut/backends/runner/lang/math.d` now
   covers `Bytecode`. This was a stale coverage gap after the runtime `signbit`
   builtin slice: the existing bytecode unary native-call path already preserves
   sign bits for positive and negative NaN inputs.
 - `evaluatesRuntimeSignbitNanInputFailureMessage.0` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `signbit` builtin slice: the existing bytecode
   `signbit` builtin and integer equality assertion diagnostics already report
   `1 != 0` for a negative NaN input.
 - `evaluatesRuntimeSignbitNanInputFailureMessage.1` in
-  `tests/ut/backends/runner/ct/math.d` now covers `Bytecode`. This was a stale
+  `tests/ut/backends/runner/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `signbit` builtin slice: the existing bytecode
   `signbit` builtin and integer equality assertion diagnostics already report
   `0 == 0` for a positive NaN input.
-- `tests/ut/backends/runner/ct/integrals.d` now covers `Bytecode` for
+- `tests/ut/backends/runner/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
   slices. The `byte` slice added the first module-backed `Bytecode.runTests`
@@ -699,7 +699,7 @@ on the new core before the engine default flips.
   integral assertion-diagnostic case and taught the bytecode VM to report
   failed equality assertions from the runtime operands, producing
   `-126 != 130` for a narrowed `byte` value.
-- `tests/ut/backends/runner/ct/integrals.d` is now complete for `Bytecode`.
+- `tests/ut/backends/runner/lang/integrals.d` is now complete for `Bytecode`.
   `typeFailureMessage.ubyte.0` and `typeFailureMessage.uint.0` were promoted
   together as the remaining integral assertion-diagnostic family. They passed
   with the existing equality diagnostic support and did not require distinct
@@ -760,7 +760,7 @@ on the new core before the engine default flips.
   the missing bytecode `evalRepl` API, so Bytecode now compiles an already
   parsed REPL eval cell and runs expression cells through the existing VM
   eval path.
-- `malloc` in `tests/ut/backends/runner/rt/cstdlib.d` now covers `Bytecode`,
+- `malloc` in `tests/ut/backends/runner/sys/cstdlib.d` now covers `Bytecode`,
   completing that module. The promotion exposed the missing
   no-available-source diagnostic: `malloc` resolves to a `FuncDeclaration`
   with a null `fbody` and is not an implemented builtin, so `compileCall` now
@@ -770,13 +770,13 @@ on the new core before the engine default flips.
   never reached, matching the CTFE and tree-walker oracles.
 - `assertNonzeroIntCondition`, `assertNonzeroIntConditionFailureMessage.0`,
   and `assertNonzeroIntConditionFailureMessage.1` in
-  `tests/ut/backends/runner/ct/logic.d` now cover `Bytecode`. The promotion exposed
+  `tests/ut/backends/runner/lang/logic.d` now cover `Bytecode`. The promotion exposed
   missing bitwise-or expression support for `40 | mask()`, so bytecode now
   lowers DMD `OrExp` to a narrow `bitOr` opcode and preserves the existing
   assertion truthiness and equality diagnostics.
 - `logicalNot`, `logicalNotCall`, `logicalNotFailureMessage.0`,
   `logicalNotFailureMessage.1`, `logicalNotCallFailureMessage.0`, and
-  `logicalNotCallFailureMessage.1` in `tests/ut/backends/runner/ct/logic.d` now
+  `logicalNotCallFailureMessage.1` in `tests/ut/backends/runner/lang/logic.d` now
   cover `Bytecode`. The promotion exposed missing DMD `NotExp` lowering, so
   bytecode now lowers logical not to a unary opcode using VM truthiness and
   reports failed bool equality assertions as `true`/`false`.
@@ -788,7 +788,7 @@ on the new core before the engine default flips.
   `logicalAndCallShortCircuit`,
   `logicalAndCallShortCircuitFailureMessage.0`, and
   `logicalAndCallShortCircuitFailureMessage.1` in
-  `tests/ut/backends/runner/ct/logic.d` now cover `Bytecode`. The promotion
+  `tests/ut/backends/runner/lang/logic.d` now cover `Bytecode`. The promotion
   exposed missing DMD `LogicalExp` `&&` lowering, so bytecode now emits narrow
   jump/pop control flow for short-circuit evaluation, normalizes both paths to
   bool, and preserves plain assertion text for failed truth assertions.
@@ -798,7 +798,7 @@ on the new core before the engine default flips.
   `logicalOrFailureMessage.1`, `logicalOrOops`, `logicalOrShortCircuit`,
   `logicalOrShortCircuitFailureMessage.0`, and
   `logicalOrShortCircuitFailureMessage.1` in
-  `tests/ut/backends/runner/ct/logic.d` now cover `Bytecode`. The promotion
+  `tests/ut/backends/runner/lang/logic.d` now cover `Bytecode`. The promotion
   exposed missing DMD `LogicalExp` `||` lowering, so bytecode now emits narrow
   jump/pop control flow for short-circuit evaluation, normalizes both paths to
   bool, and reports failed `assert(!condition)` diagnostics such as
@@ -806,145 +806,145 @@ on the new core before the engine default flips.
 - `logicalAndComparisonOperands`,
   `logicalAndComparisonOperandsFailureMessage.0`, and
   `logicalAndComparisonOperandsFailureMessage.1` in
-  `tests/ut/backends/runner/ct/logic.d` now cover `Bytecode`, completing the module.
+  `tests/ut/backends/runner/lang/logic.d` now cover `Bytecode`, completing the module.
   The promotion exposed missing DMD `CmpExp` lowering for comparison operands
   inside logical expressions, so bytecode now lowers the required integer `<`
   and `>` comparisons to bool results while preserving bool equality assertion
   diagnostics such as `true != false` and `false != true`.
 - `voidFunctionReturnsToCaller` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. This was a
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. This was a
   stale coverage gap: the existing bytecode module test path already handled a
   called `void` function returning to its unittest caller before reporting the
   following failed integer equality assertion as `1 != 2`.
-- `intLessThanOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `intLessThanOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. The promotion exposed missing bytecode assertion diagnostics for
   failed `<` assertions: bytecode now tags assertion comparisons with the
   comparison operation and reports the inverse failed relation, such as
   `42 >= 42`, instead of a generic failed assertion string.
-- `intLessOrEqualOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `intLessOrEqualOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. The promotion exposed missing DMD `<=` lowering in bytecode, so
   the VM now evaluates a narrow `lessOrEqual` opcode and formats failed
   assertion diagnostics with the inverse operator, such as `43 > 42`.
-- `intGreaterThanOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `intGreaterThanOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. The promotion exposed that `>` expression execution already
   existed, but assertion-specific comparison lowering did not tag failed `>`
   assertions. Bytecode now emits `Op.greaterThan` for that path and reports the
   inverse failed relation, such as `42 <= 42`.
-- `intGreaterOrEqualOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `intGreaterOrEqualOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. The promotion exposed missing DMD `>=` lowering in bytecode, so
   the VM now evaluates a narrow `greaterOrEqual` opcode and formats failed
   assertion diagnostics with the inverse operator, such as `41 < 42`.
-- `intNotEqualOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `intNotEqualOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. The promotion exposed that DMD `EqualExp` lowering did not yet
   distinguish `!=` from `==`, so bytecode now emits and evaluates a `notEqual`
   opcode and reports failed `!=` assertions with the inverse operator, such as
   `42 == 42`.
-- `ok` in `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. This
+- `ok` in `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. This
   was a stale coverage gap: the existing bytecode function-call, return, and
   equality assertion path already handled the passing assertion.
-- `oops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. This
+- `oops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. This
   was a stale coverage gap: the existing bytecode equality assertion diagnostic
   path already reported the failed function-return comparison as `42 != 43`.
-- `okFailureMessage.0` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `okFailureMessage.0` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. This was a stale coverage gap: the existing bytecode equality
   assertion diagnostic path already reported the failed function-return
   comparison as `7 != 8`.
-- `localIntReturnOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `localIntReturnOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. This was a stale coverage gap: the existing bytecode local
   declaration, load, function-return, and equality assertion diagnostic path
   already reported the failed comparison as `42 != 43`.
-- `voidFunctionOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `voidFunctionOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. This was a stale coverage gap: the existing bytecode call-frame
   and integer assertion-failure path already propagated the failure from a
   called `void` function as `` `assert(0)` failed ``.
-- `functionParametersOops` in `tests/ut/backends/runner/ct/diagnostics.d` now
+- `functionParametersOops` in `tests/ut/backends/runner/lang/diagnostics.d` now
   covers `Bytecode`. This was a stale coverage gap: the existing bytecode
   parameter binding, integer addition, return, and equality assertion
   diagnostic path already reported the failed comparison as `43 != 42`.
-- `tenFunctionParametersOops` in `tests/ut/backends/runner/ct/diagnostics.d` now
+- `tenFunctionParametersOops` in `tests/ut/backends/runner/lang/diagnostics.d` now
   covers `Bytecode`. This was a stale coverage gap: the existing bytecode call
   frame parameter binding handled the wider ten-argument call and reported the
   failed summed comparison as `56 != 42`.
-- `functionParameterOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `functionParameterOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. This was a stale coverage gap: the existing bytecode single
   parameter binding, integer addition, return, and equality assertion
   diagnostic path already reported the failed comparison as `42 != 43`.
-- `ifElseOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `ifElseOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. The promotion exposed missing DMD `IfStatement` lowering in the
   bytecode compiler, so bytecode now emits narrow branch control flow using the
   existing jump opcodes and reports the selected branch result as `43 != 42`.
-- `refParameterOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `refParameterOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. The promotion exposed missing local assignment lowering and
   scalar local `ref` argument writeback. Bytecode now lowers simple local
   assignment, records local reference arguments for calls, writes ref parameter
   locals back to caller locals on return, and reports the final failed
   comparison as `42 != 43`.
-- `inFunctionParametersOops` in `tests/ut/backends/runner/ct/diagnostics.d` now
+- `inFunctionParametersOops` in `tests/ut/backends/runner/lang/diagnostics.d` now
   covers `Bytecode`. This was a stale coverage gap: bytecode already treats
   `in int` parameters as value parameters, evaluates the integer addition in
   the callee, and reports the failed equality assertion as `43 != 42`.
-- `refSizeTParameterOops` in `tests/ut/backends/runner/ct/diagnostics.d` now covers
+- `refSizeTParameterOops` in `tests/ut/backends/runner/lang/diagnostics.d` now covers
   `Bytecode`. This was a stale coverage gap: the existing scalar `ref`
   parameter writeback path already handles `size_t`, so bytecode increments
   the caller local and reports the final failed comparison as `42 != 43`.
 - `explicitAssertMessageOverridesContext` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. This was a
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. This was a
   stale coverage gap: bytecode already gives an explicit assertion message
   priority over generated comparison context, so `assert(1 == 2, "oops")`
   reports `oops`.
 - `literalFalseAssertionMatchesDmd` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. This was a
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. This was a
   stale coverage gap: bytecode already reports a literal false assertion as
   `` `assert(false)` failed ``.
 - `runtimeBoolAssertionContextMatchesDmd` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. The promotion
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. The promotion
   exposed that DMD lowers runtime truth assertions through an internal
   assertion temporary. Bytecode now suppresses that lowered temp text for
   runtime truth assertions and reports the failed bool relation as
   `false != true`, while preserving explicit assertion messages and literal
   `assert(false)` diagnostics.
 - `boolAssertionContextMatchesDmd` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. This was a
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. This was a
   stale coverage gap: bytecode already preserves bool operands in equality
   assertion diagnostics and reports `true != false`.
 - `charAssertionContextMatchesDmd` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. The promotion
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. The promotion
   exposed that bytecode assertion diagnostics rendered char operands as their
   integer code units. Bytecode now formats comparisons between two char
   operands as D char literals, such as `'a' != 'b'`.
 - `dynamicAssertMessageMatchesDmd` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. The promotion
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. The promotion
   exposed missing dynamic assertion-message handling: bytecode now evaluates a
   variable assertion message only on the failing branch, unwraps DMD's cast
   wrapper around that message expression, and throws the evaluated string
   `oops`.
 - `nullClassMethodCallReportsDiagnostic` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. The promotion
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. The promotion
   exposed missing `null` expression support and missing receiver diagnostics
   for dot-call class methods. Bytecode now lowers DMD `null` to `Value.null_`
   and checks the dot-call receiver before emitting the function call, reporting
   `function call through null class reference `null``.
 - `nullClassFieldReadReportsDiagnostic` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. The promotion
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. The promotion
   exposed missing DMD `DotVarExp` lowering for class field reads. Bytecode now
   evaluates the field receiver and reports the null-receiver diagnostic
   `` class `thing` is `null` and cannot be dereferenced `` before leaving
   non-null class field reads unsupported.
 - `typeidNullClassReferenceReportsDiagnostic` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`. The promotion
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`. The promotion
   exposed missing DMD `TypeidExp` and `IdentityExp` lowering for this
   diagnostic path. Bytecode now evaluates expression-backed `typeid`, reports
   `` null pointer dereference evaluating typeid. `thing` is `null` `` for a
   null class reference, and keeps general TypeInfo behavior outside this
   slice.
 - `voidInitializedScalarReadReportsUninitialized` in
-  `tests/ut/backends/runner/ct/diagnostics.d` now covers `Bytecode`, completing the
+  `tests/ut/backends/runner/lang/diagnostics.d` now covers `Bytecode`, completing the
   module. The promotion exposed missing `= void` local tracking. Bytecode now
   marks void-initialized scalar locals with `Value.void_` and reports CTFE-style
   uninitialized-read diagnostics such as
   `` cannot read uninitialized variable `.answer.value` in ctfe `` when the
   local is loaded.
-- `evaluatesRuntimePowDoubleInputs` in `tests/ut/backends/runner/ct/math.d` now
+- `evaluatesRuntimePowDoubleInputs` in `tests/ut/backends/runner/lang/math.d` now
   covers `Bytecode`. The promotion exposed that bytecode assertion comparisons
   only accepted integer-compatible operands; bytecode now compares numeric
   operands through `Value.asReal`, allowing the existing `std.math.pow` builtin
@@ -961,7 +961,7 @@ switch; `Bytecode` still defaults to the old core):
   `Value` reification at the `Evaluator` boundary
   (`backends/bytecode/core/{program,compiler,machine,reify}.d`).
 - `type.*` (all eight integral widths) in
-  `tests/ut/backends/runner/ct/integrals.d`: native-layout locals and
+  `tests/ut/backends/runner/lang/integrals.d`: native-layout locals and
   parameters at DMD-computed sizes and alignments, lazy per-function
   compilation through a machine callback, calls with contiguous argument
   areas, truncating and sign-extending casts, comma expressions, and the
@@ -974,7 +974,7 @@ switch; `Bytecode` still defaults to the old core):
   path) and failed equality asserts render both operands from frame bytes
   at the comparison width.
 - `signedUnsignedComparisonIsUnsigned` and `wraparoundAtTypeBoundaries` in
-  `tests/ut/backends/runner/ct/integrals.d` now cover `BytecodeNewCore`.
+  `tests/ut/backends/runner/lang/integrals.d` now cover `BytecodeNewCore`.
   `signedUnsignedComparisonIsUnsigned` was a stale coverage gap: existing
   integer promotions and unsigned-comparison opcodes already matched the
   `SystemLinker` oracle. `wraparoundAtTypeBoundaries` exposed missing
@@ -999,7 +999,7 @@ switch; `Bytecode` still defaults to the old core):
   reified at the boundary, with a `ResultType` distinguishing the non-scalar
   string from the scalar path (`stringLiteralIsArray`). The string slice is
   the leading edge of the later arrays slice; only literals are supported.
-- All `tests/ut/backends/runner/ct/logic.d` blocks, completing `logic.d`
+- All `tests/ut/backends/runner/lang/logic.d` blocks, completing `logic.d`
   (module order 4) on the new core. Earned in three slices (the four-root-cause
   analysis below predicted four subagents; `&&` and `||` share one
   short-circuit lowering, so the third slice greened both): (a) bitwise-OR —
@@ -1026,7 +1026,7 @@ switch; `Bytecode` still defaults to the old core):
   constructor message through the existing string-slice path and executes a
   `throwString` opcode that reports the rendered message through the runner.
   DMD-folded `assert(true)` emits no code, matching compiled output.
-- All promotable `tests/ut/backends/runner/ct/diagnostics.d` blocks,
+- All promotable `tests/ut/backends/runner/lang/diagnostics.d` blocks,
   completing `diagnostics.d` (module order 6) on the new core. 13 of 26
   promoted tests passed unchanged; the other 13 were earned in six slices
   (see the diagnostics analysis section): comparison-assert operators
@@ -1043,7 +1043,7 @@ switch; `Bytecode` still defaults to the old core):
   characterization diagnostics with no `SystemLinker` oracle that require
   class support (slice 9) or test CTFE-only divergence the new core will not
   emulate.
-- All SystemLinker-backed `tests/ut/backends/runner/ct/math.d` blocks,
+- All SystemLinker-backed `tests/ut/backends/runner/lang/math.d` blocks,
   completing `math.d` (module order 7) on the new core. 13 of 56 promoted
   tests passed unchanged; the remaining 43 were earned in three sequential
   slices (see the math analysis section): `real` scalar storage/reification,
@@ -1053,7 +1053,7 @@ switch; `Bytecode` still defaults to the old core):
   `evaluatesRuntimePowFloatInputs` block was deliberately not promoted
   because it lacks a `SystemLinker` oracle due to the dmd-as-a-library
   template-emission issue recorded in `ai/plans/dmd-backend.md`.
-- All SystemLinker-backed `tests/ut/backends/runner/ct/arrays.d` blocks,
+- All SystemLinker-backed `tests/ut/backends/runner/lang/arrays.d` blocks,
   completing `arrays.d` (module order 8) on the new core (53/53 promoted,
   see the arrays analysis section). This is the native-layout memory model
   realised: dynamic arrays as `{ptr, length}` slice descriptors over GC-heap
@@ -1063,7 +1063,7 @@ switch; `Bytecode` still defaults to the old core):
   associative arrays via druntime-hook call-site interception against a
   VM-owned map table. The 5 `Ctfe, Interpreter`-only CTFE-divergence blocks
   remain unpromoted (no `SystemLinker` oracle).
-- All `tests/ut/backends/runner/ct/structs.d` blocks, completing `structs.d`
+- All `tests/ut/backends/runner/lang/structs.d` blocks, completing `structs.d`
   (module order 9) on the new core (43/43 promoted, see the structs analysis
   section). This is slice 4 (structs with native layout) realised on top of
   the array memory model: structs are `Type.size()` inline frame blocks with
@@ -1075,7 +1075,7 @@ switch; `Bytecode` still defaults to the old core):
   nested-struct enclosing-local capture through a stack-base-index context
   pointer, and scope-exit destructor / static-array postblit insertion. All
   43 blocks are SystemLinker-oracle-backed; none were withheld.
-- All `tests/ut/backends/runner/ct/control_flow.d` blocks, completing
+- All `tests/ut/backends/runner/lang/control_flow.d` blocks, completing
   `control_flow.d` (module order 10) on the new core (67/67 promoted, see
   the control-flow analysis section). This is slice 3 realised on top of the
   earlier scalar, array, and struct machinery: free calls, `if`/loops,
@@ -1083,14 +1083,14 @@ switch; `Bytecode` still defaults to the old core):
   nested-lambda `this` capture, UTF string `foreach`, and the narrow
   try/catch/finally-on-goto surface needed by the module. All blocks are
   SystemLinker-oracle-backed; none were withheld.
-- All SystemLinker-backed `tests/ut/backends/runner/ct/exceptions.d`
+- All SystemLinker-backed `tests/ut/backends/runner/lang/exceptions.d`
   blocks, completing `exceptions.d` (module order 11) on the new core
   (26/26 promoted, see the exceptions analysis section). This covers class
   exception construction, throw statements and expressions, uncaught-exception
   reporting, catch matching and binding, propagation across calls and
   branches, unwinding, `finally` ordering, return capture before `finally`,
   `goto` through exception scopes, and exception chaining.
-- All SystemLinker-backed `tests/ut/backends/runner/ct/expressions.d`
+- All SystemLinker-backed `tests/ut/backends/runner/lang/expressions.d`
   blocks, completing `expressions.d` (module order 12) on the new core
   (55/55 promoted, see the expressions analysis section). This covers the
   remaining broad expression surface: integer operators, mixed numeric
@@ -1098,14 +1098,14 @@ switch; `Bytecode` still defaults to the old core):
   heap aggregate allocation, class/interface dispatch, `typeid`, delegates,
   complex literals, vector splats, and integer `^^` lowering. CTFE-only
   characterization tests remain CTFE-only.
-- All SystemLinker-backed `tests/ut/backends/runner/ct/cerealed.d` blocks,
+- All SystemLinker-backed `tests/ut/backends/runner/lang/cerealed.d` blocks,
   completing `cerealed.d` (module order 13) on the new core (23/23 promoted,
   see the cerealed analysis section). The last two promoted cases were the
   AA-shaped `nestedStructWritesAssociativeArrayChild` and
   `classSerialisationReadsStaticChildRegistry` fixtures, which added narrow
   support for associative-array literals with struct values, static
   associative-array storage, and delegate-valued AA lookup/invocation.
-- `tests/ut/backends/runner/rt/cstdlib.d` (module order 2) is reconciled on
+- `tests/ut/backends/runner/sys/cstdlib.d` (module order 2) is reconciled on
   the new core. The flipped `Bytecode` backend now runs the scalar/pointer
   libc value rows recorded in the Current Coverage State below, including
   `calloc.multiArg.zeroedNativeMemory`,
@@ -1218,7 +1218,7 @@ Measured state (`bin/ut -l`, 2026-07-09): the new core carries far more
 matrix rows than the old core. Exactly four `Bytecode` rows have no
 `BytecodeNewCore` counterpart, and all four are behaviours:
 
-1. `ct/diagnostics.d`: `nullClassFieldReadReportsDiagnostic`,
+1. `lang/diagnostics.d`: `nullClassFieldReadReportsDiagnostic`,
    `nullClassMethodCallReportsDiagnostic`, and
    `typeidNullClassReferenceReportsDiagnostic`. The new core already has
    native object layout, vtables, virtual dispatch, and `typeid`
@@ -1226,7 +1226,7 @@ matrix rows than the old core. Exactly four `Bytecode` rows have no
    `expressions.typeid.classReferenceUsesDynamicClass`). What it lacks is a
    null-reference *diagnostic* on field read, method call, and `typeid`.
    This is much smaller than slice 9 as written.
-2. `ct/math.d`: `evaluatesRuntimePowFloatInputs`. The new core recognises no
+2. `lang/math.d`: `evaluatesRuntimePowFloatInputs`. The new core recognises no
    math intrinsics at all (`compiler.d` matches only `classinfo` and
    `emplace` by identifier), so `pow` on float inputs needs intrinsic
    lowering.
@@ -1234,15 +1234,15 @@ matrix rows than the old core. Exactly four `Bytecode` rows have no
 Two additional stale-row cases are not behaviours and need no new-core
 implementation:
 
-- `ct/diagnostics.d`: `voidInitializedScalarReadReportsUninitialized`. See
+- `lang/diagnostics.d`: `voidInitializedScalarReadReportsUninitialized`. See
   "The `= void` row is a fossil" below — narrow it, do not implement it.
-- `rt/cstdlib.d`: `malloc.pointerReturn.nativeMemory` is not a behaviour the
+- `sys/cstdlib.d`: `malloc.pointerReturn.nativeMemory` is not a behaviour the
   old core performed. It is simply unpromoted in this incremental PR, not
   blocked on a current native-memory indexing gap.
 
 ### The `= void` row is a fossil
 
-`voidInitializedScalarReadReportsUninitialized` (`ct/diagnostics.d`) asserts
+`voidInitializedScalarReadReportsUninitialized` (`lang/diagnostics.d`) asserts
 that reading an `int value = void;` local throws
 `cannot read uninitialized variable ... in ctfe`, on `Ctfe`, `Interpreter`,
 `Bytecode`, and `IR`. It was added 2026-05-28 ("Add non-array CTFE coverage
@@ -1281,7 +1281,7 @@ runtime tagging in one engine, and not a reason to delay the flip.
    `Engine.typedFrames`; the `BytecodeNewCore` handle class was deleted; the
    old core (`backends/bytecode/{compiler,vm,builtins,instructions}.d`) was
    deleted; `malloc.pointerReturn.nativeMemory` stayed unpromoted while the
-   promoted `rt/cstdlib.d` native-memory rows stayed covered; the
+   promoted `sys/cstdlib.d` native-memory rows stayed covered; the
    `.BytecodeNewCore` matrix rows were renamed to `.Bytecode`. The
    legacy-core entry in the Deletion Inventory (enum member-name and
    struct-literal display in `bytecode/compiler.d`) died here too.
@@ -1314,13 +1314,13 @@ Everything below was deferred until the old core was deleted. It records what
 the new core has already re-earned, and what comes after the flip. It is the
 live backlog for future bytecode work.
 
-`eval.d` (module order 1), `rt/cstdlib.d` (2), `integrals.d` (3),
+`eval.d` (module order 1), `sys/cstdlib.d` (2), `integrals.d` (3),
 `logic.d` (4), `results.d` (5), `diagnostics.d` (6), `math.d` (7),
 `arrays.d` (8), `structs.d` (9), `control_flow.d` (10), `exceptions.d` (11),
 `expressions.d` (12), and `cerealed.d` (13) are now complete or explicitly
 reconciled on the new core (see Rewrite Coverage State).
 
-`rt/cstdlib.d` has promoted `atoi.value`, `strtol.endptr`,
+`sys/cstdlib.d` has promoted `atoi.value`, `strtol.endptr`,
 `free.null.voidReturn`, `malloc.pointerRoundTrip`, `abs.scalar`,
 `labs.widerScalar`, `ctype.toupperTolower`, `atof.floatReturn`,
 `strtod.floatReturn.endptr`, `calloc.multiArg.zeroedNativeMemory`,
@@ -1397,7 +1397,7 @@ execution). The current backlog for this track, in order:
    `ref`-argument execution (`importStdExposesPhobosSymbols`), and the
    promoted associative-array execution rows in `arrays.d` (slice 7).
 2. Slice 8, native runtime: continue widening the outbound host FFI bridge,
-   which unblocks the deferred `rt/cstdlib.d` runtime rows above. The first
+   which unblocks the deferred `sys/cstdlib.d` runtime rows above. The first
    promoted runtime row, `atoi.value.BytecodeNewCore`, is green via the shared
    `quickbite.ffi.callNative` path — the buffer-copy path, which taxes the
    native-layout frame with per-argument copies. When this slice's FFI
@@ -1472,7 +1472,7 @@ Promotion of further test modules onto the old core stops; new surface area
 (`exceptions.d` and later modules) is earned directly on the new core per the
 slice roadmap.
 
-## rt/cstdlib.d Reconciliation Analysis (BytecodeNewCore)
+## sys/cstdlib.d Reconciliation Analysis (BytecodeNewCore)
 
 The module mixes three kinds of coverage: CTFE no-source diagnostics, real
 runtime libc calls (`Interpreter`, `SystemLinker`, `LLVMJit`), and old
@@ -1501,10 +1501,10 @@ Struct-return calls (`div`, `ldiv`) remain deferred.
 
 ## math.d Promotion Analysis (BytecodeNewCore)
 
-All SystemLinker-backed tests from `tests/ut/backends/runner/ct/math.d`
+All SystemLinker-backed tests from `tests/ut/backends/runner/lang/math.d`
 have been promoted to include `BytecodeNewCore` in their `AliasSeq` blocks
 and were run in isolation with the full unit-threaded names matching
-`ut.backends.runner.ct.math.*.BytecodeNewCore`. The one
+`ut.backends.runner.lang.math.*.BytecodeNewCore`. The one
 `evaluatesRuntimePowFloatInputs` block is deliberately not promoted because
 it omits `SystemLinker` for a known dmd-as-a-library/linking issue, so the
 promotion is not oracle-backed under `ai/plans/single-oracle.md`.
@@ -1601,7 +1601,7 @@ state:
    opcodes and assertion-diagnostic selection for float/double/real.
 
 After each subagent, rerun only
-`ut.backends.runner.ct.math.*.BytecodeNewCore`; leave any passing promoted
+`ut.backends.runner.lang.math.*.BytecodeNewCore`; leave any passing promoted
 tests in place.
 
 **Completed implementation:** The new core now supports D `real` as a native
@@ -1715,7 +1715,7 @@ previous committed state, since all touch the shared core modules
 
 ## logic.d Completion Analysis (BytecodeNewCore)
 
-All 34 tests from `tests/ut/backends/runner/ct/logic.d` have been promoted to
+All 34 tests from `tests/ut/backends/runner/lang/logic.d` have been promoted to
 include `BytecodeNewCore` in their `AliasSeq`. 3 pass unchanged
 (`logicalOrBoolResult`, `logicalOrBoolResultFailureMessage.0`,
 `logicalOrBoolResultFailureMessage.1`) because DMD constant-folds `2 || false`
@@ -2099,7 +2099,7 @@ After all four items, `logic.d` is complete on `BytecodeNewCore` (34/34).
 
 ## diagnostics.d Promotion Analysis (BytecodeNewCore)
 
-All 26 tests from `tests/ut/backends/runner/ct/diagnostics.d` have been
+All 26 tests from `tests/ut/backends/runner/lang/diagnostics.d` have been
 promoted to include `BytecodeNewCore` in their `AliasSeq` blocks. 13 pass
 unchanged: `voidFunctionReturnsToCaller`, `ok`, `oops`,
 `okFailureMessage.0`, `localIntReturnOops`, `voidFunctionOops`,
@@ -2433,7 +2433,7 @@ After all six items, `diagnostics.d` is complete on `BytecodeNewCore`
 ## arrays.d Promotion Analysis (BytecodeNewCore)
 
 All SystemLinker-oracle-backed blocks in
-`tests/ut/backends/runner/ct/arrays.d` have been promoted to include
+`tests/ut/backends/runner/lang/arrays.d` have been promoted to include
 `BytecodeNewCore` in their `AliasSeq`. 53 `BytecodeNewCore` tests now
 exist. 3 pass unchanged:
 `assertDiagnostic.integerEquality`,
@@ -2817,7 +2817,7 @@ oracle).
 ## structs.d Promotion Analysis (BytecodeNewCore)
 
 All 43 SystemLinker-backed blocks in
-`tests/ut/backends/runner/ct/structs.d` have been promoted to include
+`tests/ut/backends/runner/lang/structs.d` have been promoted to include
 `BytecodeNewCore` in their `AliasSeq`. Every block's `AliasSeq` is
 `(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)`, so all 43
 are SystemLinker-oracle-backed and all 43 are in scope; none are
@@ -3241,7 +3241,7 @@ reify}.d`). No parallelism is possible: each subagent must commit before
 the next begins. The dependency order is 1 → 2 → 3 → 4 → 5 → 6 (struct
 layout first, the deepest value-flow / operator / lifetime work last).
 After each subagent, rerun only
-`ut.backends.runner.ct.structs.*.BytecodeNewCore` and leave passing
+`ut.backends.runner.lang.structs.*.BytecodeNewCore` and leave passing
 promoted tests in place.
 
 1. **Struct native-layout locals, fields, and by-value copy** (failure
@@ -3299,10 +3299,10 @@ should revisit.
 ## control_flow.d Promotion Analysis (BytecodeNewCore)
 
 All SystemLinker-backed tests from
-`tests/ut/backends/runner/ct/control_flow.d` have been promoted to include
+`tests/ut/backends/runner/lang/control_flow.d` have been promoted to include
 `BytecodeNewCore` in their `AliasSeq` blocks and were run in isolation with
 the full unit-threaded names matching
-`ut.backends.runner.ct.control_flow.*.BytecodeNewCore`. 67 tests were
+`ut.backends.runner.lang.control_flow.*.BytecodeNewCore`. 67 tests were
 promoted. 31 pass unchanged: all `while.*`, `if.*`,
 `function.*` (except `nestedLambda*` and `overloadResolutionBySignature`),
 `goto.directLabel`, `goto.restartsCompoundStatement`,
@@ -3940,7 +3940,7 @@ failures:
 ## exceptions.d Promotion Analysis (BytecodeNewCore)
 
 All SystemLinker-backed tests from
-`tests/ut/backends/runner/ct/exceptions.d` have been promoted to include
+`tests/ut/backends/runner/lang/exceptions.d` have been promoted to include
 `BytecodeNewCore` in their `AliasSeq` blocks. The Ctfe-only characterization
 tests remain Ctfe-only because their diagnostic text intentionally diverges
 from compiled-code behaviour.
@@ -3990,7 +3990,7 @@ Result: 26 tests run, 0 failed.
 ## expressions.d Promotion Analysis (BytecodeNewCore)
 
 All SystemLinker-backed tests from
-`tests/ut/backends/runner/ct/expressions.d` have been promoted to include
+`tests/ut/backends/runner/lang/expressions.d` have been promoted to include
 `BytecodeNewCore` in their `AliasSeq` blocks. CTFE-only characterization
 tests remain CTFE-only.
 
@@ -4035,7 +4035,7 @@ implementation gaps:
 
 Worker assignments should keep the promoted tests in place, make the smallest
 honest backend changes, and rerun only
-`ut.backends.runner.ct.expressions.*.BytecodeNewCore` after each fix.
+`ut.backends.runner.lang.expressions.*.BytecodeNewCore` after each fix.
 
 Completed implementation:
 
@@ -4071,7 +4071,7 @@ Result: 55 tests run, 0 failed, 1/1 failing as expected.
 ## cerealed.d Promotion Analysis (BytecodeNewCore)
 
 All SystemLinker-backed tests from
-`tests/ut/backends/runner/ct/cerealed.d` were evaluated for promotion to
+`tests/ut/backends/runner/lang/cerealed.d` were evaluated for promotion to
 `BytecodeNewCore`. All 23 SystemLinker-backed promotion candidates now include
 `BytecodeNewCore` in their `AliasSeq` blocks. CTFE-only characterization tests
 remain CTFE-only.
@@ -4112,7 +4112,7 @@ these implementation gaps:
 
 Worker assignments should keep the promoted tests in place, make the smallest
 honest backend changes, and rerun only
-`ut.backends.runner.ct.cerealed.*.BytecodeNewCore` after each fix.
+`ut.backends.runner.lang.cerealed.*.BytecodeNewCore` after each fix.
 
 Current focused checkpoint after the static child-registry slice:
 
@@ -4152,7 +4152,7 @@ Current focused checkpoint after the static child-registry slice:
   pointers through DMD's lowered class-cast dereference, and writes back `ref`
   struct parameters so the delegate mutation of `Writer.bytes` reaches the
   caller.
-- `tests/ut/backends/runner/ct/cerealed.d` is now complete on
+- `tests/ut/backends/runner/lang/cerealed.d` is now complete on
   `BytecodeNewCore`: the focused run covers 23 tests with 0 failures.
 
 Focused command:
@@ -4446,14 +4446,14 @@ showed the existing `Ctfe`/`Interpreter` row expects `array index 99 is out of
 bounds` with `[0..3]`, while `BytecodeNewCore` reports `index [99] is out of
 bounds for array of length 3`. That wording matches the
 `SystemLinker`/compiled-D array diagnostic style already pinned in
-`tests/ut/backends/runner/ct/arrays.d`, so the CTFE wording stays as a
+`tests/ut/backends/runner/lang/arrays.d`, so the CTFE wording stays as a
 CTFE/tree-walker characterization and the new-core row uses the compiled
 oracle text. No production change was needed.
 
 Slice 8 native-runtime first rung, 2026-07-08: current-master frontier
 verification found backlog item 1 already green (`moduleLevelVariables...`,
 `importStdExposesPhobosSymbols`, and the promoted `int[int]` AA execution
-family), so the next red rung was `rt/cstdlib.d`'s existing
+family), so the next red rung was `sys/cstdlib.d`'s existing
 SystemLinker-backed `atoi.value` row on `BytecodeNewCore`. The red diagnostic
 was `` `atoi` cannot be interpreted at compile time, because it has no
 available source code ``. The new core now compiles `atoi("literal")` to a
@@ -4513,7 +4513,7 @@ test delta here to cover the improved diagnostic. Leave both REPL rows
 unpromoted until the native bridge is extended by the runtime/FFI track or a
 separate approved diagnostic test is added.
 
-Slice 8 native scalar-int argument, 2026-07-08: promoted `rt/cstdlib.d`'s
+Slice 8 native scalar-int argument, 2026-07-08: promoted `sys/cstdlib.d`'s
 existing SystemLinker-backed `abs.scalar` row to `BytecodeNewCore`. The red
 diagnostic was `` `abs` cannot be interpreted at compile time, because it has
 no available source code ``. The production change generalises the narrow
@@ -4535,7 +4535,7 @@ green and the `free`/`malloc` no-source rows still red-as-expected; `bin/ut
 --random` with seed `2087389007` reported the invariant `0 failed, 6/6 failing
 as expected`.
 
-Slice 8 native wider-scalar call, 2026-07-08: promoted `rt/cstdlib.d`'s
+Slice 8 native wider-scalar call, 2026-07-08: promoted `sys/cstdlib.d`'s
 existing SystemLinker-backed `labs.widerScalar` row (`long labs(long)` on a
 runtime `long negative = -5_000_000_000L`) to `BytecodeNewCore`. The red
 diagnostic was `` `labs` cannot be interpreted at compile time, because it has
@@ -4561,7 +4561,7 @@ result width). Verification: `ninja bin/ut`, focused
 `3078925616` reported the invariant `0 failed, 6/6 failing as expected`.
 
 Slice 8 native ctype toupper/tolower calls, 2026-07-08: promoted
-`rt/cstdlib.d`'s existing SystemLinker-backed `ctype.toupperTolower` row to
+`sys/cstdlib.d`'s existing SystemLinker-backed `ctype.toupperTolower` row to
 `BytecodeNewCore`. The fixture imports a second module (`core.stdc.ctype`) and
 makes two native calls in one unittest — `toupper(int)` and `tolower(int)`,
 both `int(int)`. No production change was needed: this is stale coverage. Both
@@ -4577,7 +4577,7 @@ focused `ctype.toupperTolower.BytecodeNewCore` green, with
 `bin/ut --random` with seed `3779664640` reported the invariant `0 failed,
 6/6 failing as expected`.
 
-Slice 8 native atof double-return call, 2026-07-08: promoted `rt/cstdlib.d`'s
+Slice 8 native atof double-return call, 2026-07-08: promoted `sys/cstdlib.d`'s
 existing SystemLinker-backed `atof.floatReturn` row (`double atof(const char*)`
 on `atof("3.5".ptr)`, asserting `value == 3.5`) to `BytecodeNewCore`. The RED
 diagnostic was `` `atof` cannot be interpreted at compile time, because it has
@@ -4630,7 +4630,7 @@ was not run for this refactor; the orchestrator runs the long suite.
 
 `strtod.floatReturn.endptr` promoted to `BytecodeNewCore`, 2026-07-09:
 pre-approved `SystemLinker`-oracle promotion
-(`tests/ut/backends/runner/rt/cstdlib.d`). Red diagnostic before any
+(`tests/ut/backends/runner/sys/cstdlib.d`). Red diagnostic before any
 production change, verbatim:
 
     object.Exception: `strtod` cannot be interpreted at compile time,
@@ -4678,9 +4678,9 @@ real host addresses (`program.data.ptr + offset`) into pointer-local frame
 slots; no change needed there. Verification: `ninja bin/ut`, focused
 `strtod.floatReturn.endptr.BytecodeNewCore` green, the 12 other
 `cstdlib.*.BytecodeNewCore` rows still green (13 tests, 0 failed), all 35
-`BytecodeNewCore` pointer/null-rendering rows across `ct/expressions`,
-`ct/arrays`, `ct/control_flow`, `ct/structs`, `ct/cerealed`, and `bin/repl`
-still green, and the full `rt/cstdlib.d` module across every backend green
+`BytecodeNewCore` pointer/null-rendering rows across `lang/expressions`,
+`lang/arrays`, `lang/control_flow`, `lang/structs`, `lang/cerealed`, and `bin/repl`
+still green, and the full `sys/cstdlib.d` module across every backend green
 (88 tests, 0 failed). `bin/ut --random` was not run; the orchestrator runs
 the long suite. Production diff for the whole branch vs `master`
 (`source/`) is 192 changed lines. Next rung, `strtol.endptr`: a
@@ -4692,7 +4692,7 @@ needing a new shape; the gate widens from exactly 2 arguments to the
 (string-literal, out-pointer, scalar) triple.
 
 `strtol.endptr` promoted to `BytecodeNewCore`, 2026-07-09: pre-approved
-`SystemLinker`-oracle promotion (`tests/ut/backends/runner/rt/cstdlib.d`). Red
+`SystemLinker`-oracle promotion (`tests/ut/backends/runner/sys/cstdlib.d`). Red
 diagnostic before any production change, verbatim:
 
     object.Exception: `strtol` cannot be interpreted at compile time,
@@ -4730,8 +4730,8 @@ would silently corrupt the stack at `base + 65535`. Added a private
 existing `unsupportedNativeCall` diagnostic) instead of indexing past it.
 Verification: `ninja bin/ut`; focused run of every `cstdlib.*.BytecodeNewCore`
 row plus `strtol.endptr` on `Interpreter`/`SystemLinker`/`LLVMJit` (17 tests,
-0 failed); the `BytecodeNewCore` rows of `ct/expressions`, `ct/arrays`, and
-`ct/structs` as a regression check on the shared native-call path (152
+0 failed); the `BytecodeNewCore` rows of `lang/expressions`, `lang/arrays`, and
+`lang/structs` as a regression check on the shared native-call path (152
 tests, 0 failed, 1 failing as expected). `bin/ut --random` was not run; the
 orchestrator runs the long suite. Production diff for the whole branch vs
 `master` (`source/`) is 197 changed lines, under the 200-line cap.
@@ -4745,7 +4745,7 @@ slice of its own — return-side plumbing that the argument-side generalisation
 here does not touch.
 
 `free.null.voidReturn` promoted to `BytecodeNewCore`, 2026-07-09: the
-`free.null.voidReturn` block (`tests/ut/backends/runner/rt/cstdlib.d`) ran
+`free.null.voidReturn` block (`tests/ut/backends/runner/sys/cstdlib.d`) ran
 on `Interpreter` only, so it was not yet `SystemLinker`-oracle-backed.
 Added `SystemLinker` to that block's `AliasSeq` first and confirmed it
 passed unmodified — `free(null); assert(true);` is genuine compiled-D
@@ -4806,7 +4806,7 @@ once `BytecodeNewCore` stopped throwing. Split that block in two:
 `BytecodeNewCore`) keeps `Bytecode, BytecodeNewCore, IR`. No fixture body
 changed in either block.
 
-Verification: `ninja bin/ut`; the full `rt/cstdlib.d` module (90 tests, 0
+Verification: `ninja bin/ut`; the full `sys/cstdlib.d` module (90 tests, 0
 failed); a focused run of `free.null.voidReturn` on every backend, every
 other `cstdlib.*.BytecodeNewCore` row, and `strtod.floatReturn.endptr`/
 `strtol.endptr` on `Interpreter`/`SystemLinker`/`LLVMJit`/`BytecodeNewCore`
@@ -4908,7 +4908,7 @@ null guard at the top of `compileStatement`, matching the convention
 every other caller of it already follows (`tryFinally._body`/
 `finalbody` are null-checked before the call). This is a general
 statement-compilation fix, not a native-memory one — confirmed by
-`ct/arrays` and `ct/expressions`, whose `BytecodeNewCore` rows are
+`lang/arrays` and `lang/expressions`, whose `BytecodeNewCore` rows are
 unaffected.
 
 With the crash fixed, `malloc.pointerReturn.nativeMemory.BytecodeNewCore`
@@ -4941,9 +4941,9 @@ Later FFI-track promotions covered native-memory indexing in the `calloc` and
 `realloc` rows, so `malloc.pointerReturn.nativeMemory` is simply unpromoted in
 this incremental PR rather than blocked on that old gap.
 
-Verification: `ninja bin/ut`; the full `rt/cstdlib.d` module (87 tests, 0
-failed); the `BytecodeNewCore` rows of `ct/arrays` (289 tests, 0 failed)
-and `ct/expressions` (297 tests, 0 failed, 5 failing as expected) as a
+Verification: `ninja bin/ut`; the full `sys/cstdlib.d` module (87 tests, 0
+failed); the `BytecodeNewCore` rows of `lang/arrays` (289 tests, 0 failed)
+and `lang/expressions` (297 tests, 0 failed, 5 failing as expected) as a
 regression check on the shared `compileStatement`/native-call path.
 `bin/ut --random` was not run; the orchestrator runs the long suite.
 Production diff for this rung (`source/`) is 56 changed lines;
@@ -4951,7 +4951,7 @@ for the whole branch vs `master` (`source/`), 276 changed lines — over
 the 200-line cap, continued past it on explicit user direction rather
 than contorting the code to stay under it.
 
-`ct/diagnostics.d` null-class diagnostics promoted to `BytecodeNewCore`,
+`lang/diagnostics.d` null-class diagnostics promoted to `BytecodeNewCore`,
 2026-07-09: pre-approved `SystemLinker`-oracle-backed promotion of
 `nullClassFieldReadReportsDiagnostic`,
 `nullClassMethodCallReportsDiagnostic`, and
@@ -4963,7 +4963,7 @@ read, class method receiver dispatch, and expression-backed `typeid`.
 Also taught lowered scalar identity asserts (`is`/`!is`) to compare the
 compiled operands so `typeid(thing) is typeid(Thing)` reaches the guarded
 `typeid(thing)` operand. Focused verification: the three promoted
-`.BytecodeNewCore` rows pass; all 29 `ct/diagnostics.d`
+`.BytecodeNewCore` rows pass; all 29 `lang/diagnostics.d`
 `.BytecodeNewCore` rows pass. Remaining pre-flip behaviours are the
 `pow` float intrinsic and the separately approved `= void` narrowing.
 
@@ -4976,7 +4976,7 @@ in `tests/ut/bin/repl.d` submits `auto ptr = malloc(42);` and asserts it
 throws the no-available-source diagnostic. Once `malloc` compiled and ran
 natively on `BytecodeNewCore`, that cell stopped throwing, so the pinned
 refusal was false. Per the omit-don't-pin convention already applied four
-times to `rt/cstdlib.d`'s negative blocks in this branch, that block's
+times to `sys/cstdlib.d`'s negative blocks in this branch, that block's
 `AliasSeq` was narrowed from `Ctfe, BytecodeNewCore` to `Ctfe`, leaving the
 fixture body and expected message untouched — `malloc` is still genuinely
 refused on `Ctfe`.
@@ -4999,7 +4999,7 @@ core directly, the `BytecodeNewCore` handle is deleted, and the legacy
 top-level bytecode core (`compiler`, `vm`, `instructions`, and legacy
 `builtins`) is gone. The builtin recognizer needed by the typed-frame
 compiler moved under `bytecode/core`. Test matrices now name `Bytecode`;
-the old `rt/cstdlib.d` refusal rows that only pinned legacy-core absence
+the old `sys/cstdlib.d` refusal rows that only pinned legacy-core absence
 were narrowed off `Bytecode`; duplicate/differing legacy assertion-message
 rows were collapsed onto the compiled-oracle `Bytecode` expectation. Focused
 stale-name scans found no `BytecodeNewCore` references in `source/` or
@@ -5640,7 +5640,7 @@ temporary-library races.
 
 `struct.staticArrayCopyRunsPostblitAndDtors` Bytecode row reverted, 2026-07-15:
 the prior day's promotion was premature. Running the full suite in isolation
-(`bin/ut -s ut.backends.runner.ct.structs`) crashes the Bytecode row with a
+(`bin/ut -s ut.backends.runner.lang.structs`) crashes the Bytecode row with a
 null dereference in `readHeapElement` at
 `source/quickbite/backends/bytecode/core/machine.d:2396`, not a passing
 result. The focused single-row run in the prior entry did not exercise the
@@ -5650,3 +5650,168 @@ omit-don't-pin convention (a backend that cannot run a test is left out of
 its matrix, not pinned to a known-bad result). Re-add Bytecode once the VM's
 `readHeapElement` handles static-array-of-structs postblit/dtor heap element
 copies.
+
+`struct.dollarInIndexAssignReflectsFieldLengthAfterGrowth` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported variable in bytecode core: $` because dynamic-array element
+assignment compiled its index without exposing the target descriptor's current
+length. The assignment path now scopes the existing active-dollar length slot
+around the index expression, matching the dynamic-array read and address paths.
+This does not add `$` outside array indices or change array-resize semantics.
+Verification: focused Bytecode red then green; `ninja bin/ut`; and
+`bin/ut --random` (seed `3401576571`).
+
+`struct.postfixLengthIncrementGrowsRefParamArrayField` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+because dmd lowers postfix `.length++` through a synthetic `ref T[]` local,
+which the core copied into an independent descriptor; resizing it therefore
+left the original struct field empty. Ref dynamic-array locals now reuse the
+initializer's existing descriptor, preserving the lvalue alias and its
+pointer writeback metadata. This does not add general ref-local aliases or
+ref aliases of array elements. Verification: focused Bytecode red then green
+and `ninja bin/ut` passed. `bin/ut --random` exited with signal 11 under seed
+`1923927317`; the required replay reproduced the crash after the complete
+promoted backend matrix row had passed.
+
+`struct.foreachRefOverFieldArrayPersistsElementWrites` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+because the foreach-lowered `ref Item` local was not represented as a pointer
+into the dynamic array's backing block, and forwarding that local to another
+`ref` parameter could not use the frame-offset call ABI directly. Struct
+element ref locals now retain their backing pointer; a forwarded ref call
+copies the struct to a frame temporary and writes it through the pointer after
+return. This does not add ref aliases of static-array elements, non-local ref
+returns, or structs larger than the VM's existing pointer load/store widths.
+Verification: focused Bytecode red then green, focused five-backend matrix,
+and `ninja bin/ut` passed. `bin/ut --random` exited with signal 11 under seed
+`1300728544` after this promoted row had passed. Before this promotion,
+replaying seed `1923927317` reproduced the recorded signal 11 only after the
+promoted row and multiple subsequent
+struct matrices; a focused sequence from that row through the crash-boundary
+matrix passed, so no causal link to commit `1ae75308` was established.
+
+`pointer.refTernaryReturnLowersToAddressOfCall` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row passed on
+the rebased upstream at `dd977275`, confirming the existing ref-return call
+and conditional-pointer paths already preserve the selected caller lvalue.
+No production change was needed. This does not add assignment through a
+ternary ref return, member ref returns, or broader ref-return lowering.
+
+`refCall.assignmentToRefTernaryReturnWritesChosenBranch` promoted to
+Bytecode, 2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported assignment in bytecode core: pick(false, x, y) = 42`.
+Assignment through a ref-returning call now recognizes the lowered single
+ternary return, traces each branch through a direct ref parameter or a simple
+ref-forwarding call, executes the callee, and writes the result to the caller
+slot selected by the fixture's literal condition. This does not add runtime
+conditions, member or global ref returns, nested conditionals, or general
+lvalue-return lowering. Verification: focused Bytecode red then green; passing
+focused five-backend matrix; `ninja bin/ut`; and `bin/ut --random` (seed
+`2550343385`).
+
+`refCall.assignmentToMemberRefReturnRunsCalleeBody` promoted to Bytecode,
+2026-07-15: pre-approved promotion of the existing direct
+SystemLinker-backed compile-time fixture. The focused Bytecode row was red
+with `Unsupported assignment in bytecode core: counter.slot() = 42`. A
+ref-returning struct method whose final statement returns a scalar field now
+executes the complete method body, including receiver side effects, before
+writing the assignment value into that field of the caller's receiver. This
+does not add conditional or early member ref returns, non-scalar fields,
+class methods, or general lvalue-return lowering. Verification: focused
+Bytecode red then green; passing focused five-backend matrix; `ninja bin/ut`;
+and `bin/ut --random` (seed `2688354283`).
+
+Review finding 1, member ref-return assignment base, 2026-07-15: the
+`tryMemberRefCallAssign` slice above always added the returned field offset to
+the method receiver, even when the returned `DotVarExp` was based on a `ref`
+parameter. The approved direct SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnUsesReturnedBase` proved compiled D writes
+`other.value` for `receiver.slot(other) = 42`; Bytecode was red with
+`42 != 0` because it wrote `receiver.value`. Member ref-return assignment now
+uses the caller lvalue of a returned ref-parameter base, while implicit
+`this`/`super` fields retain receiver-relative lowering and other bases decline
+this specialized path. This does not add value-parameter bases, nested field
+bases, pointers, conditionals, early returns, or general lvalue-return
+lowering. Verification: focused SystemLinker oracle green and Bytecode red;
+focused Bytecode/SystemLinker regression green; the prior member ref-return
+Bytecode row green; `ninja bin/ut`; and `bin/ut --random` (seed `233816370`,
+3389 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 2, conditional member ref return, 2026-07-15: the specialized
+member ref-return assignment path trusted the textually final return even when
+an earlier conditional return selected a different field. The approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToConditionalMemberRefReturn` proved compiled D writes
+`other.value` for `receiver.slot(true, other) = 42`; Bytecode was red with
+`42 != 0` because it wrote `receiver.value`. The specialized path now
+recognizes the exact `if (parameter) return field; return field;` shape when
+the caller condition is a literal, executes the callee, and writes through the
+selected return base. Its ordinary final-return path now accepts only
+expression-statement prefixes, so unproved control flow declines instead of
+silently selecting the final return. This does not add runtime conditions,
+`else` returns, nested conditionals, loops, or general lvalue-return lowering.
+Verification: focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and both prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`2831149159`, 3391 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 3, repeated ref-foreach argument alias, 2026-07-15: forwarding
+one ref-foreach struct local to two `ref` parameters materialized independent
+caller temporaries, so their post-call pointer stores competed and the final
+store erased the first parameter's field mutation. The approved direct
+SystemLinker/Bytecode regression
+`struct.foreachRefRepeatedArgumentPreservesAlias` proved compiled D preserves
+both writes to the shared array element; Bytecode was red with `0 != 1`.
+Repeated forwarding of the same struct-pointer local now reuses one caller
+temporary, and the machine keeps callee parameter slots that name the same
+caller storage coherent between instructions. Distinct caller offsets remain
+separate. This does not add ref-foreach over static arrays, general aggregate
+lvalues, or structs beyond the existing pointer load/store widths.
+Verification: focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; seven relevant Bytecode ref and
+ref-foreach rows green; `ninja bin/ut`; and `bin/ut --random` (seed
+`1286042481`, 3393 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 4, member ref-return receiver evaluation, 2026-07-15: the
+specialized member ref-return assignment path evaluated a nontrivial receiver
+once while reconstructing the returned field destination and again while
+emitting the method call's hidden `this` argument. The reviewer's comma
+expression fixture was invalid compiled D, so the approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnEvaluatesReceiverOnce` uses a
+ref-returning receiver helper with the same observable evaluation count.
+SystemLinker evaluated the receiver helper once; Bytecode was red with
+`2 != 1`. The specialized path now passes its already-evaluated receiver into
+call emission. A receiver returned directly from one of its helper call's
+`ref` parameters executes that helper once and reuses the original caller
+slot, preserving both receiver identity and the outer method's writeback.
+This does not add conditional receiver ref returns, non-parameter receiver ref
+returns, class receivers, or general ref-return lowering. Verification:
+focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and the three prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`1377337795`, 3395 tests, 0 failed, 6/6 failing as expected).
+
+Review finding 5, forwarded receiver argument evaluation, 2026-07-15: caller
+offset recovery for a ref-returning receiver executed its selected `ref`
+argument again after emitting the receiver call. The approved direct
+SystemLinker/Bytecode regression
+`refCall.assignmentToMemberRefReturnEvaluatesRefArgumentOnce` forwards
+`*pointed(counter, evaluations)` through a ref-returning receiver helper.
+SystemLinker evaluated `pointed` once; Bytecode was red while trying to load
+the complete `Counter` through its returned pointer. Caller-offset recovery
+now follows direct ref-parameter forwarding recursively, including a pointer
+returned as `&parameter`, and supplies each recovered offset to call emission
+so the corresponding argument is not recompiled. Addressing an inline struct
+slot is supported as an opaque struct pointer so the forwarding helper's body
+can execute. This does not add conditional forwarding, non-parameter pointer
+returns, pointer field access, or general ref-return lowering. Verification:
+focused SystemLinker oracle green and Bytecode red; focused
+Bytecode/SystemLinker regression green; and all four prior member ref-return
+Bytecode regressions green; `ninja bin/ut`; and `bin/ut --random` (seed
+`463451710`, 3397 tests, 0 failed, 6/6 failing as expected).

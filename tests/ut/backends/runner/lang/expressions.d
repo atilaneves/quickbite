@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.expressions;
+module ut.backends.runner.lang.expressions;
 
 
 import ut.backends;
@@ -23,7 +23,7 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
     operators are worth keeping here because the failure messages encode the
     negated operator.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("assertDiagnostic.lessThan." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -39,7 +39,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("assertDiagnostic.lessOrEqual." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -55,7 +55,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("assertDiagnostic.greaterThan." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -71,7 +71,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("assertDiagnostic.greaterOrEqual." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -87,7 +87,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("assertDiagnostic.notEqual." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -107,7 +107,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Integer arithmetic and bitwise operators.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.arithmeticOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -139,7 +139,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
 // Bytecode ("Unsupported expression `a % b`") and IR ("Unsupported IR
 // expression `a % b`") do not implement %.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.moduloSignFollowsDividend." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -165,7 +165,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.shiftOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -188,7 +188,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
 // Bytecode and IR ("Unsupported ... expression `v >> 28`") do not implement
 // shifts.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.unsignedRightShiftZeroFills." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -208,7 +208,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.bitwiseOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -234,7 +234,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.relationalOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -254,7 +254,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.unaryOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -273,7 +273,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.assignmentOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -296,7 +296,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.commaExpressionSequencesOperands." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -318,7 +318,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.postIncrementUsesRuntimeSeed." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -342,7 +342,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Integer widths, wrapping, casts, and mixed numeric comparisons.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("integer.ubyteCastTruncatesRuntimeValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -356,7 +356,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("integer.ubyteLocalTruncatesOnStore." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -371,7 +371,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("integer.ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -387,7 +387,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("integer.longLiteral." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -403,7 +403,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("integer.ulongHighBitComparisonsUseUnsignedValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -420,7 +420,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("integer.ulongDoubleComparisonUsesNumericUnsignedValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -440,7 +440,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("integer.floatEqualityIsNumeric." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -459,7 +459,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Floating-point, real, complex, and std.math expressions.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("floating.distinguishesFloatingPointValues." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -474,7 +474,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("floating.evaluatesPow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -488,7 +488,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("floating.castsFloatingValueNumerically." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -523,7 +523,10 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // The Ctfe counterpart above is @ShouldFail due to a CTFE-formatter
 // limitation; compiled code genuinely passes.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "CTFE @ShouldFail (assert formatter uses sprintf), see pin above"),
+)) {
     @("floating.intToFloatCastUsesFloatPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -539,7 +542,11 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "see Interpreter pin below; passes the real assertions instead " ~
+        "of the CTFE-formatter ShouldFail"),
+)) {
     @ShouldFail(
         "DMD CTFE returns <real not supported> because druntime's " ~
         "assert formatter uses sprintf",
@@ -575,7 +582,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("floating.realComparisonPreservesRealPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -590,7 +597,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("complex.literalWithRuntimeParts." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -614,7 +621,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Typeid, virtual dispatch, interfaces, and delegates.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("typeid.classReferenceUsesDynamicClass." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -655,7 +662,11 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 // Compiled typeid(T).name is the fully qualified name (snippet_N.Widget);
 // only CTFE returns the bare identifier. The snippet module name varies per
 // run, so match the stable suffix of the failure message.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see Ctfe pin above; CTFE returns the bare identifier, compiled " ~
+        "code the fully-qualified name"),
+)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -677,7 +688,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("class.virtualCallUsesDynamicClass." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -712,7 +723,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("interface.virtualCallUsesRuntimeDispatch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -745,7 +756,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("delegate.nestedCallUsesCapturedValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -770,7 +781,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("delegate.structMemberCallUsesReceiver." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -833,7 +844,11 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 // `context is null` assertion fails; the Ctfe rejection above is CTFE-only.
 // The pointer value varies per run, so match the stable suffix of the
 // message.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see Ctfe pin above; CTFE rejects dg.ptr at compile time, " ~
+        "compiled code returns a non-null context"),
+)) {
     @("delegate.ptrPropertyReturnsClosureContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -901,7 +916,11 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled dg.funcptr is a plain (non-null) function pointer, so the fixture
 // passes; the Ctfe rejection above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see Ctfe pin above; CTFE rejects dg.funcptr at compile time, " ~
+        "compiled code returns a plain function pointer"),
+)) {
     @("delegate.funcptrPropertyReturnsFunctionPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -936,7 +955,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 /++
     Casts involving slices, pointers, arrays, and bool.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.hexStringToUshortArrayUsesBigEndianWords." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -952,7 +971,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.sliceToPointerDereferencesFirstElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -974,7 +993,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.arrayPointerRoundTripsThroughVoidPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -997,7 +1016,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.arrayFieldPointerDereferencesFirstElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1021,7 +1040,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.arrayFieldPtrSliceUsesResizedLength." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1053,7 +1072,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.arrayFieldPtrSliceElementAddressWritesValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1088,7 +1107,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1110,7 +1129,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.expTypePaintedSliceFromVoidPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1137,7 +1156,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("cast.pointerToBoolReflectsNullness." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1163,7 +1182,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Conditional expressions, `new`, pointer arithmetic, and vectors.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("conditional.nonNullPointerIsTrue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1182,7 +1201,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("new.scalarPointerDereferencesRuntimeValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1200,7 +1219,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.runtimeOffsetReadsElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1223,7 +1242,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.runtimeDifferenceReadsElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1255,7 +1274,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // char/wchar/dchar family: a 1-byte `char`/`ubyte*` version does not repro,
 // because DMD inserts an extra implicit `int` promotion for sub-`int`-sized
 // operands in compound-assignment lowering that re-masks the bug.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.dcharCompoundAssignThroughUintPointerIsIntegerCompatible." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1273,7 +1292,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
 // D's right-shift compound assignment on an unsigned pointee is a logical
 // shift, including when the pointee is reached through a raw pointer.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.uintCompoundRightShiftIsLogical." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1297,7 +1316,11 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // `cast(uint*)&floatLocal`, so it is omitted here (unlike the dchar/uint
 // fixture above, where Ctfe does support same-size integer-family pointer
 // reinterpretation).
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "no byte-level memory model for floating-point locals; " ~
+        "permanently refuses cast(uint*)&floatLocal"),
+)) {
     @("pointer.floatBitsThroughUintPointerAreRawBits." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1316,7 +1339,11 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // taking the address of a local.
 
 // Same as above for `double`/`ulong*`.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "same as float/uint* above: no byte-level memory model for " ~
+        "floating-point locals"),
+)) {
     @("pointer.doubleBitsThroughUlongPointerAreRawBits." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1339,7 +1366,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // direct read of the local. SystemLinker is the oracle; LLVMJit and Ctfe are
 // omitted per the omit-don't-pin convention (address-of-a-local and float
 // byte-reinterpretation are unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.uintBitsWrittenThroughPointerReadBackAsFloat." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1367,7 +1397,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // parameter. The caller must observe the write after the call returns.
 // SystemLinker is the oracle; Ctfe and LLVMJit remain omitted for the same
 // reasons as the fixture above.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.crossFrameUintBitsWrittenThroughPointerReadBackAsFloat." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1401,7 +1434,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // before the reassignment. SystemLinker is the oracle; other backends
 // omitted per the omit-don't-pin convention (address-of-a-local is
 // unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.directWriteToAddressTakenScalarUpdatesCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1436,7 +1472,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // Other backends remain omitted per the omit-don't-pin convention
 // (address-of-a-local/parameter and float byte-reinterpretation are
 // unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.reinterpretWriteThroughRefParameterPointerReachesCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1473,7 +1512,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // getting a fresh one. SystemLinker is the oracle; other backends omitted
 // per the omit-don't-pin convention (address-of-a-local is
 // unconfirmed/unsupported there).
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.recursiveDeclarationDropsStaleScalarCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1497,7 +1539,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // Same Finding 1 bug, loop-shaped: a `foreach` body re-executes the same
 // `DeclarationExp` for `x` every iteration, so the first iteration's
 // promoted cell must not leak into the second iteration's fresh `x`.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.loopRedeclaredLocalDropsStaleScalarCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1521,7 +1566,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // `variable in locals` directly, bypassing a promoted `scalarCells` entry --
 // stale once a cross-frame pointer write (`setToFive`) refreshes only the
 // cell.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.postIncrementReadsPromotedScalarCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1548,7 +1596,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // `localPointerTarget`/`writePointerTarget`'s local-pointer arm, which only
 // consulted the boxed `locals` mirror -- the same bypass post-increment's
 // `VarExp` arm had, but for the pointer-deref path.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.dereferencedPointerPostIncrementUsesPromotedScalarCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1573,7 +1624,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // narrower native-scalar pointee (a `ubyte*` reinterpret of a `uint`)
 // instead of writing into the low bytes the way the read side
 // (`reinterpretLocalPointerLoad`) already narrows by slicing.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.subWordReinterpretWriteThroughPointerWritesLowByte." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1601,7 +1655,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // address made every later read of `gValue` see 0 instead of 42. Only true
 // stack locals get cells; dataseg variables keep their own
 // storage/initializer/extern machinery.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.addressOfDatasegGlobalDoesNotShadowInitializer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1628,7 +1685,14 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // (future work), so Interpreter is omitted from this matrix per the
 // omit-don't-pin convention and separately asserted below to fail loudly
 // instead of silently miswriting.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "see Interpreter pin below (throws loudly instead of writing " ~
+        "memory)"),
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1680,7 +1744,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // (`a[0] = ...`, not through the pointer). SystemLinker's `p` aliases `a`'s
 // real storage, so the direct write is visible through `*p`. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1754,7 +1818,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `p`/`q` both alias `a`'s real storage, so a write through `p` is visible
 // through `q`. Other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayElementWrittenThroughPointerIsVisibleThroughSecondPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1788,7 +1852,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // aliases `a`'s real storage, so the loop's writes are visible through `*p`.
 // Other backends omitted per the omit-don't-pin convention (unconfirmed
 // there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1822,7 +1886,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // itself and directly on the array. SystemLinker's `p` aliases `a`'s real
 // storage, so the increment is visible both ways. Other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1852,7 +1916,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // (taken in the caller BEFORE the call, into the SAME backing array) must
 // see the write too. Other backends omitted per the omit-don't-pin
 // convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1896,7 +1960,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // alongside this fixture. SystemLinker's `p` aliases `a`'s real storage, so
 // the direct write is visible through `*p`. Other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayElementWrittenDirectlyIsVisibleThroughPointerIntoEarlierSlice." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1936,7 +2000,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // phase closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so
 // the direct write is visible through `*p`. Other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2408,7 +2472,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.addressOfRefParameterReadsThroughPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2432,7 +2496,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // must run the call and yield the address of the returned lvalue, aliasing
 // the caller's argument so writes through the pointer stick.  automem's
 // vector tests hit this on every `theAllocator` fetch.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.addressOfRefReturningCallAliasesArgument." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2453,7 +2517,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // A ref-returning ternary lowers to `*(cond ? &a : &fallback(b))`, so even
 // reading the call as an rvalue evaluates AddrExp(CallExp).  phobos'
 // `theAllocator` (`!p.isNull() ? p : setupThreadAllocator()`) is this shape.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("pointer.refTernaryReturnLowersToAddressOfCall." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2482,7 +2546,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // field's address for pointer-identity comparison at compile time
 // (`cannot cast '&Holder(7).value' to 'ulong' at compile time`), not a gap
 // to close here.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "DMD CTFE refuses to convert a struct field's address to an " ~
+        "integer at compile time (\"cannot cast '&Holder(7).value' to " ~
+        "'ulong' at compile time\")"),
+)) {
     @("pointer.addressOfStructFieldIsDistinctAcrossInstances." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2516,7 +2585,11 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // omitted: DMD CTFE genuinely refuses this construct at compile time.
 // Bytecode shares the typed-frame field-address path; Ctfe still rejects the
 // pointer-identity comparison during compile-time evaluation.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "DMD CTFE genuinely refuses this pointer-identity construct at " ~
+        "compile time"),
+)) {
     @("pointer.addressOfStructFieldIsStableAcrossReEvaluation." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2558,7 +2631,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // onto this same fixture independently on master (bytecode struct field
 // address write-through), so all three backends now share one fixture
 // asserting the SAME value rather than a throw pinned only for Interpreter.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
     @("pointer.addressOfStructFieldWriteThroughUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2593,7 +2669,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
 // depth's stale cell instead of getting a fresh one for its own (shorter,
 // differently-valued) array. SystemLinker is the oracle; other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.recursiveArrayDeclarationDropsStaleArrayCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2639,7 +2715,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // which happens to route through the existing in-place `writeCelledLocal`
 // refresh and masks this particular gap. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.recursiveStructDeclarationDropsStaleStructCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2750,7 +2826,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // 107, the inner depth's own unrelated value. SystemLinker is the oracle;
 // other backends omitted per the omit-don't-pin convention (unconfirmed
 // there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2781,7 +2857,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 
 // Struct sibling of the fixture above: the same stale-id bug for
 // `fieldSnapshotAllocationId`/`structFieldPointerVariables`.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.recursiveStructFieldPointerPassedAcrossRebindDereferencesOuterValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2816,7 +2892,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // (shorter) cell and threw `NativeArray.element: index out of range`
 // instead of declining to the outer pointer's own frozen (in-range)
 // snapshot.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.recursiveArrayPointerPassedAcrossShorterRebindDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2870,7 +2946,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // Interpreter's `*p = 42;` after the call returns did not take effect (the
 // write silently declined), so `*p + s.x` read back the pre-write value
 // instead of the correct post-write one.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.structFieldPointerWriteThroughSurvivesSiblingRecursionReturn." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2921,7 +2997,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // write falls through to the `fieldSnapshotAllocationIds` refusal check
 // (also duped) instead of aliasing. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2972,9 +3048,15 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // legitimate write through it was wrongly refused as an aliasing write.
 // Ctfe/Bytecode omitted: `new`-with-user-ctor pointer indirection through a
 // class field is not exercised on those backends yet (unrelated gaps, not
-// this fix). LLVMJit omitted: allocation ids are an Interpreter-only
-// bookkeeping detail with no compiled-code analogue to pin.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+// this fix). LLVMJit omitted: allocation ids are Interpreter-only
+// bookkeeping with no compiled-code analogue, so promoting LLVMJit here
+// would trivially pass without pinning anything meaningful.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed, "not exercised on this backend yet"),
+    Omit!(Bytecode, Because.unconfirmed, "not exercised on this backend yet"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "vacuous on LLVMJit; promotion would trivially pass"),
+)) {
     @("pointer.newCtorPointerWriteNotRefusedAfterFieldAddress." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3018,9 +3100,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // this: the decoded pointer and the original both allocate a fresh
 // `InnerStruct` via a bodyless-constructor-free `new`, and both landed on
 // allocation id 0.
-static foreach (backend; AliasSeq!(
-    Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit,
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.newStructPointersWithEqualContentAreDistinct." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3046,7 +3126,7 @@ static foreach (backend; AliasSeq!(
 // callee and write through the returned lvalue, aliasing the caller's
 // argument.  automem's vector tests hit this shape 10× as
 // `Unsupported interpreter assignment target: call`.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("refCall.assignmentToRefReturningCallWritesArgument." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3065,7 +3145,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // A ref-returning ternary as assignment target: the return lowers to
 // `*(cond ? &a : &fallback(b))`, so the write must land on whichever branch
 // actually ran — phobos' `theAllocator = x` family is this shape.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("refCall.assignmentToRefTernaryReturnWritesChosenBranch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3095,7 +3175,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // just locate its return expression — so pre-return side effects happen
 // exactly once and the executed return (not the textually first) picks the
 // lvalue.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("refCall.assignmentToMemberRefReturnRunsCalleeBody." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3116,12 +3196,135 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToMemberRefReturnUsesReturnedBase." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot(ref Counter other) {
+                    return other.value;
+                }
+            }
+
+            unittest {
+                Counter receiver;
+                Counter other;
+
+                receiver.slot(other) = 42;
+
+                assert(receiver.value == 0);
+                assert(other.value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToConditionalMemberRefReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot(bool useOther, ref Counter other) {
+                    if (useOther)
+                        return other.value;
+                    return value;
+                }
+            }
+
+            unittest {
+                Counter receiver;
+                Counter other;
+
+                receiver.slot(true, other) = 42;
+
+                assert(receiver.value == 0);
+                assert(other.value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToMemberRefReturnEvaluatesReceiverOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot() {
+                    return value;
+                }
+            }
+
+            ref Counter receiver(ref Counter counter, ref int evaluations) {
+                ++evaluations;
+                return counter;
+            }
+
+            unittest {
+                Counter counter;
+                int evaluations;
+
+                receiver(counter, evaluations).slot() = 42;
+
+                assert(evaluations == 1);
+                assert(counter.value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToMemberRefReturnEvaluatesRefArgumentOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot() {
+                    return value;
+                }
+            }
+
+            Counter* pointed(ref Counter counter, ref int evaluations) {
+                ++evaluations;
+                return &counter;
+            }
+
+            ref Counter receiver(ref Counter counter) {
+                return counter;
+            }
+
+            unittest {
+                Counter counter;
+                int evaluations;
+
+                receiver(*pointed(counter, evaluations)).slot() = 42;
+
+                assert(evaluations == 1);
+                assert(counter.value == 42);
+            }
+        });
+    }
+}
+
 // `new S` of a struct with a dynamic-array field passes the field's `null`
 // default initialiser as a positional argument; the interpreter must store it
 // as an empty array so a null array's `.length` is 0 (compiled D:
 // `(new S).arr.length == 0`).  cerealed's Appender (`new Data` then
 // `_data.arr.length`) hits this.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("new.heapStructArrayFieldHasZeroLength." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3142,7 +3345,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Ctfe, Because.unconfirmed))) {
     @("struct.defaultInitPreservesExplicitFieldInitializers." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3166,7 +3369,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // (`_data.arr.length = n`) must rebuild the array with default-initialised
 // elements; the lvalue is a field access, not a plain local.  cerealed's
 // Appender.ensureAddable hits this under CTFE-style execution.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("new.heapStructArrayFieldGrowsByLengthAssign." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3188,7 +3391,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("vector.scalarCastSplatsToStaticArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3220,7 +3423,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
 // Bytecode ("Unsupported expression `m & 1`") and IR (unmapped type assert in
 // compileExpression) do not handle the integer ^^ lowering.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("int.powerOperatorRaisesRuntimeIntegers." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3253,7 +3456,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // used to throw a spurious out-of-range error before the fix. SystemLinker
 // is the oracle; other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayAppendRefreshesStaleCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3295,7 +3498,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // fixture in arrays.d for the full-slice-fill variant. SystemLinker is the
 // oracle; other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3342,7 +3545,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // mirror and so kept answering with the stale, pre-write value.
 // SystemLinker is the oracle; other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.sliceParameterWriteThroughRefreshesSourceCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3387,7 +3590,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `*p` re-read the stale cell instead of the freshly-incremented value.
 // SystemLinker is the oracle; other backends omitted per the
 // omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.structFieldPointerCompoundIncrementWritesThroughCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3430,7 +3633,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // authoritative over the boxed mirror and so kept answering with the stale,
 // pre-write value. SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.structFieldRefLocalWriteThroughRefreshesCellAfterAddressOf." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3477,7 +3680,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // a struct, so a later deref-read through `p`
 // (`structFieldPointerCellValue`) sees the new value rather than a stale
 // cell.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.wholeStructAssignmentVisibleThroughEarlierFieldPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3528,7 +3731,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // unrelated `s.x` field to still read `1`: the array-field write must skip
 // the cell write entirely and leave the boxed mirror path (unaffected by
 // this finding) as the sole record for a non-scalar aliased field.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.structArrayFieldRefLocalWriteDoesNotDisturbScalarFieldCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3577,7 +3780,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // Interpreter returned 7 (the rebound array's first element) instead of the
 // pre-rebind value 1. SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayPointerTakenBeforePlainRebindKeepsPreRebindValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3619,7 +3822,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // resolved the stale outer id into the rebound array's own (shorter) cell
 // and threw `NativeArray.element: index out of range` instead of declining
 // to the outer pointer's own frozen (in-range) snapshot.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3666,7 +3869,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // reading its own pre-append snapshot even after a write through `q`.
 // SystemLinker is the oracle for this exact value; other backends omitted
 // per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.arrayPointerTakenBeforeAppendKeepsPreAppendValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3723,7 +3926,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // instead of 11 (`leak(0)`'s inner `a`, the value the escaped pointer
 // actually names). SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.childMintedArrayIdEscapingUpwardDoesNotResolveThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3762,7 +3965,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // parent's stale cell kept answering `a[0]` with the pre-call value even
 // though the boxed mirror was correctly refreshed. SystemLinker is the
 // oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.nestedFunctionArrayRebindIsVisibleThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3817,7 +4020,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // boxed `locals` mirror's length, not the cell's, so the out-of-range cell
 // read crashes the host instead of throwing a `RangeError`. SystemLinker is
 // the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.nestedFunctionArrayAppendGrowsArrayVisibleThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3864,7 +4067,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // bare-assignment gap, so a same-length in-place element write made by the
 // recursive callee never reconciled the caller's own stale cell.
 // SystemLinker is the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.recursiveArrayParameterElementWriteIsVisibleThroughCallerCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3912,7 +4115,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // `s`'s view with the REBOUND array's bytes even though real D gives `a`
 // entirely new storage and leaves `s`'s old view untouched. SystemLinker is
 // the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.refParameterRebindDoesNotCorruptPreexistingSliceView." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3957,7 +4160,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // slice view of the captured array's OLD storage, via
 // `writeBackNestedLocals`'s own use of the same `writeCelledLocal(...,
 // arrayIsRefWriteback: true)` reconciliation. SystemLinker is the oracle.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     @("pointer.nestedFunctionArrayRebindDoesNotCorruptPreexistingSliceView." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -171,6 +171,12 @@ private struct Compiler {
         ushort elementSize;
     }
 
+    private static struct StructPointerRefWriteBack {
+        ushort valueOffset;
+        ushort pointerOffset;
+        ushort valueSize;
+    }
+
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
         // compiled callee is an ordinary function.
@@ -1536,6 +1542,14 @@ private struct Compiler {
 
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _locals) {
+                    if (declaration in _structPointerLocals)
+                        return Operand(
+                            *existing,
+                            ScalarType.ulong_,
+                            false,
+                            true,
+                            ScalarType.void_,
+                        );
                     if (auto element = declaration in _refLocalPointers)
                         return loadThroughPointer(
                             Operand(
@@ -2712,15 +2726,51 @@ private struct Compiler {
     }
 
     private bool compileRefLocalDeclaration(VarDeclaration variable) {
+        import dmd.astenums: TY;
+
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
         if (initializer is null)
             return false;
 
         auto expression = initializerExpression(initializer.exp);
+        if (variable.type.toBasetype.ty == TY.Tarray)
+            if (auto descriptor = dynamicArrayDescriptorOrNull(expression)) {
+                _dynamicArrayLocals[variable] = *descriptor;
+                return true;
+            }
+
         auto index = expression.isIndexExp;
         if (index is null)
             return false;
+
+        if (index.type.toBasetype.ty == TY.Tstruct) {
+            // The associative array stores mutable DMD declaration pointers.
+            auto declaration = structDeclarationOf(index.type);
+            auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+            if (descriptor is null)
+                return false;
+
+            const indexSlot = compileExpression(index.e2);
+            const pointer =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy,
+                pointer,
+                descriptor.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            const scaled =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            const stride = compileSizeConstant(
+                dynamicArrayElementSize(index.e1.type, ScalarType.void_),
+            );
+            _code ~= Instruction(Op.mulInt8, scaled, indexSlot.offset, stride);
+            _code ~= Instruction(Op.addInt8, pointer, pointer, scaled);
+            _locals[variable] = pointer;
+            _structPointerLocals[variable] = declaration;
+            return true;
+        }
 
         auto pointer = tryPointerToElement(index);
         if (pointer is null)
@@ -3602,8 +3652,11 @@ private struct Compiler {
     private ushort methodReceiverOffset(CallExp call) {
         import std.conv: text;
 
-        if (auto dot = call.e1.isDotVarExp)
+        if (auto dot = call.e1.isDotVarExp) {
+            if (auto receiver = refParameterCallReceiverOffset(dot.e1))
+                return *receiver;
             return structOperandOffset(dot.e1);
+        }
 
         // An IIFE `(() => this.field)()`: the callee is the lambda directly (a
         // FuncExp), and its hidden `this` block is the enclosing method's own
@@ -3615,6 +3668,49 @@ private struct Compiler {
             "Unsupported method receiver in bytecode core: ",
             expressionChars(call),
         ));
+    }
+
+    // A struct receiver returned by `ref`, or through `&`, from one of the
+    // receiver call's own `ref` parameters aliases that caller lvalue. Resolve
+    // nested forwarding calls from the inside out, passing each recovered
+    // caller slot into call emission so every argument expression runs once.
+    private ushort* refParameterCallReceiverOffset(Expression expression) {
+        if (auto dereference = expression.isPtrExp)
+            expression = dereference.e1;
+        if (auto address = expression.isAddrExp)
+            expression = address.e1;
+        auto call = expression.isCallExp;
+        auto function_ = call is null ? null : callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || call.arguments is null)
+            return null;
+
+        auto returned = provenFinalReturnExpression(function_.fbody);
+        const returnsAddress = returned !is null &&
+            returned.isAddrExp !is null;
+        if (!type.isRef && !returnsAddress)
+            return null;
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            returned = dereference.e1;
+        if (auto address = returned is null ? null : returned.isAddrExp)
+            returned = address.e1;
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        auto index = parameter is null || !parameter.isReference
+            ? null
+            : parameterIndex(function_, parameter);
+        if (index is null || *index >= call.arguments.length)
+            return null;
+
+        auto result = refParameterCallReceiverOffset(
+            (*call.arguments)[*index],
+        );
+        if (result is null) {
+            result = new ushort;
+            *result = referenceOffset((*call.arguments)[*index]);
+        }
+        compileCall(call, null, index, result);
+        return result;
     }
 
     private Operand classMethodReceiver(CallExp call) {
@@ -3868,7 +3964,11 @@ private struct Compiler {
         if (auto deref = base.isPtrExp)
             base = deref.e1;
 
-        if (structPointerDeclaration(base.type) is null)
+        auto variable = base.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (structPointerDeclaration(base.type) is null &&
+            (declaration is null || declaration !in _structPointerLocals))
             return null;
 
         const pointer = compileExpression(base);
@@ -5367,7 +5467,10 @@ private struct Compiler {
                 return null;
             auto existing = declaration in _locals;
             if (existing is null) {
-                if (auto moduleVariable =
+                if (auto struct_ = declaration in _structLocals) {
+                    slot = struct_.offset;
+                    pointedType = declaration.type;
+                } else if (auto moduleVariable =
                         moduleScalarVariableOrNull(declaration)) {
                     const pointer = allocateBytes(
                         cast(uint) size_t.sizeof,
@@ -5387,12 +5490,13 @@ private struct Compiler {
                         moduleVariable.type,
                     );
                     return result;
+                } else {
+                    auto staticArray = declaration in _staticArrayLocals;
+                    if (staticArray is null)
+                        return null;
+                    slot = *staticArray;
+                    pointedType = address.type.toBasetype.nextOf;
                 }
-                auto staticArray = declaration in _staticArrayLocals;
-                if (staticArray is null)
-                    return null;
-                slot = *staticArray;
-                pointedType = address.type.toBasetype.nextOf;
             } else {
                 slot = *existing;
                 pointedType = declaration.type;
@@ -5406,14 +5510,17 @@ private struct Compiler {
         } else
             return null;
 
-        if (pointedType.toBasetype.ty == TY.Tstruct)
-            return null;
-
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameAddress, pointer, slot);
         auto result = new Operand;
         *result = Operand(
-            pointer, ScalarType.ulong_, false, true, scalarType(pointedType),
+            pointer,
+            ScalarType.ulong_,
+            false,
+            true,
+            pointedType.toBasetype.ty == TY.Tstruct
+                ? ScalarType.void_
+                : scalarType(pointedType),
         );
         return result;
     }
@@ -6531,10 +6638,24 @@ private struct Compiler {
 
         auto function_ = callFunction(call);
         auto type = function_ is null ? null : function_.type.isTypeFunction;
-        if (type is null || !type.isRef || call.arguments is null)
+        if (type is null || !type.isRef)
+            return null;
+
+        if (auto result = tryMemberRefCallAssign(call, function_, rhs))
+            return result;
+
+        if (call.arguments is null)
             return null;
 
         auto returned = singleReturnExpression(function_.fbody);
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            if (auto conditional = dereference.e1.isCondExp)
+                return tryConditionalRefParameterCallAssign(
+                    call,
+                    function_,
+                    conditional,
+                    rhs,
+                );
         auto variable = returned is null ? null : returned.isVarExp;
         auto parameter = variable is null ? null : variable.var.isVarDeclaration;
         if (parameter is null || !parameter.isReference)
@@ -6569,6 +6690,267 @@ private struct Compiler {
         auto result = new Operand;
         *result = Operand(value.offset, scalar);
         return result;
+    }
+
+    private Operand* tryMemberRefCallAssign(
+        CallExp call,
+        FuncDeclaration function_,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        if (function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        if (auto result = tryConditionalMemberRefCallAssign(
+                call, function_, rhs,
+            ))
+            return result;
+
+        auto returned = provenFinalReturnExpression(function_.fbody);
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            returned = dereference.e1;
+        ushort* evaluatedReceiver;
+        auto destination = memberReturnDestination(
+            call,
+            function_,
+            returned,
+            evaluatedReceiver,
+        );
+        if (destination is null)
+            return null;
+
+        compileCall(call, evaluatedReceiver);
+        const value = compileExpression(rhs);
+        const scalar = memberReturnScalar(returned);
+        if (value.type != scalar)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        _code ~= Instruction(
+            Op.copy,
+            *destination,
+            value.offset,
+            cast(ushort) size(scalar),
+        );
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    private Operand* tryConditionalMemberRefCallAssign(
+        CallExp call,
+        FuncDeclaration function_,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        auto statement = function_.fbody;
+        while (statement !is null) {
+            if (auto scope_ = statement.isScopeStatement) {
+                statement = scope_.statement;
+                continue;
+            }
+            auto wrapper = statement.isCompoundStatement;
+            if (wrapper !is null && wrapper.statements !is null &&
+                wrapper.statements.length == 1 &&
+                ((*wrapper.statements)[0].isScopeStatement !is null ||
+                    (*wrapper.statements)[0].isCompoundStatement !is null)) {
+                statement = (*wrapper.statements)[0];
+                continue;
+            }
+            break;
+        }
+        auto body = statement.isCompoundStatement;
+        if (body is null || body.statements is null ||
+            body.statements.length != 2)
+            return null;
+
+        auto conditional = (*body.statements)[0].isIfStatement;
+        if (conditional is null || conditional.elsebody !is null)
+            return null;
+        auto conditionVariable = conditional.condition.isVarExp;
+        auto conditionIndex = conditionVariable is null
+            ? null
+            : parameterIndex(
+                function_, conditionVariable.var.isVarDeclaration,
+            );
+        auto whenTrue = singleReturnExpression(conditional.ifbody);
+        auto whenFalse = singleReturnExpression((*body.statements)[1]);
+        if (conditionIndex is null || *conditionIndex >= call.arguments.length)
+            return null;
+
+        auto condition = (*call.arguments)[*conditionIndex].isIntegerExp;
+        if (condition is null)
+            return null;
+        auto selected = condition.toInteger == 0 ? whenFalse : whenTrue;
+        ushort* evaluatedReceiver;
+        auto destination = memberReturnDestination(
+            call,
+            function_,
+            selected,
+            evaluatedReceiver,
+        );
+        if (destination is null)
+            return null;
+
+        compileCall(call, evaluatedReceiver);
+        const value = compileExpression(rhs);
+        const scalar = memberReturnScalar(selected);
+        if (value.type != scalar)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        _code ~= Instruction(
+            Op.copy, *destination, value.offset, cast(ushort) size(scalar),
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    private ushort* memberReturnDestination(
+        CallExp call,
+        FuncDeclaration function_,
+        Expression returned,
+        out ushort* evaluatedReceiver,
+    ) {
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            returned = dereference.e1;
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto dot = returned is null ? null : returned.isDotVarExp;
+        auto field = variable !is null
+            ? variable.var.isVarDeclaration
+            : dot is null ? null : dot.var.isVarDeclaration;
+        if (field is null || !field.isField)
+            return null;
+
+        auto result = new ushort;
+        if (dot is null || dot.e1.isThisExp !is null ||
+            dot.e1.isSuperExp !is null) {
+            evaluatedReceiver = new ushort;
+            *evaluatedReceiver = methodReceiverOffset(call);
+            *result = cast(ushort)
+                (*evaluatedReceiver + field.offset);
+            return result;
+        }
+
+        auto base = dot.e1.isVarExp;
+        auto parameter = base is null ? null : base.var.isVarDeclaration;
+        auto index = parameter is null || !parameter.isReference
+            ? null
+            : parameterIndex(function_, parameter);
+        if (index is null || *index >= call.arguments.length)
+            return null;
+        *result = cast(ushort)
+            (referenceOffset((*call.arguments)[*index]) + field.offset);
+        return result;
+    }
+
+    private ScalarType memberReturnScalar(Expression returned) {
+        if (auto dereference = returned is null ? null : returned.isPtrExp)
+            returned = dereference.e1;
+        auto variable = returned is null ? null : returned.isVarExp;
+        auto dot = returned is null ? null : returned.isDotVarExp;
+        auto field = variable !is null
+            ? variable.var.isVarDeclaration
+            : dot is null ? null : dot.var.isVarDeclaration;
+        return scalarType(field.type);
+    }
+
+    private Operand* tryConditionalRefParameterCallAssign(
+        CallExp call,
+        FuncDeclaration function_,
+        CondExp conditional,
+        Expression rhs,
+    ) {
+        auto conditionParameter = conditional.econd.isVarExp;
+        auto conditionIndex = conditionParameter is null
+            ? null
+            : parameterIndex(function_, conditionParameter.var.isVarDeclaration);
+        auto trueIndex = refReturnParameterIndex(function_, conditional.e1);
+        auto falseIndex = refReturnParameterIndex(function_, conditional.e2);
+        if (conditionIndex is null || trueIndex is null || falseIndex is null ||
+            *conditionIndex >= call.arguments.length ||
+            *trueIndex >= call.arguments.length ||
+            *falseIndex >= call.arguments.length ||
+            (*call.arguments)[*conditionIndex].isIntegerExp is null)
+            return null;
+
+        compileCall(call);
+        const condition = compileBoolCondition((*call.arguments)[*conditionIndex]);
+        const value = compileExpression(rhs);
+        const scalar = scalarType(conditional.type.nextOf);
+        if (value.type != scalar)
+            return null;
+
+        const falseJump = emitJumpIfFalse(condition);
+        _code ~= Instruction(
+            Op.copy,
+            referenceOffset((*call.arguments)[*trueIndex]),
+            value.offset,
+            cast(ushort) size(scalar),
+        );
+        const endJump = emitJump;
+        patchJump(falseJump);
+        _code ~= Instruction(
+            Op.copy,
+            referenceOffset((*call.arguments)[*falseIndex]),
+            value.offset,
+            cast(ushort) size(scalar),
+        );
+        patchJump(endJump);
+
+        auto result = new Operand;
+        *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    private size_t* refReturnParameterIndex(
+        FuncDeclaration function_,
+        Expression expression,
+    ) {
+        if (auto address = expression.isAddrExp)
+            expression = address.e1;
+        if (auto variable = expression.isVarExp)
+            return parameterIndex(function_, variable.var.isVarDeclaration);
+        if (auto call = expression.isCallExp) {
+            auto called = callFunction(call);
+            auto returned = called is null
+                ? null
+                : singleReturnExpression(called.fbody);
+            auto variable = returned is null ? null : returned.isVarExp;
+            auto returnedParameter = variable is null
+                ? null
+                : parameterIndex(called, variable.var.isVarDeclaration);
+            if (returnedParameter !is null && call.arguments !is null &&
+                *returnedParameter < call.arguments.length)
+                return refReturnParameterIndex(
+                    function_,
+                    (*call.arguments)[*returnedParameter],
+                );
+        }
+        return null;
+    }
+
+    private size_t* parameterIndex(
+        FuncDeclaration function_,
+        VarDeclaration parameter,
+    ) {
+        if (parameter is null)
+            return null;
+        foreach (index; 0 .. function_.parameters.length)
+            if ((*function_.parameters)[index] is parameter) {
+                auto result = new size_t;
+                *result = index;
+                return result;
+            }
+        return null;
     }
 
     // `&refReturning(ref value)` must execute the callee, then point at the
@@ -7147,7 +7529,10 @@ private struct Compiler {
             return null;
 
         const value = compileExpression(rhs);
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = sliceLengthSlot(*descriptor);
         const indexSlot = compileExpression(index.e2);
+        _activeDollarLength = savedDollarLength;
         const elementSize =
             dynamicArrayElementSize(index.e1.type, descriptor.elementType);
         _code ~= Instruction(
@@ -7748,7 +8133,12 @@ private struct Compiler {
         return Operand(offset, target);
     }
 
-    private Operand compileCall(CallExp call) {
+    private Operand compileCall(
+        CallExp call,
+        const ushort* evaluatedMethodReceiver = null,
+        const size_t* evaluatedReferenceArgumentIndex = null,
+        const ushort* evaluatedReferenceArgumentOffset = null,
+    ) {
         import dmd.astenums: TY;
         import std.conv: text;
 
@@ -7862,7 +8252,9 @@ private struct Compiler {
         // area: store the receiver's frame offset there, which the machine
         // dereferences on entry and writes back on return.
         if (layout.hasThis) {
-            const receiver = methodReceiverOffset(call);
+            const receiver = evaluatedMethodReceiver is null
+                ? methodReceiverOffset(call)
+                : *evaluatedMethodReceiver;
             _code ~= Instruction(
                 Op.loadConstant,
                 cast(ushort) (argumentArea + layout.thisOffset),
@@ -7900,16 +8292,36 @@ private struct Compiler {
                 }
 
         DynamicArrayRefWriteBack[] dynamicArrayRefWriteBacks;
+        StructPointerRefWriteBack[] structPointerRefWriteBacks;
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
                     (argumentArea +
                         layout.offsets[nextArgumentIndex + argumentIndex]);
+                if (layout.isReference[nextArgumentIndex + argumentIndex] &&
+                    evaluatedReferenceArgumentIndex !is null &&
+                    evaluatedReferenceArgumentOffset !is null &&
+                    argumentIndex == *evaluatedReferenceArgumentIndex) {
+                    _code ~= Instruction(
+                        Op.loadConstant,
+                        slot,
+                        constantIndex(*evaluatedReferenceArgumentOffset),
+                        cast(ushort) size(ScalarType.uint_),
+                    );
+                    continue;
+                }
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
                     if (emitDynamicArrayRefArgument(
                         slot,
                         (*call.arguments)[argumentIndex],
                         dynamicArrayRefWriteBacks,
+                    ))
+                        continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitStructPointerRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        structPointerRefWriteBacks,
                     ))
                         continue;
                 emitCallArgument(
@@ -7945,6 +8357,13 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.descriptorOffset,
                 writeBack.indexOffset,
+            );
+        foreach (writeBack; structPointerRefWriteBacks)
+            _code ~= Instruction(
+                pointerStoreOp(writeBack.valueSize),
+                writeBack.valueOffset,
+                writeBack.pointerOffset,
+                compileSizeConstant(0),
             );
         if (isPointerType(call.type))
             return Operand(
@@ -8594,6 +9013,33 @@ private struct Compiler {
         return null;
     }
 
+    private Expression provenFinalReturnExpression(Statement statement) {
+        if (statement is null)
+            return null;
+
+        if (auto scope_ = statement.isScopeStatement)
+            return provenFinalReturnExpression(scope_.statement);
+
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements is null || compound.statements.length == 0)
+                return null;
+            foreach (preceding; (*compound.statements)[
+                    0 .. compound.statements.length - 1
+                ])
+                if (preceding !is null && preceding.isExpStatement is null &&
+                    preceding.isDtorExpStatement is null)
+                    return null;
+            return provenFinalReturnExpression(
+                (*compound.statements)[compound.statements.length - 1],
+            );
+        }
+
+        if (auto return_ = statement.isReturnStatement)
+            return return_.exp;
+
+        return null;
+    }
+
     // Emit a single call argument into `slot` of the argument area: a `ref`
     // argument passes the caller-frame offset (dereferenced on entry, written
     // back on return); a by-value struct block-copies the whole struct; a
@@ -8737,6 +9183,50 @@ private struct Compiler {
             descriptor.offset,
             indexOffset,
             cast(ushort) elementSize,
+        );
+        return true;
+    }
+
+    private bool emitStructPointerRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref StructPointerRefWriteBack[] writeBacks,
+    ) {
+        auto variable = argument.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null || declaration !in _structPointerLocals)
+            return false;
+
+        const pointerOffset = _locals[declaration];
+        const valueSize = cast(ushort) staticArraySize(argument.type);
+        foreach (writeBack; writeBacks)
+            if (writeBack.pointerOffset == pointerOffset &&
+                writeBack.valueSize == valueSize) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
+
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        _code ~= Instruction(
+            pointerLoadOp(valueSize),
+            valueOffset,
+            pointerOffset,
+            compileSizeConstant(0),
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= StructPointerRefWriteBack(
+            valueOffset, pointerOffset, valueSize,
         );
         return true;
     }

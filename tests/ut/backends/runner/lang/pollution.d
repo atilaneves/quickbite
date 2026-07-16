@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.pollution;
+module ut.backends.runner.lang.pollution;
 
 
 import ut.backends;
@@ -16,7 +16,10 @@ import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     the spike scenario slice 1 could not run: a cached parse, codegen'd after
     another fixture's compilation.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
     @("pollution.staleParseCompilesAfterOtherFixture." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

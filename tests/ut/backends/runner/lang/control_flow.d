@@ -1,4 +1,4 @@
-module ut.backends.runner.ct.control_flow;
+module ut.backends.runner.lang.control_flow;
 
 
 import ut.backends;
@@ -7,7 +7,7 @@ import ut.backends;
 /++
     Basic functions, parameters, and returns.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.localIntReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -24,7 +24,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.parameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -40,7 +40,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.parameters." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -56,7 +56,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.inParameters." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -72,7 +72,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.refParameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -92,7 +92,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.multipleRefParameters." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -112,7 +112,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.refSizeTParameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -181,7 +181,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.nestedLambdaReadsEnclosingThisField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -203,7 +203,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.nestedLambdaIifeReadsEnclosingThisField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -224,7 +224,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.voidFunction." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -238,7 +238,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.voidFunctionExplicitReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -254,7 +254,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.explicitReturnSkipsFollowingStatements." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -296,7 +296,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled `assert(false)` in a unittest body raises the plain _d_unittest
 // hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above"),
+)) {
     @("function.structMethodReturnDoesNotSkipCallerStatements." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -317,7 +319,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.freeFunctionCallWithReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -335,7 +337,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.freeFunctionCallWithDifferentOperation." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -353,7 +355,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.freeFunctionCallWithArrayParam." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -376,7 +378,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!(Plus!(IR))) {
     @("function.defaultArgumentFillsOmittedParameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -401,7 +403,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
 
 // IR is omitted: its VM asserts on f32/f64/ptr values (vm.d execute assert),
 // so the double overload cannot run.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("function.overloadResolutionBySignature." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -433,7 +435,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     If/else and returns.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("if.bodyAssignment." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -453,7 +455,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("if.elseBranches." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -473,7 +475,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("if.elseUntakenBranchDoesNotRun." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -496,7 +498,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("if.earlyReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -516,7 +518,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("if.multipleEarlyReturns." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -544,7 +546,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     While, do-while, for, break, and continue.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("while.neverRuns." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -566,7 +568,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("while.runsOnce." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -590,7 +592,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("while.runsMultipleTimes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -614,7 +616,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("while.codegenShape." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -631,7 +633,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("for.continue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -652,7 +654,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("doWhile.breakAndContinue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -679,7 +681,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("labeledBreak.exitsOuterForLoop." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -707,7 +709,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("labeledContinue.skipsToOuterForIncrement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -741,7 +743,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Switch, switch control transfer, and labeled breaks.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.caseMatch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -770,7 +772,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.defaultCase." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -799,7 +801,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.gotoCase." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -828,7 +830,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.gotoDefault." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -857,7 +859,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.gotoCaseUsesRuntimeSelector." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -890,7 +892,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.gotoDefaultUsesRuntimeSelector." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -923,7 +925,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.breaksOuterLoop." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -958,7 +960,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
 // Interpreter/Bytecode report Switch as an unsupported statement; IR cannot
 // map the string type (compiler.d valueType assert).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.stringCases." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -990,7 +992,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
 // Interpreter/Bytecode report Switch as an unsupported statement; IR cannot
 // compile the ternary in pick ("Unsupported IR expression").
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.finalSwitchOnEnumCoversAllMembers." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1028,7 +1030,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 }
 
 // Interpreter, Bytecode, and IR all report Switch as an unsupported statement.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("switch.caseRangesAndMultiValueCases." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1065,7 +1067,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Goto and restart points.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.directLabel." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1090,7 +1092,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsExpressionStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1115,7 +1117,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsCompoundStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1142,7 +1144,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsBreakStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1170,7 +1172,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsContinueStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1202,7 +1204,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Goto, catch, and finally.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsBreakStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1233,7 +1235,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsContinueStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1264,7 +1266,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsGotoStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1296,7 +1298,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsGotoCaseStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1336,7 +1338,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("goto.restartsGotoDefaultStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1376,7 +1378,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("catch.gotoRestartsBreakStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1407,7 +1409,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("catch.gotoRestartsContinueStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1438,7 +1440,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("catch.gotoRestartsGotoStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1474,7 +1476,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Foreach.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.array." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1494,7 +1496,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 
 // Bytecode cannot compile the foreach lowering's array slice ("Unsupported
 // expression `arr[]`"); IR reports the array literal as unsupported.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.arrayWithIndex." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1512,7 +1514,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.emptyArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1530,7 +1532,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.range." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1547,7 +1549,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.expressionTupleBreakAndContinue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1580,7 +1582,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.utf8StringDecodesDchars." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1605,7 +1607,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.utf16StringDecodesDchars." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1630,7 +1632,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.utf32StringEncodesAsUtf8WhenIteratingChar." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1656,7 +1658,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.reverseUtf16String." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1685,7 +1687,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 // ("Unsupported eval post expression"); Bytecode cannot compile the array
 // slice ("Unsupported expression `arr[]`"); IR reports the array literal as
 // unsupported.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("foreach.reverseIntArrayVisitsBackToFront." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1710,7 +1712,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
 /++
     Function pointers.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("functionPointer.hashCollisionUsesCorrectCallee." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1733,7 +1735,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("functionPointer.dispatchesToDistinctCallees." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1757,7 +1759,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; Matrix!()) {
     @("functionPointer.callCanEnterFunctionWithCallee." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
