@@ -10918,11 +10918,21 @@ private struct Walker {
                 return;
             }
 
+            // Class sibling of the struct-field shape above (value.md item
+            // 7, foreach-ref-over-class-static-array-field follow-up):
+            // `structFieldIndex(dot)` requires `receiverStructType`, which
+            // is null for a class receiver and throws "Unsupported
+            // interpreter field access." immediately here, before any
+            // write -- this shape was entirely unsupported. Dispatch on the
+            // STATIC receiver type (`receiverClassType`), mirroring
+            // `writeIndexLocation`'s own `DotVarExp` arm.
+            const isClassField = receiverClassType(dot.e1) !is null;
             sliceAliases[variable] = SliceAlias(
                 source,
                 lower,
                 true,
-                structFieldIndex(dot),
+                isClassField ? classFieldIndex(dot) : structFieldIndex(dot),
+                isClassField,
             );
             return;
         }
@@ -10974,8 +10984,23 @@ private struct Walker {
             throw new Exception("Unsupported interpreter slice assignment target.");
 
         if (alias_.hasFieldIndex) {
-            const updatedField = source.structFieldAt(alias_.fieldIndex)
-                .withArrayElement(alias_.lower + index, value);
+            // Class sibling of the struct-field refresh below (value.md
+            // item 7, foreach-ref-over-class-static-array-field follow-up):
+            // `alias_.source` may be a class object (`ClassObject`), whose
+            // field must be read/written via `classFieldAt`/
+            // `withClassField`, not the struct accessors (`structFieldAt`
+            // throws "Expected struct." for a `ClassObject` value).
+            // `writeCelledLocal` already dispatches its own refresh on the
+            // VALUE's runtime kind (`isStruct`/`isClassObject`), so no
+            // change is needed there.
+            const updatedField = alias_.isClassField
+                ? source.classFieldAt(alias_.fieldIndex)
+                    .withArrayElement(alias_.lower + index, value)
+                : source.structFieldAt(alias_.fieldIndex)
+                    .withArrayElement(alias_.lower + index, value);
+            const updatedOwner = alias_.isClassField
+                ? source.withClassField(alias_.fieldIndex, updatedField)
+                : source.withStructField(alias_.fieldIndex, updatedField);
             // value.md item 7's struct-static-array-field foreach-ref
             // follow-up: `alias_.source` (the struct owning the field) may
             // already have a `structCells` entry (an earlier `&s.arr[0]` in
@@ -10985,8 +11010,7 @@ private struct Walker {
             // (`structArrayFieldPointerCellValue`) sees this slice-routed
             // write too instead of stale bytes. A no-op when no cell was
             // ever promoted for `alias_.source`.
-            writeCelledLocal(alias_.source,
-                source.withStructField(alias_.fieldIndex, updatedField));
+            writeCelledLocal(alias_.source, updatedOwner);
             return;
         }
 
@@ -11964,6 +11988,11 @@ private struct SliceAlias {
     // lowering) rather than `source` directly.
     public bool hasFieldIndex;
     public size_t fieldIndex;
+    // Set alongside `hasFieldIndex` when `source` is a class object rather
+    // than a struct (value.md item 7, foreach-ref-over-class-static-array-
+    // field follow-up): `fieldIndex` must then be read/written via
+    // `classFieldAt`/`withClassField`, not the struct accessors.
+    public bool isClassField;
 }
 
 

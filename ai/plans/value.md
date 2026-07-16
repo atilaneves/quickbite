@@ -7712,6 +7712,79 @@ the same way (`c.arr[]`/a dynamic-array field's own `foreach (ref e;
 with this one (e.g. a nested struct field's static-array field sliced via
 `foreach`) are untried.
 
+Progress 2026-07-16 (class-static-array-field follow-up, foreach-ref shape:
+`foreach (ref e; c.arr) e = ...;` on a CLASS field now works at all, and is
+visible through an earlier `&c.arr[0]`): probed a menu of distinct
+native-storage behaviours (plain-array `foreach (ref e; a)` through
+`&a[i]`, a class static-array field's `foreach (ref e; c.arr)`, whole-
+struct reassignment coherence, nested `&s.inner.arr[i]`, a `static` local's
+address-taken write, swapping two address-taken struct locals, and a
+struct static-array field passed by `ref` to a callee) against the
+`Interpreter`/`SystemLinker` oracle pair, following up on this file's own
+note (2) above. Confirmed a real divergence for the class-field `foreach`-
+ref shape: RED on `Interpreter` (an exception, not merely a wrong value),
+green on `SystemLinker`. Every other probed shape already matched.
+
+Root cause: `recordSliceAlias`'s `DotVarExp` branch (populated when dmd's
+own `foreach`-to-`for` rewrite lowers `foreach (ref e; c.arr)` to `T[] __r
+= c.arr[]; ...`) computed the field index via `structFieldIndex(dot)`
+unconditionally. `structFieldIndex` requires `receiverStructType`, which is
+null for a class receiver, so it threw `"Unsupported interpreter field
+access."` immediately when recording the alias -- this shape was entirely
+unsupported, not merely missing pointer-aliasing (unlike the struct
+sibling, which had the write-through gap fixed a slice ago).
+
+Fixture `pointer.
+classStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer.
+{Interpreter,SystemLinker}` in `tests/ut/backends/runner/ct/expressions.d`,
+immediately after `pointer.
+classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+(the direct-write sibling): `class C { int[3] arr; } C c = new C();
+c.arr[0] = one(); int* p = &c.arr[0]; foreach (ref e; c.arr) e = e +
+ninetyNine(); assert(*p == 1 + 99);`. RED confirmed on `Interpreter` before
+any production change: `object.Exception ... "Unsupported interpreter
+field access."` thrown from `structFieldIndex`. Green on `SystemLinker`
+throughout. `Ctfe`/`LLVMJit` omitted per the omit-don't-pin convention
+(unconfirmed there), matching the struct sibling fixture's own backend
+set.
+
+Fix, in `impl.d`: `recordSliceAlias`'s `DotVarExp` branch now dispatches on
+the STATIC receiver type (`receiverClassType(dot.e1) !is null`, mirroring
+`writeIndexLocation`'s own `DotVarExp` arm), computing the field index via
+the EXISTING `classFieldIndex(dot)` instead of `structFieldIndex(dot)` for
+a class receiver, and records the new `SliceAlias.isClassField` bool.
+`writeThroughSliceAlias`'s `hasFieldIndex` branch then reads/writes the
+field via `classFieldAt`/`withClassField` instead of `structFieldAt`/
+`withStructField` when `isClassField` is set (`structFieldAt` throws
+`"Expected struct."` for a `ClassObject` value, since `Value`'s struct and
+class variants are disjoint `SumType` alternatives). No change to
+`writeCelledLocal`: it already dispatches its own `structCells`/
+`classCells` refresh on the VALUE's runtime kind (`isStruct`/
+`isClassObject`), so passing it a `ClassObject`-valued whole-owner update
+already refreshes a promoted `classCells` entry correctly, the same way it
+already did for the struct case the prior slice fixed.
+
+No `interpreter.md` §9.10 shim retired -- unrelated to this class/struct
+dispatch widening.
+
+Focused suites all green (run together): ct.expressions 573/0 (5 failing
+as expected, unchanged, plus this slice's own 2 new backend instances),
+ct.structs 305/0, ct.arrays 346/0, ct.exceptions 130/0, ct.control_flow
+336/0, interpreter 218/0, bin.repl 228/0, evaluator.eval 71/0 -- 2207 run,
+0 failed, 5/5 failing as expected. The full `bin/ut --random` was left to
+the orchestrator per the usual long-suite handoff.
+
+Remaining follow-up: (1) `Ctfe`/`LLVMJit` behaviour for this fixture is
+unconfirmed (never probed), unlike its direct-write sibling which already
+covers all four backends; (2) a dynamic-array field sliced the same way
+(a dynamic-array field's own `foreach (ref e; ...)`) is still untried, for
+both struct and class receivers; (3) other slice-alias write-through
+shapes composed with this one (e.g. a nested struct or class field's
+static-array field sliced via `foreach`) are untried; (4) the plain chained
+slice-alias branch (`recordSliceAlias`'s final `VarExp` arm) never
+propagates `hasFieldIndex`/`isClassField` at all -- unchanged, pre-existing
+gap shared with the struct sibling slice, out of this narrow slice's scope.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

@@ -4047,6 +4047,53 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// value.md item 7's class-static-array-field follow-up, foreach-ref
+// mutation shape: the class sibling of `pointer.
+// structStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer`
+// above -- `foreach (ref e; c.arr) e = ...;` lowers (dmd's own foreach-to-for
+// rewrite) to `T[] __r = c.arr[]; ... ref T e = __r[__key];`, so the write
+// reaches `c` through a SLICE alias of the field, not the direct
+// `c.arr[i] = ...` write path `pointer.
+// classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+// already covers. `recordSliceAlias`'s `DotVarExp` branch computed the
+// field index via `structFieldIndex(dot)` unconditionally, which requires
+// `receiverStructType` and throws "Unsupported interpreter field access."
+// immediately for a class receiver -- this shape was entirely unsupported
+// (not merely missing pointer-aliasing), so a plain (pointer-free)
+// `foreach (ref e; c.arr) e = ...;` already threw. SystemLinker's `p`
+// aliases `c`'s real storage, so the write is visible through `*p`.
+// `Ctfe`/`LLVMJit` omitted per the omit-don't-pin convention (unconfirmed
+// there), matching the struct sibling fixture's own backend set.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.classStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr[0] = one();
+                int* p = &c.arr[0];
+                foreach (ref e; c.arr)
+                    e = e + ninetyNine();
+                assert(*p == 1 + 99);
+            }
+        });
+    }
+}
+
 // value.md item 7 decomposition item 4 (aggregate composition), write-
 // through-pointer follow-up: the opposite direction of `pointer.
 // classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
