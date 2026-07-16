@@ -299,7 +299,7 @@ final class Compiler {
     // time.
     private void parseLightningRod() {
         import dmd.dmodule: Module;
-        import dmd.frontend: fullSemantic, dmdParseModule = parseModule;
+        import dmd.frontend: dmdParseModule = parseModule;
         import dmd.globals: global;
 
         // A root module parsed before the rod would silently become the
@@ -313,7 +313,7 @@ final class Compiler {
 
         auto result = dmdParseModule("quickbite_rod.d", "module quickbite_rod;\n");
         assert(!result.diagnostics.hasErrors, "lightning rod failed to parse");
-        result.module_.fullSemantic;
+        fullSemanticWithInlineAsmSnapshot(result.module_);
         assert(global.errors == 0, "lightning rod failed semantic");
 
         _rod = result.module_;
@@ -452,10 +452,13 @@ final class Compiler {
         // drives `-unittest <files>`: each phase runs across all roots before
         // the next begins.
         foreach (m; modules) m.importAll(null);
+        import quickbite.frontend.dmd.functions:
+            snapshotInlineAsmInstructions;
         foreach (m; modules) m.dsymbolSemantic(null);
         runDeferredSemantic;
         foreach (m; modules) m.semantic2(null);
         runDeferredSemantic2;
+        snapshotInlineAsmInstructions;
         foreach (m; modules) m.semantic3(null);
         runDeferredSemantic3;
         if (global.errors != 0)
@@ -591,7 +594,6 @@ final class Compiler {
         import dmd.errors: diagnostics;
         import dmd.frontend:
             addImport,
-            fullSemantic,
             dmdParseModule = parseModule;
         import dmd.globals: global;
         import std.conv: text;
@@ -638,7 +640,7 @@ final class Compiler {
         if (moduleResult.diagnostics.hasErrors)
             throw new Exception(diagnosticMessage);
 
-        moduleResult.module_.fullSemantic;
+        fullSemanticWithInlineAsmSnapshot(moduleResult.module_);
         if (global.errors != 0)
             throw new Exception(diagnosticMessage);
 
@@ -648,6 +650,28 @@ final class Compiler {
             sourceCache[key] = moduleResult.module_;
 
         return moduleResult;
+    }
+
+    private void fullSemanticWithInlineAsmSnapshot(
+        imported!"dmd.dmodule".Module module_,
+    ) {
+        import dmd.dsymbolsem:
+            dsymbolSemantic, importAll, runDeferredSemantic,
+            runDeferredSemantic2, runDeferredSemantic3;
+        import dmd.semantic2: semantic2;
+        import dmd.semantic3: semantic3;
+        import quickbite.frontend.dmd.functions:
+            snapshotInlineAsmInstructions;
+
+        module_.importedFrom = module_;
+        module_.importAll(null);
+        module_.dsymbolSemantic(null);
+        runDeferredSemantic;
+        module_.semantic2(null);
+        runDeferredSemantic2;
+        snapshotInlineAsmInstructions;
+        module_.semantic3(null);
+        runDeferredSemantic3;
     }
 
     private string cacheKey(

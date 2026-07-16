@@ -723,7 +723,8 @@ private bool callViaLibffi(
         )) {
             argumentValues[index] = cast(void*) address;
         } else if (isDelegateParameter(parameterTypes[index])) {
-            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
+            argumentBuffers[index] =
+                new ubyte[](preparedArgumentFfiTypes[index].size);
             if (!isScopedDelegateParameter(type, index)) {
                 if (durableInboundRegistry is null)
                     return false;
@@ -746,7 +747,8 @@ private bool callViaLibffi(
             }
             argumentValues[index] = argumentBuffers[index].ptr;
         } else if (isOutParameter(parameterTypes[index], addressOfLocal)) {
-            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
+            argumentBuffers[index] =
+                new ubyte[](preparedArgumentFfiTypes[index].size);
             // Allocate a host cell sized to the pointed-to type, marshal the
             // argument's current value into it (ffi.md §35.6), pass its
             // address as the out parameter, and reify the written value
@@ -765,7 +767,8 @@ private bool callViaLibffi(
                 outParameterCells[index].ptr;
             argumentValues[index] = argumentBuffers[index].ptr;
         } else {
-            argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
+            argumentBuffers[index] =
+                new ubyte[](preparedArgumentFfiTypes[index].size);
             marshaller.fillArgument(
                 argumentBuffers[index],
                 parameterTypes[index],

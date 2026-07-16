@@ -111,22 +111,19 @@ package(quickbite.backends.bytecode) struct ResultType {
 package(quickbite.backends.bytecode) enum stringSliceSize = 8;
 
 // Bytes of a dynamic-array slice descriptor laid out in the frame: a native
-// `void* ptr` into VM-owned heap memory followed by a `size_t length`, matching
-// the x86-64 ABI representation of a `T[]`.
+// `void* ptr` into VM-owned heap memory followed by a `size_t length`. The
+// native bridge reverses these fields to D's ABI `{length, ptr}` descriptor.
 package(quickbite.backends.bytecode) enum sliceDescriptorSize =
     2 * size_t.sizeof;
 
 // A native (libc) call's argument area is N contiguous slots of this
 // stride, one per argument, laid out at
 // `argumentArea + index * nativeArgumentSlotSize` regardless of each
-// argument's own width: the stride is a fixed native-word slot, not the
-// argument's own width, so the marshaller can locate argument `index`
-// without knowing the widths of the arguments before it. Invariant: the
-// stride must be at least as wide as the widest scalar argument the bridge
-// accepts (an 8-byte `long` on a hypothetical 32-bit target, where
-// `size_t.sizeof == 4`, would not fit).
+// argument's own width, so the marshaller can locate argument `index` without
+// knowing the widths of the arguments before it. The stride accommodates the
+// widest bridge value, currently a two-word dynamic-array descriptor.
 package(quickbite.backends.bytecode) enum nativeArgumentSlotSize =
-    size_t.sizeof;
+    sliceDescriptorSize;
 
 // Sentinel for an instruction operand that would otherwise carry an optional
 // catch-object frame offset or exception class id.
@@ -400,14 +397,22 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     subInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
     mulInt4, // a: destination frame offset, b: lhs, c: rhs (4-byte integer)
     mulInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    // a: product followed by carry, b: lhs, c: rhs (unsigned integer)
+    mulUnsignedInt4WithCarry,
+    mulUnsignedInt8WithCarry,
     divInt8, // a: destination frame offset, b: lhs, c: rhs (signed 8-byte div)
+    divUnsignedInt8, // a: destination, b: lhs, c: rhs (unsigned 8-byte div)
+    modUnsignedInt8, // a: destination, b: lhs, c: rhs (unsigned 8-byte mod)
     subInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
+    bitOrInt8, // a: destination frame offset, b: lhs, c: rhs
     divInt4, // a: destination frame offset, b: lhs, c: rhs (signed division)
     modInt4, // a: destination frame offset, b: lhs, c: rhs (signed remainder)
     shlInt4, // a: destination frame offset, b: lhs, c: rhs
     shrInt4, // a: destination frame offset, b: lhs, c: rhs (signed shift)
     ushrInt4, // a: destination frame offset, b: lhs, c: rhs (zero-fill shift)
+    shrInt8, // a: destination frame offset, b: lhs, c: rhs (signed shift)
+    ushrInt8, // a: destination frame offset, b: lhs, c: rhs (zero-fill shift)
     bitAndInt4, // a: destination frame offset, b: lhs, c: rhs
     bitXorInt4, // a: destination frame offset, b: lhs, c: rhs
     bitNotInt4, // a: destination frame offset, b: source
@@ -499,7 +504,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     assertTrue, // a: condition frame offset, b: assert diagnostic index
     // a: condition frame offset, b: assert diagnostic index (verbatim message)
     assertTrueVerbatim,
-    assertNonzeroInt4, // a: int frame offset, b: assert diagnostic index
+    assertNonzeroInt4, // a: integer frame offset, b: assert diagnostic index
     halt, // unconditional abort throwing the plain "Assertion failure" message
     // unconditional abort throwing the "unittest failure" message, for a
     // literal-false assert lexically inside a unittest body

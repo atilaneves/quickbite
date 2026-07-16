@@ -302,15 +302,9 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   failure into the smallest D-language fixture backed by `SystemLinker`, then
   follow the normal approval rule before adding or changing that test.
 
-The first current candidate is
-`dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate.Bytecode` in
-`tests/ut/backends/runner/lang/arrays.d`. Its recorded missing semantic is
-array `.ptr` plus reserve/capacity-preserving append identity; the last known
-frontier is `Unsupported expression in bytecode core: &arr`. Promote that row,
-capture its actual red result in the current checkout, and implement from that
-evidence. Continue through the remaining `Because.unconfirmed` queue in this
-order, re-reading the matrices before each promotion because the source may
-have changed:
+Continue through the remaining `Because.unconfirmed` queue in this order,
+re-reading the matrices before each promotion because the source may have
+changed:
 
 1. `dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace.Bytecode`:
    interior-slice `.ptr`, used-capacity tracking, and in-place append.

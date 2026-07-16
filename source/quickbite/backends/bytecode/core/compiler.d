@@ -358,6 +358,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto asm_ = statement.isCompoundAsmStatement) {
+            compileUnsignedMultiplyAsm(asm_);
+            return;
+        }
+
         if (auto compound = statement.isCompoundStatement) {
             foreach (childIndex; 0 .. compound.statements.length)
                 compileStatement((*compound.statements)[childIndex]);
@@ -498,6 +503,98 @@ private struct Compiler {
         ));
     }
 
+    // Decode the unsigned checked-multiply instruction shape used by portable
+    // D source with an x86 runtime fast path. The frontend preserves these
+    // operands before DMD consumes its asm statements; every other instruction
+    // sequence remains explicitly unsupported.
+    private void compileUnsignedMultiplyAsm(
+        imported!"dmd.statement".CompoundAsmStatement compound,
+    ) {
+        import quickbite.frontend.dmd.functions: inlineAsmInstructions;
+        import std.conv: text;
+
+        const instructions = inlineAsmInstructions(compound);
+        if (instructions.length == 0)
+            throw new Exception("Inline asm was not preserved by the frontend.");
+
+        ushort accumulator = ushort.max;
+        ushort carry = ushort.max;
+        ScalarType accumulatorType;
+        foreach (identifiers; instructions) {
+            if (identifiers.length == 3 && identifiers[0] == "mov") {
+                if (identifiers[1] == "EAX" || identifiers[1] == "RAX") {
+                    const source = asmLocal(identifiers[2]);
+                    accumulator = source.offset;
+                    accumulatorType = source.type;
+                    continue;
+                }
+                if (identifiers[2] == "EAX" || identifiers[2] == "RAX") {
+                    const destination = asmLocal(identifiers[1]);
+                    if (accumulator == ushort.max ||
+                        destination.type != accumulatorType)
+                        throw new Exception("Unsupported inline asm `mov`.");
+                    _code ~= Instruction(
+                        Op.copy,
+                        destination.offset,
+                        accumulator,
+                        cast(ushort) size(accumulatorType),
+                    );
+                    continue;
+                }
+            }
+
+            if (identifiers.length == 2 && identifiers[0] == "mul") {
+                const rhs = asmLocal(identifiers[1]);
+                if (accumulator == ushort.max || rhs.type != accumulatorType ||
+                    (size(accumulatorType) != uint.sizeof &&
+                        size(accumulatorType) != ulong.sizeof))
+                    throw new Exception("Unsupported inline asm `mul`.");
+                const result = allocateBytes(
+                    cast(uint) (size(accumulatorType) + bool.sizeof),
+                    cast(uint) size(accumulatorType),
+                );
+                _code ~= Instruction(
+                    size(accumulatorType) == uint.sizeof
+                        ? Op.mulUnsignedInt4WithCarry
+                        : Op.mulUnsignedInt8WithCarry,
+                    result,
+                    accumulator,
+                    rhs.offset,
+                );
+                accumulator = result;
+                carry = cast(ushort) (result + size(accumulatorType));
+                continue;
+            }
+
+            if (identifiers.length == 2 && identifiers[0] == "setc") {
+                const destination = asmLocal(identifiers[1]);
+                if (carry == ushort.max || destination.type != ScalarType.bool_)
+                    throw new Exception("Unsupported inline asm `setc`.");
+                _code ~= Instruction(
+                    Op.copy,
+                    destination.offset,
+                    carry,
+                    cast(ushort) bool.sizeof,
+                );
+                continue;
+            }
+
+            throw new Exception(text(
+                "Unsupported inline asm instruction: ", identifiers,
+            ));
+        }
+    }
+
+    private Operand asmLocal(in string name) {
+        import std.conv: text;
+
+        foreach (declaration, offset; _locals)
+            if (declaration.ident !is null &&
+                declaration.ident.toString == name)
+                return Operand(offset, scalarType(declaration.type));
+        throw new Exception(text("Unsupported inline asm operand: ", name));
+    }
+
     private void compileIfStatement(imported!"dmd.statement".IfStatement if_) {
         const condition = compileBoolCondition(if_.condition);
         const falseJump = emitJumpIfFalse(condition);
@@ -511,6 +608,7 @@ private struct Compiler {
 
         patchJump(endJump);
     }
+
 
     // `with (subject) body`. For a struct subject, DMD binds a synthetic
     // `S* __withSym = &subject` and rewrites the body's unqualified fields to
@@ -2291,6 +2389,32 @@ private struct Compiler {
                 if (auto descriptor = declaration in _dynamicArrayLocals)
                     return descriptor;
 
+        if (auto dereference = expression.isPtrExp)
+            if (expression.type.toBasetype.ty == TY.Tarray &&
+                !isStringType(expression.type)) {
+                const pointer = compileExpression(dereference.e1);
+                if (!pointer.isPointer)
+                    return null;
+
+                const offset =
+                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.pointerLoad16,
+                    offset,
+                    pointer.offset,
+                    compileSizeConstant(0),
+                );
+                auto result = new DynamicArrayLocal;
+                *result = DynamicArrayLocal(
+                    offset,
+                    dynamicArrayElementType(expression.type),
+                    arrayElementIsArray(expression.type),
+                    true,
+                    pointer.offset,
+                );
+                return result;
+            }
+
         if (_hasNestedContext)
             if (auto variable = expression.isVarExp)
                 if (auto declaration = variable.var.isVarDeclaration)
@@ -2567,11 +2691,29 @@ private struct Compiler {
 
         auto type = cast(Type) typeid_.obj;
         auto classType = type is null ? null : type.toBasetype.isTypeClass;
-        if (classType is null || classType.sym is null)
+        if (classType is null || classType.sym is null) {
+            const native = nativeTypeInfoAddress(type);
+            if (native != 0) {
+                const offset = allocate(ScalarType.ulong_);
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    offset,
+                    constantIndex(native),
+                    cast(ushort) size(ScalarType.ulong_),
+                );
+                return Operand(
+                    offset,
+                    ScalarType.ulong_,
+                    false,
+                    true,
+                    ScalarType.void_,
+                );
+            }
             throw new Exception(text(
                 "Unsupported typeid in bytecode core: ",
                 expressionChars(typeid_),
             ));
+        }
 
         const offset = allocate(ScalarType.ulong_);
         _code ~= Instruction(
@@ -2581,6 +2723,16 @@ private struct Compiler {
             cast(ushort) size(ScalarType.ulong_),
         );
         return Operand(offset, ScalarType.ulong_);
+    }
+
+    private size_t nativeTypeInfoAddress(Type type) {
+        import dmd.astenums: TY;
+
+        if (type is null)
+            return 0;
+        if (type.toBasetype.ty == TY.Tint32)
+            return cast(size_t) cast(void*) typeid(int);
+        return 0;
     }
 
     private Operand* tryTypeidName(DotVarExp dot) {
@@ -5102,7 +5254,11 @@ private struct Compiler {
         );
 
         _code ~= Instruction(
-            pointerSliceOp(size(pointer.pointerElement)),
+            pointerSliceOp(
+                pointer.pointerElement == ScalarType.void_
+                    ? 1
+                    : size(pointer.pointerElement),
+            ),
             destination,
             pointer.offset,
             bounds,
@@ -5486,9 +5642,11 @@ private struct Compiler {
         if (declaration is null)
             return null;
         auto existing = declaration in _locals;
+        auto dynamicArray = declaration in _dynamicArrayLocals;
         auto staticArray = declaration in _staticArrayLocals;
         auto struct_ = declaration in _structLocals;
-        if (existing is null && staticArray is null && struct_ is null) {
+        if (existing is null && dynamicArray is null &&
+            staticArray is null && struct_ is null) {
             if (auto pointer = tryAddressOfCaptured(
                     declaration, symOff.type.toBasetype.nextOf))
                 return pointer;
@@ -5518,16 +5676,20 @@ private struct Compiler {
 
         const base = existing !is null
             ? *existing
-            : staticArray !is null
-                ? *staticArray
-                : struct_.offset;
+            : dynamicArray !is null
+                ? dynamicArray.offset
+                : staticArray !is null
+                    ? *staticArray
+                    : struct_.offset;
         const slot = cast(ushort) (base + symOff.offset);
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameAddress, pointer, slot);
         auto result = new Operand;
         *result = Operand(
             pointer, ScalarType.ulong_, false, true,
-            struct_ is null
+            dynamicArray !is null
+                ? ScalarType.void_
+                : struct_ is null
                 ? scalarType(existing is null
                     ? symOff.type.toBasetype.nextOf
                     : declaration.type)
@@ -5568,8 +5730,12 @@ private struct Compiler {
             auto declaration = variable.var.isVarDeclaration;
             if (declaration is null)
                 return null;
+            if (auto descriptor = declaration in _dynamicArrayLocals) {
+                slot = descriptor.offset;
+                pointedType = declaration.type;
+            }
             auto existing = declaration in _locals;
-            if (existing is null) {
+            if (pointedType is null && existing is null) {
                 if (auto struct_ = declaration in _structLocals) {
                     slot = struct_.offset;
                     pointedType = declaration.type;
@@ -5604,7 +5770,7 @@ private struct Compiler {
                     slot = *staticArray;
                     pointedType = address.type.toBasetype.nextOf;
                 }
-            } else {
+            } else if (pointedType is null) {
                 slot = *existing;
                 pointedType = declaration.type;
             }
@@ -5625,9 +5791,7 @@ private struct Compiler {
             ScalarType.ulong_,
             false,
             true,
-            pointedType.toBasetype.ty == TY.Tstruct
-                ? ScalarType.void_
-                : scalarType(pointedType),
+            pointerElementScalar(address.type),
         );
         return result;
     }
@@ -5840,11 +6004,15 @@ private struct Compiler {
         return complexDoubleOperand(offset);
     }
 
-    // D's `|` is integer-typed; the opcode works on the raw 4-byte bits, so
-    // signed and unsigned operands share the same machine operation.
+    // D's `|` is integer-typed; the opcodes work on the raw bits, so signed
+    // and unsigned operands of the same width share the same operation.
     private Operand compileOrExpression(OrExp or) {
         const lhs = compileExpression(or.e1);
         const rhs = compileExpression(or.e2);
+        if (isEightByteInteger(lhs.type) &&
+            isEightByteInteger(rhs.type))
+            return emitBinary(Op.bitOrInt8, lhs, rhs, scalarType(or.type));
+
         return compileInt4BinaryResult(
             or,
             lhs,
@@ -5916,6 +6084,10 @@ private struct Compiler {
         const rhs = compileExpression(divide.e2);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.divDouble, lhs, rhs, ScalarType.double_);
+        if (lhs.type == ScalarType.ulong_ && rhs.type == ScalarType.ulong_)
+            return emitBinary(
+                Op.divUnsignedInt8, lhs, rhs, ScalarType.ulong_,
+            );
 
         return compileIntBinaryResult(
             divide,
@@ -5930,6 +6102,11 @@ private struct Compiler {
     private Operand compileModuloExpression(BinExp modulo) {
         const lhs = compileExpression(modulo.e1);
         const rhs = compileExpression(modulo.e2);
+        if (lhs.type == ScalarType.ulong_ && rhs.type == ScalarType.ulong_)
+            return emitBinary(
+                Op.modUnsignedInt8, lhs, rhs, ScalarType.ulong_,
+            );
+
         return compileIntBinaryResult(
             modulo,
             lhs,
@@ -5947,6 +6124,18 @@ private struct Compiler {
     ) {
         Operand lhs = compileExpression(shift.e1); // may promote narrow ints.
         Operand rhs = compileExpression(shift.e2); // may promote narrow ints.
+        if (isEightByteInteger(lhs.type) &&
+            isCompoundIntegerScalar(rhs.type) &&
+            size(rhs.type) <= int.sizeof &&
+            isEightByteInteger(scalarType(shift.type))) {
+            if (size(rhs.type) < int.sizeof)
+                rhs = extend(rhs, ScalarType.int_);
+            const actualOp = op == Op.shrInt4
+                ? (isSigned(lhs.type) ? Op.shrInt8 : Op.ushrInt8)
+                : op == Op.ushrInt4 ? Op.ushrInt8 : Op.shlInt4;
+            if (actualOp != Op.shlInt4)
+                return emitBinary(actualOp, lhs, rhs, scalarType(shift.type));
+        }
         const actualOp = op == Op.shrInt4 && !isSigned(lhs.type)
             ? Op.ushrInt4
             : op;
@@ -6433,7 +6622,7 @@ private struct Compiler {
         import std.conv: text;
 
         auto declaration = compoundAssignLocalDeclaration(assign.e1);
-        auto slot = declaration is null ? null : declaration in _locals;
+        auto slot = compoundAssignLocalSlot(declaration);
         if (slot is null && _hasNestedContext && declaration !is null)
             if (auto captured = declaration in _capturedOffsets)
                 return compileCapturedIntegerCompoundAssign(
@@ -6494,6 +6683,23 @@ private struct Compiler {
             );
 
         return Operand(*slot, lvalueType);
+    }
+
+    private ushort* compoundAssignLocalSlot(VarDeclaration declaration) {
+        if (declaration is null)
+            return null;
+        if (auto slot = declaration in _locals)
+            return slot;
+
+        // Inline-asm semantic analysis can leave the surrounding expression
+        // referring to the parameter declaration from the function type while
+        // `FuncDeclaration.parameters` holds the materialised declaration.
+        // Parameter names are unique within a signature, so reconcile those
+        // two compiler-owned nodes by identifier.
+        foreach (local, offset; _locals)
+            if (local.ident is declaration.ident)
+                return local in _locals;
+        return null;
     }
 
     private Operand compileCapturedIntegerCompoundAssign(
@@ -6593,6 +6799,21 @@ private struct Compiler {
         // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
         if (auto length = assign.e1.isArrayLengthExp)
             return compileArrayLengthAssign(length, assign.e2);
+
+        // A dynamic-array `*p = rhs` must copy the full descriptor before the
+        // generic pointer-dereference path selects a scalar-width store.
+        if (assign.e1.isPtrExp !is null &&
+            isDynamicArrayArgument(assign.e1))
+            if (auto descriptor = dynamicArrayDescriptorOrNull(assign.e1)) {
+                compileDynamicArrayInto(
+                    descriptor.offset,
+                    descriptor.elementType,
+                    assign.e2,
+                    descriptor.elementIsArray,
+                );
+                writeBackDynamicArrayDescriptor(*descriptor);
+                return Operand(descriptor.offset, ScalarType.void_);
+            }
 
         // `m[k] = v` for an associative array: insert or overwrite the entry in
         // the VM-owned map.
@@ -8326,6 +8547,14 @@ private struct Compiler {
         import std.conv: text;
 
         auto function_ = callFunction(call);
+        if (function_ !is null && function_.parameters is null) {
+            import dmd.funcsem: functionSemantic3;
+            import quickbite.frontend.dmd.functions:
+                snapshotInlineAsmInstructions;
+
+            snapshotInlineAsmInstructions;
+            functionSemantic3(function_);
+        }
 
         if (auto expression = immediateLambdaReturn(call))
             return compileExpression(expression);
@@ -8488,15 +8717,19 @@ private struct Compiler {
 
         DynamicArrayRefWriteBack[] dynamicArrayRefWriteBacks;
         StructPointerRefWriteBack[] structPointerRefWriteBacks;
+        if (call.arguments !is null &&
+            nextArgumentIndex + call.arguments.length > layout.offsets.length)
+            throw new Exception(text(
+                "Missing bytecode parameter layout for call: ",
+                expressionChars(call),
+            ));
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
                     (argumentArea +
                         layout.offsets[nextArgumentIndex + argumentIndex]);
-                auto parameter = (*function_.parameters)[
-                    nextArgumentIndex + argumentIndex
-                ];
-                if (parameterIsLazy(parameter)) {
+                if (functionParameterIsLazy(
+                        function_, nextArgumentIndex + argumentIndex)) {
                     emitLazyCallArgument(slot, (*call.arguments)[argumentIndex]);
                     continue;
                 }
@@ -8586,7 +8819,8 @@ private struct Compiler {
         import dmd.astenums: TY;
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
-        if ((returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
+        if ((returnTy != TY.Tbool &&
+             returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
              returnTy != TY.Tuns64 &&
              returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
              returnTy != TY.Tpointer) ||
@@ -10865,7 +11099,9 @@ private struct Compiler {
         import std.conv: text;
 
         const operand = compileExpression(expression);
-        if (operand.type != ScalarType.int_ && operand.type != ScalarType.bool_)
+        if (operand.type != ScalarType.int_ &&
+            operand.type != ScalarType.bool_ &&
+            !isEightByteInteger(operand.type))
             throw new Exception(text(
                 "Unsupported truth assert in bytecode core: ",
                 expressionChars(expression),
@@ -10998,8 +11234,79 @@ private struct Compiler {
             layout.blockSize += contextAlign;
         }
 
-        if (function_.parameters is null)
+        if (function_.parameters is null) {
+            import dmd.astenums: STC;
+
+            auto type = function_.type.toBasetype.isTypeFunction;
+            auto parameters = type is null
+                ? null
+                : type.parameterList.parameters;
+            if (parameters is null)
+                return layout;
+
+            foreach (parameter; *parameters) {
+                const isReference =
+                    (parameter.storageClass &
+                        (STC.ref_ | STC.out_ | STC.auto_)) != STC.none;
+
+                if (parameter.type.toBasetype.ty == TY.Tarray &&
+                    !isStringType(parameter.type)) {
+                    enum descriptorAlign = cast(uint) size_t.sizeof;
+                    layout.blockSize = (layout.blockSize +
+                        descriptorAlign - 1) & ~(descriptorAlign - 1);
+                    layout.offsets ~= cast(ushort) layout.blockSize;
+                    layout.isReference ~= isReference;
+                    if (isReference)
+                        layout.refParameters ~= RefParameter(
+                            cast(ushort) layout.blockSize,
+                            sliceDescriptorSize,
+                        );
+                    layout.blockSize += sliceDescriptorSize;
+                    continue;
+                }
+
+                if (isStringType(parameter.type)) {
+                    layout.blockSize =
+                        (layout.blockSize + 3) & ~3u;
+                    layout.offsets ~= cast(ushort) layout.blockSize;
+                    layout.isReference ~= false;
+                    layout.blockSize += stringSliceSize;
+                    continue;
+                }
+
+                if (parameter.type.toBasetype.ty == TY.Tstruct ||
+                    parameter.type.toBasetype.ty == TY.Tsarray) {
+                    const aggregateAlign = staticArrayAlign(parameter.type);
+                    const aggregateBytes =
+                        cast(uint) staticArraySize(parameter.type);
+                    layout.blockSize = (layout.blockSize +
+                        aggregateAlign - 1) & ~(aggregateAlign - 1);
+                    layout.offsets ~= cast(ushort) layout.blockSize;
+                    layout.isReference ~= isReference;
+                    if (isReference)
+                        layout.refParameters ~= RefParameter(
+                            cast(ushort) layout.blockSize,
+                            aggregateBytes,
+                        );
+                    layout.blockSize += aggregateBytes;
+                    continue;
+                }
+
+                const scalar = scalarType(parameter.type);
+                const alignment = size(scalar);
+                layout.blockSize = (layout.blockSize +
+                    alignment - 1) & ~(alignment - 1);
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= isReference;
+                if (isReference)
+                    layout.refParameters ~= RefParameter(
+                        cast(ushort) layout.blockSize,
+                        size(scalar),
+                    );
+                layout.blockSize += size(scalar);
+            }
             return layout;
+        }
 
         foreach (parameterIndex; 0 .. function_.parameters.length) {
             auto parameter = (*function_.parameters)[parameterIndex];
@@ -11115,6 +11422,22 @@ private struct Compiler {
         import dmd.astenums: STC;
 
         return (parameter.storage_class & STC.lazy_) != STC.none;
+    }
+
+    private bool functionParameterIsLazy(
+        FuncDeclaration function_,
+        in size_t index,
+    ) {
+        import dmd.astenums: STC;
+
+        if (function_.parameters !is null)
+            return parameterIsLazy((*function_.parameters)[index]);
+
+        auto type = function_.type.toBasetype.isTypeFunction;
+        auto parameters = type is null ? null : type.parameterList.parameters;
+        if (parameters is null || index >= parameters.length)
+            return false;
+        return ((*parameters)[index].storageClass & STC.lazy_) != STC.none;
     }
 
     // A function result is either a scalar or a string slice. Only the string
@@ -11392,6 +11715,7 @@ private struct Compiler {
 
         switch (type.toBasetype.ty) with (TY) {
             case Tvoid:
+            case Tnoreturn:
                 return ScalarType.void_;
             case Tbool:
                 return ScalarType.bool_;
@@ -11446,6 +11770,8 @@ private struct Compiler {
         if (element.toBasetype.ty == TY.Tsarray)
             element = element.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tstruct)
+            return ScalarType.void_;
+        if (element.toBasetype.ty == TY.Tarray)
             return ScalarType.void_;
         if (element.toBasetype.ty == TY.Tdelegate)
             return ScalarType.void_;
@@ -12443,7 +12769,8 @@ private bool isCompoundIntegerScalar(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: ScalarType;
 
-    return type == ScalarType.byte_ ||
+    return type == ScalarType.bool_ ||
+        type == ScalarType.byte_ ||
         type == ScalarType.ubyte_ ||
         type == ScalarType.short_ ||
         type == ScalarType.ushort_ ||
@@ -12554,13 +12881,35 @@ private imported!"dmd.func".FuncDeclaration callFunction(
     if (call.f !is null)
         return call.f;
 
-    if (auto variable = call.e1.isVarExp)
+    return expressionFunction(call.e1);
+}
+
+private imported!"dmd.func".FuncDeclaration expressionFunction(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (expression is null)
+        return null;
+
+    if (auto variable = expression.isVarExp)
         if (auto function_ = variable.var.isFuncDeclaration)
             return function_;
 
-    if (auto dot = call.e1.isDotVarExp)
+    if (auto dot = expression.isDotVarExp)
         if (auto function_ = dot.var.isFuncDeclaration)
             return function_;
+
+    if (auto symbol = expression.isSymOffExp)
+        if (auto function_ = symbol.var.isFuncDeclaration)
+            return function_;
+
+    if (auto address = expression.isAddrExp)
+        return expressionFunction(address.e1);
+
+    if (auto dereference = expression.isPtrExp)
+        return expressionFunction(dereference.e1);
+
+    if (auto cast_ = expression.isCastExp)
+        return expressionFunction(cast_.e1);
 
     return null;
 }
