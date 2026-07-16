@@ -2030,8 +2030,20 @@ private struct Walker {
             promoteNestedStructFieldCell(dot, id);
             promoteClassFieldCell(dot, id);
             promoteNestedClassStructFieldCell(dot, id);
-            promoteArrayNestedStructFieldCell(dot, id);
-            return Value.arrayPointerValue([runExpression(dot)], id, 0);
+            // Review finding 5 (SHOULD-FIX, 2026-07-16): a side-effecting
+            // array index (`&a[i++].inner.x`) must be evaluated exactly
+            // once. `promoteArrayNestedStructFieldCell` evaluates it (to
+            // seed the reverse-lookup element index) only when this exact
+            // shape applies, in which case it hands back the snapshot value
+            // built from that SAME evaluation; `runExpression(dot)` below
+            // -- which would re-run the whole chain, including the index a
+            // second time -- is the fallback for every other shape, none of
+            // which touched the index above.
+            Value arrayNestedValue;
+            const snapshot = promoteArrayNestedStructFieldCell(dot, id, arrayNestedValue)
+                ? arrayNestedValue
+                : runExpression(dot);
+            return Value.arrayPointerValue([snapshot], id, 0);
         }
 
         // `&call()` of a ref-returning function: run the call and yield the
@@ -3331,42 +3343,65 @@ private struct Walker {
     // (a union element, a non-struct element) -- every one of those leaves
     // `promoteArrayCell` itself a no-op (or is never reached), so there is no
     // cell here to point at.
-    private void promoteArrayNestedStructFieldCell(
+    //
+    // Review finding 5 (SHOULD-FIX, 2026-07-16): `index.e2` (`a[i++]`'s `i++`)
+    // is a general expression and may side-effect. This function must
+    // evaluate it exactly once -- to seed `elementIndex` above -- rather than
+    // leaving `addressOfExpression`'s caller to separately `runExpression`
+    // the whole `dot` chain (which would re-run `index.e2`, a second time,
+    // to rebuild the pointer's boxed snapshot). So this function now builds
+    // that snapshot itself, indexing the ALREADY-evaluated `elementIndex`
+    // directly via `Value.opIndex`/`structFieldAt` -- the same field path
+    // `runExpression(dot)` would walk, minus the redundant re-evaluation --
+    // and returns `true` with `value` set. Returns `false` (leaving `value`
+    // untouched) for every shape described above that this promotion
+    // declines outright, none of which have evaluated `index.e2` yet, so the
+    // caller's own `runExpression(dot)` fallback remains the sole (first)
+    // evaluation for those.
+    private bool promoteArrayNestedStructFieldCell(
         imported!"dmd.expression".DotVarExp dot,
         in size_t id,
+        out Value value,
     ) {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
 
         auto innerDot = dot.e1.isDotVarExp;
         if (innerDot is null)
-            return;
+            return false;
 
         auto index = innerDot.e1.isIndexExp;
         if (index is null)
-            return;
+            return false;
 
         auto var = index.e1.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable is null)
-            return;
+            return false;
 
         auto outerStructType = innerDot.type.toBasetype.isTypeStruct;
         if (outerStructType is null || outerStructType.sym.isUnionDeclaration !is null)
-            return;
+            return false;
 
         if (!isNativeScalarType(dot.type))
-            return;
+            return false;
 
         promoteArrayCell(variable);
         if ((variable in arrayCells) is null)
-            return;
+            return false;
 
         const elementIndex = cast(size_t) runExpression(index.e2).asLong;
 
         arrayNestedStructFieldPointerVariables[id] = variable;
         arrayNestedStructFieldPointerElementIndices[id] = elementIndex;
-        arrayNestedStructFieldPointerOuterFieldIndices[id] = structFieldIndex(innerDot);
-        arrayNestedStructFieldPointerInnerFieldIndices[id] = structFieldIndex(dot);
+        const outerFieldIndex = structFieldIndex(innerDot);
+        const innerFieldIndex = structFieldIndex(dot);
+        arrayNestedStructFieldPointerOuterFieldIndices[id] = outerFieldIndex;
+        arrayNestedStructFieldPointerInnerFieldIndices[id] = innerFieldIndex;
+
+        value = runExpression(index.e1)[elementIndex]
+            .structFieldAt(outerFieldIndex)
+            .structFieldAt(innerFieldIndex);
+        return true;
     }
 
     // Drops `variable`'s `structCells` entry (if any) together with every

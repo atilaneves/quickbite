@@ -8172,3 +8172,39 @@ before; it dies with the legacy executors.
   When a display change collides with a bytecode-pinned row, apply the
   matrix rule (drop the engine from that block, record the pending re-earn)
   rather than extending bytecode display scaffolding.
+
+Progress 2026-07-16 (review fix: `promoteArrayNestedStructFieldCell`
+double-evaluated a side-effecting array index, SHOULD-FIX finding 5, review
+of `value-native-20260715`): `promoteArrayNestedStructFieldCell` (`impl.d`)
+evaluated `index.e2` itself (`runExpression(index.e2).asLong`, to seed the
+`arrayNestedStructFieldPointer*ElementIndices` reverse-lookup entry), while
+`addressOfExpression`'s `DotVarExp` branch unconditionally called
+`runExpression(dot)` right after to build the pointer's boxed snapshot --
+re-running the WHOLE `a[i++].inner.x` chain, including `i++`, a second
+time. Two bugs from the one root cause: a side-effecting index ran twice
+(`&a[i++].inner.x` left `i` at 2, not 1), and the reverse map's element
+index (from the FIRST evaluation) could diverge from the boxed snapshot's
+element (from the SECOND). Fix: `promoteArrayNestedStructFieldCell` now
+returns `bool` with `out Value value` (matching this file's established
+`bool ...(out Value value)` convention, e.g.
+`arrayNestedStructFieldPointerCellValue`) -- when the array-nested-struct-
+field shape applies and a cell promotes, it builds the snapshot itself from
+the ALREADY-evaluated `elementIndex`
+(`runExpression(index.e1)[elementIndex].structFieldAt(outer).
+structFieldAt(inner)`, the same field path `runExpression(dot)` walks, only
+without re-running `index.e2`) and returns `true`; `addressOfExpression`
+uses that value directly instead of falling back to `runExpression(dot)`.
+Every other shape this promotion declines returns `false` before touching
+`index.e2` at all, so `runExpression(dot)` remains their sole (first)
+evaluation, unchanged. Exposing fixture (red-first; Interpreter read `i ==
+2`, expected `1`, matching the finding's own repro exactly):
+`pointer.arrayNestedStructFieldIndexWithSideEffectEvaluatedOnce`
+(`Interpreter`/`SystemLinker`; other backends omitted, omit-don't-pin,
+unconfirmed there).
+
+Focused suites all green (run individually): ct.expressions (585 run, 0
+failed, 5/5 failing as expected), ct.structs (307 run, 0 failed), ct.arrays
+(346 run, 0 failed), ct.exceptions (130 run, 0 failed), interpreter (218
+run, 0 failed), bin.repl (228 run, 0 failed), evaluator.eval (71 run, 0
+failed). The full `bin/ut --random` was left to the orchestrator per the
+usual long-suite handoff.

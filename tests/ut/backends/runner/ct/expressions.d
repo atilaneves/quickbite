@@ -4761,3 +4761,37 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
+
+// Review finding 5 (SHOULD-FIX, 2026-07-16): `promoteArrayNestedStructFieldCell`
+// evaluated `index.e2` itself (to seed the
+// `arrayNestedStructFieldPointer*ElementIndices` reverse-lookup entry), then
+// `addressOfExpression`'s `DotVarExp` branch unconditionally called
+// `runExpression(dot)` to build the pointer's boxed snapshot -- re-running
+// the WHOLE `a[i++].inner.x` chain, including `i++` a second time. A
+// side-effecting index (`i++`) therefore ran twice: once inside the promote
+// call, once again building the snapshot. SystemLinker's `p` aliases real
+// storage and evaluates the index expression exactly once. Other backends
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.arrayNestedStructFieldIndexWithSideEffectEvaluatedOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            unittest {
+                S[] a = [S(Inner(1)), S(Inner(2))];
+                int i = 0;
+                auto p = &a[i++].inner.x;
+                assert(i == 1);
+            }
+        });
+    }
+}
