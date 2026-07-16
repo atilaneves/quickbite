@@ -2351,7 +2351,7 @@ static foreach (backend; Matrix!()) {
 // (shorter) cell and threw `NativeArray.element: index out of range`
 // instead of declining to the outer pointer's own frozen (in-range)
 // snapshot.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveArrayPointerPassedAcrossShorterRebindDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
