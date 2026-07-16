@@ -11,8 +11,9 @@ stand:
   surface is complete; expression-cell wiring is partial and the interim
   `displayString`/`Value.toString` scaffolding still exists (item 1).
   Formatter-wrapped CTFE and interpreter sessions consume the guest-produced
-  string directly; only their unformatted evaluator paths retain that
-  scaffolding.
+  string directly; nested-context structs are formatter-wrapped and render
+  only their declared fields. Only their unformatted evaluator paths retain
+  the scaffolding.
   CTFE and interpreter unittests execute directly without rendering; IR and
   Bytecode still use the interim evaluation bridge (item 2).
 - The interpreter's native-layout container layer is complete:
@@ -431,10 +432,12 @@ Conventions, in order:
    as the scalar case. No element-type metadata is needed on any value
    carrier.
 5. Structs and enums round-trip via their rendered names (`Point(1, 2)`,
-   `E.a`). Enum members render qualified (`E.b`) — a bare member name is
-   not round-trippable D. Multi-entry AA rendering order is unpinned (D
-   AA iteration order is unspecified; round-trip validity does not depend
-   on it), as are non-member enum values (`cast(E)5`).
+   `E.a`). Struct rendering walks declared fields only; compiler-synthesized
+   context storage is never part of the display. Enum members render qualified
+   (`E.b`) — a bare member name is not round-trippable D. Multi-entry AA
+   rendering order is unpinned (D AA iteration order is unspecified;
+   round-trip validity does not depend on it), as are non-member enum values
+   (`cast(E)5`).
 6. Width round-trips for strings via the literal suffix (`"x"w`, `"x"d`);
    for characters it does not (all widths render `'a'`, disambiguated by
    `typeof`). Type qualifiers (`const`/`immutable`) and mutability are
@@ -506,10 +509,10 @@ are done; what is still pending, in order:
    the round-trip spec, and the `text(value)` catch-all covers only the
    rule-7 no-contract values. Expression cells are synthesized as
    `__quickbiteFormat(expr)` for a broad set of return types when the
-   backend opts in (`Ctfe`, `Interpreter`), but some displays (range and
-   template structs, nested-context structs) still run through the
-   interim `displayString`/`Value.toString` scaffolding. Keep expanding
-   the gate per backend (decision 4) until every REPL expression is
+   backend opts in (`Ctfe`, `Interpreter`). The remaining gate exclusions are
+   range and template structs, which still run through the interim
+   `displayString`/`Value.toString` scaffolding. Keep expanding the gate per
+   backend (decision 4) until every REPL expression is
    formatter-wrapped and the unformatted evaluator paths can be deleted.
    Items 2 and 3 are blocked until this wiring lands. The interpreter's
    `std.conv.text` hook is temporary formatter scaffolding, not a general

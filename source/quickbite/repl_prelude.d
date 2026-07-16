@@ -142,13 +142,13 @@ private string pointerDisplay(T)(in T value) @safe pure {
 }
 
 private string structDisplay(T)(in T value) @safe pure {
-    import std.traits: Unqual;
+    import std.traits: FieldNameTuple, Unqual;
 
     string rendered = Unqual!T.stringof ~ "(";
-    foreach (index, field; value.tupleof) {
+    static foreach (index, fieldName; FieldNameTuple!T) {
         if (index != 0)
             rendered ~= ", ";
-        rendered ~= __quickbiteFormat(field);
+        rendered ~= __quickbiteFormat(__traits(getMember, value, fieldName));
     }
     rendered ~= ")";
     return rendered;
