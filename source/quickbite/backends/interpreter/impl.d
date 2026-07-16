@@ -5534,13 +5534,7 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        arrayAllocationAliases = child.arrayAllocationAliases;
-        mergeArrayAllocationMaps(child);
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
-        arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeFieldPointerState(child);
+        mergePointerCellState(child);
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -5573,13 +5567,7 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        arrayAllocationAliases = child.arrayAllocationAliases;
-        mergeArrayAllocationMaps(child);
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
-        arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeFieldPointerState(child);
+        mergePointerCellState(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
@@ -5594,6 +5582,20 @@ private struct Walker {
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
+    }
+
+    // Merges the allocation and field-pointer maps whose entries describe
+    // native cells reachable across a call boundary. Free-function and member
+    // returns share this dispatcher so a new map cannot be propagated through
+    // only one call shape.
+    private void mergePointerCellState(ref Walker child) {
+        arrayAllocationAliases = child.arrayAllocationAliases;
+        mergeArrayAllocationMaps(child);
+        mergeFieldAddressAllocations(child);
+        mergeNestedFieldAddressAllocations(child);
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+        arrayPointerWritebacks = child.arrayPointerWritebacks;
+        mergeFieldPointerState(child);
     }
 
     // Merges every field-pointer reverse lookup and adopts its corresponding
