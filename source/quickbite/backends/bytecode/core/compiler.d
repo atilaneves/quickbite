@@ -4085,6 +4085,14 @@ private struct Compiler {
             fieldPointer,
             compileSizeConstant(0),
         );
+        if (isPointerType(field.type))
+            return Operand(
+                destination,
+                ScalarType.ulong_,
+                false,
+                true,
+                pointerElementScalar(field.type),
+            );
         return Operand(destination, fieldScalar);
     }
 
@@ -4225,7 +4233,10 @@ private struct Compiler {
             registerClass(classType.sym),
             cast(ushort) classType.sym.structsize,
         );
-        initialiseClassObject(pointer, classType.sym, newExp.arguments);
+        if (newExp.member !is null)
+            runClassConstructor(pointer, newExp.member, newExp.arguments);
+        else
+            initialiseClassObject(pointer, classType.sym, newExp.arguments);
 
         auto result = new Operand;
         *result = Operand(
@@ -4362,6 +4373,36 @@ private struct Compiler {
 
         // A constructor's struct result is treated as void (its only effect is
         // mutating the receiver block), so no result slot is needed.
+        _code ~= Instruction(Op.call, index, argumentArea, cast(ushort) 0);
+    }
+
+    private void runClassConstructor(
+        in ushort pointer,
+        FuncDeclaration constructor,
+        Expressions* arguments,
+    ) {
+        const index = registerFunction(constructor);
+        const layout = parameterLayout(constructor);
+        const argumentArea = allocateBytes(layout.blockSize, 8);
+
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (argumentArea + layout.classThisOffset),
+            pointer,
+            cast(ushort) size_t.sizeof,
+        );
+
+        if (arguments !is null)
+            foreach (argumentIndex; 0 .. arguments.length) {
+                const slot = cast(ushort)
+                    (argumentArea + layout.offsets[argumentIndex]);
+                emitCallArgument(
+                    slot,
+                    layout.isReference[argumentIndex],
+                    (*arguments)[argumentIndex],
+                );
+            }
+
         _code ~= Instruction(Op.call, index, argumentArea, cast(ushort) 0);
     }
 

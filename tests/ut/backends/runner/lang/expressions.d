@@ -2511,7 +2511,6 @@ static foreach (backend; Matrix!()) {
 // would trivially pass without pinning anything meaningful.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed, "not exercised on this backend yet"),
-    Omit!(Bytecode, Because.unconfirmed, "not exercised on this backend yet"),
     Omit!(LLVMJit, Because.unconfirmed,
         "vacuous on LLVMJit; promotion would trivially pass"),
 )) {

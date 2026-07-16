@@ -5838,9 +5838,7 @@ generalising beyond an oracle-backed fixture:
   array mutation and broader stale-cell reconciliation remain.
 
 The next promotion candidate is
-`pointer.newCtorPointerWriteNotRefusedAfterFieldAddress`, which still needs
-user class-constructor execution before its pointer-field assignment is
-meaningful.
+`pointer.recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue`.
 
 The randomized suite has an unresolved order-dependent failure in
 `repl.backend.displaysStaticStringArrayResults.Bytecode`: an `ArraySliceError`
