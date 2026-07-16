@@ -2190,7 +2190,7 @@ static foreach (backend; Matrix!(
 // depth's stale cell instead of getting a fresh one for its own (shorter,
 // differently-valued) array. SystemLinker is the oracle; other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveArrayDeclarationDropsStaleArrayCell." ~
         backend.stringof)
     @Tags(backend.stringof)

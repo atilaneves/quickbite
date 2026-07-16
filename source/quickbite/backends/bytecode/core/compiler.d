@@ -4567,6 +4567,21 @@ private struct Compiler {
             return;
         }
 
+        if (auto conditional = source.isCondExp) {
+            const condition = compileBoolCondition(conditional.econd);
+            const falseJump = emitJumpIfFalse(condition);
+            compileDynamicArrayInto(
+                destination, elementType, conditional.e1, elementIsArray,
+            );
+            const endJump = emitJump;
+            patchJump(falseJump);
+            compileDynamicArrayInto(
+                destination, elementType, conditional.e2, elementIsArray,
+            );
+            patchJump(endJump);
+            return;
+        }
+
         // `dest = makeArray(...)` copies the call's 16-byte slice-descriptor
         // result into the destination slot; the backing memory is shared.
         if (auto call = source.isCallExp) {

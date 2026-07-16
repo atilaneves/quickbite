@@ -5837,8 +5837,7 @@ generalising beyond an oracle-backed fixture:
 - Static arrays of dynamic arrays copy complete slice descriptors. Nested
   array mutation and broader stale-cell reconciliation remain.
 
-Useful next promotion candidates include the adjacent recursive-array fixture,
-which still needs ternary dynamic-array initializer support, and
+The next promotion candidate is
 `pointer.newCtorPointerWriteNotRefusedAfterFieldAddress`, which still needs
 user class-constructor execution before its pointer-field assignment is
 meaningful.
