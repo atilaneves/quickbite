@@ -2180,6 +2180,34 @@ private struct Walker {
         child.addressOfRefReturn = true;
         child.result = Value(false);
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
+        forkPerFrameCellsInto(child);
+        seedPointerTargetLocals(child);
+        child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
+
+        try {
+            child.runStatement(call.f.fbody);
+        } catch (InterpretedException exception) {
+            writeBackFunctionState(call.f, argumentExpressions, child, arguments);
+            throw exception;
+        }
+        writeBackFunctionState(call.f, argumentExpressions, child, arguments);
+
+        return returnedLvalueAddress(call.f, argumentExpressions, child);
+    }
+
+    // Duplicates the complete per-frame cell-state maps -- scalar/array/
+    // struct/class cells, every field-pointer reverse-lookup map (and its
+    // field-index/writeback siblings), allocation bookkeeping, and the
+    // function-pointer/delegate/lazy-argument tables -- from this frame into
+    // `child`'s own independent copies. This is the single place every
+    // interpreted call/nested-frame fork site populates a child `Walker`'s
+    // per-frame cell state from the parent, so a new map family only needs
+    // to be added here once instead of at every fork site by hand.
+    // `locals` is deliberately NOT duped here: each fork site seeds it with
+    // its own logic (dataseg-only for a non-nested free function, a full dup
+    // for a nested function/member call/destructor, ...).
+    private void forkPerFrameCellsInto(ref Walker child) {
+        child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.scalarCells = scalarCells.dup;
@@ -2230,18 +2258,6 @@ private struct Walker {
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
-        seedPointerTargetLocals(child);
-        child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
-
-        try {
-            child.runStatement(call.f.fbody);
-        } catch (InterpretedException exception) {
-            writeBackFunctionState(call.f, argumentExpressions, child, arguments);
-            throw exception;
-        }
-        writeBackFunctionState(call.f, argumentExpressions, child, arguments);
-
-        return returnedLvalueAddress(call.f, argumentExpressions, child);
     }
 
     // The child's returned address points into its own frame: a pointer to a
@@ -5343,60 +5359,10 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
-        child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.locals = (captureLocals || function_.isNested)
             ? locals.dup
             : datasegLocals;
-        child.localPointers = localPointers.dup;
-        child.localPointerIds = localPointerIds.dup;
-        child.scalarCells = scalarCells.dup;
-        child.arrayCells = arrayCells.dup;
-        child.structCells = structCells.dup;
-        child.classCells = classCells.dup;
-        child.classFieldPointerVariables = classFieldPointerVariables.dup;
-        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
-        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
-        child.nestedClassStructFieldPointerVariables =
-            nestedClassStructFieldPointerVariables.dup;
-        child.nestedClassStructFieldPointerOuterFieldIndices =
-            nestedClassStructFieldPointerOuterFieldIndices.dup;
-        child.nestedClassStructFieldPointerInnerFieldIndices =
-            nestedClassStructFieldPointerInnerFieldIndices.dup;
-        child.nestedClassStructFieldPointerWritebacks =
-            nestedClassStructFieldPointerWritebacks.dup;
-        child.classArrayFieldPointerVariables = classArrayFieldPointerVariables.dup;
-        child.classArrayFieldPointerFieldIndices =
-            classArrayFieldPointerFieldIndices.dup;
-        child.classArrayFieldPointerWritebacks = classArrayFieldPointerWritebacks.dup;
-        child.nextLocalPointerId = nextLocalPointerId;
-        child.functionPointers = functionPointers.dup;
-        child.functionPointerIds = functionPointerIds.dup;
-        child.nextFunctionPointerId = nextFunctionPointerId;
-        child.delegates = delegates.dup;
-        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
-        child.lazyArgumentLocals = lazyArgumentLocals.dup;
-        child.sliceAliases = sliceAliases.dup;
-        child.arrayAllocations = arrayAllocations.dup;
-        child.arrayAllocationAliases = arrayAllocationAliases.dup;
-        child.arrayAllocationVariables = arrayAllocationVariables.dup;
-        child.structFieldPointerVariables = structFieldPointerVariables.dup;
-        child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
-        child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
-        child.structArrayFieldPointerVariables = structArrayFieldPointerVariables.dup;
-        child.structArrayFieldPointerFieldIndices =
-            structArrayFieldPointerFieldIndices.dup;
-        child.structArrayFieldPointerWritebacks = structArrayFieldPointerWritebacks.dup;
-        child.nestedStructFieldPointerVariables = nestedStructFieldPointerVariables.dup;
-        child.nestedStructFieldPointerOuterFieldIndices =
-            nestedStructFieldPointerOuterFieldIndices.dup;
-        child.nestedStructFieldPointerInnerFieldIndices =
-            nestedStructFieldPointerInnerFieldIndices.dup;
-        child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
-        child.fieldAddressAllocations = fieldAddressAllocations.dup;
-        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
-        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
-        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
-        child.allocationCount = allocationCount;
+        forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
         registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
@@ -5434,58 +5400,8 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
-        child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.locals = locals.dup;
-        child.localPointers = localPointers.dup;
-        child.localPointerIds = localPointerIds.dup;
-        child.scalarCells = scalarCells.dup;
-        child.arrayCells = arrayCells.dup;
-        child.structCells = structCells.dup;
-        child.classCells = classCells.dup;
-        child.classFieldPointerVariables = classFieldPointerVariables.dup;
-        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
-        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
-        child.nestedClassStructFieldPointerVariables =
-            nestedClassStructFieldPointerVariables.dup;
-        child.nestedClassStructFieldPointerOuterFieldIndices =
-            nestedClassStructFieldPointerOuterFieldIndices.dup;
-        child.nestedClassStructFieldPointerInnerFieldIndices =
-            nestedClassStructFieldPointerInnerFieldIndices.dup;
-        child.nestedClassStructFieldPointerWritebacks =
-            nestedClassStructFieldPointerWritebacks.dup;
-        child.classArrayFieldPointerVariables = classArrayFieldPointerVariables.dup;
-        child.classArrayFieldPointerFieldIndices =
-            classArrayFieldPointerFieldIndices.dup;
-        child.classArrayFieldPointerWritebacks = classArrayFieldPointerWritebacks.dup;
-        child.nextLocalPointerId = nextLocalPointerId;
-        child.functionPointers = functionPointers.dup;
-        child.functionPointerIds = functionPointerIds.dup;
-        child.nextFunctionPointerId = nextFunctionPointerId;
-        child.delegates = delegates.dup;
-        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
-        child.lazyArgumentLocals = lazyArgumentLocals.dup;
-        child.sliceAliases = sliceAliases.dup;
-        child.arrayAllocations = arrayAllocations.dup;
-        child.arrayAllocationAliases = arrayAllocationAliases.dup;
-        child.arrayAllocationVariables = arrayAllocationVariables.dup;
-        child.structFieldPointerVariables = structFieldPointerVariables.dup;
-        child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
-        child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
-        child.structArrayFieldPointerVariables = structArrayFieldPointerVariables.dup;
-        child.structArrayFieldPointerFieldIndices =
-            structArrayFieldPointerFieldIndices.dup;
-        child.structArrayFieldPointerWritebacks = structArrayFieldPointerWritebacks.dup;
-        child.nestedStructFieldPointerVariables = nestedStructFieldPointerVariables.dup;
-        child.nestedStructFieldPointerOuterFieldIndices =
-            nestedStructFieldPointerOuterFieldIndices.dup;
-        child.nestedStructFieldPointerInnerFieldIndices =
-            nestedStructFieldPointerInnerFieldIndices.dup;
-        child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
-        child.fieldAddressAllocations = fieldAddressAllocations.dup;
-        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
-        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
-        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
-        child.allocationCount = allocationCount;
+        forkPerFrameCellsInto(child);
         if (receiverExpression !is null)
             if (auto var = receiverExpression.isVarExp)
                 if (auto variable = var.var.isVarDeclaration)
@@ -6456,48 +6372,7 @@ private struct Walker {
         child.currentFunction = function_;
         child.result = Value(false);
         child.locals = locals.dup;
-        child.localPointers = localPointers.dup;
-        child.localPointerIds = localPointerIds.dup;
-        child.scalarCells = scalarCells.dup;
-        child.arrayCells = arrayCells.dup;
-        child.structCells = structCells.dup;
-        child.classCells = classCells.dup;
-        child.classFieldPointerVariables = classFieldPointerVariables.dup;
-        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
-        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
-        child.nestedClassStructFieldPointerVariables =
-            nestedClassStructFieldPointerVariables.dup;
-        child.nestedClassStructFieldPointerOuterFieldIndices =
-            nestedClassStructFieldPointerOuterFieldIndices.dup;
-        child.nestedClassStructFieldPointerInnerFieldIndices =
-            nestedClassStructFieldPointerInnerFieldIndices.dup;
-        child.nestedClassStructFieldPointerWritebacks =
-            nestedClassStructFieldPointerWritebacks.dup;
-        child.classArrayFieldPointerVariables = classArrayFieldPointerVariables.dup;
-        child.classArrayFieldPointerFieldIndices =
-            classArrayFieldPointerFieldIndices.dup;
-        child.classArrayFieldPointerWritebacks = classArrayFieldPointerWritebacks.dup;
-        child.nextLocalPointerId = nextLocalPointerId;
-        child.arrayAllocations = arrayAllocations.dup;
-        child.arrayAllocationAliases = arrayAllocationAliases.dup;
-        child.arrayAllocationVariables = arrayAllocationVariables.dup;
-        child.structFieldPointerVariables = structFieldPointerVariables.dup;
-        child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
-        child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
-        child.structArrayFieldPointerVariables = structArrayFieldPointerVariables.dup;
-        child.structArrayFieldPointerFieldIndices =
-            structArrayFieldPointerFieldIndices.dup;
-        child.structArrayFieldPointerWritebacks = structArrayFieldPointerWritebacks.dup;
-        child.nestedStructFieldPointerVariables = nestedStructFieldPointerVariables.dup;
-        child.nestedStructFieldPointerOuterFieldIndices =
-            nestedStructFieldPointerOuterFieldIndices.dup;
-        child.nestedStructFieldPointerInnerFieldIndices =
-            nestedStructFieldPointerInnerFieldIndices.dup;
-        child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
-        child.fieldAddressAllocations = fieldAddressAllocations.dup;
-        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
-        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
-        child.allocationCount = allocationCount;
+        forkPerFrameCellsInto(child);
         child.thisValue = receiver;
         child.hasThis = true;
 
@@ -8024,56 +7899,7 @@ private struct Walker {
         child.refReturnAssignedValue = value;
         child.result = Value(false);
         child.locals = locals.dup;
-        child.localPointers = localPointers.dup;
-        child.localPointerIds = localPointerIds.dup;
-        child.scalarCells = scalarCells.dup;
-        child.arrayCells = arrayCells.dup;
-        child.structCells = structCells.dup;
-        child.classCells = classCells.dup;
-        child.classFieldPointerVariables = classFieldPointerVariables.dup;
-        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
-        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
-        child.nestedClassStructFieldPointerVariables =
-            nestedClassStructFieldPointerVariables.dup;
-        child.nestedClassStructFieldPointerOuterFieldIndices =
-            nestedClassStructFieldPointerOuterFieldIndices.dup;
-        child.nestedClassStructFieldPointerInnerFieldIndices =
-            nestedClassStructFieldPointerInnerFieldIndices.dup;
-        child.nestedClassStructFieldPointerWritebacks =
-            nestedClassStructFieldPointerWritebacks.dup;
-        child.classArrayFieldPointerVariables = classArrayFieldPointerVariables.dup;
-        child.classArrayFieldPointerFieldIndices =
-            classArrayFieldPointerFieldIndices.dup;
-        child.classArrayFieldPointerWritebacks = classArrayFieldPointerWritebacks.dup;
-        child.nextLocalPointerId = nextLocalPointerId;
-        child.functionPointers = functionPointers.dup;
-        child.functionPointerIds = functionPointerIds.dup;
-        child.nextFunctionPointerId = nextFunctionPointerId;
-        child.delegates = delegates.dup;
-        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
-        child.lazyArgumentLocals = lazyArgumentLocals.dup;
-        child.sliceAliases = sliceAliases.dup;
-        child.arrayAllocations = arrayAllocations.dup;
-        child.arrayAllocationAliases = arrayAllocationAliases.dup;
-        child.arrayAllocationVariables = arrayAllocationVariables.dup;
-        child.structFieldPointerVariables = structFieldPointerVariables.dup;
-        child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
-        child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
-        child.structArrayFieldPointerVariables = structArrayFieldPointerVariables.dup;
-        child.structArrayFieldPointerFieldIndices =
-            structArrayFieldPointerFieldIndices.dup;
-        child.structArrayFieldPointerWritebacks = structArrayFieldPointerWritebacks.dup;
-        child.nestedStructFieldPointerVariables = nestedStructFieldPointerVariables.dup;
-        child.nestedStructFieldPointerOuterFieldIndices =
-            nestedStructFieldPointerOuterFieldIndices.dup;
-        child.nestedStructFieldPointerInnerFieldIndices =
-            nestedStructFieldPointerInnerFieldIndices.dup;
-        child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
-        child.fieldAddressAllocations = fieldAddressAllocations.dup;
-        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
-        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
-        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
-        child.allocationCount = allocationCount;
+        forkPerFrameCellsInto(child);
         child.thisValue = receiver;
         child.hasThis = true;
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
@@ -8143,56 +7969,7 @@ private struct Walker {
         child.refReturnAssignedValue = value;
         child.result = Value(false);
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
-        child.localPointers = localPointers.dup;
-        child.localPointerIds = localPointerIds.dup;
-        child.scalarCells = scalarCells.dup;
-        child.arrayCells = arrayCells.dup;
-        child.structCells = structCells.dup;
-        child.classCells = classCells.dup;
-        child.classFieldPointerVariables = classFieldPointerVariables.dup;
-        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
-        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
-        child.nestedClassStructFieldPointerVariables =
-            nestedClassStructFieldPointerVariables.dup;
-        child.nestedClassStructFieldPointerOuterFieldIndices =
-            nestedClassStructFieldPointerOuterFieldIndices.dup;
-        child.nestedClassStructFieldPointerInnerFieldIndices =
-            nestedClassStructFieldPointerInnerFieldIndices.dup;
-        child.nestedClassStructFieldPointerWritebacks =
-            nestedClassStructFieldPointerWritebacks.dup;
-        child.classArrayFieldPointerVariables = classArrayFieldPointerVariables.dup;
-        child.classArrayFieldPointerFieldIndices =
-            classArrayFieldPointerFieldIndices.dup;
-        child.classArrayFieldPointerWritebacks = classArrayFieldPointerWritebacks.dup;
-        child.nextLocalPointerId = nextLocalPointerId;
-        child.functionPointers = functionPointers.dup;
-        child.functionPointerIds = functionPointerIds.dup;
-        child.nextFunctionPointerId = nextFunctionPointerId;
-        child.delegates = delegates.dup;
-        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
-        child.lazyArgumentLocals = lazyArgumentLocals.dup;
-        child.sliceAliases = sliceAliases.dup;
-        child.arrayAllocations = arrayAllocations.dup;
-        child.arrayAllocationAliases = arrayAllocationAliases.dup;
-        child.arrayAllocationVariables = arrayAllocationVariables.dup;
-        child.structFieldPointerVariables = structFieldPointerVariables.dup;
-        child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
-        child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
-        child.structArrayFieldPointerVariables = structArrayFieldPointerVariables.dup;
-        child.structArrayFieldPointerFieldIndices =
-            structArrayFieldPointerFieldIndices.dup;
-        child.structArrayFieldPointerWritebacks = structArrayFieldPointerWritebacks.dup;
-        child.nestedStructFieldPointerVariables = nestedStructFieldPointerVariables.dup;
-        child.nestedStructFieldPointerOuterFieldIndices =
-            nestedStructFieldPointerOuterFieldIndices.dup;
-        child.nestedStructFieldPointerInnerFieldIndices =
-            nestedStructFieldPointerInnerFieldIndices.dup;
-        child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
-        child.fieldAddressAllocations = fieldAddressAllocations.dup;
-        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
-        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
-        child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
-        child.allocationCount = allocationCount;
+        forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
         child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
 
@@ -11096,51 +10873,7 @@ private struct Walker {
         child.currentFunction = new_.member;
         child.result = Value(false);
         child.locals = locals.dup;
-        child.localPointers = localPointers.dup;
-        child.localPointerIds = localPointerIds.dup;
-        child.scalarCells = scalarCells.dup;
-        child.arrayCells = arrayCells.dup;
-        child.structCells = structCells.dup;
-        child.classCells = classCells.dup;
-        child.classFieldPointerVariables = classFieldPointerVariables.dup;
-        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
-        child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
-        child.nestedClassStructFieldPointerVariables =
-            nestedClassStructFieldPointerVariables.dup;
-        child.nestedClassStructFieldPointerOuterFieldIndices =
-            nestedClassStructFieldPointerOuterFieldIndices.dup;
-        child.nestedClassStructFieldPointerInnerFieldIndices =
-            nestedClassStructFieldPointerInnerFieldIndices.dup;
-        child.nestedClassStructFieldPointerWritebacks =
-            nestedClassStructFieldPointerWritebacks.dup;
-        child.classArrayFieldPointerVariables = classArrayFieldPointerVariables.dup;
-        child.classArrayFieldPointerFieldIndices =
-            classArrayFieldPointerFieldIndices.dup;
-        child.classArrayFieldPointerWritebacks = classArrayFieldPointerWritebacks.dup;
-        child.nextLocalPointerId = nextLocalPointerId;
-        child.functionPointers = functionPointers.dup;
-        child.functionPointerIds = functionPointerIds.dup;
-        child.nextFunctionPointerId = nextFunctionPointerId;
-        child.delegates = delegates.dup;
-        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
-        child.lazyArgumentLocals = lazyArgumentLocals.dup;
-        child.fieldAddressAllocations = fieldAddressAllocations.dup;
-        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
-        child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
-        child.structFieldPointerVariables = structFieldPointerVariables.dup;
-        child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
-        child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
-        child.structArrayFieldPointerVariables = structArrayFieldPointerVariables.dup;
-        child.structArrayFieldPointerFieldIndices =
-            structArrayFieldPointerFieldIndices.dup;
-        child.structArrayFieldPointerWritebacks = structArrayFieldPointerWritebacks.dup;
-        child.nestedStructFieldPointerVariables = nestedStructFieldPointerVariables.dup;
-        child.nestedStructFieldPointerOuterFieldIndices =
-            nestedStructFieldPointerOuterFieldIndices.dup;
-        child.nestedStructFieldPointerInnerFieldIndices =
-            nestedStructFieldPointerInnerFieldIndices.dup;
-        child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
-        child.allocationCount = allocationCount;
+        forkPerFrameCellsInto(child);
         child.thisValue = object;
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
