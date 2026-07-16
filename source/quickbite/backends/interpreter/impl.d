@@ -3647,6 +3647,16 @@ private struct Walker {
         }
     }
 
+    // Drops the cell families that every fresh local or parameter binding
+    // invalidates. Class cells are deliberately excluded: declarations drop
+    // them separately, while parameter binding retains its existing class
+    // alias state.
+    private void dropNonClassCells(VarDeclaration variable) {
+        scalarCells.remove(variable);
+        dropArrayCell(variable);
+        dropStructCell(variable);
+    }
+
     // Reads `variable`'s current value: a promoted `scalarCells` entry (the
     // byte-level authority once `&variable` has promoted one) takes
     // priority over the boxed `locals` mirror, which in turn takes priority
@@ -6535,9 +6545,7 @@ private struct Walker {
             // the same way a fresh `DeclarationExp` does -- recursion reuses
             // the same
             // `VarDeclaration` for a parameter at every call depth.
-            scalarCells.remove(parameter);
-            dropArrayCell(parameter);
-            dropStructCell(parameter);
+            dropNonClassCells(parameter);
             locals[parameter] = arguments[index];
 
             // `runRefArgumentExpression` seeds a `ref` argument still bound to
@@ -6584,9 +6592,7 @@ private struct Walker {
         // parameter is still a new
         // stack slot for its own `VarDeclaration`, so drop any inherited/
         // stale cell.
-        scalarCells.remove(parameter);
-        dropArrayCell(parameter);
-        dropStructCell(parameter);
+        dropNonClassCells(parameter);
         locals[parameter] = Value.undisplayable;
 
         if (auto variable = lazyExpressionVariable(argumentExpression)) {
@@ -11223,9 +11229,7 @@ private struct Walker {
         // recursion at all -- including a nested `foreach`'s per-iteration
         // slice temporary, whose source array is promoted eagerly by
         // `promoteSliceArrayCell` with no address-of needed at all.
-        scalarCells.remove(variable);
-        dropArrayCell(variable);
-        dropStructCell(variable);
+        dropNonClassCells(variable);
         dropClassCell(variable);
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {

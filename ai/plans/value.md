@@ -616,9 +616,11 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    - Per-frame cell state is forked in one place
      (`Walker.forkPerFrameCellsInto`), and field-pointer registry families
      merge through one return-side dispatch point
-     (`Walker.mergeFieldPointerState`). Cell-map merge and drop still need
-     equivalent single dispatch points instead of per-family calls hand-wired
-     at every site.
+     (`Walker.mergeFieldPointerState`). Fresh-binding drops shared by locals
+     and parameters dispatch through `Walker.dropNonClassCells`; class-cell
+     drop remains declaration-only. Cell-map merge and the remaining class
+     drop distinction still need consolidation without changing alias
+     semantics.
    - `runNewStructPointerExpression`'s fork site still duplicates a
      narrow three-field subset with no recorded rationale; confirm it is
      deliberate or fold it into the common path.
