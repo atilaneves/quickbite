@@ -8885,6 +8885,27 @@ private struct Walker {
 
         auto cell = NativeStruct.allocate(unionType);
 
+        // Review finding 3 (SHOULD-FIX, review of value-native-20260715):
+        // `NativeStruct.allocate` zero-initialises, and the transient cell
+        // used to be seeded ONLY with the just-written member's own bytes
+        // before the sibling loop below re-derived every OTHER member's
+        // FULL extent from it -- any sibling WIDER than the written member
+        // read zeros in the bytes outside the written member's extent
+        // instead of the union's PRIOR bytes there (e.g. `int[2] a; int i;`:
+        // writing `u.i` after `u.a = [...]` zeroed `a[1]`, which lies
+        // entirely outside `i`'s 4-byte extent). Seeding the cell from
+        // `receiver` -- the union's CURRENT boxed state, via the SAME
+        // overlay-every-member-in-declaration-order path `promoteStructCell`
+        // already uses to seed a cell from scratch -- first fills every
+        // byte the union's prior state actually agreed on (every earlier
+        // write through this same function already left every native-scalar/
+        // array/struct sibling mutually consistent, so re-overlaying them
+        // here is harmless, exactly as that seed's own doc comment already
+        // established); the just-written member's bytes below then overwrite
+        // only their own extent on top, leaving any wider sibling's tail
+        // outside that extent intact instead of zeroed.
+        writeStructCellScalarFields(cell, receiver);
+
         if (writtenScalar) {
             writeScalar(writtenType, cell.field(fieldIndex), value);
         } else if (writtenStruct) {

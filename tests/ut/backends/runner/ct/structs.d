@@ -1962,6 +1962,50 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Review finding 3 (SHOULD-FIX, review of value-native-20260715):
+// `withUnionFieldWrite` allocated a FRESH, ZEROED transient cell and seeded
+// ONLY the just-written member's own bytes before re-deriving every
+// sibling's FULL extent from it -- any sibling WIDER than the written
+// member read zeros in the bytes outside the written member's extent
+// instead of the union's PRIOR bytes there. Here `a` (8 bytes) is written
+// first, then the narrower `i` (4 bytes, aliasing only `a[0]`) is written;
+// `a[1]` (the tail outside `i`'s extent) must keep its prior value, not
+// read back as zero. `Ctfe` is omitted (omit-don't-pin, `ai/mistakes.md`):
+// real DMD's own CTFE engine refuses this overlapped-field read exactly as
+// the other write-then-read-a-sibling union fixtures above already found.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("union.writeThroughScalarMemberPreservesWiderArraySiblingTail." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seven() {
+                return 7;
+            }
+
+            int thirteen() {
+                return 13;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            union U {
+                int[2] a;
+                int i;
+            }
+
+            unittest {
+                U u;
+                u.a = [seven(), thirteen()];
+                u.i = nine();
+                assert(u.a[1] == thirteen());
+            }
+        });
+    }
+}
+
 // The aggregate-first-member counterpart of
 // `union.untouchedSiblingDefaultsFromFirstMemberBits`: `379ef066`'s own
 // follow-up flagged that when the FIRST declared member is itself an

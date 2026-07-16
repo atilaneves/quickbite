@@ -8070,6 +8070,46 @@ both still need an activation-frame- or object-identity-scoped cell
 rather than a variable-slot-scoped one -- structural changes out of this
 surgical fix's scope.
 
+Progress 2026-07-16 (review fix: `withUnionFieldWrite` zeroed a wider
+sibling's tail, SHOULD-FIX finding 3, review of `value-native-20260715`):
+the transient cell `withUnionFieldWrite` (`impl.d`) allocates to
+re-derive every sibling after one union member's write is fresh and
+zeroed (`NativeStruct.allocate`); it was seeded ONLY with the
+just-written member's own bytes, so a sibling WIDER than the written
+member had its bytes OUTSIDE that member's extent read back as zero
+instead of the union's prior value there (`int[2] a; int i;`: writing
+`u.i` after `u.a = [...]` zeroed `a[1]`; `long l; int i;`: writing `u.i`
+zeroed `l`'s high 4 bytes). Fix, in `impl.d`'s `withUnionFieldWrite`
+only: one added call, `writeStructCellScalarFields(cell, receiver)`,
+seeding the whole cell from the union's CURRENT boxed state (the SAME
+overlay-every-member path `promoteStructCell` already uses to seed a
+cell from scratch) before the just-written member's own bytes are
+written on top and the sibling-refresh loop runs -- a wider sibling's
+tail outside the written extent now keeps its prior bytes instead of
+reading zero. Exposing fixture (red-first; Interpreter read `0`,
+expected `13`, matching the finding's own repro exactly):
+`union.writeThroughScalarMemberPreservesWiderArraySiblingTail`
+(`Interpreter`/`SystemLinker`; `Ctfe` omitted, omit-don't-pin, same
+overlapped-field-read CTFE refusal the other write-then-read-a-sibling
+union fixtures above already hit).
+
+All 16 existing + new `union.*` fixtures reconfirmed green together,
+including the four WRITE-the-WIDEST-member fixtures this fix must not
+regress (`writeThroughOneMemberIsVisibleThroughAnother`,
+`writeThroughScalarMemberIsVisibleThroughStructMember`,
+`writeThroughScalarMemberIsVisibleThroughArrayMember`,
+`writeThroughArrayMemberIsVisibleThroughScalarMember`) plus the
+default-init pair (`untouchedSiblingDefaultsFromFirstMemberBits`,
+`untouchedSiblingDefaultsFromStructFirstMemberBits`) and the
+address-taken union fixture
+(`addressTakenFieldSeesWriteThroughSiblingMember`). Focused suites all
+green (run individually): ct.expressions (581 run, 0 failed, 5/5 failing
+as expected), ct.structs (307 run, 0 failed), ct.arrays (346 run, 0
+failed), ct.exceptions (130 run, 0 failed), interpreter (218 run, 0
+failed), bin.repl (228 run, 0 failed), evaluator.eval (71 run, 0 failed).
+The full `bin/ut --random` was left to the orchestrator per the usual
+long-suite handoff.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as
