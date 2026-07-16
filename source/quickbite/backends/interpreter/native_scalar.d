@@ -5,10 +5,10 @@ private:
 
 
 // A leaf codec between the interpreter's boxed scalar `quickbite.lang.Value`
-// and the host's native byte layout for a D scalar type. This is
-// `ai/plans/value.md` item 7's first production call site for the
-// native-layout container types (`native_block.d`/`native_array.d`/
-// `native_struct.d`): `impl.d`'s `reinterpretLocalPointerLoad` allocates a
+// and the host's native byte layout for a D scalar type. This is the first
+// production call site for the native-layout container types
+// (`native_block.d`/`native_array.d`/`native_struct.d`): `impl.d`'s
+// `reinterpretLocalPointerLoad` allocates a
 // `NativeBlock`, `writeScalar`s the source local's bits into it, and
 // `readScalar`s the target type back out, so `*cast(T*) &local` becomes a
 // load of the same bytes at a different static type instead of a hardcoded
@@ -28,9 +28,9 @@ private:
 // `ffi_marshal.d`'s `marshalArgument`/`unmarshalValue` route their
 // exact-size scalar arms through `writeScalar`/`readScalar` too, so this is
 // the interpreter's single scalar<->bytes authority across both the
-// native-layout container call site above and the FFI marshaller (`ai/plans/
-// value.md` item 7's "must not grow a second set of D layout rules"
-// guardrail). One case stays on `ffi_marshal.d`'s own byte splat: a native
+// native-layout container call site above and the FFI marshaller: the
+// interpreter must not grow a second set of D layout rules. One case stays
+// on `ffi_marshal.d`'s own byte splat: a native
 // closure/callback result buffer for a narrow scalar return type is widened
 // by libffi to its `ffi_arg` width and must carry a sign/zero-extended copy
 // of the value across the WHOLE widened buffer for ABI correctness, which

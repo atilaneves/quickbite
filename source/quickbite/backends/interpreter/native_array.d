@@ -15,12 +15,11 @@ private:
 static assert((void[]).sizeof == 2 * size_t.sizeof);
 
 
-// The array-native block handle skeleton (ai/plans/value.md item 7's
-// "Next PR"): an interpreter-owned array value carrying a stable block, the
-// DMD element type, length, and stride. `allocate` picks the block's GC scan
-// policy from whether the element type carries pointers; there is no
-// separate root-registration token or lifecycle to track (see
-// `NativeBlock.Scan` and ai/plans/value.md's "GC roots" note).
+// The array-native block handle: an interpreter-owned array value carrying
+// a stable block, the DMD element type, length, and stride. `allocate`
+// picks the block's GC scan policy from whether the element type carries
+// pointers; there is no separate root-registration token or lifecycle to
+// track (see `NativeBlock.Scan`).
 public struct NativeArray {
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.native_struct: NativeStruct;
@@ -213,8 +212,7 @@ public struct NativeArray {
     // guest variable to it, exactly as compiled D does -- not for this
     // container: `reserve` throwing on a borrowed handle is the correct
     // low-level primitive regardless of what a higher-level guest operation
-    // later decides to do about it. There is no such call site yet (see
-    // ai/plans/value.md item 7).
+    // later decides to do about it. There is no such call site yet.
     //
     // `begin == end` (including `begin == end == length`, D's legal `xs[$
     // .. $]`) is legal and returns a real zero-length array; `scan` is
@@ -574,7 +572,7 @@ public struct NativeArray {
     // How many `_stride`-sized elements the block's true GC allocation
     // could hold, derived from `NativeBlock.trueByteSize` rather than
     // stored -- the GC already knows this fact, so a separate `_capacity`
-    // field would be a second, driftable copy of it (item 7's guardrail).
+    // field would be a second, driftable copy of it.
     // For an owned array this is `>= length` (the GC's bin size rounds up
     // from the requested `length * stride`); for a borrowed or
     // zero-length array `_block.trueByteSize` is 0, so this is 0 too --
@@ -603,9 +601,9 @@ public struct NativeArray {
     // leaving the address unchanged; if extension fails, allocating a new
     // block of the required byte length with this array's own scan policy,
     // copying the live `length * stride` bytes across, and adopting the new
-    // block, where the address legitimately changes. Per item 7's
-    // Address-stability bullet, that is correct -- stale pointers into the
-    // old block go stale exactly as compiled D loses append capacity on
+    // block, where the address legitimately changes. That is correct --
+    // stale pointers into the old block go stale exactly as compiled D
+    // loses append capacity on
     // reallocation, and no boxed/old-block value is ever copied back as the
     // authority. Both paths leave the SAME observable state: `block.
     // byteLength == n * stride` and every byte beyond the live `length *
@@ -711,9 +709,9 @@ public struct NativeArray {
     // -- unlike `setLength`'s own grow path below, which always zeroes.
     //
     // Grow (`n > _length`) on a `borrowed` handle throws unconditionally,
-    // never touching storage -- a deliberate narrowing (review finding,
-    // 2026-07-10) of an earlier version of this function, which instead
-    // allowed growth within the handle's own already-verified `_block.
+    // never touching storage -- a deliberate narrowing of an earlier
+    // version of this function, which instead allowed growth within the
+    // handle's own already-verified `_block.
     // byteLength` (e.g. growing a shrunk `NativeArray.slice` back within
     // its original span). That version was unsound: because `slice` is a
     // real, bidirectional aliasing view, re-zeroing on such a regrowth was

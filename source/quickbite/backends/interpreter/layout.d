@@ -7,9 +7,8 @@ private:
 // Layout facts read directly from DMD: byte size and whether a type carries
 // pointers the GC must scan. This module computes none of these itself --
 // every value returned is DMD's own number, verbatim, on a 64-bit host (see
-// the `static assert` below). Per ai/plans/value.md item 7's guardrail:
-// DMD-derived layout facts stay the source of truth; the interpreter must
-// not grow a second set of D layout rules.
+// the `static assert` below). DMD-derived layout facts stay the source of
+// truth; the interpreter must not grow a second set of D layout rules.
 
 // `dmd.mtype.Type.size` returns `uinteger_t`, a `ulong` regardless of host
 // width (`dmd.globals`). `typeByteSizeImpl` narrows that to `size_t`; on a

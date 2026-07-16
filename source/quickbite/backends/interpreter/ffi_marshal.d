@@ -406,10 +406,9 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.native_array: NativeArray;
 
-        // Routed through the item 7 container handle rather than a
-        // hand-rolled `index * elementSize` walk (ai/plans/value.md item
-        // 7's guardrail), mirroring `unmarshalSlice`'s default arm.
-        // `writeback.bytes` is this module's own previously-marshalled
+        // Routed through `NativeArray` rather than a hand-rolled
+        // `index * elementSize` walk, mirroring `unmarshalSlice`'s default
+        // arm. `writeback.bytes` is this module's own previously-marshalled
         // buffer (see `marshalPointerElements`), so `NativeArray.borrow`'s
         // wrap-without-copy is exactly the old direct sub-slice.
         PointerElementsWriteback[] result;
@@ -653,8 +652,8 @@ private void marshalArgument(
 
     switch (type.ty) {
         // native_scalar.writeScalar is `layout.d`'s single scalar<->bytes
-        // authority (`ai/plans/value.md` item 7); it needs `dest.length ==
-        // layout.typeByteSize(type)` exactly. That holds for every argument,
+        // authority; it needs `dest.length == layout.typeByteSize(type)`
+        // exactly. That holds for every argument,
         // receiver, ref-result, and struct/array-field buffer this function
         // fills. It does NOT hold for a native closure/callback result
         // buffer (`invokeClosure`/`InterpreterInboundTrampolineSession.
@@ -714,10 +713,9 @@ private void marshalArgument(
             return;
 
         case TY.Tstruct: {
-            // Routed through the item 7 container handle rather than a
-            // hand-rolled `sym.fields[i].offset`/`size(fieldType)` walk
-            // (ai/plans/value.md item 7's guardrail). `field(index)` is a
-            // writable sub-slice of `buffer` (the block borrows the
+            // Routed through `NativeStruct` rather than a hand-rolled
+            // `sym.fields[i].offset`/`size(fieldType)` walk. `field(index)`
+            // is a writable sub-slice of `buffer` (the block borrows the
             // caller's own mutable buffer), and `fieldDeclaration(index).
             // type` is the DECLARED field type -- `.toBasetype` below
             // reproduces the exact same recursive dispatch the old code's
@@ -840,12 +838,11 @@ private ubyte[] marshalPointerElements(
     import quickbite.lang: Value;
     import quickbite.backends.interpreter.native_array: NativeArray;
 
-    // Routed through the item 7 container handle rather than a hand-rolled
-    // `new ubyte[](length * elementSize)` + `index * elementSize` walk
-    // (ai/plans/value.md item 7's guardrail), mirroring
-    // `marshalSliceArgument` below. `NativeArray.allocate` zeroes via
-    // `GC.calloc` exactly as `new ubyte[]` did, so an element still `=
-    // void` that this loop `continue`s past stays zero.
+    // Routed through `NativeArray` rather than a hand-rolled
+    // `new ubyte[](length * elementSize)` + `index * elementSize` walk,
+    // mirroring `marshalSliceArgument` below. `NativeArray.allocate`
+    // zeroes via `GC.calloc` exactly as `new ubyte[]` did, so an element
+    // still `= void` that this loop `continue`s past stays zero.
     const offset = cast(size_t) pointer.pointerElementOffset;
     const length = pointer.pointerLength - offset;
     auto na = NativeArray.allocate(elementType, length);
@@ -911,10 +908,10 @@ private ubyte[] marshalSliceArgument(
     in imported!"quickbite.lang".Value value,
     ref ubyte[][] keepAliveBuffers,
 ) {
-    // Routed through the item 7 container handle rather than a hand-rolled
-    // `new ubyte[](length * elementSize)` + `index * elementSize` walk
-    // (ai/plans/value.md item 7's guardrail). `elementType` is resolved to
-    // its basetype up front, exactly as the old code did, and reused both
+    // Routed through `NativeArray` rather than a hand-rolled
+    // `new ubyte[](length * elementSize)` + `index * elementSize` walk.
+    // `elementType` is resolved to its basetype up front, exactly as the
+    // old code did, and reused both
     // to build the handle and to dispatch the recursive marshal.
     import quickbite.backends.interpreter.native_array: NativeArray;
 
@@ -1147,11 +1144,10 @@ private imported!"quickbite.lang".Value unmarshalStaticArray(
     import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
     import quickbite.backends.interpreter.native_array: NativeArray;
 
-    // Routed through the item 7 container handle rather than a hand-rolled
-    // `index * elementSize` walk (ai/plans/value.md item 7's guardrail).
-    // `elementType` is resolved to its basetype up front, exactly as the
-    // old code did, and reused both to build the handle and to dispatch
-    // the recursive unmarshal.
+    // Routed through `NativeArray` rather than a hand-rolled
+    // `index * elementSize` walk. `elementType` is resolved to its
+    // basetype up front, exactly as the old code did, and reused both to
+    // build the handle and to dispatch the recursive unmarshal.
     auto staticArray = cast(TypeSArray) type;
     auto elementType = staticArray.next.toBasetype;
     const length = staticArrayLength(staticArray);
@@ -1206,10 +1202,9 @@ private imported!"quickbite.lang".Value unmarshalSlice(
             return Value.stringValue(chars[0 .. length].dup);
 
         default:
-            // Routed through the item 7 container handle rather than a
-            // hand-rolled `index * elementSize` walk (ai/plans/value.md
-            // item 7's guardrail). `data` is native memory this function
-            // did not allocate -- exactly `NativeArray.borrow`'s own
+            // Routed through `NativeArray` rather than a hand-rolled
+            // `index * elementSize` walk. `data` is native memory this
+            // function did not allocate -- exactly `NativeArray.borrow`'s own
             // documented precondition, vouched for here by the native call
             // that filled this return buffer. No length precondition to
             // assert here (unlike `unmarshalStruct`/`unmarshalStaticArray`):
@@ -1316,9 +1311,9 @@ private imported!"quickbite.lang".Value unmarshalStruct(
     import quickbite.backends.interpreter.native_struct: NativeStruct;
     import std.string: fromStringz;
 
-    // Routed through the item 7 container handle rather than a hand-rolled
-    // `sym.fields[i].offset`/`size(fieldType)` walk (ai/plans/value.md
-    // item 7's "must not grow a second set of D layout rules" guardrail).
+    // Routed through `NativeStruct` rather than a hand-rolled
+    // `sym.fields[i].offset`/`size(fieldType)` walk: layout facts stay
+    // DMD's own, never a second set of D layout rules grown here.
     // `NativeStruct.fieldDeclaration(index).type` is the DECLARED field
     // type, not the basetype the old code dispatched on -- `.toBasetype`
     // below reproduces the exact same recursive dispatch.

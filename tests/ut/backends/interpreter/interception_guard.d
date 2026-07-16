@@ -15,8 +15,7 @@ private:
 // at the `Walker.runCallExpression` chokepoint via `isLegalInterception`/
 // `enforceInterceptionPolicy` (source/quickbite/backends/interpreter/
 // interception_guard.d). These exercise the predicate directly rather than
-// driving it through a full interpreter fixture, per the plan's own guard
-// work item.
+// driving it through a full interpreter fixture.
 
 FuncDeclaration findFunction(
     Module module_,

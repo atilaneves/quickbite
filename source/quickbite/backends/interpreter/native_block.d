@@ -29,8 +29,7 @@ public struct NativeBlock {
     //
     // Do not read `borrowed` as "not GC memory". It meant that before
     // `subRange` existed, and guards keyed on it that way were wrong in
-    // four separate places (see ai/plans/value.md's "ownership vs
-    // GC-visibility" note). `trueByteSize` and `tryExtendTo` gate on
+    // four separate places. `trueByteSize` and `tryExtendTo` gate on
     // `Ownership` because they ask this enum's own question; the
     // scanned-destination check in `NativeArray.writeSliceHeader` asks
     // the GC instead, because it asks a different one.
@@ -117,8 +116,8 @@ public struct NativeBlock {
 
     // The true byte size of this block's underlying GC allocation, read
     // from `core.memory.GC.sizeOf` -- the GC's own bin size, not a size we
-    // invent or cache ourselves (item 7's guardrail: layout facts stay the
-    // GC/DMD's single source of truth, never a second copy of our own).
+    // invent or cache ourselves: layout facts stay the GC/DMD's single
+    // source of truth, never a second copy of our own.
     //
     // `Ownership.borrowed` returns 0 unconditionally, checked explicitly
     // rather than left to fall out of `GC.sizeOf`'s own contract. That
