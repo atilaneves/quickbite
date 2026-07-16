@@ -1690,7 +1690,6 @@ static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.diverges,
         "see Interpreter pin below (throws loudly instead of writing " ~
         "memory)"),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory." ~
@@ -2678,7 +2677,7 @@ static foreach (backend; Matrix!(
 // depth's stale cell instead of getting a fresh one for its own (shorter,
 // differently-valued) array. SystemLinker is the oracle; other backends
 // omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveArrayDeclarationDropsStaleArrayCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2837,7 +2836,7 @@ static foreach (backend; Matrix!(
 // 107, the inner depth's own unrelated value. SystemLinker is the oracle;
 // other backends omitted per the omit-don't-pin convention (unconfirmed
 // there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveArrayPointerPassedAcrossRebindDereferencesOuterValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2903,7 +2902,7 @@ static foreach (backend; Matrix!()) {
 // (shorter) cell and threw `NativeArray.element: index out of range`
 // instead of declining to the outer pointer's own frozen (in-range)
 // snapshot.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveArrayPointerPassedAcrossShorterRebindDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3056,14 +3055,13 @@ static foreach (backend; Matrix!()) {
 // A pointer minted inside such a ctor could numerically collide with an
 // already-live field-snapshot id from an unrelated `&s.field`, so a later
 // legitimate write through it was wrongly refused as an aliasing write.
-// Ctfe/Bytecode omitted: `new`-with-user-ctor pointer indirection through a
-// class field is not exercised on those backends yet (unrelated gaps, not
-// this fix). LLVMJit omitted: allocation ids are Interpreter-only
+// Ctfe omitted: `new`-with-user-ctor pointer indirection through a class
+// field is not exercised on that backend yet. LLVMJit omitted: allocation ids
+// are Interpreter-only
 // bookkeeping with no compiled-code analogue, so promoting LLVMJit here
 // would trivially pass without pinning anything meaningful.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed, "not exercised on this backend yet"),
-    Omit!(Bytecode, Because.unconfirmed, "not exercised on this backend yet"),
     Omit!(LLVMJit, Because.unconfirmed,
         "vacuous on LLVMJit; promotion would trivially pass"),
 )) {
@@ -4023,7 +4021,7 @@ static foreach (backend; Matrix!()) {
 // boxed `locals` mirror's length, not the cell's, so the out-of-range cell
 // read crashes the host instead of throwing a `RangeError`. SystemLinker is
 // the oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.nestedFunctionArrayAppendGrowsArrayVisibleThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4118,7 +4116,7 @@ static foreach (backend; Matrix!()) {
 // `s`'s view with the REBOUND array's bytes even though real D gives `a`
 // entirely new storage and leaves `s`'s old view untouched. SystemLinker is
 // the oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.refParameterRebindDoesNotCorruptPreexistingSliceView." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4163,7 +4161,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 // slice view of the captured array's OLD storage, via
 // `writeBackNestedLocals`'s own use of the same `writeCelledLocal(...,
 // arrayIsRefWriteback: true)` reconciliation. SystemLinker is the oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.nestedFunctionArrayRebindDoesNotCorruptPreexistingSliceView." ~
         backend.stringof)
     @Tags(backend.stringof)

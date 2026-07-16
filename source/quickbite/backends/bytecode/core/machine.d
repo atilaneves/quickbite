@@ -41,6 +41,9 @@ package(quickbite.backends.bytecode) RunResult run(
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.
     ubyte[][] heap;
+    // Blocks whose appendable status entered this run through a native-layout
+    // slice descriptor write. Ordinary VM-owned arrays keep copy-on-append.
+    size_t[] appendablePointers;
     // VM-owned `int[int]` maps backing associative-array locals. A local's
     // 8-byte slot holds a 1-based index into this table (0 meaning a not-yet-
     // created empty map); the table roots every map's keys and values.
@@ -337,12 +340,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case appendElement1, appendElement2, appendElement4:
-                heap ~= appendElement(
+                auto appended = appendElement(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
                     appendElementSize(instruction.op),
+                    heap,
+                    appendablePointers,
                 );
+                heap ~= appended;
                 ++ip;
                 break;
 
@@ -677,6 +683,37 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case mulUnsignedInt4WithCarry:
+                const lhs4 = scalarValue!uint(stack, base + instruction.b);
+                const rhs4 = scalarValue!uint(stack, base + instruction.c);
+                const wideProduct4 = cast(ulong) lhs4 * rhs4;
+                const ubyte[uint.sizeof] unsignedProduct4 = scalarBytes(
+                    cast(uint) wideProduct4,
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = unsignedProduct4;
+                stack[base + instruction.a + uint.sizeof] =
+                    wideProduct4 > uint.max;
+                ++ip;
+                break;
+
+            case mulUnsignedInt8WithCarry:
+                const lhs8 = scalarValue!ulong(stack, base + instruction.b);
+                const rhs8 = scalarValue!ulong(stack, base + instruction.c);
+                const hasCarry8 = lhs8 != 0 && rhs8 > ulong.max / lhs8;
+                const ubyte[ulong.sizeof] unsignedProduct8 = scalarBytes(
+                    lhs8 * rhs8,
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + ulong.sizeof
+                ] = unsignedProduct8;
+                stack[base + instruction.a + ulong.sizeof] = hasCarry8;
+                ++ip;
+                break;
+
             case divInt8:
                 const ubyte[long.sizeof] quotient8 = scalarBytes(
                     scalarValue!long(stack, base + instruction.b) /
@@ -684,6 +721,28 @@ package(quickbite.backends.bytecode) RunResult run(
                 );
                 stack[base + instruction.a .. base + instruction.a + long.sizeof]
                     = quotient8;
+                ++ip;
+                break;
+
+            case divUnsignedInt8:
+                const ubyte[ulong.sizeof] unsignedQuotient8 = scalarBytes(
+                    scalarValue!ulong(stack, base + instruction.b) /
+                    scalarValue!ulong(stack, base + instruction.c),
+                );
+                stack[
+                    base + instruction.a .. base + instruction.a + ulong.sizeof
+                ] = unsignedQuotient8;
+                ++ip;
+                break;
+
+            case modUnsignedInt8:
+                const ubyte[ulong.sizeof] unsignedRemainder8 = scalarBytes(
+                    scalarValue!ulong(stack, base + instruction.b) %
+                    scalarValue!ulong(stack, base + instruction.c),
+                );
+                stack[
+                    base + instruction.a .. base + instruction.a + ulong.sizeof
+                ] = unsignedRemainder8;
                 ++ip;
                 break;
 
@@ -703,6 +762,16 @@ package(quickbite.backends.bytecode) RunResult run(
                     scalarValue!int(stack, base + instruction.c),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = bits;
+                ++ip;
+                break;
+
+            case bitOrInt8:
+                const ubyte[long.sizeof] bits = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) |
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
                     = bits;
                 ++ip;
                 break;
@@ -753,6 +822,27 @@ package(quickbite.backends.bytecode) RunResult run(
                         scalarValue!int(stack, base + instruction.c)),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = unsignedRightShifted;
+                ++ip;
+                break;
+
+            case shrInt8:
+                const ubyte[long.sizeof] rightShifted = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) >>
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = rightShifted;
+                ++ip;
+                break;
+
+            case ushrInt8:
+                const ubyte[long.sizeof] unsignedRightShifted = scalarBytes(
+                    cast(long) (scalarValue!ulong(
+                        stack, base + instruction.b,
+                    ) >> scalarValue!int(stack, base + instruction.c)),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
                     = unsignedRightShifted;
                 ++ip;
                 break;
@@ -2237,30 +2327,76 @@ private ubyte[] concatArrays(
     return block;
 }
 
+private extern(C) bool gc_expandArrayUsed(
+    void[] slice,
+    size_t newUsed,
+    bool atomic,
+) pure nothrow;
+
 // Append the element at `elementOffset` to the slice descriptor at
-// `descriptorOffset`, reallocating its backing memory. A fresh block of
-// `(length + 1)` elements is allocated, the existing elements copied in, and the
-// new element written at the end; the descriptor is overwritten with the new
-// {ptr, length + 1}. Returns the new block so the caller can root it in `heap`.
-// Reallocating rather than growing in place matches compiled D: a slice into the
-// old block keeps pointing at the untouched original.
+// `descriptorOffset`. Use druntime's appendable-block bookkeeping first so a
+// prior `reserve` can grow the slice in place; otherwise allocate and copy.
+// Returns the resulting block so the caller can root it in `heap`.
 private ubyte[] appendElement(
     ref ubyte[] stack,
     in size_t descriptorOffset,
     in size_t elementOffset,
     in uint elementSize,
+    in ubyte[][] heap,
+    ref size_t[] appendablePointers,
 ) @trusted {
+    import core.memory: GC;
+
     const length = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
     const pointer = scalarValue!size_t(stack, descriptorOffset);
+    const oldBytes = length * elementSize;
+    const newBytes = (length + 1) * elementSize;
+    const blockInfo = GC.query(cast(void*) pointer);
+    const canGrowInPlace = containsPointer(appendablePointers, pointer) ||
+        (!heapContainsPointer(heap, pointer) &&
+            (blockInfo.attr & GC.BlkAttr.APPENDABLE) != 0);
 
-    auto block = new ubyte[]((length + 1) * elementSize);
-    const source = (cast(const(ubyte)*) pointer)[0 .. length * elementSize];
-    block[0 .. length * elementSize] = source[];
-    block[length * elementSize .. (length + 1) * elementSize] =
+    if (pointer != 0 &&
+        canGrowInPlace &&
+        gc_expandArrayUsed(
+            (cast(void*) pointer)[0 .. oldBytes], newBytes, false)) {
+        if (!containsPointer(appendablePointers, pointer))
+            appendablePointers ~= pointer;
+        auto block = (cast(ubyte*) pointer)[0 .. newBytes];
+        block[oldBytes .. newBytes] =
+            stack[elementOffset .. elementOffset + elementSize];
+        writeSliceDescriptor(stack, descriptorOffset, block, length + 1);
+        return block;
+    }
+
+    auto block = new ubyte[](newBytes);
+    const source = (cast(const(ubyte)*) pointer)[0 .. oldBytes];
+    block[0 .. oldBytes] = source[];
+    block[oldBytes .. newBytes] =
         stack[elementOffset .. elementOffset + elementSize];
 
     writeSliceDescriptor(stack, descriptorOffset, block, length + 1);
     return block;
+}
+
+private bool heapContainsPointer(in ubyte[][] heap, in size_t pointer)
+    @trusted @nogc nothrow pure
+{
+    foreach (block; heap) {
+        const begin = cast(size_t) block.ptr;
+        if (pointer >= begin && pointer < begin + block.length)
+            return true;
+    }
+    return false;
+}
+
+private bool containsPointer(in size_t[] pointers, in size_t pointer)
+    @safe @nogc nothrow pure
+{
+    foreach (candidate; pointers)
+        if (candidate == pointer)
+            return true;
+    return false;
 }
 
 // Resize the dynamic array at `descriptorOffset` to `newLength` elements
@@ -2882,8 +3018,9 @@ private final class BytecodeNativeMarshaller:
         const ty = type.toBasetype.ty;
         if (ty == TY.Tvoid)
             return direction == NativeMarshaller.Direction.fromNative;
-        return ty == TY.Tint32 || ty == TY.Tint64 || ty == TY.Tuns64 ||
-            ty == TY.Tfloat64 || ty == TY.Tpointer;
+        return ty == TY.Tbool || ty == TY.Tint32 || ty == TY.Tuns32 ||
+            ty == TY.Tint64 || ty == TY.Tuns64 || ty == TY.Tfloat64 ||
+            ty == TY.Tpointer || ty == TY.Tclass || ty == TY.Tarray;
     }
 
     public bool canRepresentOutCell(Type pointedToType) {
@@ -2913,6 +3050,17 @@ private final class BytecodeNativeMarshaller:
         // width (4 bytes for `int`, 8 for a pointer); copy exactly that many,
         // not a fixed 8.
         const slot = _argument + index * nativeArgumentSlotSize;
+        import dmd.astenums: TY;
+        if (type.toBasetype.ty == TY.Tarray) {
+            assert(buffer.length == 2 * size_t.sizeof);
+            buffer[0 .. size_t.sizeof] = _stack[
+                slot + size_t.sizeof .. slot + 2 * size_t.sizeof
+            ];
+            buffer[size_t.sizeof .. 2 * size_t.sizeof] = _stack[
+                slot .. slot + size_t.sizeof
+            ];
+            return;
+        }
         buffer[] = _stack[slot .. slot + buffer.length];
     }
 
@@ -2921,11 +3069,14 @@ private final class BytecodeNativeMarshaller:
     // libffi. Out parameters point directly at the target local; ordinary
     // arguments point at their fixed-stride argument slot.
     public const(void)* argumentAddress(in size_t index, Type type) @trusted {
+        import dmd.astenums: TY;
         import quickbite.backends.bytecode.core.program:
             nativeArgumentSlotSize, noOutParameterOffset;
 
         const outParameter = _outParameterOffsets[index];
         if (outParameter != noOutParameterOffset)
+            return null;
+        if (type.toBasetype.ty == TY.Tarray)
             return null;
 
         const slot = _argument + index * nativeArgumentSlotSize;
@@ -2965,6 +3116,8 @@ private final class BytecodeNativeMarshaller:
                 // `callNativeImpl` (ffi/core.d) calls `readResult` even for a
                 // void-returning callee; there is no result to copy back.
                 return 0;
+            case Tbool:
+                return bool.sizeof;
             case Tint32:
                 return int.sizeof;
             case Tint64:

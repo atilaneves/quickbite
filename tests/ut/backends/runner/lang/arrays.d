@@ -1729,20 +1729,19 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// This fixture pins the oracle's real `reserve` contract, not the
-// gc_reserveArrayCapacity shim's echoed return value. Interpreter omitted:
-// the shim fabricates a capacity number without growing the value model's
-// backing allocation, so `arr.ptr` before and after filling to the reserved
-// capacity compares unequal (a representation gap in the shim). Ctfe
-// omitted: pointer-identity `is` on a GC-backed slice lowers to an address
-// cast CTFE refuses at compile time. Bytecode omitted: `.ptr` of an array is
-// not yet implemented there.
+// Owed §9.10 gap fixture (ai/plans/interpreter.md): the oracle's real
+// `reserve` contract, not the gc_reserveArrayCapacity shim's echoed return
+// value. Interpreter omitted: the shim fabricates a capacity number without
+// growing the value model's backing allocation, so `arr.ptr` before and
+// after filling to the reserved capacity compares unequal (representation
+// debt, retires with value.md's native-layout track). Ctfe omitted:
+// pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE
+// refuses at compile time.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
     Omit!(Interpreter, Because.unconfirmed,
         "gc_reserveArrayCapacity shim doesn't grow the backing allocation; representation debt, retires with value.md's native-layout track"),
-    Omit!(Bytecode, Because.unconfirmed, "`.ptr` of an array not yet implemented"),
 )) {
     @("dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate." ~
         backend.stringof)
