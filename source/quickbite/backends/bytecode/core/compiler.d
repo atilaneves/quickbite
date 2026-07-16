@@ -74,8 +74,7 @@ private struct Compiler {
     // element size for indexing and heap allocation.
     private DynamicArrayLocal[VarDeclaration] _dynamicArrayLocals;
     // Locals whose slot holds a raw `size_t` pointer value (`T* p`); the value
-    // records the pointed-at element scalar, giving the stride for arithmetic,
-    // indexing, dereference, and slicing.
+    // records the pointed-at element scalar for opcode selection.
     private ScalarType[VarDeclaration] _pointerLocals;
     // `ref` locals whose slot holds a raw pointer to the aliased storage.
     private ScalarType[VarDeclaration] _refLocalPointers;
@@ -5254,11 +5253,7 @@ private struct Compiler {
         );
 
         _code ~= Instruction(
-            pointerSliceOp(
-                pointer.pointerElement == ScalarType.void_
-                    ? 1
-                    : size(pointer.pointerElement),
-            ),
+            pointerSliceOp(pointerElementMetadata(slice.e1.type).byteStride),
             destination,
             pointer.offset,
             bounds,
@@ -11762,22 +11757,29 @@ private struct Compiler {
     }
 
     private ScalarType pointerElementScalar(Type pointerType) {
+        return pointerElementMetadata(pointerType).opcodeType;
+    }
+
+    private PointerElementMetadata pointerElementMetadata(Type pointerType) {
         import dmd.astenums: TY;
 
         auto element = pointerType.toBasetype.nextOf;
         if (element is null)
-            return ScalarType.void_;
+            return PointerElementMetadata(ScalarType.void_, 0);
+        const byteStride = element.toBasetype.ty == TY.Tfunction
+            ? 0
+            : cast(uint) staticArraySize(element);
         if (element.toBasetype.ty == TY.Tsarray)
             element = element.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tstruct)
-            return ScalarType.void_;
+            return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tarray)
-            return ScalarType.void_;
+            return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tdelegate)
-            return ScalarType.void_;
+            return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tfunction)
-            return ScalarType.void_;
-        return scalarType(element);
+            return PointerElementMetadata(ScalarType.void_, byteStride);
+        return PointerElementMetadata(scalarType(element), byteStride);
     }
 }
 
@@ -11801,12 +11803,16 @@ private struct Operand {
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
     bool isString; // when set, `offset` holds a string-slice descriptor
     // When set, `offset` holds a raw `size_t` pointer value (8 bytes) into
-    // VM-owned heap memory; `pointerElement` is the pointed-at element scalar,
-    // giving the stride for arithmetic, indexing, dereference, and slicing.
+    // VM-owned heap memory; `pointerElement` selects scalar load/store opcodes.
     bool isPointer;
     imported!"quickbite.backends.bytecode.core.program".ScalarType
         pointerElement;
     bool isComplex;
+}
+
+private struct PointerElementMetadata {
+    imported!"quickbite.backends.bytecode.core.program".ScalarType opcodeType;
+    uint byteStride;
 }
 
 // A dynamic-array local: its slice-descriptor frame offset and the element

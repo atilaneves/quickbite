@@ -64,6 +64,11 @@ This is the load-bearing decision; everything else follows from it.
   slices into locals, unions, and reinterpret casts behave exactly as native
   code does. This eliminates the whole class of deviations the tree-walking
   interpreter's pointer-snapshot model is known for.
+- Pointer metadata keeps opcode scalar type and native element byte stride as
+  separate facts. Aggregate pointees use the non-scalar opcode marker, but
+  stepping and slicing still use DMD's size of the immediate pointed-at type
+  (`int[]*` advances by a slice descriptor and `S*` by `S.sizeof`). Never infer
+  byte stride from the scalar opcode type.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
