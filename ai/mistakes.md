@@ -367,17 +367,27 @@
   a vtable-registration fix.
 
 - For a suspected bytecode-core VM bug, bisect with `bin/qb`'s non-interactive
-  REPL (`printf '<stmt>;\n<expr>\n' | ./bin/qb -b bytecode`, statements need a
-  trailing `;`, the final bare expression displays its value; compare against
-  `./bin/qb -b system-linker` as the oracle) instead of decoding a crash's
-  compiled instructions by hand through gdb: it isolates the exact failing
-  construct in seconds where manual `Instruction` field/`Op`-ordinal decoding
-  from a core dump takes many single-stepped `print` calls. Concretely,
-  `compileBoolCondition` (`if`/`while`/ternary/`!`/`&&`/`||`) and
-  `Op.notBool`/`Op.jumpIfFalse`/`Op.jumpIfTrue` read only the condition
-  operand's first byte, not its full native width; a non-bool, non-pointer
-  scalar whose value has a zero low byte but is otherwise non-zero (e.g.
-  `ulong v = 256; if (!v)`) is misclassified as false. `core.bitop.bsr`'s
-  `if (!v) return -1;` guard hits this for any power-of-256 input, so the
-  next VM call site it reaches (whatever divides by `bsr(...) + 1`) reads a
-  divide-by-zero SIGFPE that has nothing to do with the actual bug.
+  REPL (`./bin/qb -b bytecode -c '<expr>'`, or pipe statements with a trailing
+  `;` then a bare final expression into `./bin/qb -b <backend>`; an IIFE like
+  `./bin/qb -b bytecode -c '(){ ulong v = 256; return (v && true) ? 1 : 0;
+  }()'` lets `-c` take statements too; compare against `./bin/qb -b
+  system-linker` as the oracle) instead of decoding a crash's compiled
+  instructions by hand through gdb: it isolates the exact failing construct
+  in seconds where manual `Instruction` field/`Op`-ordinal decoding from a
+  core dump takes many single-stepped `print` calls.
+
+- Don't act on a claimed bug mechanism inherited from a prior agent's report
+  without re-verifying it against the oracle first; a plausible-sounding
+  attribution to a nearby function can be wrong even when the symptom is
+  real, and acting on it sends the fix into the wrong code. Concretely,
+  `ulong v = 256; if (!v)` misbehaving was mis-attributed to
+  `compileBoolCondition`/`Op.notBool`/`Op.jumpIfFalse`/`Op.jumpIfTrue`
+  reading only the condition's low byte; the actual defect (fixed in
+  `b0cddcfa`) was that DMD's `LogicalExp` semantic folds `x && true`/`x ||
+  false`/`true && x` into `CastExp(bool, x)`, and
+  `compileCastExpression`'s bool-target branch in
+  `source/quickbite/backends/bytecode/core/compiler.d` only special-cased
+  pointer sources — every other source fell through to the generic
+  `size(target) <= size(source.type)` path, copying just the target's
+  1-byte width via `Op.copy` instead of computing `operand != 0` at the
+  operand's own full width.
