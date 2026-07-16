@@ -132,7 +132,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review: dmd's own semantic3 merges a synthesized
+// dmd's own semantic3 merges a synthesized
 // zero-init statement for every `out` parameter of a zero-init struct type
 // into the callee's body (`BlitExp(VarExp(param), IntegerExp(0))`, with the
 // literal's own `.type` retyped to the struct type as a "memset" marker --

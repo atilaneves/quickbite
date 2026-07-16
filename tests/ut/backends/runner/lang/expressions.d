@@ -1427,7 +1427,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Once `&f` promotes an authoritative native-scalar cell (value.md item 7),
+// Once `&f` promotes an authoritative native-scalar cell,
 // a later DIRECT reassignment (`f = threePointZero`, not a pointer write)
 // must keep that cell current too: both the direct read of `f` and a read
 // through the pointer must see the new value's bits, not the stale ones from
@@ -1466,7 +1466,7 @@ static foreach (backend; Matrix!(
 // the callee writes raw bits into the parameter's slot via a same-size
 // pointer cast, and the CALLER's variable (bound to that `ref` parameter)
 // must observe the write after the call returns. This is the guest-level
-// call-site frontier of value.md item 7: a freshly promoted native cell for
+// call-site frontier: a freshly promoted native cell for
 // the `ref` parameter must stay connected to the caller's own cell/box.
 // SystemLinker is the oracle; Bytecode runs this confirmed typed-frame path.
 // Other backends remain omitted per the omit-don't-pin convention
@@ -1503,7 +1503,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 1 (value.md item 7 review): a fresh `DeclarationExp` binding is a
+// A fresh `DeclarationExp` binding is a
 // new stack slot, but the interpreter never dropped a stale `scalarCells`
 // entry inherited for the same `VarDeclaration`. Recursion reuses the same
 // AST `VarDeclaration` for `x` at every call depth, and `child.scalarCells =
@@ -1536,7 +1536,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Same Finding 1 bug, loop-shaped: a `foreach` body re-executes the same
+// The same stale scalar-cell bug as the recursion case above, loop-shaped: a `foreach` body re-executes the same
 // `DeclarationExp` for `x` every iteration, so the first iteration's
 // promoted cell must not leak into the second iteration's fresh `x`.
 static foreach (backend; Matrix!(
@@ -1562,7 +1562,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 2 (value.md item 7 review): post-increment's `VarExp` arm read
+// Post-increment's `VarExp` arm read
 // `variable in locals` directly, bypassing a promoted `scalarCells` entry --
 // stale once a cross-frame pointer write (`setToFive`) refreshes only the
 // cell.
@@ -1592,7 +1592,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 3 (value.md item 7 review): `(*p)++` reads and writes through
+// `(*p)++` reads and writes through
 // `localPointerTarget`/`writePointerTarget`'s local-pointer arm, which only
 // consulted the boxed `locals` mirror -- the same bypass post-increment's
 // `VarExp` arm had, but for the pointer-deref path.
@@ -1619,7 +1619,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 5 (value.md item 7 review): `writeLocation`'s `PtrExp` cell arm
+// `writeLocation`'s `PtrExp` cell arm
 // required the pointee to be exactly the cell's own width, throwing for a
 // narrower native-scalar pointee (a `ubyte*` reinterpret of a `uint`)
 // instead of writing into the low bytes the way the read side
@@ -1647,7 +1647,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 1 (value.md item 7 review): `&g` on a dataseg variable (module-
+// `&g` on a dataseg variable (module-
 // level/`__gshared`/`static`) routed through `promoteScalarCell`, which
 // seeded the cell from `defaultValue` (0) because a dataseg variable's real
 // initializer is materialized lazily on first read, and the `VarExp` read
@@ -1674,7 +1674,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 2 (value.md item 7 review): once `&i` has promoted a native-scalar
+// Once `&i` has promoted a native-scalar
 // cell, `writeLocation`'s `PtrExp` arm required the pointee to be a
 // native-scalar type no wider than the cell; a struct-typed (or wider)
 // pointee used to fall through to a mirror-only `locals` write, leaving the
@@ -1739,7 +1739,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
-// value.md item 7's array-native-storage guest call site: `&a[0]` takes a
+// Array-native-storage guest call site: `&a[0]` takes a
 // pointer into a dynamic array local, then the array is written DIRECTLY
 // (`a[0] = ...`, not through the pointer). SystemLinker's `p` aliases `a`'s
 // real storage, so the direct write is visible through `*p`. Other backends
@@ -1812,7 +1812,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7's write-side counterpart of the fixture above: a write
+// Write-side counterpart of the fixture above: a write
 // THROUGH one pointer into a dynamic array element must be visible through a
 // SECOND, independently-taken pointer into the same element. SystemLinker's
 // `p`/`q` both alias `a`'s real storage, so a write through `p` is visible
@@ -1847,7 +1847,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md item 7 candidate slice: `foreach (ref e; a)` mutation must be
+// `foreach (ref e; a)` mutation must be
 // visible through an earlier-taken pointer into `a`. SystemLinker's `p`
 // aliases `a`'s real storage, so the loop's writes are visible through `*p`.
 // Other backends omitted per the omit-don't-pin convention (unconfirmed
@@ -1881,7 +1881,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md item 7 candidate slice: a compound/post-increment write THROUGH an
+// A compound/post-increment write THROUGH an
 // array-element pointer (`(*p)++`) must be visible both through the pointer
 // itself and directly on the array. SystemLinker's `p` aliases `a`'s real
 // storage, so the increment is visible both ways. Other backends omitted per
@@ -1910,7 +1910,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md item 7's cross-frame array-pointer aliasing candidate: a callee
+// Cross-frame array-pointer aliasing: a callee
 // takes `&a[i]` of a caller's array passed by `ref` and writes through it.
 // SystemLinker's `ref` parameter aliases the caller's real storage, so `p`
 // (taken in the caller BEFORE the call, into the SAME backing array) must
@@ -1949,7 +1949,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md item 7 candidate: a pointer taken into a SLICE (not the source
+// A pointer taken into a SLICE (not the source
 // array itself) must still see a later direct write to the source. This is
 // a genuine characterization test, not a gap fixture: `promoteSliceArrayCell`
 // already gives a slice local an `arrayCells` entry sharing the SAME
@@ -1993,7 +1993,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md item 7's struct phase, first guest call site: `&s.x` snapshotted
+// Struct phase, first guest call site: `&s.x` snapshotted
 // the field's value at address-of time instead of aliasing `s`'s own
 // storage, so a later direct write to the field (`s.x = ninetyNine()`) was
 // invisible through the earlier pointer -- the same snapshot gap the array
@@ -2033,8 +2033,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Class sibling of the struct fixture above (value.md item 7's class phase
-// starts): a class object's scalar field, address-taken via `&c.x`, must
+// Class sibling of the struct fixture above: a class object's scalar
+// field, address-taken via `&c.x`, must
 // alias the SAME storage a later direct field write updates. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there), matching
 // the struct fixture's own backend set.
@@ -2073,8 +2073,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// Write-through-pointer sibling of the direct-write fixture above (value.md
-// item 7's class phase, next slice): the same `&c.x` cell must also accept a
+// Write-through-pointer sibling of the direct-write fixture above: the
+// same `&c.x` cell must also accept a
 // write THROUGH the pointer (`*p = v`), visible via a later direct field
 // read, mirroring the struct phase's own
 // `pointer.addressOfStructFieldWriteThroughUpdatesField`. Other backends
@@ -2115,8 +2115,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// Cross-frame sibling of the write-through fixture above (value.md item 7's
-// class phase, next slice): the caller takes `&c.x` (promoting a `classCells`
+// Cross-frame sibling of the write-through fixture above: the caller
+// takes `&c.x` (promoting a `classCells`
 // entry and a `classFieldPointerVariables`/`classFieldPointerFieldIndices`
 // reverse-lookup entry in the CALLER's own frame), then passes the pointer
 // into a callee that writes through it, mirroring the struct phase's own
@@ -2166,8 +2166,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// Same-frame plain-variable class aliasing (value.md item 7's class phase,
-// decomposition item 1): `C c2 = c;` copies a REFERENCE, not an object, so
+// Same-frame plain-variable class aliasing: `C c2 = c;` copies a
+// REFERENCE, not an object, so
 // `c` and `c2` must observe the same underlying object -- a write through
 // one alias's field must be visible through the other, with no `&`/pointer
 // involved at all. Before this slice each class-typed local boxed its own
@@ -2199,16 +2199,15 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// Same-frame plain-variable class aliasing, non-scalar field (value.md item
-// 7's class phase, decomposition item 1's own aggregate-composition
-// follow-up): `classCellFieldValue` -- the DIRECT (non-pointer) class-field
+// Same-frame plain-variable class aliasing, non-scalar field:
+// `classCellFieldValue` -- the DIRECT (non-pointer) class-field
 // read's authoritative-cell dispatcher -- only consults the shared
 // `classCells` cell for a `native_scalar.isNativeScalarType` field; a
 // scalar-element static-array field still falls back to the boxed `locals`
 // mirror, which the OTHER alias's write never touches. `c2.arr[0] = 99;`
-// already reaches the shared cell (the write side's `writeClassCellScalarFields`
-// widens every scalar-element static-array field, value.md item 7
-// decomposition item 4), but reading `c.arr[0]` back through the ORIGINAL
+// already reaches the shared cell (the write side's
+// `writeClassCellScalarFields` widens every scalar-element static-array
+// field), but reading `c.arr[0]` back through the ORIGINAL
 // alias, with no `&`/pointer involved, still sees the stale independent copy.
 // Only Interpreter and SystemLinker (the oracle) are pinned here per the
 // omit-don't-pin convention.
@@ -2235,15 +2234,14 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// Same-frame plain-variable class aliasing, struct-typed field (value.md
-// item 7's class phase, decomposition item 1's own aggregate-composition
-// follow-up, struct shape): `classCellFieldValue` -- the DIRECT (non-pointer)
+// Same-frame plain-variable class aliasing, struct-typed field:
+// `classCellFieldValue` -- the DIRECT (non-pointer)
 // class-field read's authoritative-cell dispatcher -- widened the scalar and
 // scalar-element-static-array field shapes so far; a struct-typed field
 // still falls back to the boxed `locals` mirror, which the OTHER alias's
 // write never touches. `c2.inner.x = 99;` already reaches the shared cell
 // (the write side's `writeClassCellScalarFields` already recurses one level
-// into a struct-typed field, value.md item 7 decomposition item 4), but
+// into a struct-typed field), but
 // reading `c.inner.x` back through the ORIGINAL alias, with no `&`/pointer
 // involved, still sees the stale independent copy. Only Interpreter and
 // SystemLinker (the oracle) are pinned here per the omit-don't-pin
@@ -2275,13 +2273,13 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// Cross-frame class reference aliasing (value.md item 7's class phase,
-// decomposition item 2): passing the SAME object as TWO different by-value
+// Cross-frame class reference aliasing: passing the SAME object as TWO
+// different by-value
 // parameters must leave both parameters observing the SAME object, since a
 // class argument is reference-passed -- exactly as if both parameters were
 // `C c2 = c;` aliases of one another, except the aliasing happens at the
 // call boundary (parameter binding) rather than a declaration. The existing
-// §9.10 shim (`writeBackByValueClassArguments`) only writes the mutated
+// `writeBackByValueClassArguments` shim only writes the mutated
 // value back into the ONE argument expression location it was invoked with
 // (`locals[b]`'s own caller-side location) after the call returns -- it has
 // no mechanism linking the SEPARATE `VarDeclaration`s `a` and `b` DURING the
@@ -2311,11 +2309,10 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// `this`-reached class aliasing (value.md item 7's class phase,
-// decomposition item 3): a METHOD mutating `this.x` must be visible to
+// `this`-reached class aliasing: a METHOD mutating `this.x` must be visible to
 // another caller-side alias of the SAME object through the shared class
-// cell, exactly like decomposition item 2's `combine(a, b)` case, except
-// the mutating write happens through `this` rather than an ordinary
+// cell, exactly like the `combine(a, b)` cross-frame aliasing case above,
+// except the mutating write happens through `this` rather than an ordinary
 // by-value parameter. `c.mutateAndCheck(c)` binds the receiver AND the
 // by-value parameter `other` from the SAME argument expression `c`, so
 // `other` gets a `classCells` entry shared with the caller's `c`
@@ -2349,7 +2346,6 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// BLOCKER regression (review of value-native-20260715, finding 1):
 // `writeCelledLocal`'s `classCells` branch could not tell a reference REBIND
 // (`c = b;`) apart from a whole-object field-write refresh, and unconditionally
 // overwrote the (possibly SHARED) cell in place with the new object's fields --
@@ -2385,7 +2381,6 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// BLOCKER regression (review of value-native-20260715, finding 2):
 // `writeLocation`'s `DotVarExp` class arm re-derived the receiver via
 // `runExpression(dot.e1)`, which for a class local is the STALE boxed
 // `locals[variable]` mirror -- the plain `VarExp` read path has no
@@ -2422,8 +2417,8 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// HIGH regression (second-pass review of value-native-20260715): the
-// CROSS-FRAME / nested-function-capture analog of the BLOCKER above
+// The CROSS-FRAME / nested-function-capture analog of the reference-rebind
+// aliasing bug above
 // (`class.reassigningAliasedVariableDoesNotCorruptOriginalObject`). A nested
 // function rebinding a captured aliased class variable THROUGH an
 // intermediate `null` (`c = null; c = new C(2); c.x = 5;`) used to drop this
@@ -2577,7 +2572,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Rung 7 review finding: addressOfExpression's DotVarExp branch minted a
+// addressOfExpression's DotVarExp branch minted a
 // fresh `++allocationCount` identity on *every* evaluation of `&s.field`, so
 // re-taking the same field's address gave a different identity each time
 // (`&a.value !is &a.value`) — real D gives the same address back. Fixed by
@@ -2614,14 +2609,13 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Rung 7 review finding, sibling of the identity fix above: writing through
+// Sibling of the identity fix above: writing through
 // a `&s.field` pointer used to silently write into the pointer's own
 // throwaway value snapshot instead of `s`'s storage, losing the write with
 // no diagnostic. SystemLinker pins real D's actual (aliasing) write-through
 // behaviour.
 //
-// Promoted 2026-07-14 (value.md item 7's struct phase, write-through-pointer
-// slice): `Holder` has exactly one scalar field of a plain struct LOCAL,
+// `Holder` has exactly one scalar field of a plain struct LOCAL,
 // address-taken via `&a.value` -- precisely the case the `structCells`
 // native cell (already promoted at address-of time) now supports end to
 // end. The Interpreter used to refuse this write outright
@@ -2659,7 +2653,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// value.md item 7 review, finding 1, extended to arrays: the same
+// Extended to arrays: the same
 // stale-cell bug `pointer.recursiveDeclarationDropsStaleScalarCell` names
 // for `scalarCells`, but for `arrayCells`. Recursion reuses the same AST
 // `VarDeclaration` for `a` at every call depth, and `child.arrayCells =
@@ -2753,8 +2747,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Class sibling of `recursiveStructDeclarationDropsStaleStructCell` above
-// (value.md item 7 class phase: `dropClassCell` gap) -- unlike the struct
+// Class sibling of `recursiveStructDeclarationDropsStaleStructCell` above:
+// unlike the struct
 // and array phases, the class phase has NO `dropClassCell` mirroring
 // `dropStructCell`/`dropArrayCell`, so `runDeclarationExpression`'s fresh-
 // binding cleanup never drops a stale `classCells` entry inherited via
@@ -2814,7 +2808,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// Final-review finding 3 (BLOCKER): `allocationId`/`fieldSnapshotAllocationId`
+// `allocationId`/`fieldSnapshotAllocationId`
 // memoize their id per `VarDeclaration` and were never removed alongside the
 // cell drop the two fixtures above already exercise, so a pointer minted at
 // an OUTER recursion depth and passed DOWN into a call that re-declares the
@@ -2935,7 +2929,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Final-review finding 4 (SHOULD-FIX): `structFieldPointerVariables`/
+// `structFieldPointerVariables`/
 // `FieldIndices` are copied back wholesale after a call returns. A
 // recursive callee's own fresh `S s = ...;` re-declaration drops the
 // reverse-lookup entry for `s` from the CALLEE's own (duped) copy via
@@ -2986,8 +2980,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md item 7's struct phase left cross-frame struct-field-pointer
-// write-through unexercised: the caller takes `&s.x` (promoting a
+// Cross-frame struct-field-pointer
+// write-through: the caller takes `&s.x` (promoting a
 // `structCells` entry and a `structFieldPointerVariables`/
 // `structFieldPointerFieldIndices` reverse-lookup entry in the CALLER's own
 // frame), then passes the pointer into a callee that writes through it. The
@@ -3447,7 +3441,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review, finding 3: `a ~= x` grew the boxed array but left
+// `a ~= x` grew the boxed array but left
 // a promoted `arrayCells` entry (here promoted by `&a[0]`) at its OLD
 // length. A subsequent in-bounds write to the newly-appended element
 // (`a[1] = five();`) is unaffected -- `writeThroughArrayCell` is a silent
@@ -3489,7 +3483,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md item 7 review, finding 4: `runSliceAssignExpression`'s bounded
+// `runSliceAssignExpression`'s bounded
 // form (`a[i .. j] = x`) writes `locals[variable]` directly but never
 // refreshes a promoted `arrayCells` entry -- here promoted by `&a[0]` --
 // which `readIndexExpression`'s cell arm reads in preference to the boxed
@@ -3534,7 +3528,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md review (finding 5): `bump(int[] s)` binds `s` via
+// `bump(int[] s)` binds `s` via
 // `recordParameterSliceAlias` -- a slice-expression argument never calls
 // `promoteSliceArrayCell`, so `s` itself never gets an `arrayCells` entry --
 // while `a`, the slice's source, already has one (promoted here by
@@ -3581,7 +3575,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md review (finding 6): `writePointerTarget` called
+// `writePointerTarget` called
 // `writeThroughArrayPointer` but not `writeThroughStructFieldPointer`, so
 // `(*p)++` through a struct-field pointer read the promoted `structCells`
 // entry (via `pointerTargetValue`/`structFieldPointerCellValue`) but wrote
@@ -3623,7 +3617,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md review (finding 7): once `&s.x` has promoted a `structCells`
+// Once `&s.x` has promoted a `structCells`
 // entry for `s`, a `ref` LOCAL bound directly to `s.x` (recorded via
 // `recordStructFieldAlias`/`structFieldAliases`, the only reachable path to
 // `writeThroughStructFieldAlias`) writes `ninetyNine()` through
@@ -3721,7 +3715,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// value.md final review (finding 1): `recordStructFieldAlias` records ANY
+// `recordStructFieldAlias` records ANY
 // `DotVarExp` initializer bound to a `ref` local -- including a non-scalar
 // (array/nested-struct) field -- so `writeThroughStructFieldAlias` reached a
 // promoted `structCells` entry for a field it cannot represent as a native
@@ -3769,11 +3763,11 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Re-review finding 2 (BLOCKER, 2026-07-14): `writeCelledLocal`'s plain
+// `writeCelledLocal`'s plain
 // rebind arm (`a = [...]`, no recursion involved at all) dropped
 // `arrayCells[variable]` but never the memoized `arrayAllocations`/
 // `arrayAllocationVariables` id -- the same per-binding fresh-id principle
-// finding 3 above established, applied incompletely to this arm. A pointer
+// established above, applied incompletely to this arm. A pointer
 // taken BEFORE the rebind (`p`) kept resolving, via the still-live reverse
 // map, into the REBOUND array's own freshly-promoted cell instead of
 // declining to its own frozen snapshot. Before any production change,
@@ -3911,10 +3905,11 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// New finding 3 (BLOCKER, re-review 2026-07-14): `mergeArrayAllocationMaps`
+// `mergeArrayAllocationMaps`
 // unconditionally unions a child's reverse (`arrayAllocationVariables`)
 // entries into the parent. A child's OWN fresh rebind of a shared
-// `VarDeclaration` mints a FRESH id for its own cell (finding 3 above), and
+// `VarDeclaration` mints a FRESH id for its own cell (per the per-binding
+// fresh-id principle above), and
 // dynamic-array elements are GC-allocated, so a pointer into that fresh
 // child cell may legally escape upward (returned from the child). The
 // reverse map is keyed by `VarDeclaration`, not by binding, so routing that
@@ -3956,7 +3951,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Re-review BLOCKER (2026-07-14, cross-frame cell staleness): the parent's
+// Cross-frame cell staleness: the parent's
 // promoted `arrayCells` entry is READ-AUTHORITATIVE (`runIndexExpression`'s
 // cell arm shadows the boxed `locals` mirror), but `writeBackNestedLocals`
 // only ever refreshed the parent's boxed `locals` mirror with a bare
@@ -4012,7 +4007,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Crash twin of the BLOCKER above: a nested function GROWING a captured
+// Crash twin of the cross-frame cell staleness bug above: a nested function GROWING a captured
 // array (`a ~= x`) changes its length, so the parent's stale `arrayCells`
 // entry -- never reconciled by `writeBackNestedLocals` -- is not merely
 // wrong but too SHORT for the post-append index, and
@@ -4059,7 +4054,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Recursion twin of the BLOCKER above, with no nesting at all: a dynamic-
+// Recursion twin of the cross-frame cell staleness bug above, with no nesting at all: a dynamic-
 // array PARAMETER (not `ref`) shares its backing storage across recursive
 // calls exactly like real D. `writeBackArrayPointerTargets` -- the
 // `writeBackNestedLocals` counterpart for a variable whose address was
@@ -4102,8 +4097,8 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Cross-frame sibling of the same-frame `s = b;` rebind fixture (value.md
-// item 7 review round 2, finding 2): a `ref int[]` parameter REBOUND to a
+// Cross-frame sibling of the same-frame `s = b;` rebind fixture: a `ref
+// int[]` parameter REBOUND to a
 // new same-length array inside the callee must give the caller's own
 // variable fresh storage WITHOUT corrupting a pre-existing slice VIEW of
 // the caller's OLD storage. `writeBackRefArguments` routes the parameter's
@@ -4210,7 +4205,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 }
 
 
-// value.md item 7's array-of-struct widening: `promoteArrayCell` previously
+// Array-of-struct widening: `promoteArrayCell` previously
 // only gave `arrayCells` an entry when the element type was `native_scalar.
 // isNativeScalarType`, so `&a[i]` on an array of structs stayed on the
 // boxed-snapshot path (`arrayPointer`'s VarExp branch still minted an
@@ -4249,7 +4244,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7's array-element/nested-field composition follow-up:
+// Array-element/nested-field composition follow-up:
 // composing the two slices above -- a nested struct field OF an
 // array-of-struct element, `&a[i].inner.x`. `addressOfExpression`'s
 // `DotVarExp` branch only called `promoteNestedStructFieldCell`, which
@@ -4291,7 +4286,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// Review finding 4 (SHOULD-FIX, 2026-07-16): `dropArrayCell` cleaned only
+// `dropArrayCell` cleaned only
 // `arrayCells` plus the `arrayAllocations`/`arrayAllocationVariables` memo --
 // it never invalidated the `arrayNestedStructFieldPointer*` reverse-lookup
 // maps the fixture above populates, unlike every OTHER pointer family
@@ -4350,8 +4345,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// value.md item 7's struct-static-array-field follow-up (the smaller of the
-// two deferred candidates named in the array-of-struct progress note):
+// Struct-static-array-field follow-up:
 // `&s.arr[i]` where `arr` is a static-array field of a plain struct local.
 // `arrayPointer`'s `array.isDotVarExp` branch minted a fresh `++
 // allocationCount` id for this shape with no reverse-lookup registration at
@@ -4390,7 +4384,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7's struct-static-array-field follow-up, foreach-ref
+// Struct-static-array-field follow-up, foreach-ref
 // mutation shape: `foreach (ref e; s.arr) e = ...;` lowers (dmd's own
 // foreach-to-for rewrite) to `T[] __r = s.arr[]; ... ref T e = __r[__key];`,
 // so the write lands through a SLICE alias of the field, not a direct
@@ -4428,8 +4422,8 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// Class sibling of the struct-static-array-field fixture above (value.md
-// item 7 decomposition item 4, aggregate composition): `&c.arr[i]` where
+// Class sibling of the struct-static-array-field fixture above:
+// `&c.arr[i]` where
 // `arr` is a scalar-element static-array field of a plain class local `c`.
 // `arrayPointer`'s `array.isDotVarExp` branch only calls
 // `promoteStructArrayFieldCell`, which requires `variable.type.toBasetype.
@@ -4469,7 +4463,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7's class-static-array-field follow-up, foreach-ref
+// Class-static-array-field follow-up, foreach-ref
 // mutation shape: the class sibling of `pointer.
 // structStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer`
 // above -- `foreach (ref e; c.arr) e = ...;` lowers (dmd's own foreach-to-for
@@ -4516,8 +4510,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// value.md item 7 decomposition item 4 (aggregate composition), write-
-// through-pointer follow-up: the opposite direction of `pointer.
+// Write-through-pointer follow-up: the opposite direction of `pointer.
 // classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
 // above -- write THROUGH `&c.arr[i]`, then read `c.arr[i]` directly --
 // mirroring `pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly`'s
@@ -4551,7 +4544,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7 decomposition item 4's remaining cross-frame follow-up: the
+// Cross-frame follow-up: the
 // class-receiver sibling of `pointer.
 // structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
 // caller takes `&c.arr[0]` (promoting a `classCells` entry and a
@@ -4601,9 +4594,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7's nested-struct-field follow-up (the smaller of the two
-// deferred candidates named in the struct-static-array-field progress
-// note): `&s.inner.x` where `inner` is a (non-union) struct field of a
+// Nested-struct-field follow-up: `&s.inner.x` where `inner` is a
+// (non-union) struct field of a
 // plain struct local and `x` is a scalar field of `inner`.
 // `addressOfExpression`'s `DotVarExp` branch resolves `fieldSnapshotAllocationId`/
 // `promoteStructFieldCell` only for a `dot.e1.isVarExp` receiver; here
@@ -4643,7 +4635,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7's pointer-identity memoization follow-up, the nested-field
+// Pointer-identity memoization follow-up, the nested-field
 // sibling of `pointer.addressOfStructFieldIsStableAcrossReEvaluation` above:
 // `fieldSnapshotAllocationId` only memoizes an id per (receiver variable,
 // field index) when `dot.e1` resolves directly to a `VarExp` -- for
@@ -4682,7 +4674,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// value.md item 7's cross-frame pointer-identity follow-up (54d0bb99's own
+// Cross-frame pointer-identity follow-up (54d0bb99's own
 // deferred gap): `nestedFieldAddressAllocations` memoizes `&s.inner.x`'s
 // allocation id only within the SAME `Walker` frame -- a nested function
 // closing over `s` (the identical `VarDeclaration`, no rebind at all) runs
@@ -4731,8 +4723,6 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// value.md item 7's array-of-static-array follow-up (the smallest remaining
-// candidate the nested-struct-field progress note above left open):
 // `&a[i]` on a dynamic array whose element type is itself a scalar-element
 // static array (`int[2][]`) -- the array-of-static-array sibling of the
 // array-of-struct fixture above. `promoteArrayCell` previously stopped at
@@ -4769,7 +4759,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7's struct-static-array-field cross-frame follow-up: the
+// Struct-static-array-field cross-frame follow-up: the
 // array-typed-field sibling of `pointer.
 // structFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The caller
 // takes `&s.arr[0]` (promoting a `structCells` entry and a
@@ -4819,7 +4809,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7's nested-struct-field cross-frame follow-up: the
+// Nested-struct-field cross-frame follow-up: the
 // nested-field sibling of `pointer.
 // structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
 // caller takes `&s.inner.x` (promoting a `structCells` entry and a
@@ -4873,7 +4863,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7 decomposition item 4 (aggregate composition): the class
+// The class
 // sibling of `pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer`
 // one level deeper, mirroring `pointer.
 // addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but with a
@@ -4920,8 +4910,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7 decomposition item 4 (aggregate composition), write-
-// through-pointer follow-up: the opposite direction of `pointer.
+// Write-through-pointer follow-up: the opposite direction of `pointer.
 // nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer` above
 // -- write THROUGH `&c.inner.x`, then read `c.inner.x` directly -- mirroring
 // `pointer.addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but
@@ -4958,7 +4947,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// value.md item 7 decomposition item 4's remaining cross-frame follow-up: the
+// Cross-frame follow-up: the
 // nested-class-struct-field sibling of `pointer.
 // classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
 // caller takes `&c.inner.x` (promoting a `classCells` entry and a
@@ -5012,7 +5001,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-// Review finding 5 (SHOULD-FIX, 2026-07-16): `promoteArrayNestedStructFieldCell`
+// `promoteArrayNestedStructFieldCell`
 // evaluated `index.e2` itself (to seed the
 // `arrayNestedStructFieldPointer*ElementIndices` reverse-lookup entry), then
 // `addressOfExpression`'s `DotVarExp` branch unconditionally called

@@ -1410,16 +1410,15 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// cerealed's `grainWithLengthInBytesAttr` (ffi.md/interpreter.md §9.7,
-// 2026-07-13 follow-up) grows an array-typed FIELD of a `ref` struct
-// parameter with `__traits(getMember, val, member).length++;`. dmd lowers
-// postfix `.length++` on a field access through a synthetic `ref` local
-// (`ref int[] __tmp = h.arr; ... _d_arraysetlengthT(__tmp, ...)`), unlike
-// plain `.length = .length + 1`, which resizes the field directly. Keep
-// this fixture's index deliberately `$`-free (`arr[arr.length - 1]`): a
+// cerealed's `grainWithLengthInBytesAttr` grows an array-typed FIELD of a
+// `ref` struct parameter with `__traits(getMember, val, member).length++;`.
+// dmd lowers postfix `.length++` on a field access through a synthetic `ref`
+// local (`ref int[] __tmp = h.arr; ... _d_arraysetlengthT(__tmp, ...)`),
+// unlike plain `.length = .length + 1`, which resizes the field directly.
+// Keep this fixture's index deliberately `$`-free (`arr[arr.length - 1]`): a
 // distinct `$`/`lengthVar`-ordering bug in the assignment-target path
 // (`Walker.runIndexAssignExpression`'s `DotVarExp` branch) affects
-// `h.arr[$ - 1] = ...` and is tracked separately in interpreter.md §9.7,
+// `h.arr[$ - 1] = ...` and is exercised separately (see the fixture below),
 // not fixed here, to keep this fixture pinned to the one root it exposes.
 static foreach (backend; Matrix!()) {
     @("struct.postfixLengthIncrementGrowsRefParamArrayField." ~ backend.stringof)
@@ -1443,7 +1442,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// The third root named in the fixture above (interpreter.md §9.7):
+// This is the `$`/`lengthVar`-ordering bug named in the fixture above:
 // `Walker.runIndexAssignExpression`'s `DotVarExp` branch (impl.d) used to
 // evaluate `index.e2` before running `index.e1`/seeding `index.lengthVar`,
 // so `$` inside an index-ASSIGN target through a struct FIELD (`h.arr[$ -
@@ -1476,7 +1475,7 @@ static foreach (backend; Matrix!()) {
 // cerealed's cereal.d (`ubyte b = void; cereal.grain(b);` inside the
 // isOutputRange `grain(U, C, T)` template, then `val.put(b)`) writes a
 // void-initialised local through two nested `ref`-forwarding calls before
-// reading it back. interpreter.md §9.7 (void-init `ref`-argument reads).
+// reading it back.
 static foreach (backend; Matrix!()) {
     @("refArgument.voidLocalIsReadableAfterNestedRefWrite." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1514,7 +1513,7 @@ static foreach (backend; Matrix!()) {
 // a bogus `RangeError` instead of the intended comparison. Real D never
 // re-evaluates a `ref` argument's lvalue after the call: it binds the
 // address once. Root: skip the write-back (and its re-evaluation) whenever
-// the parameter's value is unchanged after the call. interpreter.md §9.7.
+// the parameter's value is unchanged after the call.
 static foreach (backend; Matrix!()) {
     @("refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten." ~
         backend.stringof)
@@ -1546,7 +1545,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Rung 7 review finding, sibling of the fix just above: the unchanged-
+// Sibling of the fix just above: the unchanged-
 // parameter skip check compared `Value`s with plain `==`, which is wrong for
 // floating scalars two ways. `-0.0 == 0.0` is true, so a callee that
 // genuinely rewrites a negative zero to a positive zero got its write-back
@@ -1586,7 +1585,7 @@ static foreach (backend; Matrix!()) {
 // (a struct field, here `val.units`) left `__r` untracked as a slice alias:
 // writes to `e`'s fields updated the interpreter's local snapshot of `__r`
 // but never propagated back to `val.units`, so the caller's array element
-// silently kept its default value. interpreter.md §9.7.
+// silently kept its default value.
 static foreach (backend; Matrix!()) {
     @("struct.foreachRefOverFieldArrayPersistsElementWrites." ~
         backend.stringof)
@@ -1673,7 +1672,7 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
 // default-initialised enum field (a plain scalar `Value`, per
 // `defaultValue`'s `toBasetype`-driven dispatch) against the same enum
 // member from a literal-constructed struct. No cast, pointer, or cereal
-// machinery needed. interpreter.md §9.7.
+// machinery needed.
 static foreach (backend; Matrix!()) {
     @("struct.equalityComparesEnumFieldByValueAcrossOrigin." ~
         backend.stringof)
@@ -1705,7 +1704,7 @@ static foreach (backend; Matrix!()) {
 // callee's own frame, so a nested `DotVarExp` field read through it saw
 // a bare `Value.void_` instead of the materialised default struct
 // `runExpression`'s `VarExp` branch already produces for a directly
-// uninitialized local. interpreter.md §9.7.
+// uninitialized local.
 static foreach (backend; Matrix!()) {
     @("refArgument.voidStructLocalFieldWritableThroughNestedRefWrite." ~
         backend.stringof)
@@ -1735,9 +1734,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md final review (finding 2): once `foreach (v; a)` has promoted an
-// `arrayCells` entry for `a` (`promoteSliceArrayCell` needs no address-of at
-// all), a member-function write to that same array reached through a
+// Once `foreach (v; a)` has promoted an `arrayCells` entry for `a`
+// (`promoteSliceArrayCell` needs no address-of at all), a member-function
+// write to that same array reached through a
 // struct field (`Holder(a).bump()`, funnelled through
 // `writeThroughThisStructArrayFieldAlias`) updated only the boxed mirror,
 // never `a`'s promoted cell. `a[0]` reads through the cell-authoritative
@@ -1791,7 +1790,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// New finding 1 (BLOCKER, re-review 2026-07-14): `ff93e303` added
+// Commit `ff93e303` added
 // `child.structFieldPointerWritebacks.remove(variable)` in
 // `writeBackStructFieldPointerTargets` as "behaviour-neutral hardening" --
 // it is not neutral. An intermediate member-function frame (`Poker.poke`,
@@ -2000,7 +1999,6 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-// Review finding 3 (SHOULD-FIX, review of value-native-20260715):
 // `withUnionFieldWrite` allocated a FRESH, ZEROED transient cell and seeded
 // ONLY the just-written member's own bytes before re-deriving every
 // sibling's FULL extent from it -- any sibling WIDER than the written

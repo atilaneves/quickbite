@@ -37,7 +37,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             // The interpreter's own message, verbatim: rewriting it through
             // DMD's CTFE engine (as an earlier revision did) replaced the
             // real, actionable error with whichever body-less leaf CTFE
-            // happened to reject (ai/plans/interpreter.md §5).
+            // happened to reject.
             return EvalResult(EvalResult.Diagnostic(exception.msg));
         }
     }
@@ -97,9 +97,9 @@ private struct Walker {
 
     private Value[VarDeclaration] locals;
 
-    // Authoritative native bytes for an address-taken scalar local (value.md
-    // item 7's guest-local slice): populated eagerly the moment `&local` is
-    // taken (see `localPointerValue`), for `native_scalar.
+    // Authoritative native bytes for an address-taken scalar local:
+    // populated eagerly the moment `&local` is taken (see
+    // `localPointerValue`), for `native_scalar.
     // isNativeScalarType` locals only. Non-address-taken locals, and every
     // aggregate/pointer local, still live only in `locals` above -- this
     // table is a narrow byte-level authority, not a replacement for it.
@@ -109,9 +109,9 @@ private struct Walker {
     private NativeBlock[VarDeclaration] scalarCells;
 
     // Authoritative native bytes for an address-taken dynamic array local
-    // whose element type is `native_scalar.isNativeScalarType` (value.md
-    // item 7's array guest-local slice, mirroring `scalarCells` above):
-    // populated eagerly the moment `&a[i]` is taken (see `promoteArrayCell`,
+    // whose element type is `native_scalar.isNativeScalarType`, mirroring
+    // `scalarCells` above: populated eagerly the moment `&a[i]` is taken
+    // (see `promoteArrayCell`,
     // called from `arrayPointer`). Once a cell exists, a direct element
     // write (`writeIndexLocation`), a write THROUGH a pointer into the
     // element (`writeThroughArrayPointer`), and a pointer deref-read
@@ -125,8 +125,7 @@ private struct Walker {
     // Set (never cleared once true within a frame) by `writeCelledLocal`
     // whenever it replaces `variable`'s array value wholesale rather than
     // mutating one in place -- a plain (non-writeback) assignment, or a
-    // ref-writeback whose length changed (value.md item 7 review round 4,
-    // finding 1). The cross-frame writeback call sites
+    // ref-writeback whose length changed. The cross-frame writeback call sites
     // (`writeBackNestedLocals`, `writeBackArrayPointerTargets`,
     // `writeBackRefArguments`) need this to tell a genuine REBIND of a
     // ref/captured array apart from an element-level mutation that
@@ -140,8 +139,7 @@ private struct Walker {
     // its writeback decision against.
     private bool[VarDeclaration] arrayRebinds;
 
-    // Class sibling of `arrayRebinds` above (BLOCKER fix, review of
-    // value-native-20260715 finding 1): set (never cleared once true within a
+    // Class sibling of `arrayRebinds` above: set (never cleared once true within a
     // frame) by `writeCelledLocal` whenever it drops `variable`'s `classCells`
     // entry rather than refreshing it in place -- a plain reference REBIND
     // (`c = b;`), as opposed to a same-object field-write refresh
@@ -160,9 +158,9 @@ private struct Walker {
     private bool[VarDeclaration] classRebinds;
 
     // Authoritative native bytes for a struct local that has had one of its
-    // `native_scalar.isNativeScalarType` fields address-taken (value.md item
-    // 7's struct phase starts, mirroring `arrayCells` above): populated
-    // eagerly the moment `&s.field` is taken for a scalar field (see
+    // `native_scalar.isNativeScalarType` fields address-taken, mirroring
+    // `arrayCells` above: populated eagerly the moment `&s.field` is taken
+    // for a scalar field (see
     // `promoteStructCell`, called from `addressOfExpression`'s `DotVarExp`
     // arm). Once a cell exists, a direct field write (`writeLocation`'s
     // `DotVarExp` arm, via `writeCelledLocal`) and a pointer deref-read
@@ -225,10 +223,9 @@ private struct Walker {
 
     // Reverse lookup from a promoted `&s.inner.x` pointer's allocation id back
     // to which struct variable and (outer, inner) field-index pair share the
-    // SAME `structCells` entry's bytes -- value.md item 7's nested-struct-
-    // field follow-up (the smaller of the two candidates the struct-static-
-    // array-field progress note deferred), one level of struct-field
-    // nesting only: `inner` must itself be a (non-union) struct field of a
+    // SAME `structCells` entry's bytes -- the nested-struct-field
+    // counterpart of the struct-static-array-field case above, one level
+    // of struct-field nesting only: `inner` must itself be a (non-union) struct field of a
     // plain struct local, and `x` a scalar field of `inner`. The cell view
     // is `NativeStruct.structField(outerIndex).field(innerIndex)` -- a
     // nested `NativeStruct` sharing the parent's block -- rather than the
@@ -262,8 +259,7 @@ private struct Walker {
     // the frame that actually owns `variable`.
     private bool[VarDeclaration] nestedStructFieldPointerWritebacks;
 
-    // Array-element sibling of `nestedStructFieldPointerVariables` above
-    // (value.md item 7's array-element/nested-field composition follow-up):
+    // Array-element sibling of `nestedStructFieldPointerVariables` above:
     // `&a[i].inner.x` where `a` is a dynamic array of a (non-union) struct
     // whose `inner` field is itself a (non-union) struct, and `x` is a
     // scalar field of `inner`. The cell view is `NativeArray.
@@ -287,9 +283,9 @@ private struct Walker {
     private size_t[size_t] arrayNestedStructFieldPointerInnerFieldIndices;
 
     // Authoritative native bytes for a class-typed local that has had one of
-    // its `native_scalar.isNativeScalarType` fields address-taken (value.md
-    // item 7's class phase starts, mirroring `structCells` above): populated
-    // eagerly the moment `&c.field` is taken for a scalar field (see
+    // its `native_scalar.isNativeScalarType` fields address-taken, mirroring
+    // `structCells` above: populated eagerly the moment `&c.field` is taken
+    // for a scalar field (see
     // `promoteClassCell`, called from `addressOfExpression`'s `DotVarExp`
     // arm). Once a cell exists, a direct field write (`writeLocation`'s
     // `DotVarExp` arm, via `writeCelledLocal`) and a pointer deref-read
@@ -334,8 +330,7 @@ private struct Walker {
 
     // Reverse lookup from a promoted `&c.inner.x` pointer's allocation id
     // back to which class variable and (outer, inner) field-index pair share
-    // the SAME `classCells` entry's bytes -- value.md item 7 decomposition
-    // item 4 (aggregate composition), the class-receiver sibling of
+    // the SAME `classCells` entry's bytes -- the class-receiver sibling of
     // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
     // `...InnerFieldIndices` above, one level of struct-field nesting only:
     // `inner` must itself be a (non-union) struct field of a plain class
@@ -381,10 +376,10 @@ private struct Walker {
     // Reverse lookup from a promoted `&c.arr[i]` pointer's allocation id back
     // to which class variable and field index share the SAME `classCells`
     // entry's bytes -- the class-receiver sibling of
-    // `structArrayFieldPointerVariables`/`...FieldIndices` above (value.md
-    // item 7 decomposition item 4, the other aggregate-composition shape the
-    // nested-class-struct-field progress notes left as a follow-up): `arr`
-    // must be a scalar-element static-array field of a plain class local.
+    // `structArrayFieldPointerVariables`/`...FieldIndices` above, the other
+    // aggregate-composition shape alongside the nested-class-struct-field
+    // case: `arr` must be a scalar-element static-array field of a plain
+    // class local.
     // The cell view is a `NativeArray` adopted over
     // `classCells[variable].subRange(offset, size)` -- the same composition
     // primitive (`NativeArray.adopt`) `NativeStruct.arrayField` uses
@@ -444,8 +439,7 @@ private struct Walker {
     private size_t[size_t][VarDeclaration] fieldAddressAllocations;
     // Per-(root variable, outer field index, inner field index) memo for
     // `&s.inner.x`/`&c.inner.x` allocation ids -- the one-level-nested
-    // sibling of `fieldAddressAllocations` above (value.md item 7's
-    // pointer-identity memoization follow-up): repeated address-of
+    // sibling of `fieldAddressAllocations` above: repeated address-of
     // evaluations of the same nested field return the same identity.
     // Cross-frame follow-up (2026-07-16): now duplicated into every
     // child-frame `Walker` and merged back (`mergeNestedFieldAddressAllocations`)
@@ -870,8 +864,7 @@ private struct Walker {
         // classDefaultValue/classTypeNames here (rather than the string
         // heuristic below) gives the real base-class chain: correct
         // Error-vs-Exception classification and intermediate bases, instead
-        // of `nativeExceptionRoot`'s name-prefix guess (interpreter.md
-        // §9.10).
+        // of `nativeExceptionRoot`'s name-prefix guess.
         if (auto class_ = classDeclarationByQualifiedName(className))
             return withNativeExceptionObjectPointer(
                 classDefaultValue(class_)
@@ -965,9 +958,10 @@ private struct Walker {
         ), pointer);
     }
 
-    // Delete this with value.md's native-layout class/object work. It only
-    // keeps the boxed native-exception shim from reading interpreter-owned
-    // exception metadata as if it were native object storage.
+    // Delete this once class/object storage is fully native-layout backed.
+    // Until then, it only keeps the boxed native-exception shim from reading
+    // interpreter-owned exception metadata as if it were native object
+    // storage.
     private bool isSyntheticNativeExceptionField(in string name)
         @safe @nogc nothrow pure const
     {
@@ -1669,7 +1663,7 @@ private struct Walker {
                 throw new Exception(uninitializedVariableMessage(variable, currentFunction));
             }
 
-            // Byte-level authority (value.md item 7): once `&variable` has
+            // Byte-level authority: once `&variable` has
             // promoted a cell, its bytes -- not the boxed mirror below --
             // are the true value, so a reinterpret write through a pointer
             // (`writeLocation`'s `PtrExp` arm) is visible here.
@@ -1998,7 +1992,7 @@ private struct Walker {
             // writeLocation's PtrExp path still refuses writing through a
             // known field-snapshot id -- unchanged by the promotion below.
             //
-            // value.md item 7's struct phase starts: for a scalar field of a
+            // For a scalar field of a
             // plain struct LOCAL, `promoteStructFieldCell` additionally gives
             // the receiver a `structCells` entry and records this id's
             // (receiver, field index) in the reverse lookup, so a direct
@@ -2006,7 +2000,7 @@ private struct Walker {
             // through THIS pointer's deref-read
             // (`structFieldPointerCellValue`) -- closing the reverse-
             // propagation gap the array phase already closed for `&a[i]`.
-            // value.md item 7's nested-struct-field follow-up: `&s.inner.x`
+            // For the nested-struct-field case, `&s.inner.x`
             // shares the SAME id above (`dot.e1.isVarExp` is null for it, so
             // `fieldSnapshotAllocationId` already took its non-`VarExp`-
             // receiver fresh-id fallback), but `promoteStructFieldCell`
@@ -2014,12 +2008,12 @@ private struct Walker {
             // recognises the one-level-nested shape on its own and registers
             // this id in its own reverse lookup when it applies; a no-op
             // otherwise.
-            // value.md item 7's class phase starts: `promoteClassFieldCell`
+            // For the class case, `promoteClassFieldCell`
             // is the class sibling of `promoteStructFieldCell` -- gives the
             // receiver a `classCells` entry when `dot`'s receiver is a plain
             // class-typed local (a no-op for a struct receiver, exactly as
             // `promoteStructFieldCell` no-ops for a class receiver).
-            // value.md item 7 decomposition item 4 (aggregate composition):
+            // For nested class-struct fields (aggregate composition),
             // `promoteNestedClassStructFieldCell` is the class-receiver
             // sibling of `promoteNestedStructFieldCell` -- `&c.inner.x` where
             // `inner` is a struct field of class-typed local `c` (a no-op for
@@ -2030,7 +2024,7 @@ private struct Walker {
             promoteNestedStructFieldCell(dot, id);
             promoteClassFieldCell(dot, id);
             promoteNestedClassStructFieldCell(dot, id);
-            // Review finding 5 (SHOULD-FIX, 2026-07-16): a side-effecting
+            // A side-effecting
             // array index (`&a[i++].inner.x`) must be evaluated exactly
             // once. `promoteArrayNestedStructFieldCell` evaluates it (to
             // seed the reverse-lookup element index) only when this exact
@@ -2066,14 +2060,13 @@ private struct Walker {
     // one-level-nested receiver (`&s.inner.x`/`&c.inner.x`, `dot.e1` itself a
     // `DotVarExp` whose own `e1` resolves to a plain `VarExp`) is memoized
     // too, per (root variable, outer field index, inner field index) via
-    // `nestedFieldAddressAllocations` (value.md item 7's pointer-identity
-    // memoization follow-up, cross-frame since 2026-07-16 -- see that
-    // field's own comment). Any other receiver shape
+    // `nestedFieldAddressAllocations` (cross-frame since 2026-07-16 -- see
+    // that field's own comment). Any other receiver shape
     // (e.g. `&call().field`, or two or more levels of nesting) gets a fresh
     // id every time. Either way the id is recorded as a field snapshot so
     // writeLocation's PtrExp path can refuse writing through it.
     // A class-typed receiver's field index comes from `classFieldIndex`, not
-    // `structFieldIndex` (value.md item 7's class phase starts): the latter
+    // `structFieldIndex`: the latter
     // resolves the receiver's type via `receiverStructType`, which returns
     // `null` for a class and previously made this function throw
     // "Unsupported interpreter field access." for every `&c.field`, before
@@ -2298,7 +2291,7 @@ private struct Walker {
         auto var = array.isVarExp;
         if (var is null) {
             if (auto dot = array.isDotVarExp) {
-                // value.md item 7's struct-static-array-field follow-up:
+                // For the struct-static-array-field case,
                 // `&s.arr[i]` where `arr` is a static-array field of a plain
                 // struct local. Reusing `fieldSnapshotAllocationId` gives the
                 // same memoized-per-(receiver, field index) identity
@@ -2308,9 +2301,9 @@ private struct Walker {
                 // cell, so `writeLocation`'s `PtrExp` arm still refuses a
                 // write it cannot back with real aliasing instead of
                 // silently rewriting the pointer variable's own snapshot.
-                // value.md item 7 decomposition item 4 (aggregate
-                // composition, the other shape the nested-class-struct-field
-                // progress notes left as a follow-up): `&c.arr[i]` where
+                // For the class case (aggregate composition, the other
+                // shape alongside the nested-class-struct-field case):
+                // `&c.arr[i]` where
                 // `arr` is a scalar-element static-array field of a plain
                 // class local. `promoteClassArrayFieldCell` is the
                 // class-receiver sibling of `promoteStructArrayFieldCell`
@@ -2342,8 +2335,8 @@ private struct Walker {
         if (auto alias_ = variable in sliceAliases)
             source = alias_.source;
 
-        // value.md item 7's array guest-local slice: `&a[i]` is the address-
-        // taking moment that promotes `source`'s authoritative `NativeArray`
+        // `&a[i]` is the address-taking moment that promotes `source`'s
+        // authoritative `NativeArray`
         // cell, the array counterpart of `promoteScalarCell` above -- keyed
         // by `source` (not `variable`) to match `allocationId(source)`
         // just below, so `arrayPointerVariable`'s reverse lookup (via
@@ -2413,8 +2406,8 @@ private struct Walker {
     }
 
     // Eagerly gives an address-taken native-scalar local an authoritative
-    // native-byte cell (value.md item 7's guest-local slice) the first time
-    // its address is taken, seeded from whatever value the local currently
+    // native-byte cell the first time its address is taken, seeded from
+    // whatever value the local currently
     // holds (its boxed value in `locals`, or the type's default if never
     // written). Once a cell exists, `writeLocation`'s `PtrExp` arm and the
     // `VarExp` read arm route through it instead of `locals`, so a
@@ -2456,19 +2449,16 @@ private struct Walker {
     }
 
     // Eagerly gives an address-taken dynamic-array local a `NativeArray`
-    // cell the first time `&a[i]` is taken (value.md item 7's array
-    // guest-local slice, `arrayCells`'s own promotion, mirroring
-    // `promoteScalarCell` above), seeded from the array's current boxed
+    // cell the first time `&a[i]` is taken (`arrayCells`'s own promotion,
+    // mirroring `promoteScalarCell` above), seeded from the array's current boxed
     // elements. A dynamic array whose element type is `native_scalar.
     // isNativeScalarType` gets a scalar-bytes cell; a dynamic array whose
     // element type is a (non-union) struct gets a cell too, seeded field by
     // field through `NativeArray.structElement`/`writeStructCellScalarFields`
     // -- the array-of-struct counterpart of `promoteStructCell` above,
-    // reusing the same container accessor the plan's composition matrix
-    // already built. A dynamic array whose element type is itself a
-    // scalar-element static array (`int[3][] a`, value.md item 7's
-    // array-of-static-array follow-up) gets a cell too, seeded element by
-    // element through `NativeArray.arrayElement`/
+    // reusing the same composition accessor. A dynamic array whose element
+    // type is itself a scalar-element static array (`int[3][] a`) gets a
+    // cell too, seeded element by element through `NativeArray.arrayElement`/
     // `writeStaticArrayCellScalarElements` -- the array-of-array counterpart
     // of the struct branch above, reusing the same inline-bytes container
     // accessor. A union element, a static-array element whose OWN element
@@ -2551,8 +2541,8 @@ private struct Walker {
 
     // Gives a slice local (`int[] s = a[];`) an `arrayCells` entry that
     // shares the SAME `NativeArray` block as its slice source, rather than
-    // the detached boxed `.dup` `locals` already holds -- value.md item 7's
-    // array-native storage extended to the reverse slice-aliasing direction
+    // the detached boxed `.dup` `locals` already holds -- native array
+    // storage extended to the reverse slice-aliasing direction
     // (a write to the SOURCE visible through an earlier-taken slice; the
     // forward direction -- a write through the slice, visible in the source
     // -- was already covered by `sliceAliases`/`writeThroughSliceAlias`).
@@ -2616,8 +2606,8 @@ private struct Walker {
 
     // Eagerly gives an address-taken struct local a `NativeStruct` cell the
     // first time `&s.field` is taken for one of its own scalar fields
-    // (value.md item 7's struct phase starts, mirroring `promoteArrayCell`
-    // above), seeded from the struct's current boxed field values. Narrow
+    // (mirroring `promoteArrayCell` above), seeded from the struct's
+    // current boxed field values. Narrow
     // first slice: only a plain (non-dataseg) struct-typed local gets a
     // cell; a dataseg variable, or a receiver that never resolves to a
     // struct-typed boxed value, is left untouched and keeps using the
@@ -2639,8 +2629,8 @@ private struct Walker {
         // at its own (overlapping, offset-0-for-a-plain-union) byte range
         // with no union-vs-struct branch, so a second field's seed would
         // clobber the first's bytes IF the two fields' boxed values ever
-        // disagree about the underlying bits. Address-taken scalar-only
-        // union slice (value.md item 7, 2026-07-15): when EVERY member is
+        // disagree about the underlying bits. For an address-taken
+        // scalar-only union (2026-07-15): when EVERY member is
         // `native_scalar.isNativeScalarType`, that clobber is harmless --
         // the only two ways this cell's bytes are ever (re)seeded are
         // `withUnionFieldWrite` (which re-derives every OTHER native-scalar
@@ -2681,8 +2671,8 @@ private struct Walker {
 
     // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
     // `cell` from `structValue`'s boxed fields (the struct counterpart of
-    // `promoteArrayCell`'s element loop), and -- value.md item 7's
-    // struct-static-array-field follow-up -- every static-array field whose
+    // `promoteArrayCell`'s element loop), and -- for the
+    // struct-static-array-field case -- every static-array field whose
     // OWN element type is `native_scalar.isNativeScalarType`, via
     // `NativeStruct.arrayField`'s `NativeArray` view over the same block.
     // Also -- the nested-struct-field follow-up -- recurses one level into
@@ -2745,8 +2735,8 @@ private struct Walker {
         }
     }
 
-    // `&s.field`'s promotion moment (value.md item 7's struct phase starts):
-    // when `dot`'s receiver resolves to a plain local variable and the field
+    // `&s.field`'s promotion moment: when `dot`'s receiver resolves to a
+    // plain local variable and the field
     // itself is `native_scalar.isNativeScalarType`, gives the receiver a
     // `structCells` entry (`promoteStructCell`, mirroring `promoteArrayCell`'s
     // role in `arrayPointer`) and records `id` -- the SAME allocation id
@@ -2783,8 +2773,8 @@ private struct Walker {
 
     // Eagerly gives an address-taken class local a `classCells` cell the
     // first time `&c.field` is taken for one of its own scalar fields
-    // (value.md item 7's class phase starts, the class sibling of
-    // `promoteStructCell`), seeded from the object's current boxed field
+    // (the class sibling of `promoteStructCell`), seeded from the object's
+    // current boxed field
     // values. Narrow first slice: only a plain (non-dataseg) class-typed
     // local gets a cell; a dataseg variable, or a receiver whose boxed value
     // isn't a class object, is left untouched and keeps using the existing
@@ -2826,8 +2816,8 @@ private struct Walker {
         classCells[variable] = cell;
     }
 
-    // value.md item 7 decomposition item 1 (same-frame plain-variable class
-    // aliasing): `C c2 = c;` or `c2 = c;` copies a REFERENCE, so `c2` must
+    // Same-frame plain-variable class aliasing: `C c2 = c;` or `c2 = c;`
+    // copies a REFERENCE, so `c2` must
     // share `c`'s object identity, not box an independent copy of its
     // fields. Eagerly promotes (or reuses) `source`'s `classCells` entry and
     // points `target` at the SAME `NativeBlock` -- `NativeBlock` is a value
@@ -2860,8 +2850,8 @@ private struct Walker {
             classCells[target] = *cell;
     }
 
-    // Cross-frame counterpart of `registerClassAliasIfPlainVar` above (value.md
-    // item 7 decomposition item 2): a by-value class PARAMETER is still a
+    // Cross-frame counterpart of `registerClassAliasIfPlainVar` above:
+    // a by-value class PARAMETER is still a
     // REFERENCE to the caller's object, exactly like `C c2 = c;`, except the
     // aliasing happens at the call boundary (parameter binding) instead of a
     // declaration, and the two `VarDeclaration`s involved (the caller's
@@ -2927,8 +2917,8 @@ private struct Walker {
         }
     }
 
-    // `this`-reached counterpart of `registerClassArgumentAliases` above
-    // (value.md item 7 decomposition item 3): the hidden `this` parameter is
+    // `this`-reached counterpart of `registerClassArgumentAliases` above:
+    // the hidden `this` parameter is
     // itself a by-value REFERENCE to the caller's object, exactly like any
     // other by-value class parameter aliased from the same argument
     // variable -- except there is no argument EXPRESSION for `this`, only
@@ -3006,8 +2996,8 @@ private struct Walker {
 
     // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
     // `cell` from `classValue`'s boxed fields -- the class counterpart of
-    // `writeStructCellScalarFields`. Also -- value.md item 7 decomposition
-    // item 4 (aggregate composition) -- widens every scalar-element
+    // `writeStructCellScalarFields`. Also -- for aggregate composition --
+    // widens every scalar-element
     // static-array field via a `NativeArray` adopted over the field's own
     // byte sub-range (the class-receiver sibling of
     // `writeStructCellScalarFields`'s own `NativeStruct.arrayField`-based
@@ -3057,8 +3047,8 @@ private struct Walker {
                 continue;
             }
 
-            // Aggregate composition (value.md item 7 decomposition item 4):
-            // a (non-union) struct-typed field recurses one level, mirroring
+            // Aggregate composition: a (non-union) struct-typed field recurses
+            // one level, mirroring
             // `writeStructCellScalarFields`'s own nested-struct-field
             // recursion. Unlike that function's `cell` (already a
             // `NativeStruct`), `cell` here is a plain `NativeBlock` -- a
@@ -3083,8 +3073,8 @@ private struct Walker {
         }
     }
 
-    // `&c.field`'s promotion moment (value.md item 7's class phase starts):
-    // when `dot`'s receiver resolves to a plain local variable and the field
+    // `&c.field`'s promotion moment: when `dot`'s receiver resolves to a plain
+    // local variable and the field
     // itself is `native_scalar.isNativeScalarType`, gives the receiver a
     // `classCells` entry (`promoteClassCell`, the class sibling of
     // `promoteStructFieldCell`) and records `id` in the reverse lookup
@@ -3119,8 +3109,8 @@ private struct Walker {
         classFieldPointerFieldIndices[id] = classFieldIndex(dot);
     }
 
-    // Class-receiver sibling of `promoteNestedStructFieldCell` (value.md item
-    // 7 decomposition item 4, aggregate composition): `&c.inner.x` where
+    // Class-receiver sibling of `promoteNestedStructFieldCell` (aggregate
+    // composition): `&c.inner.x` where
     // `inner` is a (non-union) struct field of a plain class local `c` and
     // `x` is a scalar field of `inner`. `dot` is the INNER `DotVarExp`
     // (`c.inner.x`, for field `x`); its own `dot.e1` is the OUTER
@@ -3174,9 +3164,9 @@ private struct Walker {
         nestedClassStructFieldPointerInnerFieldIndices[id] = structFieldIndex(dot);
     }
 
-    // Array-typed-field sibling of `promoteStructFieldCell` above (value.md
-    // item 7's struct-static-array-field follow-up): when `dot`'s receiver
-    // resolves to a plain local variable and the field itself is a static
+    // Array-typed-field sibling of `promoteStructFieldCell` above: when `dot`'s
+    // receiver resolves to a plain local variable and the field itself is a
+    // static
     // array whose element type is `native_scalar.isNativeScalarType`, gives
     // the receiver a `structCells` entry and records `id` in the
     // `structArrayFieldPointerVariables`/`structArrayFieldPointerFieldIndices`
@@ -3214,10 +3204,9 @@ private struct Walker {
         structArrayFieldPointerFieldIndices[id] = structFieldIndex(dot);
     }
 
-    // Class-receiver sibling of `promoteStructArrayFieldCell` above (value.md
-    // item 7 decomposition item 4, the other aggregate-composition shape the
-    // nested-class-struct-field progress notes left as a follow-up): when
-    // `dot`'s receiver resolves to a plain class-typed local variable and the
+    // Class-receiver sibling of `promoteStructArrayFieldCell` above (the other
+    // aggregate-composition shape): when `dot`'s receiver resolves to a plain
+    // class-typed local variable and the
     // field itself is a static array whose element type is `native_scalar.
     // isNativeScalarType`, gives the receiver a `classCells` entry
     // (`promoteClassCell`, same as `promoteClassFieldCell`) and records `id`
@@ -3262,9 +3251,7 @@ private struct Walker {
         classArrayFieldPointerFieldIndices[id] = classFieldIndex(dot);
     }
 
-    // One level of struct-field nesting (value.md item 7's nested-struct-
-    // field follow-up, the smaller of the two candidates the struct-static-
-    // array-field progress note deferred): `&s.inner.x` where `inner` is a
+    // One level of struct-field nesting: `&s.inner.x` where `inner` is a
     // (non-union) struct field of a plain struct local `s` and `x` is a
     // scalar field of `inner`. `dot` is the INNER `DotVarExp` (`s.inner.x`,
     // for the field `x`); its own `dot.e1` is the OUTER `DotVarExp`
@@ -3317,8 +3304,7 @@ private struct Walker {
         nestedStructFieldPointerInnerFieldIndices[id] = structFieldIndex(dot);
     }
 
-    // Array-element sibling of `promoteNestedStructFieldCell` above (value.md
-    // item 7's array-element/nested-field composition follow-up): `&a[i].
+    // Array-element sibling of `promoteNestedStructFieldCell` above: `&a[i].
     // inner.x` where `a` is a dynamic array of a (non-union) struct, `inner`
     // is a (non-union) struct field of the element type, and `x` is a scalar
     // field of `inner`. `dot` is the INNER `DotVarExp` (`a[i].inner.x`, for
@@ -3344,8 +3330,8 @@ private struct Walker {
     // `promoteArrayCell` itself a no-op (or is never reached), so there is no
     // cell here to point at.
     //
-    // Review finding 5 (SHOULD-FIX, 2026-07-16): `index.e2` (`a[i++]`'s `i++`)
-    // is a general expression and may side-effect. This function must
+    // Single-evaluation of the index (2026-07-16): `index.e2` (`a[i++]`'s
+    // `i++`) is a general expression and may side-effect. This function must
     // evaluate it exactly once -- to seed `elementIndex` above -- rather than
     // leaving `addressOfExpression`'s caller to separately `runExpression`
     // the whole `dot` chain (which would re-run `index.e2`, a second time,
@@ -3406,8 +3392,8 @@ private struct Walker {
 
     // Drops `variable`'s `structCells` entry (if any) together with every
     // `structFieldPointerVariables`/`structFieldPointerFieldIndices` reverse-
-    // lookup entry that pointed at it (value.md item 7 review round 2,
-    // finding 1): dropping only the forward `structCells` entry would leave
+    // lookup entry that pointed at it: dropping only the forward `structCells`
+    // entry would leave
     // a stale `&s.field` pointer's allocation id mapped to `variable`, so a
     // later dereference through that stale id could resolve into whatever
     // cell a subsequent, unrelated binding of the same `VarDeclaration`
@@ -3416,8 +3402,8 @@ private struct Walker {
     // `arrayCells.remove`. Collects matching ids before removing rather than
     // mutating `structFieldPointerVariables` while iterating it.
     //
-    // Also drops `variable`'s `fieldAddressAllocations` entry (final review,
-    // finding 3): that forward memo -- `fieldSnapshotAllocationId`'s own
+    // Also drops `variable`'s `fieldAddressAllocations` entry: that forward
+    // memo -- `fieldSnapshotAllocationId`'s own
     // per-(receiver, field index) cache -- was never cleared by the reverse-
     // lookup cleanup above, so a fresh `&s.field` taken after THIS fresh
     // binding reused the OLD id rather than minting a new one, defeating the
@@ -3428,8 +3414,8 @@ private struct Walker {
     // recursive call that re-declares `variable`) still resolves -- via
     // `structFieldPointerVariables`, re-populated under the SAME id -- into
     // whatever cell THIS binding promotes, instead of correctly declining.
-    // Also drops `variable`'s `nestedFieldAddressAllocations` entry (value.md
-    // item 7's pointer-identity memoization follow-up), the nested-field
+    // Also drops `variable`'s `nestedFieldAddressAllocations` entry (the
+    // pointer-identity memoization follow-up), the nested-field
     // sibling of the `fieldAddressAllocations` drop above, for the identical
     // reason.
     private void dropStructCell(VarDeclaration variable) {
@@ -3445,8 +3431,7 @@ private struct Walker {
             structFieldPointerFieldIndices.remove(id);
         }
 
-        // Same stale-id cleanup for the array-typed-field reverse lookup
-        // (value.md item 7's struct-static-array-field follow-up) -- a
+        // Same stale-id cleanup for the array-typed-field reverse lookup -- a
         // `&s.arr[i]` id left behind here would let a pointer minted BEFORE
         // this fresh binding keep resolving into whatever cell THIS binding
         // promotes next, exactly the bug the scalar-field cleanup above
@@ -3461,9 +3446,8 @@ private struct Walker {
             structArrayFieldPointerFieldIndices.remove(id);
         }
 
-        // Same stale-id cleanup for the nested-struct-field reverse lookup
-        // (value.md item 7's nested-struct-field follow-up), for the same
-        // reason as the two cleanups above.
+        // Same stale-id cleanup for the nested-struct-field reverse lookup,
+        // for the same reason as the two cleanups above.
         size_t[] staleNestedFieldIds;
         foreach (id, pointedVariable; nestedStructFieldPointerVariables)
             if (pointedVariable is variable)
@@ -3479,9 +3463,7 @@ private struct Walker {
         nestedFieldAddressAllocations.remove(variable);
     }
 
-    // Class sibling of `dropStructCell` above (value.md item 7 class phase:
-    // the "dropClassCell (whole class phase)" gap the aggregate-composition
-    // progress notes flagged as missing): drops `variable`'s `classCells`
+    // Class sibling of `dropStructCell` above: drops `variable`'s `classCells`
     // entry (if any) together with every `classFieldPointerVariables`/
     // `nestedClassStructFieldPointerVariables`/`classArrayFieldPointerVariables`
     // reverse-lookup entry (and their field-index siblings) that pointed at
@@ -3545,8 +3527,8 @@ private struct Walker {
         nestedFieldAddressAllocations.remove(variable);
     }
 
-    // Array sibling of `dropStructCell` above (value.md item 7 final review,
-    // finding 3): drops `variable`'s `arrayCells` entry together with its
+    // Array sibling of `dropStructCell` above: drops `variable`'s `arrayCells`
+    // entry together with its
     // memoized `arrayAllocations`/`arrayAllocationVariables` id, for exactly
     // the same reason -- `allocationId` memoizes per `VarDeclaration` and was
     // never cleared by the pre-existing `arrayCells.remove` alone, so a
@@ -3561,8 +3543,8 @@ private struct Walker {
     //
     // Also drops every `arrayNestedStructFieldPointerVariables` reverse-
     // lookup entry (and its `...ElementIndices`/`...OuterFieldIndices`/
-    // `...InnerFieldIndices` siblings) that pointed at `variable` (review
-    // finding 4, 2026-07-16): `promoteArrayNestedStructFieldCell` (`&a[i].
+    // `...InnerFieldIndices` siblings) that pointed at `variable`
+    // (2026-07-16): `promoteArrayNestedStructFieldCell` (`&a[i].
     // inner.x`) populates these four maps but, unlike every other pointer
     // family's own reverse lookup (`structFieldPointerVariables`/
     // `nestedStructFieldPointerVariables`/etc., all cleaned by
@@ -3605,7 +3587,7 @@ private struct Walker {
     // over the type's default. Every celled-var read arm that has no extra
     // fallback of its own (a data-segment initializer, a differently-typed
     // pointee) routes through this single helper so no future read path can
-    // pick the wrong map (value.md item 7 review, findings 2 and 3).
+    // pick the wrong map.
     private Value readCelledLocal(VarDeclaration variable) {
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
@@ -3622,8 +3604,8 @@ private struct Walker {
     // `variable`, refreshing its promoted `scalarCells`/`arrayCells` entry
     // (if one exists) and re-deriving (or keeping current with) the boxed
     // `locals` mirror, so the two never drift no matter which a later read
-    // consults (value.md item 7 review, finding 3, extended to arrays: the
-    // cross-frame `ref` array-parameter writeback gap). This is the ONLY
+    // consults -- including the cross-frame `ref` array-parameter writeback
+    // gap. This is the ONLY
     // call site `writeBackRefArguments` routes a `ref int[]` parameter's
     // final value through (`writeLocation`'s plain-`VarExp` arm) -- without
     // the `arrayCells` branch below, a caller whose array already had a cell
@@ -3634,8 +3616,8 @@ private struct Walker {
     // Callers that write through a differently-typed pointee (a reinterpret
     // write) do not use this helper; see `writeLocation`'s `PtrExp` arm.
     //
-    // `arrayIsRefWriteback` (value.md item 7 review round 2, finding 2)
-    // distinguishes the ref-writeback caller above (an aliased `ref int[]`
+    // `arrayIsRefWriteback` distinguishes the ref-writeback caller above (an
+    // aliased `ref int[]`
     // parameter's final value genuinely representing the SAME storage,
     // mutated in place inside the callee) from every OTHER caller of this
     // function reached via `writeLocation`'s plain-`VarExp` arm, i.e. a
@@ -3645,8 +3627,8 @@ private struct Walker {
     // through this helper drops the cell unconditionally, matching a rebind
     // that cannot be represented as an in-place byte mutation.
     //
-    // Review round 4, finding 1: a cross-frame writeback caller's `true`
-    // does NOT always mean "genuinely the same storage" -- the callee may
+    // A cross-frame writeback caller's `true` does NOT always mean "genuinely
+    // the same storage" -- the callee may
     // have REBOUND the ref/captured array to a brand-new same-length array
     // (`p = [x, y];`) rather than mutated it in place, and an in-place
     // refresh would then overwrite the bytes a separate, still-live alias
@@ -3657,8 +3639,7 @@ private struct Walker {
     // own `arrayRebinds` marker (set by THIS function, below) to tell a
     // genuine mutation apart from a rebind before deciding whether the
     // parent's own cell may be refreshed in place or must be dropped.
-    // `classFieldRefresh` (BLOCKER fix, review of value-native-20260715
-    // findings 1 and 2) is the class-typed sibling of `arrayIsRefWriteback`
+    // `classFieldRefresh` is the class-typed sibling of `arrayIsRefWriteback`
     // just above, with the polarity flipped: `true` means "this value is an
     // AUTHORITATIVE same-object field-write refresh" (only
     // `writeLocation`'s `DotVarExp`/class-array-field write arms, and
@@ -3674,7 +3655,7 @@ private struct Walker {
     // never a field mutation of the SAME object. Refreshing a (possibly
     // SHARED) cell in place from a rebind's new value would silently splice
     // the new object's fields into whatever OTHER alias still shares the old
-    // cell (finding 1's exact corruption); dropping it instead (`dropClassCell`)
+    // cell (the exact corruption this avoids); dropping it instead (`dropClassCell`)
     // and marking `classRebinds` matches `arrayCells`'s own decline-rather-
     // than-corrupt choice for a changed-identity rebind, and leaves the
     // caller's own alias bookkeeping (`registerClassAliasIfPlainVar`/
@@ -3714,9 +3695,9 @@ private struct Walker {
             } else {
                 // A rebind's cell drop must also drop the memoized
                 // allocation id (`dropArrayCell`, not a bare `arrayCells.
-                // remove`) -- the same per-binding fresh-id principle
-                // finding 3's fresh-binding sites already apply (value.md
-                // item 7 final review): an id left behind here would let a
+                // remove`) -- the same per-binding fresh-id principle the
+                // other fresh-binding sites already apply: an id left behind
+                // here would let a
                 // pointer minted BEFORE this rebind keep resolving, via the
                 // still-live reverse map, into whatever cell the REBOUND
                 // array's own next address-of promotes, instead of
@@ -3738,7 +3719,7 @@ private struct Walker {
         }
 
         // Same in-place-mutation refresh, for a struct local's `structCells`
-        // entry (value.md item 7's struct phase starts): `writeLocation`'s
+        // entry: `writeLocation`'s
         // `DotVarExp` arm always rewrites the WHOLE struct (`receiver.
         // withStructField(fieldIndex, value)`) before reaching here, so this
         // refreshes every scalar field's bytes rather than just the one that
@@ -3754,9 +3735,8 @@ private struct Walker {
                 structCells.remove(variable);
         }
 
-        // Class sibling of the struct refresh above (value.md item 7's class
-        // phase starts). BLOCKER fix (review of value-native-20260715,
-        // findings 1 and 2): unlike the struct branch above, a plain class
+        // Class sibling of the struct refresh above. Unlike the struct branch
+        // above, a plain class
         // assignment through a `VarExp` target is NOT always a refresh of the
         // SAME object -- classes have no `opAssign`, so `writeLocation`'s
         // plain-`VarExp` arm serves both a genuine reference REBIND (`c =
@@ -3773,8 +3753,8 @@ private struct Walker {
         // (`classWritebackIsMutation`) knows not to refresh the parent's own
         // cell in place either.
         //
-        // Second-pass review of value-native-20260715 (HIGH, nested-function-
-        // capture cross-frame analog of the BLOCKER above): the rebind marker
+        // A nested-function-capture cross-frame analog of the same-frame
+        // hazard above: the rebind marker
         // used to be set only `if (value.isClassObject)`, so a rebind THROUGH
         // an intermediate `null` (`c = null; c = new C(2); c.x = 5;`, a
         // nested function reassigning a captured aliased class variable)
@@ -3785,7 +3765,7 @@ private struct Walker {
         // writeback to refresh the PARENT's cell in place, splicing the
         // child's brand-new, unrelated object into a buffer another alias
         // (`a` in the example) still shares -- the exact corruption the
-        // BLOCKER fix closed for the same-frame case, reopened cross-frame,
+        // same-frame fix above closed, reopened cross-frame,
         // and nondeterministic besides (whichever captured variable
         // `writeBackNestedLocals`'s AA-order iteration happens to reconcile
         // last wins the shared buffer). A plain `VarExp` write to a
@@ -3902,8 +3882,8 @@ private struct Walker {
             return loadNativePointerElement(pointer.e1.type, value, 0);
 
         if (!value.isLocalPointer) {
-            // Byte-level authority for an array element (value.md item 7's
-            // array guest-local slice): once `&a[i]` has promoted an
+            // Byte-level authority for an array element: once `&a[i]` has
+            // promoted an
             // `arrayCells` entry for the variable this pointer points into,
             // its bytes -- not `value`'s own boxed element snapshot taken
             // at address-of time -- are the true value, so a direct write
@@ -3916,8 +3896,8 @@ private struct Walker {
             if (arrayPointerCellValue(value, cellValue))
                 return cellValue;
 
-            // Byte-level authority for a struct-field pointer (value.md item
-            // 7's struct phase starts): once `&s.field` has promoted a
+            // Byte-level authority for a struct-field pointer: once `&s.field`
+            // has promoted a
             // `structCells` entry, its bytes -- not the boxed field snapshot
             // `addressOfExpression` took -- are the true value, so a direct
             // field write (`writeLocation`'s `DotVarExp` arm) after the
@@ -3927,15 +3907,13 @@ private struct Walker {
             if (structFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
-            // Byte-level authority for a struct-static-array-field pointer
-            // (value.md item 7's struct-static-array-field follow-up): once
-            // `&s.arr[i]` has promoted a `structCells` entry, mirroring the
+            // Byte-level authority for a struct-static-array-field pointer:
+            // once `&s.arr[i]` has promoted a `structCells` entry, mirroring the
             // two checks above for the scalar-field and plain-array cases.
             if (structArrayFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
-            // Byte-level authority for a nested-struct-field pointer
-            // (value.md item 7's nested-struct-field follow-up): once
+            // Byte-level authority for a nested-struct-field pointer: once
             // `&s.inner.x` has promoted a `structCells` entry, mirroring the
             // three checks above for the array-element, scalar-field, and
             // static-array-field cases.
@@ -3943,32 +3921,31 @@ private struct Walker {
                 return cellValue;
 
             // Byte-level authority for an array-element/nested-struct-field
-            // pointer (value.md item 7's array-element/nested-field
-            // composition follow-up): once `&a[i].inner.x` has promoted an
+            // pointer: once `&a[i].inner.x` has promoted an
             // `arrayCells` entry, mirroring the nested-struct-field check
             // above, composed with the array-element case's own
             // `NativeArray.structElement` view.
             if (arrayNestedStructFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
-            // Byte-level authority for a class-field pointer (value.md item
-            // 7's class phase starts): once `&c.field` has promoted a
+            // Byte-level authority for a class-field pointer: once `&c.field`
+            // has promoted a
             // `classCells` entry, mirroring `structFieldPointerCellValue`
             // above for the struct case.
             if (classFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
             // Byte-level authority for a nested-class-struct-field pointer
-            // (value.md item 7 decomposition item 4, aggregate composition):
-            // once `&c.inner.x` has promoted a `classCells` entry, mirroring
+            // (aggregate composition): once `&c.inner.x` has promoted a
+            // `classCells` entry, mirroring
             // `nestedStructFieldPointerCellValue` above for the struct-
             // receiver case.
             if (nestedClassStructFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
             // Byte-level authority for a class-static-array-field pointer
-            // (value.md item 7 decomposition item 4, the other
-            // aggregate-composition shape): once `&c.arr[i]` has promoted a
+            // (the other aggregate-composition shape): once `&c.arr[i]` has
+            // promoted a
             // `classCells` entry, mirroring `structArrayFieldPointerCellValue`
             // above for the struct-receiver case.
             if (classArrayFieldPointerCellValue(value, cellValue))
@@ -3998,7 +3975,7 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter pointer target.");
 
-        // Byte-level authority (value.md item 7): once `&variable` has
+        // Byte-level authority: once `&variable` has
         // promoted a cell, its bytes -- not the boxed `locals` mirror below
         // -- are the true value, shared by reference across every walker
         // that dup'd `scalarCells`. A deref-read that instead consulted the
@@ -4014,8 +3991,8 @@ private struct Walker {
     }
 
     // `*cast(T*) &local`: a load of the same bytes at a different static
-    // type, not a hardcoded name/type-pair match (ai/plans/value.md item 7,
-    // "Shim deletion path"). Only taken when both `source` and `target` are
+    // type, not a hardcoded name/type-pair match. Only taken when both
+    // `source` and `target` are
     // `native_scalar.isNativeScalarType` AND `target` is no wider than
     // `source`: reading a wider target than the source local owns would
     // read bytes the local never had, which stays on the passthrough path
@@ -5673,9 +5650,9 @@ private struct Walker {
     }
 
     // Non-destructive merge for `arrayAllocations`/`arrayAllocationVariables`
-    // after a call returns (value.md item 7 final review, finding 4's array
-    // counterpart): a wholesale `= child.X` copy-back would let a callee's
-    // own fresh-binding invalidation (`dropArrayCell`, finding 3 above) of a
+    // after a call returns (the array counterpart of the field-pointer map
+    // merges below): a wholesale `= child.X` copy-back would let a callee's
+    // own fresh-binding invalidation (`dropArrayCell`) of a
     // stale id it inherited from THIS frame's own dup silently erase THIS
     // frame's still-live entry for the same `VarDeclaration` too, now that
     // id invalidation applies across recursion. Every id is minted from one
@@ -5686,7 +5663,7 @@ private struct Walker {
     // a rebind that happened only in a deeper frame's own copy cannot
     // clobber this frame's own still-valid mapping for the same variable.
     //
-    // Re-review finding 3 (2026-07-14): the reverse map
+    // Follow-up (2026-07-14): the reverse map
     // (`arrayAllocationVariables`) merge used to union every child entry in
     // unconditionally. That routed a child-MINTED id (a fresh rebind's own
     // `&a[i]`, e.g. taken after a recursive callee re-declares the same
@@ -5717,12 +5694,12 @@ private struct Walker {
     }
 
     // Struct sibling of the merge above -- `structFieldPointerVariables`/
-    // `FieldIndices` (finding 4 itself, the reviewer's own struct fixture)
-    // merge the identical, conflict-free way: ids are globally unique, so a
+    // `FieldIndices` merge the identical, conflict-free way: ids are globally
+    // unique, so a
     // key present in both this frame's and the callee's copy always names
     // the same variable/field index.
     //
-    // Re-review finding 3's symmetric guard (2026-07-14): applied here too,
+    // Symmetric guard (2026-07-14): applied here too,
     // keyed on (variable, field index) rather than just variable, since a
     // struct can have several independently-addressed fields -- a child
     // entry is skipped only when this frame's OWN `fieldAddressAllocations`
@@ -5748,8 +5725,8 @@ private struct Walker {
     }
 
     // Array-typed-field sibling of `mergeStructFieldPointerVariableMaps`
-    // above (value.md item 7's struct-static-array-field cross-frame
-    // follow-up, 2026-07-15): `structArrayFieldPointerVariables`/
+    // above (struct-static-array-field cross-frame follow-up, 2026-07-15):
+    // `structArrayFieldPointerVariables`/
     // `FieldIndices` merge the identical, conflict-free way -- the id space
     // is shared with the scalar-field maps (both mint through the same
     // `fieldSnapshotAllocationId` memo), so the same
@@ -5771,9 +5748,9 @@ private struct Walker {
     }
 
     // Nested-struct-field sibling of `mergeStructArrayFieldPointerVariableMaps`
-    // above (value.md item 7's nested-struct-field cross-frame follow-up,
-    // 2026-07-15). Re-review follow-up (2026-07-16, cross-frame nested-field
-    // pointer-identity): an id in this map IS now memoized, through
+    // above (nested-struct-field cross-frame follow-up, 2026-07-15).
+    // Follow-up (2026-07-16, cross-frame nested-field pointer-identity): an
+    // id in this map IS now memoized, through
     // `nestedFieldAddressAllocations` -- once that map started getting duped
     // into every child `Walker` (mirroring `fieldAddressAllocations`), a
     // (root variable, outer field index, inner field index) triple can
@@ -5800,8 +5777,8 @@ private struct Walker {
         }
     }
 
-    // Class sibling of `mergeStructFieldPointerVariableMaps` above (value.md
-    // item 7's class phase, cross-frame write-through-pointer follow-up):
+    // Class sibling of `mergeStructFieldPointerVariableMaps` above
+    // (cross-frame write-through-pointer follow-up):
     // `classFieldPointerVariables`/`FieldIndices` merge the identical,
     // conflict-free way -- a class-field id is memoized through the SAME
     // `fieldAddressAllocations[variable]` map `fieldSnapshotAllocationId`
@@ -5824,8 +5801,8 @@ private struct Walker {
     }
 
     // Nested-class-struct-field sibling of `mergeNestedStructFieldPointerVariableMaps`
-    // above (value.md item 7 decomposition item 4's remaining cross-frame
-    // follow-up, 2026-07-15). Re-review follow-up (2026-07-16, cross-frame
+    // above (remaining aggregate-composition cross-frame follow-up,
+    // 2026-07-15). Follow-up (2026-07-16, cross-frame
     // nested-field pointer-identity): `&c.inner.x` shares the SAME
     // `nestedFieldAddressAllocations` memo the struct-receiver sibling's own
     // comment now describes -- the map is shared between a struct and a
@@ -5853,8 +5830,8 @@ private struct Walker {
     }
 
     // Array-typed-field sibling of `mergeClassFieldPointerVariableMaps` above
-    // (value.md item 7 decomposition item 4, class static-array-field
-    // cross-frame follow-up): `classArrayFieldPointerVariables`/
+    // (class static-array-field cross-frame follow-up):
+    // `classArrayFieldPointerVariables`/
     // `FieldIndices` merge the identical, conflict-free way -- a
     // class-array-field id is memoized through the same
     // `fieldAddressAllocations[variable]` map a class scalar field's id is
@@ -5892,8 +5869,8 @@ private struct Walker {
             }
     }
 
-    // `nestedFieldAddressAllocations`' own forward-map merge (value.md item
-    // 7's cross-frame nested-field pointer-identity follow-up), the
+    // `nestedFieldAddressAllocations`' own forward-map merge (the cross-frame
+    // nested-field pointer-identity follow-up), the
     // one-level-nested sibling of `mergeFieldAddressAllocations` above with
     // the identical "this frame's own entry wins" rule, one key level
     // deeper: a (root variable, outer field index, inner field index) triple
@@ -5921,8 +5898,8 @@ private struct Walker {
                 }
     }
 
-    // Cross-frame writeback discriminator (value.md item 7 review round 4,
-    // finding 1): whether `childVariable`'s final value in `child` still
+    // Cross-frame writeback discriminator: whether `childVariable`'s final
+    // value in `child` still
     // represents an in-place MUTATION of storage `this` frame's own
     // `arrayCells` entry may safely be refreshed with, or a REBIND the
     // callee performed instead. `arrayRebinds` is set by `writeCelledLocal`
@@ -5943,8 +5920,8 @@ private struct Walker {
         return (childVariable in child.arrayRebinds) is null;
     }
 
-    // Class sibling of `arrayWritebackIsMutation` above (BLOCKER fix, review
-    // of value-native-20260715 finding 1): `writeBackNestedLocals` below
+    // Class sibling of `arrayWritebackIsMutation` above:
+    // `writeBackNestedLocals` below
     // iterates over EVERY variable in `child.locals`, including class-typed
     // ones this frame may already share a `classCells` entry for -- most of
     // which `child` never touched at all, let alone rebound. Reading
@@ -5956,7 +5933,7 @@ private struct Walker {
     // object (present in the map: this frame's own cell must be dropped too,
     // matching a same-frame `c = b;` rebind's own decline-rather-than-corrupt
     // choice), rather than the unconditional whole-cell refresh that
-    // corrupted a shared cell for every OTHER alias (finding 1).
+    // corrupted a shared cell for every OTHER alias.
     private bool classWritebackIsMutation(
         VarDeclaration childVariable,
         ref Walker child,
@@ -5964,7 +5941,7 @@ private struct Walker {
         return (childVariable in child.classRebinds) is null;
     }
 
-    // Re-review BLOCKER (2026-07-14, cross-frame cell staleness):
+    // Follow-up (2026-07-14, cross-frame cell staleness):
     // `runIndexExpression`'s cell arm makes a promoted `arrayCells` entry
     // READ-AUTHORITATIVE over the boxed `locals` mirror, but this used to
     // refresh only the mirror with a bare assignment, never reconciling the
@@ -5981,8 +5958,8 @@ private struct Walker {
     // unchanged for a scalar/struct variable (`writeCelledLocal`'s own
     // pre-existing scalarCells/structCells branches, not gated on this).
     //
-    // Review round 4, finding 1: whether the callee's write was a genuine
-    // in-place mutation or a REBIND is no longer assumed unconditionally --
+    // Whether the callee's write was a genuine in-place mutation or a REBIND
+    // is no longer assumed unconditionally --
     // `arrayWritebackIsMutation` answers it per variable, from `child`'s own
     // `arrayRebinds` marker, so a nested function that REPLACES a captured
     // array with a new same-length one (`a = [x, y];`) drops the parent's
@@ -6022,7 +5999,7 @@ private struct Walker {
                 continue;
 
             // A native-scalar target already carries a promoted `scalarCells`
-            // entry (value.md item 7): `localPointerValue` promotes eagerly
+            // entry: `localPointerValue` promotes eagerly
             // and every frame shares the same `NativeBlock` bytes by
             // reference (`child.scalarCells = scalarCells.dup`), so the
             // child's writes are already visible here. Copying the boxed
@@ -6066,7 +6043,7 @@ private struct Walker {
     // only that case reconciles the cell; every other variable keeps the
     // pre-existing plain mirror copy.
     //
-    // Review round 4, finding 1: as in `writeBackNestedLocals`,
+    // As in `writeBackNestedLocals`,
     // `arrayWritebackIsMutation` -- not a hardcoded `true` -- decides
     // whether the recursive callee's write reconciles the caller's cell in
     // place (a genuine element mutation) or drops it (the callee rebound
@@ -6107,8 +6084,8 @@ private struct Walker {
     }
 
     // Write-through-pointer counterpart of `writeBackArrayPointerTargets`,
-    // for a cross-frame `&s.field` pointer (value.md item 7's struct phase,
-    // cross-frame slice): a callee that writes through such a pointer via
+    // for a cross-frame `&s.field` pointer: a callee that writes through
+    // such a pointer via
     // `writeThroughStructFieldPointer` can always refresh the shared
     // `structCells` entry (its bytes are the SAME `NativeStruct` the
     // receiver's own frame holds), but when `variable` belongs to an OUTER
@@ -6140,8 +6117,8 @@ private struct Walker {
     }
 
     // Array-typed-field sibling of `writeBackStructFieldPointerTargets` above
-    // (value.md item 7's struct-static-array-field cross-frame follow-up,
-    // 2026-07-15): same reasoning, for a cross-frame `&s.arr[i]` pointer --
+    // (struct-static-array-field cross-frame follow-up, 2026-07-15): same
+    // reasoning, for a cross-frame `&s.arr[i]` pointer --
     // a direct array-field element read (`s.arr[i]`) never consults
     // `structCells` either, only a `*pointer` deref does, so the owning
     // frame's boxed `locals` mirror must be refreshed here too.
@@ -6163,8 +6140,8 @@ private struct Walker {
     }
 
     // Nested-struct-field sibling of `writeBackStructFieldPointerTargets`/
-    // `writeBackStructArrayFieldPointerTargets` above (value.md item 7's
-    // nested-struct-field cross-frame follow-up, 2026-07-15): same
+    // `writeBackStructArrayFieldPointerTargets` above (nested-struct-field
+    // cross-frame follow-up, 2026-07-15): same
     // reasoning, for a cross-frame `&s.inner.x` pointer -- a direct nested
     // field read (`s.inner.x`) never consults `structCells` either, only a
     // `*pointer` deref does, so the owning frame's boxed `locals` mirror
@@ -6186,8 +6163,8 @@ private struct Walker {
         }
     }
 
-    // Class sibling of `writeBackStructFieldPointerTargets` above (value.md
-    // item 7's class phase, cross-frame write-through-pointer follow-up):
+    // Class sibling of `writeBackStructFieldPointerTargets` above
+    // (cross-frame write-through-pointer follow-up):
     // same reasoning, for a cross-frame `&c.field` pointer -- a direct
     // class-field read (`c.field`) never consults `classCells` either, only
     // a `*pointer` deref does, so the owning frame's boxed `locals` mirror
@@ -6215,8 +6192,8 @@ private struct Walker {
     }
 
     // Nested-class-struct-field sibling of `writeBackClassFieldPointerTargets`
-    // above (value.md item 7 decomposition item 4's remaining cross-frame
-    // follow-up, 2026-07-15): same reasoning, for a cross-frame `&c.inner.x`
+    // above (remaining cross-frame follow-up, 2026-07-15): same reasoning,
+    // for a cross-frame `&c.inner.x`
     // pointer -- a direct nested-field read (`c.inner.x`) never consults
     // `classCells` either, only a `*pointer` deref does, so the owning
     // frame's boxed `locals` mirror must be refreshed here too, mirroring
@@ -6247,8 +6224,8 @@ private struct Walker {
     }
 
     // Array-typed-field sibling of `writeBackClassFieldPointerTargets` above
-    // (value.md item 7 decomposition item 4, class static-array-field
-    // cross-frame follow-up): same reasoning, for a cross-frame `&c.arr[i]`
+    // (class static-array-field cross-frame follow-up): same reasoning, for
+    // a cross-frame `&c.arr[i]`
     // pointer -- a direct class-array-field element read (`c.arr[i]`) never
     // consults `classCells` either, only a `*pointer` deref does, so the
     // owning frame's boxed `locals` mirror must be refreshed here too,
@@ -6280,8 +6257,8 @@ private struct Walker {
     // `writeClassCellScalarFields`: every `native_scalar.isNativeScalarType`
     // field is overlaid onto `current` from the cell (authoritative once a
     // cross-frame write-through-pointer touched it via
-    // `writeThroughClassFieldPointer`). Widened (value.md item 7
-    // decomposition item 4, class static-array-field cross-frame follow-up)
+    // `writeThroughClassFieldPointer`). Widened (class static-array-field
+    // cross-frame follow-up)
     // to also overlay every scalar-element static-array field via a
     // `NativeArray` adopted over the field's own byte sub-range -- the same
     // composition `writeClassCellScalarFields`'s own array-field widening
@@ -6289,8 +6266,8 @@ private struct Walker {
     // array-field widening -- needed so
     // `writeBackClassArrayFieldPointerTargets` above can refresh a
     // cross-frame `&c.arr[i]` write's owning frame the same way. Widened
-    // again (value.md item 7 decomposition item 4's remaining cross-frame
-    // follow-up, 2026-07-15) to recurse one level into every (non-union)
+    // again (remaining cross-frame follow-up, 2026-07-15) to recurse one
+    // level into every (non-union)
     // struct-typed field via a `NativeStruct` adopted over the field's own
     // byte sub-range -- the class-receiver sibling of `structValueFromCell`'s
     // own nested-field recursion -- needed so
@@ -6632,8 +6609,8 @@ private struct Walker {
 
             // A fresh call binds a new stack slot for `parameter`; drop any
             // inherited/stale `scalarCells`/`arrayCells`/`structCells` entry
-            // the same way a fresh `DeclarationExp` does (value.md item 7
-            // review round 2, finding 1) -- recursion reuses the same
+            // the same way a fresh `DeclarationExp` does -- recursion reuses
+            // the same
             // `VarDeclaration` for a parameter at every call depth.
             scalarCells.remove(parameter);
             dropArrayCell(parameter);
@@ -6642,8 +6619,8 @@ private struct Walker {
 
             // `runRefArgumentExpression` seeds a `ref` argument still bound to
             // an uninitialized caller local with a bare `Value.void_`
-            // placeholder rather than reading through it (interpreter.md
-            // §9.7). Mirror that uninitialized status onto the callee's own
+            // placeholder rather than reading through it. Mirror that
+            // uninitialized status onto the callee's own
             // parameter so a nested read through it — including a `DotVarExp`
             // field access on a struct/static-array parameter, e.g. cerealed's
             // `grain(__traits(getMember, val, member))` — hits the same
@@ -6666,7 +6643,7 @@ private struct Walker {
     }
 
     // A `lazy` parameter is a delegate over the *caller's live frame*, not a
-    // value captured at call time (ai/plans/interpreter.md §9.10). `locals`
+    // value captured at call time. `locals`
     // is a D associative array: a reference to a heap-allocated hash table.
     // Storing `callerLocals` here without `.dup` (and forwarding it without
     // `.dup` below, and substituting it without `.dup` in `runLazyArgument`)
@@ -6680,8 +6657,8 @@ private struct Walker {
         Expression argumentExpression,
         Value[VarDeclaration] callerLocals,
     ) {
-        // Same fresh-binding rule as `bindFunctionParameters` (value.md item
-        // 7 review round 2, finding 1): a lazy parameter is still a new
+        // Same fresh-binding rule as `bindFunctionParameters`: a lazy
+        // parameter is still a new
         // stack slot for its own `VarDeclaration`, so drop any inherited/
         // stale cell.
         scalarCells.remove(parameter);
@@ -6896,7 +6873,7 @@ private struct Walker {
                     continue;
 
                 // This is the cross-frame `ref` array-parameter writeback
-                // case (value.md item 7 review round 2, finding 2): `*value`
+                // case: `*value`
                 // MAY genuinely represent the SAME storage `argument`
                 // already denotes (the callee mutated it through the
                 // aliased `ref` parameter), in which case a same-length
@@ -6905,7 +6882,7 @@ private struct Walker {
                 // same-length array (`p = [x, y];`), which must NOT be
                 // refreshed in place or it corrupts the bytes a separate,
                 // still-live alias (e.g. a pre-existing slice view) keeps
-                // pointing at the OLD storage (review round 4, finding 1).
+                // pointing at the OLD storage.
                 // `arrayWritebackIsMutation` tells the two apart from
                 // `child`'s own `arrayRebinds` marker for `parameter`.
                 writeLocation(argument, *value, arrayWritebackIsMutation(parameter, child));
@@ -7354,7 +7331,7 @@ private struct Walker {
             if (target.isClassObject) {
                 const fieldIndex = classFieldIndex(dot, target);
 
-                // value.md item 7 decomposition item 1: `dot.e1`'s own
+                // `dot.e1`'s own
                 // `classCells` entry, when present, is authoritative over
                 // this receiver's independent boxed copy -- it may be a
                 // SHARED cell (another alias's write lands here too) or a
@@ -7374,8 +7351,8 @@ private struct Walker {
     }
 
     // Shared receiver-to-`classCells`-key resolution for `classCellFieldValue`
-    // and `writeClassCellFieldIfPresent` below (value.md item 7 decomposition
-    // item 3): a bare `VarExp` resolves to its own `VarDeclaration`, exactly
+    // and `writeClassCellFieldIfPresent` below: a bare `VarExp` resolves to
+    // its own `VarDeclaration`, exactly
     // as before this slice. A bare `ThisExp` (the receiver of `this.field`
     // inside a method body) resolves to `currentFunction.vthis` -- the
     // hidden `this` parameter's `VarDeclaration`, dmd's own stable per-
@@ -7396,7 +7373,7 @@ private struct Walker {
         return null;
     }
 
-    // BLOCKER fix (review of value-native-20260715, finding 2): re-derives
+    // Re-derives
     // `receiverExpression`'s CURRENT value from its own `classCells` entry,
     // when one exists, before a whole-object field write folds ONE field's
     // new value into it. Without this, `writeLocation`'s `DotVarExp` arm (and
@@ -7440,8 +7417,8 @@ private struct Walker {
     // `classCells` key via `classCellKeyVariable` above (a bare `VarExp`, or
     // a bare `ThisExp` resolving to `currentFunction.vthis`), and
     // `fieldIndex` must be either a `native_scalar.isNativeScalarType` field
-    // or (value.md item 7 decomposition item 1's own aggregate-composition
-    // follow-up) a scalar-element static-array field, or this returns
+    // or (aggregate-composition follow-up) a scalar-element static-array
+    // field, or this returns
     // `false` and leaves `value` untouched -- every one of those keeps the
     // caller's existing boxed fallback unchanged. `target` is the caller's
     // already-computed boxed receiver value (`runDotVarExpression`'s own
@@ -7514,9 +7491,8 @@ private struct Walker {
             return true;
         }
 
-        // Aggregate composition, struct shape (value.md item 7 decomposition
-        // item 1's own follow-up, the symmetric case to the static-array
-        // branch above): a (non-union) struct-typed field. Reuses the exact
+        // Aggregate composition, struct shape (the symmetric case to the
+        // static-array branch above): a (non-union) struct-typed field. Reuses the exact
         // composition primitive `writeClassCellScalarFields`'s own struct
         // recursion already uses -- `NativeStruct.adopt` over the field's
         // own byte sub-range, since a `classCells` entry has no
@@ -7704,8 +7680,7 @@ private struct Walker {
         // `c2 = c;` (plain-variable rebind, as opposed to `c2.x = v`'s
         // field write below): register the class-reference alias here too,
         // the assignment-operator sibling of `runDeclarationExpression`'s
-        // own `registerClassAliasIfPlainVar` call (value.md item 7
-        // decomposition item 1).
+        // own `registerClassAliasIfPlainVar` call.
         if (auto var = assign.e1.isVarExp)
             if (auto variable = var.var.isVarDeclaration)
                 registerClassAliasIfPlainVar(variable, assign.e2);
@@ -7713,19 +7688,18 @@ private struct Walker {
         return value;
     }
 
-    // `arrayRefWriteback` (value.md item 7 review round 2, finding 2):
+    // `arrayRefWriteback`:
     // `writeBackRefArguments` is the only caller that ever passes `true`,
     // for a `VarExp` target's whole-array value written back from a `ref
     // int[]` parameter's callee-side final value, as opposed to a plain
     // source-level rebind (`s = b;`), which always passes the default
     // `false`. `true` here does NOT by itself mean "genuinely the same
     // storage, mutated in place" -- the callee may instead have REBOUND the
-    // parameter (review round 4, finding 1), so `writeBackRefArguments`
+    // parameter, so `writeBackRefArguments`
     // computes this per call via `arrayWritebackIsMutation` rather than
     // hardcoding `true`. See `writeCelledLocal`'s own doc comment for why
     // the distinction matters and how it is resolved.
-    // `classFieldRefresh` (BLOCKER fix, review of value-native-20260715
-    // findings 1 and 2): `true` only from THIS function's own `DotVarExp` and
+    // `classFieldRefresh`: `true` only from THIS function's own `DotVarExp` and
     // class-array-field-write recursions below, and from
     // `writeIndexLocation`/`runIndexAssignExpression`'s own class-array-field
     // arms and `writeThroughSliceAlias`'s class-field arm -- every one of
@@ -7774,7 +7748,7 @@ private struct Walker {
                 }
             }
 
-            // Byte-level authority (value.md item 7): once `&variable` has
+            // Byte-level authority: once `&variable` has
             // promoted a cell, direct reads consult it (the `VarExp` arm of
             // `runExpression`) rather than the `locals` mirror below, so a
             // direct write must refresh the cell too, or a stale cell value
@@ -7820,7 +7794,6 @@ private struct Walker {
             if (receiver.isClassObject) {
                 const fieldIndex = classFieldIndex(dot, receiver);
 
-                // BLOCKER fix (review of value-native-20260715, finding 2):
                 // `receiver` above came from the plain `VarExp`/`ThisExp`
                 // read path, which has no `classCells` overlay, so its OTHER
                 // fields may already be stale relative to a cell another
@@ -7831,7 +7804,7 @@ private struct Walker {
                 // stale field values.
                 const authoritative = classCellOverlaidValue(dot.e1, receiver);
 
-                // value.md item 7 decomposition item 1: mirror the write
+                // mirror the write
                 // into `dot.e1`'s own `classCells` entry, when present,
                 // BEFORE the boxed write below -- a no-op unless `dot.e1`
                 // is a bare `VarExp` with a cell (shared with another alias,
@@ -7883,14 +7856,14 @@ private struct Walker {
                 if (variable is null)
                     throw new Exception("Unsupported interpreter assignment target.");
 
-                // Byte-level reinterpret write (value.md item 7): a
+                // Byte-level reinterpret write: a
                 // promoted cell exists, so write `value`'s bits in as the
                 // pointer's pointee type, then refresh the `locals` mirror
                 // by reading the local's own type back out. Without this,
                 // `*p = x` through a differently-typed pointer stored the
                 // boxed value verbatim -- a real bug vs SystemLinker.
                 //
-                // Finding 5 (value.md item 7 review): a NARROWER
+                // A NARROWER
                 // native-scalar pointee (e.g. a `ubyte*` reinterpret of a
                 // `uint`) writes only into the cell's low
                 // `typeByteSize(pointeeType)` bytes -- mirroring
@@ -7944,15 +7917,15 @@ private struct Walker {
                 return;
 
             // `&s.field` of a scalar field on a plain struct LOCAL promoted
-            // a `structCells` entry at address-of time (value.md item 7's
-            // struct phase): write through it exactly like SystemLinker's
+            // a `structCells` entry at address-of time: write through it
+            // exactly like SystemLinker's
             // real aliasing, instead of refusing below.
             if (writeThroughStructFieldPointer(pointer, value))
                 return;
 
             // `&s.arr[i]` of a static-array field on a plain struct LOCAL
-            // promoted a `structCells` entry at address-of time (value.md
-            // item 7's struct-static-array-field follow-up): write through
+            // promoted a `structCells` entry at address-of time
+            // (struct-static-array-field follow-up): write through
             // it exactly like SystemLinker's real aliasing, instead of
             // refusing below.
             if (writeThroughStructArrayFieldPointer(pointer, value))
@@ -7960,15 +7933,15 @@ private struct Walker {
 
             // `&s.inner.x` of a nested (one level) scalar field on a plain
             // struct LOCAL promoted a `structCells` entry at address-of time
-            // (value.md item 7's nested-struct-field follow-up): write
+            // (nested-struct-field follow-up): write
             // through it exactly like SystemLinker's real aliasing, instead
             // of refusing below.
             if (writeThroughNestedStructFieldPointer(pointer, value))
                 return;
 
             // `&c.x` of a scalar field on a plain class-typed LOCAL promoted
-            // a `classCells` entry at address-of time (value.md item 7's
-            // class phase, write-through-pointer slice): write through it
+            // a `classCells` entry at address-of time
+            // (write-through-pointer slice): write through it
             // exactly like SystemLinker's real aliasing, instead of refusing
             // below.
             if (writeThroughClassFieldPointer(pointer, value))
@@ -7976,8 +7949,8 @@ private struct Walker {
 
             // `&c.inner.x` of a nested (one level) scalar field on a plain
             // class-typed LOCAL promoted a `classCells` entry at address-of
-            // time (value.md item 7 decomposition item 4, aggregate
-            // composition, write-through-pointer follow-up): write through it
+            // time (aggregate composition, write-through-pointer follow-up):
+            // write through it
             // exactly like SystemLinker's real aliasing, instead of refusing
             // below.
             if (writeThroughNestedClassStructFieldPointer(pointer, value))
@@ -7985,7 +7958,7 @@ private struct Walker {
 
             // `&c.arr[i]` of a static-array field on a plain class-typed
             // LOCAL promoted a `classCells` entry at address-of time
-            // (value.md item 7 decomposition item 4's write-through-pointer
+            // (write-through-pointer
             // follow-up): write through it exactly like SystemLinker's real
             // aliasing, instead of refusing below.
             if (writeThroughClassArrayFieldPointer(pointer, value))
@@ -8275,8 +8248,8 @@ private struct Walker {
         return backendCastValue(value, target);
     }
 
-    // Delegates to `native_scalar.writeScalar` -- `ai/plans/value.md` item
-    // 7's single scalar<->bytes authority -- rather than re-deriving a
+    // Delegates to `native_scalar.writeScalar` -- the single scalar<->bytes
+    // authority -- rather than re-deriving a
     // scalar's byte width and bit pattern here; this module must not grow
     // its own second set of D layout rules alongside that codec's.
     private Value[] scalarBytes(
@@ -8312,10 +8285,9 @@ private struct Walker {
     }
 
     // The inverse of `scalarBytes` above, via `native_scalar.readScalar`.
-    // Note this also now succeeds for `float`/`double` -- see `ai/plans/
-    // value.md`'s 2026-07-10 "single scalar<->bytes authority" progress
-    // note for why the old name-matched `switch`'s throw on those two types
-    // was safe to drop.
+    // This also now succeeds for `float`/`double`: routing through the
+    // single scalar<->bytes codec dropped the old name-matched `switch`'s
+    // throw on those two types.
     private Value scalarFromBytes(
         imported!"dmd.mtype".Type type,
         in Value[] bytes,
@@ -8386,8 +8358,8 @@ private struct Walker {
     }
 
     // Write-through-pointer counterpart of `structFieldPointerCellValue`
-    // (value.md item 7's struct phase, closing the write-through-pointer
-    // gap left open when the struct phase started): once `&s.field` has
+    // (the write side of the struct-field-pointer aliasing whose read side
+    // `structFieldPointerCellValue` already handles): once `&s.field` has
     // promoted a `structCells` entry, `*p = value` writes `value`'s bytes
     // straight into the cell's field slice and re-derives the boxed
     // `locals` mirror from the (already-updated) whole struct, exactly the
@@ -8444,7 +8416,7 @@ private struct Walker {
     }
 
     // Array-typed-field sibling of `writeThroughStructFieldPointer` above
-    // (value.md item 7's struct-static-array-field follow-up): once
+    // (struct-static-array-field follow-up): once
     // `&s.arr[i]` has promoted a `structCells` entry, `*p = value` writes
     // `value`'s bytes into the cell's `NativeStruct.arrayField` view at the
     // pointer's element offset and re-derives the boxed `locals` mirror from
@@ -8495,7 +8467,7 @@ private struct Walker {
     }
 
     // Nested-struct-field sibling of `writeThroughStructFieldPointer` above
-    // (value.md item 7's nested-struct-field follow-up): once `&s.inner.x`
+    // (nested-struct-field follow-up): once `&s.inner.x`
     // has promoted a `structCells` entry, `*p = value` writes `value`'s
     // bytes into the cell's nested `NativeStruct.structField(outerIndex)`
     // view at the inner field index, and re-derives the boxed `locals`
@@ -8552,8 +8524,8 @@ private struct Walker {
         return true;
     }
 
-    // Class sibling of `writeThroughStructFieldPointer` above (value.md item
-    // 7's class phase, write-through-pointer slice): once `&c.field` has
+    // Class sibling of `writeThroughStructFieldPointer` above
+    // (write-through-pointer slice): once `&c.field` has
     // promoted a `classCells` entry, `*p = value` writes `value`'s bytes
     // straight into the cell's field byte range (the same offset/size facts
     // `classFieldPointerCellValue` already reads for the deref-read side) and
@@ -8609,8 +8581,8 @@ private struct Walker {
     }
 
     // Class+nested-struct-field sibling of `writeThroughNestedStructFieldPointer`
-    // and `writeThroughClassFieldPointer` above (value.md item 7 decomposition
-    // item 4, aggregate composition, write-through-pointer follow-up): once
+    // and `writeThroughClassFieldPointer` above (aggregate composition,
+    // write-through-pointer follow-up): once
     // `&c.inner.x` has promoted a `classCells` entry via
     // `promoteNestedClassStructFieldCell`, `*p = value` writes `value`'s
     // bytes straight into the cell's nested `NativeStruct` view -- adopted
@@ -8619,8 +8591,7 @@ private struct Walker {
     // deref-read side -- and re-derives the boxed `locals` mirror from the
     // (already-updated) whole object, mirroring
     // `writeThroughNestedStructFieldPointer`'s cell-then-mirror discipline.
-    // Cross-frame follow-up (value.md item 7 decomposition item 4's
-    // remaining cross-frame follow-up, 2026-07-15): `current` (the
+    // Cross-frame follow-up (2026-07-15): `current` (the
     // receiver's own boxed value) can be absent here even on a genuine hit,
     // exactly as in `writeThroughClassArrayFieldPointer` -- a CROSS-FRAME
     // write (`variable` is the CALLER's own local, `id` recorded before the
@@ -8682,7 +8653,7 @@ private struct Walker {
     }
 
     // Class-receiver sibling of `writeThroughStructArrayFieldPointer` above
-    // (value.md item 7 decomposition item 4, aggregate composition,
+    // (aggregate composition,
     // write-through-pointer follow-up): once `&c.arr[i]` has promoted a
     // `classCells` entry via `promoteClassArrayFieldCell`, `*p = value`
     // writes `value`'s bytes into the cell's `NativeArray` view -- adopted
@@ -8693,7 +8664,7 @@ private struct Walker {
     // pointer's own element offset, and re-derives the boxed `locals`
     // mirror from the (already-updated) whole object, mirroring
     // `writeThroughStructArrayFieldPointer`'s cell-then-mirror discipline.
-    // Cross-frame follow-up (value.md item 7 decomposition item 4):
+    // Cross-frame follow-up:
     // `current` (the receiver's own boxed value) can be absent here even on
     // a genuine hit, exactly as in `writeThroughStructArrayFieldPointer` -- a
     // CROSS-FRAME write (`variable` is the CALLER's own local, `id` recorded
@@ -8751,8 +8722,8 @@ private struct Walker {
         return true;
     }
 
-    // Write-side counterpart of `classCellFieldValue` above (value.md item 7
-    // decomposition item 1): mirrors a direct field write (`c.field = v`,
+    // Write-side counterpart of `classCellFieldValue` above: mirrors a
+    // direct field write (`c.field = v`,
     // as opposed to a pointer deref write, which
     // `writeThroughClassFieldPointer` above already handles) into
     // `receiverExpression`'s resolved `classCells` key
@@ -8826,8 +8797,8 @@ private struct Walker {
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
 
         if (auto dot = index.e1.isDotVarExp) {
-            // Class sibling of the struct branch below (value.md item 7
-            // decomposition item 4, aggregate composition -- static-array
+            // Class sibling of the struct branch below (aggregate
+            // composition -- static-array
             // field): `c.arr[i] = v` for a class-typed field previously fell
             // through to `structFieldIndex`, which requires
             // `receiverStructType` and throws "Unsupported interpreter field
@@ -8843,8 +8814,7 @@ private struct Walker {
             if (receiverClassType(dot.e1) !is null) {
                 const receiver = runExpression(dot.e1);
                 const fieldIndex = classFieldIndex(dot, receiver);
-                // BLOCKER fix (review of value-native-20260715, finding 2):
-                // same stale-receiver hazard `writeLocation`'s `DotVarExp`
+                // Same stale-receiver hazard `writeLocation`'s `DotVarExp`
                 // arm closes -- re-derive from the shared cell before folding
                 // in this element's write.
                 const authoritative = classCellOverlaidValue(dot.e1, receiver);
@@ -8919,22 +8889,22 @@ private struct Walker {
     // call), so `promoteStructCell`'s own guard (and its pointer/cross-frame
     // aliasing machinery) is untouched by this. A native-scalar written/
     // sibling field routes through `native_scalar.writeScalar`/`readScalar`
-    // directly on the cell's own field bytes. Widened (value.md item 7,
-    // 2026-07-15, non-scalar union member follow-up) to also handle a
+    // directly on the cell's own field bytes. Widened (2026-07-15,
+    // non-scalar union member follow-up) to also handle a
     // written/sibling field that is itself a (non-union) struct, via the
     // SAME composition machinery `promoteStructCell`'s scalar-only cells
     // already use: `writeStructCellScalarFields` to seed the struct-typed
     // field's own scalar sub-fields into the transient cell's shared bytes,
     // and `structValueFromCell` to re-derive a struct-typed sibling's boxed
-    // value back out of those same bytes. Widened again (value.md item 7,
-    // 2026-07-16, static-array union member follow-up) so a SIBLING field
+    // value back out of those same bytes. Widened again (2026-07-16,
+    // static-array union member follow-up) so a SIBLING field
     // that is a static array whose OWN element type is `native_scalar.
     // isNativeScalarType` is also refreshed, via the SAME `NativeStruct.
     // arrayField` view `writeStructCellScalarFields`/`structValueFromCell`
     // already use for a struct's own static-array field: `readScalar`s each
     // element back out of the transient cell's shared bytes into the
-    // sibling's boxed array value. Widened again (value.md item 7,
-    // 2026-07-16, WRITTEN-side static-array follow-up) so assigning a WHOLE
+    // sibling's boxed array value. Widened again (2026-07-16,
+    // WRITTEN-side static-array follow-up) so assigning a WHOLE
     // scalar-element static-array union member (e.g. `u.a = [...]`) also
     // seeds the transient cell's shared bytes -- via the SAME `NativeStruct.
     // arrayField` view, `writeScalar`ing each of the just-written array
@@ -8978,7 +8948,6 @@ private struct Walker {
 
         auto cell = NativeStruct.allocate(unionType);
 
-        // Review finding 3 (SHOULD-FIX, review of value-native-20260715):
         // `NativeStruct.allocate` zero-initialises, and the transient cell
         // used to be seeded ONLY with the just-written member's own bytes
         // before the sibling loop below re-derived every OTHER member's
@@ -9122,9 +9091,9 @@ private struct Walker {
             return runNestedIndexAssignExpression(outer, index, rhs);
 
         if (auto dot = index.e1.isDotVarExp) {
-            // Class sibling of the struct branch below (value.md item 7
-            // decomposition item 4, aggregate composition -- static-array
-            // field): `c.arr[i] = v`'s SIMPLE-assignment path (as opposed to
+            // Class sibling of the struct branch below (aggregate
+            // composition -- static-array field): `c.arr[i] = v`'s
+            // SIMPLE-assignment path (as opposed to
             // `writeIndexLocation`'s compound-assignment/atomic path, fixed
             // alongside this one) previously fell through to
             // `structFieldIndex`, which throws "Unsupported interpreter
@@ -9135,8 +9104,7 @@ private struct Walker {
             if (receiverClassType(dot.e1) !is null) {
                 const receiver = runExpression(dot.e1);
                 const fieldIndex = classFieldIndex(dot, receiver);
-                // BLOCKER fix (review of value-native-20260715, finding 2):
-                // same stale-receiver hazard `writeLocation`'s `DotVarExp`
+                // Same stale-receiver hazard `writeLocation`'s `DotVarExp`
                 // arm closes -- re-derive from the shared cell before folding
                 // in this element's write.
                 const authoritative = classCellOverlaidValue(dot.e1, receiver);
@@ -9195,8 +9163,8 @@ private struct Walker {
         return value;
     }
 
-    // Refreshes `variable`'s promoted `arrayCells` entry (value.md item 7's
-    // array guest-local slice), if one exists, alongside the `locals` mirror
+    // Refreshes `variable`'s promoted `arrayCells` entry, if one exists,
+    // alongside the `locals` mirror
     // a direct element write (`a[i] = x`) already updated -- an earlier
     // `&a[i]` pointer's deref-read (`runPointerExpression`) consults the
     // cell, not `locals`, so a direct element write must keep the cell
@@ -9220,8 +9188,7 @@ private struct Walker {
     // -- the same scalar-fields-only overlay `promoteStructCell`'s own cell
     // uses, applied to one array element's sub-range instead of a whole
     // struct local. `cell.elementType` a (necessarily scalar-element, per
-    // `promoteArrayCell`'s own guard) static array -- value.md item 7's
-    // array-of-static-array follow-up -- routes through `NativeArray.
+    // `promoteArrayCell`'s own guard) static array routes through `NativeArray.
     // arrayElement`/`writeStaticArrayCellScalarElements`, the array-typed
     // sibling of the struct branch. Shared by every `arrayCells`
     // element-write call site so none of them needs its own element-type
@@ -9249,8 +9216,8 @@ private struct Walker {
     }
 
     // Writes boxed `arrayValue`'s scalar elements into `cell`'s bytes (the
-    // static-array-element counterpart of `writeStructCellScalarFields`,
-    // value.md item 7's array-of-static-array follow-up): shared by
+    // static-array-element counterpart of `writeStructCellScalarFields`):
+    // shared by
     // `promoteArrayCell`'s static-array-element branch (the cell-creation
     // seed) and `writeArrayCellElement`'s own branch above (a direct
     // element write, `a[i] = [...]`, after the cell already exists).
@@ -9281,8 +9248,8 @@ private struct Walker {
     // through `structValueFromCell` -- the same read-back `writeBack
     // StructFieldPointerTargets` already uses for a top-level struct-field
     // cell, applied here to one array element's sub-range. `cell.
-    // elementType` a static array (value.md item 7's array-of-static-array
-    // follow-up) routes through `arrayValueFromCell`, the array-typed
+    // elementType` a static array routes through `arrayValueFromCell`, the
+    // array-typed
     // sibling of `structValueFromCell`. The base `Value` overlaid for the
     // struct branch is `variable`'s own current boxed element when one
     // exists (so a non-scalar sub-field, out of this narrow slice's scope,
@@ -9485,7 +9452,7 @@ private struct Walker {
         locals[variable] = Value.arrayValue(elements);
         uninitializedLocals.remove(variable);
 
-        // value.md item 7 review, finding 4: a promoted `arrayCells` entry
+        // A promoted `arrayCells` entry
         // (e.g. from an earlier `&a[i]` or a slice sharing `variable`'s
         // storage) is read-authoritative over this `locals` mirror --
         // `readIndexExpression`'s cell arm -- so every element this
@@ -9765,7 +9732,7 @@ private struct Walker {
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
 
-        // value.md item 7 review, finding 3: `~=` may reallocate (D's own
+        // `~=` may reallocate (D's own
         // "append may reallocate, old pointers go stale" semantics), and even
         // when it does not, a promoted `arrayCells` entry is a fixed-length
         // `NativeArray` sized at promotion time -- it cannot represent the
@@ -9774,14 +9741,14 @@ private struct Walker {
         // (`readIndexExpression`'s cell arm, `writeThroughArrayCell`); the
         // next read falls through to this fresh `locals` mirror instead.
         //
-        // Re-review finding 2 (2026-07-14): dropping the CELL alone left the
+        // Dropping the CELL alone left the
         // memoized `arrayAllocations`/`arrayAllocationVariables` id in
         // place, since `variable` itself was never re-declared here -- a
         // pointer re-taken AFTER this append then minted the SAME id as one
         // taken BEFORE it, and a write through the new pointer became
         // visible through the old one even though `~=` may have reallocated
         // in real D. `dropArrayCell` mints a fresh id for the next
-        // address-of instead, matching the fresh-id principle finding 3's
+        // address-of instead, matching the fresh-id principle that
         // fresh-binding sites already apply -- the correct, D-matching
         // choice even though it changes `p is q` identity for the case
         // where the append happened not to reallocate.
@@ -10003,7 +9970,7 @@ private struct Walker {
     // Real D zero-initializes the union's WHOLE storage block from that
     // first member's own bytes, so an untouched sibling reads the first
     // member's bits reinterpreted as its own type -- not its own type's
-    // independent default (value.md item 7, union default-init follow-up).
+    // independent default.
     // `fieldsSoFar` is this literal's own `fields` accumulator: by the time
     // a later index is processed, index 0's value has already been
     // computed and appended, so it is always available here without a
@@ -10031,7 +9998,7 @@ private struct Walker {
     // neither `isNativeScalarType` nor a plain (non-union) struct -- so the
     // caller's existing independent-`defaultValue` fallback applies
     // unchanged in every other case, including the still-open gap
-    // (value.md) for a static-array or class first member/sibling. When the
+    // for a static-array or class first member/sibling. When the
     // first member is a struct, reuses `withUnionFieldWrite`'s own
     // `writeStructCellScalarFields` idiom to seed the transient cell's
     // shared bytes from the first member's already-resolved struct value
@@ -10255,7 +10222,7 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported native out-parameter target.");
 
-            // A promoted cell (value.md item 7) is the byte authority: the
+            // A promoted cell is the byte authority: the
             // argument-evaluation pass that ran `&local` for this native
             // call already promoted `variable` (see `promoteScalarCell`),
             // so the writeback must land in the cell too, or a direct
@@ -10414,8 +10381,8 @@ private struct Walker {
             ));
         }
 
-        // Byte-level authority (value.md item 7's SLICE guest-local, reverse
-        // direction): once `promoteSliceArrayCell` has given `variable` an
+        // Byte-level authority for a slice's shared storage, reverse
+        // direction: once `promoteSliceArrayCell` has given `variable` an
         // `arrayCells` entry sharing storage with its slice source (or
         // `promoteArrayCell` gave the source itself one), its bytes -- not
         // `source`'s own boxed snapshot, which a direct write to the OTHER
@@ -10456,7 +10423,7 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter pointer target.");
 
-        // Byte-level authority (value.md item 7, finding 3): a promoted
+        // Byte-level authority: a promoted
         // cell -- not the boxed `locals` mirror -- is the true value once
         // `&variable` promoted one, the same priority `readCelledLocal`
         // gives `runPointerExpression`'s deref-read arm. Without this,
@@ -10465,7 +10432,7 @@ private struct Walker {
         return readCelledLocal(*variable);
     }
 
-    // Byte-level authority for an array-element pointer (value.md item 7):
+    // Byte-level authority for an array-element pointer:
     // once `&a[i]` has promoted an `arrayCells` entry for the variable a
     // non-local pointer points into, its bytes -- not a boxed snapshot --
     // are the true value. Shared by `runPointerExpression`'s deref-read arm
@@ -10473,8 +10440,8 @@ private struct Walker {
     // increment read path) so both agree on the same cell. Returns `false`
     // (leaving `value` untouched) for every other array pointer -- no
     // promoted cell, or a static array -- which keeps the existing boxed
-    // `pointerTarget` fallback at each call site. A struct element (value.md
-    // item 7's array-of-struct widening) is handled the same as a scalar
+    // `pointerTarget` fallback at each call site. A struct element is
+    // handled the same as a scalar
     // element, both via `readArrayCellElement`.
     private bool arrayPointerCellValue(in Value pointer, out Value value) {
         auto variable = arrayPointerVariable(pointer);
@@ -10493,8 +10460,8 @@ private struct Walker {
         return true;
     }
 
-    // Byte-level authority for a struct-field pointer (value.md item 7's
-    // struct phase starts): once `&s.field` has promoted a `structCells`
+    // Byte-level authority for a struct-field pointer:
+    // once `&s.field` has promoted a `structCells`
     // entry for the struct variable a non-local pointer points into, its
     // bytes -- not the boxed snapshot `addressOfExpression` took at
     // address-of time -- are the true value. Shared by
@@ -10527,8 +10494,8 @@ private struct Walker {
         return true;
     }
 
-    // Class sibling of `structFieldPointerCellValue` above (value.md item
-    // 7's class phase starts): once `&c.field` has promoted a `classCells`
+    // Class sibling of `structFieldPointerCellValue` above:
+    // once `&c.field` has promoted a `classCells`
     // entry for the class variable a non-local pointer points into, its
     // bytes -- not the boxed snapshot `addressOfExpression` took at
     // address-of time -- are the true value. Shared by the same two call
@@ -10562,9 +10529,8 @@ private struct Walker {
         return true;
     }
 
-    // Array-typed-field sibling of `structFieldPointerCellValue` above
-    // (value.md item 7's struct-static-array-field follow-up): once
-    // `&s.arr[i]` has promoted a `structCells` entry, the cell's
+    // Array-typed-field sibling of `structFieldPointerCellValue` above:
+    // once `&s.arr[i]` has promoted a `structCells` entry, the cell's
     // `NativeStruct.arrayField` view -- not the boxed snapshot
     // `arrayPointer` took at address-of time -- is the true value at the
     // pointer's element offset. Returns `false` (leaving `value` untouched)
@@ -10597,10 +10563,9 @@ private struct Walker {
         return true;
     }
 
-    // Class-receiver sibling of `structArrayFieldPointerCellValue` above
-    // (value.md item 7 decomposition item 4, the other aggregate-composition
-    // shape the nested-class-struct-field progress notes left as a
-    // follow-up): once `&c.arr[i]` has promoted a `classCells` entry, the
+    // Class-receiver sibling of `structArrayFieldPointerCellValue` above,
+    // the class-array-field counterpart of the nested-class-struct-field
+    // case: once `&c.arr[i]` has promoted a `classCells` entry, the
     // cell's `NativeArray` view -- adopted over the field's own byte
     // sub-range, since a `classCells` entry is a plain `NativeBlock` rather
     // than a `NativeStruct` (see `classCells`'s own field comment) -- is the
@@ -10647,8 +10612,8 @@ private struct Walker {
     }
 
     // Nested-struct-field sibling of `structFieldPointerCellValue`/
-    // `structArrayFieldPointerCellValue` above (value.md item 7's nested-
-    // struct-field follow-up): once `&s.inner.x` has promoted a
+    // `structArrayFieldPointerCellValue` above: once `&s.inner.x` has
+    // promoted a
     // `structCells` entry, the cell's nested `NativeStruct.
     // structField(outerIndex)` view -- not the boxed snapshot
     // `addressOfExpression` took at address-of time -- is the true value at
@@ -10686,8 +10651,8 @@ private struct Walker {
         return true;
     }
 
-    // Array-element sibling of `nestedStructFieldPointerCellValue` above
-    // (value.md item 7's array-element/nested-field composition follow-up):
+    // Array-element sibling of `nestedStructFieldPointerCellValue` above,
+    // composing array-element and nested-field access:
     // once `&a[i].inner.x` has promoted an `arrayCells` entry, the cell's
     // per-element `NativeArray.structElement(elementIndex)` view, further
     // narrowed by its own nested `NativeStruct.structField(outerIndex)` view
@@ -10731,9 +10696,8 @@ private struct Walker {
         return true;
     }
 
-    // Class-receiver sibling of `nestedStructFieldPointerCellValue` above
-    // (value.md item 7 decomposition item 4, aggregate composition): once
-    // `&c.inner.x` has promoted a `classCells` entry, the cell's nested
+    // Class-receiver sibling of `nestedStructFieldPointerCellValue` above:
+    // once `&c.inner.x` has promoted a `classCells` entry, the cell's nested
     // `NativeStruct` view -- adopted over the outer field's own byte
     // sub-range, since a `classCells` entry is a plain `NativeBlock` rather
     // than a `NativeStruct` (see `classCells`'s own field comment) -- is the
@@ -10827,7 +10791,7 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported interpreter pointer target.");
 
-            // Cell-then-mirror (value.md item 7, finding 3): this write is
+            // Cell-then-mirror: this write is
             // always at `variable`'s own storage type (an atomic op or a
             // `(*p)++`/`+=` write-back), never a differently-typed
             // reinterpret write, so `writeCelledLocal` applies directly.
@@ -10851,38 +10815,33 @@ private struct Walker {
         // function's only callers) refreshes the same promoted
         // `structCells` entry that `structFieldPointerCellValue` above reads
         // from -- instead of the stale boxed-value rewrite the fallback
-        // below would otherwise perform (value.md review, finding 6).
+        // below would otherwise perform.
         if (writeThroughStructFieldPointer(pointer, value))
             return;
 
         // A struct-static-array-field pointer (`&s.arr[i]`): the array-typed
-        // sibling of the check above (value.md item 7's struct-static-
-        // array-field follow-up), same reasoning.
+        // sibling of the check above, same reasoning.
         if (writeThroughStructArrayFieldPointer(pointer, value))
             return;
 
         // A nested-struct-field pointer (`&s.inner.x`): the one-level-nested
-        // sibling of the two checks above (value.md item 7's nested-struct-
-        // field follow-up), same reasoning.
+        // sibling of the two checks above, same reasoning.
         if (writeThroughNestedStructFieldPointer(pointer, value))
             return;
 
         // A class-field pointer (`&c.field`): the class-typed sibling of the
-        // struct-family checks above (value.md item 7's class phase,
-        // write-through-pointer slice), same reasoning.
+        // struct-family checks above, same reasoning.
         if (writeThroughClassFieldPointer(pointer, value))
             return;
 
         // A nested-class-struct-field pointer (`&c.inner.x`): the class-
-        // typed sibling of `writeThroughNestedStructFieldPointer` (value.md
-        // item 7 decomposition item 4's write-through-pointer follow-up),
+        // typed sibling of `writeThroughNestedStructFieldPointer`,
         // same reasoning.
         if (writeThroughNestedClassStructFieldPointer(pointer, value))
             return;
 
         // A class-array-field pointer (`&c.arr[i]`): the class-typed
-        // sibling of `writeThroughStructArrayFieldPointer` (value.md item 7
-        // decomposition item 4's write-through-pointer follow-up), same
+        // sibling of `writeThroughStructArrayFieldPointer`, same
         // reasoning.
         if (writeThroughClassArrayFieldPointer(pointer, value))
             return;
@@ -11248,8 +11207,8 @@ private struct Walker {
                 return;
             }
 
-            // Class sibling of the struct-field shape above (value.md item
-            // 7, foreach-ref-over-class-static-array-field follow-up):
+            // Class sibling of the struct-field shape above (foreach-ref
+            // over a class static-array field):
             // `structFieldIndex(dot)` requires `receiverStructType`, which
             // is null for a class receiver and throws "Unsupported
             // interpreter field access." immediately here, before any
@@ -11298,7 +11257,7 @@ private struct Walker {
             return;
 
         // A still-void static array (e.g. a `ref` parameter bound to the
-        // caller's `T val = void;`, interpreter.md §9.7) leaves the source's
+        // caller's `T val = void;`) leaves the source's
         // `locals` entry holding the bare `Value.void_` placeholder rather
         // than a real `Array`/`Struct` — `val[]`'s `foreach (ref e; val)`
         // lowering slices it into a temporary, and a write through the
@@ -11314,8 +11273,8 @@ private struct Walker {
             throw new Exception("Unsupported interpreter slice assignment target.");
 
         if (alias_.hasFieldIndex) {
-            // Class sibling of the struct-field refresh below (value.md
-            // item 7, foreach-ref-over-class-static-array-field follow-up):
+            // Class sibling of the struct-field refresh below (foreach-ref
+            // over a class static-array field):
             // `alias_.source` may be a class object (`ClassObject`), whose
             // field must be read/written via `classFieldAt`/
             // `withClassField`, not the struct accessors (`structFieldAt`
@@ -11324,7 +11283,6 @@ private struct Walker {
             // VALUE's runtime kind (`isStruct`/`isClassObject`), so no
             // change is needed there.
             //
-            // BLOCKER fix (review of value-native-20260715, finding 2):
             // `*source` is the plain `locals[alias_.source]` boxed mirror,
             // the same stale-relative-to-a-shared-cell snapshot
             // `writeLocation`'s `DotVarExp` arm used to read -- re-derive an
@@ -11348,16 +11306,16 @@ private struct Walker {
             const updatedOwner = alias_.isClassField
                 ? authoritativeSource.withClassField(alias_.fieldIndex, updatedField)
                 : authoritativeSource.withStructField(alias_.fieldIndex, updatedField);
-            // value.md item 7's struct-static-array-field foreach-ref
-            // follow-up: `alias_.source` (the struct owning the field) may
+            // Struct-static-array-field foreach-ref case: `alias_.source`
+            // (the struct owning the field) may
             // already have a `structCells` entry (an earlier `&s.arr[0]` in
             // the same frame) -- `writeCelledLocal` is the SAME whole-struct
             // refresh a direct `s.arr[i] = v` write reaches via
             // `writeLocation`, so a later deref-read through that cell
             // (`structArrayFieldPointerCellValue`) sees this slice-routed
             // write too instead of stale bytes. A no-op when no cell was
-            // ever promoted for `alias_.source`. `classFieldRefresh` (BLOCKER
-            // fix above) marks this the same authoritative same-object
+            // ever promoted for `alias_.source`. `classFieldRefresh`
+            // (documented above) marks this the same authoritative same-object
             // refresh the `DotVarExp` write arm performs, not a rebind.
             writeCelledLocal(
                 alias_.source,
@@ -11369,7 +11327,7 @@ private struct Walker {
         }
 
         locals[alias_.source] = source.withArrayElement(alias_.lower + index, value);
-        // value.md review, finding 5: a slice-expression parameter (bound
+        // A slice-expression parameter (bound
         // via `recordParameterSliceAlias`, which never calls
         // `promoteSliceArrayCell`) has no `arrayCells` entry of its own, but
         // `alias_.source` -- the slice's origin -- may already have one (an
@@ -11397,7 +11355,7 @@ private struct Walker {
             throw new Exception("Unsupported interpreter struct field alias target.");
 
         locals[*sourceVariable] = source.withArrayElement(index, value);
-        // value.md final review, finding 2: once `sourceVariable` has a
+        // Once `sourceVariable` has a
         // promoted `arrayCells` entry (needing no address-of at all --
         // `foreach (v; a)` promotes it via `promoteSliceArrayCell`), a
         // member-function write to the same array reached through a struct
@@ -11424,9 +11382,8 @@ private struct Walker {
         // `scalarCells`/`arrayCells`/`structCells`/`classCells` entry for it
         // before writing `locals` below, or a later `&variable` would
         // resurrect a prior instance's promoted cell instead of getting a
-        // correct fresh one (value.md item 7 review round 2, finding 1 -- the
-        // round 1 fix only dropped `scalarCells`, missing the two cell maps
-        // the array/struct phases added since; the class phase's own
+        // correct fresh one (an earlier version dropped only `scalarCells`,
+        // missing the `arrayCells`/`structCells` maps added later;
         // `dropClassCell` closes the same gap for `classCells`, added later
         // still). Recursion reuses the same `VarDeclaration` AST node at
         // every call depth, and duping each of `scalarCells`/`arrayCells`/
@@ -11763,7 +11720,7 @@ private struct Walker {
             );
 
         locals[alias_.source] = source.withStructField(alias_.index, value);
-        // value.md review, finding 7: a `ref` local bound directly to a
+        // A `ref` local bound directly to a
         // struct field (`ref int r = s.x;`, recorded via
         // `recordStructFieldAlias`) must also refresh `alias_.source`'s
         // promoted `structCells` entry, if one exists (an earlier `&s.x`),
@@ -11774,7 +11731,7 @@ private struct Walker {
         // array sibling. A no-op when no cell was ever promoted for
         // `alias_.source`.
         //
-        // value.md final review, finding 1: `recordStructFieldAlias` records
+        // `recordStructFieldAlias` records
         // ANY `DotVarExp` initializer, including a non-scalar (array/nested-
         // struct) field, but a `structCells` entry only ever holds native
         // SCALAR field bytes (`writeStructCellScalarFields`'s own guard).
@@ -11849,7 +11806,7 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported eval post expression target.");
 
-            // `readCelledLocal` (value.md item 7, finding 2): a plain
+            // `readCelledLocal`: a plain
             // `variable in locals` lookup here bypassed a promoted
             // `scalarCells` entry, reading stale bytes once a cross-frame
             // pointer write refreshed only the cell.
@@ -12343,8 +12300,8 @@ private struct SliceAlias {
     public bool hasFieldIndex;
     public size_t fieldIndex;
     // Set alongside `hasFieldIndex` when `source` is a class object rather
-    // than a struct (value.md item 7, foreach-ref-over-class-static-array-
-    // field follow-up): `fieldIndex` must then be read/written via
+    // than a struct (foreach-ref over a class static-array field):
+    // `fieldIndex` must then be read/written via
     // `classFieldAt`/`withClassField`, not the struct accessors.
     public bool isClassField;
 }
