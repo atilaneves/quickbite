@@ -313,6 +313,31 @@
   leaves, when detecting "this function's body is inline asm" in this
   codebase.
 
+- Code comments must stand on their own. Never cite this repo's planning or
+  review artefacts from `source/` or `tests/`: no `ai/plans/...` pointers as the
+  *reason* a line exists, no "item N"/"decomposition item N"/"phase"/"follow-up"
+  narrative, and above all no code-review labels ("review round 2, finding 3",
+  "the BLOCKER above"). A reader of the source has no plan and no review in front
+  of them, so such a comment conveys nothing; state the mechanism or the
+  invariant instead ("drop the cell on rebind so a stale pointer cannot resolve
+  into a later binding"), which is what the reference was standing in for. This
+  is easy to get wrong when a commit is driven from a plan or a review finding —
+  the framing that produced the change is not the framing that explains it. A
+  bare `§`-section citation to a design doc (e.g. `ffi.md §35.2`) is a different
+  thing and remains fine: it points at a stable specified contract, not at
+  narrative.
+
+- When a fixture carries a `SystemLinker`-oracle expectation, give it
+  `Matrix!(...)` and opt backends out only via `Omit!(B, Because.…, "note")` —
+  never hand-roll a shorter `AliasSeq!(Interpreter, SystemLinker)`. That raw form
+  is reserved for characterization pins that carry no oracle expectation
+  (`ai/plans/single-oracle.md`), and using it for an oracle-backed test silently
+  drops every backend you didn't happen to type — `LLVMJit` especially, which is
+  compiled code and usually agrees with the oracle. `Matrix!()` forces the
+  question: a backend can only leave the matrix with an explicit reason, so
+  "never tried it" stops being expressible. Actually run each backend and promote
+  the ones that pass.
+
 - Before assuming a druntime/Phobos function referenced by name (e.g. for an
   interpreter/backend name-based special case) is a body-less `extern(C)`
   prototype, check the actual vendored source. `core.stdc.math.fabs` is

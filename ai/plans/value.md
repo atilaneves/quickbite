@@ -5695,6 +5695,34 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    - the cerealed frontier resumes on the new representation, and the
      latency A/B (item 6's original question) is finally measured on real
      suites once they run.
+
+   Consolidation debt (accrued 2026-07-15/16 landing the aggregate, class, and
+   union cells; pay this down before widening the matrix further). Each new
+   (receiver, field/element) shape was landed as its own red-first slice, and
+   each grew a parallel family: a `promote*` entry point, a
+   `*PointerVariables`/`*FieldIndices`/`*Writebacks` reverse-lookup trio, a
+   `*CellValue` reader, a `writeThrough*` writer, a `merge*Maps`, a
+   `writeBack*Targets`, and a `drop*Cell` obligation. There are now ~10 such
+   families differing only in key shape and which `NativeStruct`/`NativeArray`
+   view they compose. This duplication is not cosmetic — it has already
+   produced real bugs, because every family must independently honour three
+   obligations (dup on frame fork, merge on return, drop on rebind) and missing
+   one is invisible until it corrupts: a `drop*Cell` site was missing for
+   exactly one family (a stale `&a[i].inner.x` resolved into a later binding),
+   and unifying the fork side uncovered three sites that silently duped a
+   narrower field set than their siblings.
+   - Do NOT add an eleventh family. The next shape that needs a cell should
+     instead drive the generalization: one mechanism keyed by (root variable,
+     field PATH) — `a[i].inner.x` described as a path rather than a bespoke map
+     per shape — so promote/read/write/merge/writeback/drop each exist once.
+   - Per-frame cell state is now forked in one place
+     (`Walker.forkPerFrameCellsInto`); that is the model for the rest. Merge
+     and drop should likewise become single dispatch points instead of
+     per-family calls hand-wired at every site.
+   - `runNewStructPointerExpression`'s fork site still duplicates a narrow
+     three-field subset with no recorded rationale; confirm it is deliberate or
+     fold it into the common path.
+
    Design sketch 2026-07-09 (the "plan before code" session; no code, no
    fixtures, no shim deletion). A *native block* is a stable byte range laid
    out with DMD's own offsets, stride, and alignment; a *handle* is the
