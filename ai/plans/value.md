@@ -716,11 +716,12 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      default-init siblings).
    - Native-pointer arithmetic: the design sketch's "pointers become real
      addresses into that storage" is unmet for pointers that already are
-     native. Offsetting a native pointer by an integer is refused
-     outright, so interpreted code that walks a raw native buffer (an
-     FFI-returned pointer, `GC.malloc`/`pureMalloc` storage) cannot index
-     it; only the interpreter's own boxed pointer variant supports
-     arithmetic. This blocks retiring the `gc_*` array-capacity hooks:
+     native. Direct indexing of FFI-returned storage is supported, including
+     `malloc` storage; forming a new pointer by offsetting a native pointer by
+     an integer is refused outright. Interpreted code therefore cannot walk a
+     raw native buffer by incrementing its pointer; only the interpreter's own
+     boxed pointer variant supports that arithmetic. This blocks retiring the
+     `gc_*` array-capacity hooks:
      their `void[]`-returning shape reaches real druntime code that does
      native-pointer arithmetic, so the hooks cannot become ordinary
      body-less FFI leaves until this is modelled.
