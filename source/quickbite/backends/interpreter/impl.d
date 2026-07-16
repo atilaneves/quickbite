@@ -5530,19 +5530,7 @@ private struct Walker {
         mergeNestedFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeStructFieldPointerVariableMaps(child);
-        structFieldPointerWritebacks = child.structFieldPointerWritebacks;
-        mergeStructArrayFieldPointerVariableMaps(child);
-        structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
-        mergeNestedStructFieldPointerVariableMaps(child);
-        nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
-        mergeClassFieldPointerVariableMaps(child);
-        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
-        mergeNestedClassStructFieldPointerVariableMaps(child);
-        nestedClassStructFieldPointerWritebacks =
-            child.nestedClassStructFieldPointerWritebacks;
-        mergeClassArrayFieldPointerVariableMaps(child);
-        classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
+        mergeFieldPointerState(child);
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -5581,19 +5569,7 @@ private struct Walker {
         mergeNestedFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeStructFieldPointerVariableMaps(child);
-        structFieldPointerWritebacks = child.structFieldPointerWritebacks;
-        mergeStructArrayFieldPointerVariableMaps(child);
-        structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
-        mergeNestedStructFieldPointerVariableMaps(child);
-        nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
-        mergeClassFieldPointerVariableMaps(child);
-        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
-        mergeNestedClassStructFieldPointerVariableMaps(child);
-        nestedClassStructFieldPointerWritebacks =
-            child.nestedClassStructFieldPointerWritebacks;
-        mergeClassArrayFieldPointerVariableMaps(child);
-        classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
+        mergeFieldPointerState(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
@@ -5608,6 +5584,27 @@ private struct Walker {
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
+    }
+
+    // Merges every field-pointer reverse lookup and adopts its corresponding
+    // cross-frame writeback set. This is the return-side counterpart of
+    // `forkPerFrameCellsInto`: call-return paths dispatch the complete family
+    // here so adding or removing a field shape cannot silently update only
+    // one kind of call.
+    private void mergeFieldPointerState(ref Walker child) {
+        mergeStructFieldPointerVariableMaps(child);
+        structFieldPointerWritebacks = child.structFieldPointerWritebacks;
+        mergeStructArrayFieldPointerVariableMaps(child);
+        structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
+        mergeNestedStructFieldPointerVariableMaps(child);
+        nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
+        mergeClassFieldPointerVariableMaps(child);
+        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
+        mergeNestedClassStructFieldPointerVariableMaps(child);
+        nestedClassStructFieldPointerWritebacks =
+            child.nestedClassStructFieldPointerWritebacks;
+        mergeClassArrayFieldPointerVariableMaps(child);
+        classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
     }
 
     private void mergeNativeThrowableRoots(ref Walker child) {

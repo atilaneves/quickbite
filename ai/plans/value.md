@@ -613,10 +613,12 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      (root variable, field PATH) — `a[i].inner.x` described as a path
      rather than a bespoke map per shape — so promote/read/write/merge/
      writeback/drop each exist once.
-   - Per-frame cell state is now forked in one place
-     (`Walker.forkPerFrameCellsInto`); that is the model for the rest.
-     Merge and drop should likewise become single dispatch points instead
-     of per-family calls hand-wired at every site.
+   - Per-frame cell state is forked in one place
+     (`Walker.forkPerFrameCellsInto`), and field-pointer registry families
+     merge through one return-side dispatch point
+     (`Walker.mergeFieldPointerState`). Cell-map merge and drop still need
+     equivalent single dispatch points instead of per-family calls hand-wired
+     at every site.
    - `runNewStructPointerExpression`'s fork site still duplicates a
      narrow three-field subset with no recorded rationale; confirm it is
      deliberate or fold it into the common path.
