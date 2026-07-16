@@ -5534,14 +5534,13 @@ private struct Compiler {
 
         const target = scalarType(cast_.to);
 
-        if (target == ScalarType.bool_ && source.isPointer) {
-            const zero = compileSizeConstant(0);
-            const offset = allocate(ScalarType.bool_);
-            _code ~= Instruction(
-                Op.notEqual8, offset, source.offset, zero,
-            );
-            return Operand(offset, ScalarType.bool_);
-        }
+        // `cast(bool)` on a pointer or an integral type is `source != 0` at
+        // the source's own width (DMD folds `x && true`/`x || false`-shaped
+        // `LogicalExp`s into exactly this cast); a float/double/real source
+        // falls through to the generic numeric conversion below.
+        if (target == ScalarType.bool_ &&
+            (source.isPointer || isCompoundIntegerScalar(source.type)))
+            return compileTruthValue(source);
 
         // Crossing the int/float boundary needs a numeric conversion, not a
         // byte copy or integer extension. Only double -> int is needed today.
@@ -6434,26 +6433,45 @@ private struct Compiler {
     }
 
     // Normalise an expression to a one-byte bool condition. Dynamic-array
-    // truthiness is its length, while a pointer condition (`slot ? ...`) is
-    // non-null iff its 8-byte value is non-zero.
+    // truthiness is its length; every other operand goes through
+    // `compileTruthValue`.
     private Operand compileBoolCondition(Expression expression) {
         if (isDynamicArrayArgument(expression)) {
             const descriptor = dynamicArrayDescriptor(expression);
             return Operand(sliceLengthSlot(descriptor), ScalarType.ulong_);
         }
 
-        const operand = compileExpression(expression);
-        if (!operand.isPointer)
+        return compileTruthValue(compileExpression(expression));
+    }
+
+    // An operand's truthiness is `operand != 0` over its own full width:
+    // pointers compare at 8 bytes, integral types narrower than `int` widen
+    // first so the comparison opcode's fixed read width matches the slot's
+    // actual layout (mirrors `==`/`!=`'s operand preparation). A bool
+    // operand is already canonical. Any other operand (float/double/real,
+    // which use a separate constant-loading opcode) is returned unchanged.
+    private Operand compileTruthValue(Operand operand) {
+        if (operand.type == ScalarType.bool_)
+            return operand;
+        if (!operand.isPointer && !isCompoundIntegerScalar(operand.type))
             return operand;
 
-        const zero =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        if (!operand.isPointer && size(operand.type) < int.sizeof)
+            operand = extend(
+                operand,
+                isSigned(operand.type) ? ScalarType.int_ : ScalarType.uint_,
+            );
+
+        const width = operand.isPointer
+            ? size_t.sizeof : size(operand.type);
+        const zero = allocateBytes(cast(uint) width, width);
         _code ~= Instruction(
-            Op.loadConstant, zero, constantIndex(0),
-            cast(ushort) size_t.sizeof,
+            Op.loadConstant, zero, constantIndex(0), cast(ushort) width,
         );
         const result = allocate(ScalarType.bool_);
-        _code ~= Instruction(Op.notEqual8, result, operand.offset, zero);
+        const op = operand.isPointer
+            ? Op.notEqual8 : comparisonNotEqualOp(operand.type);
+        _code ~= Instruction(op, result, operand.offset, zero);
         return Operand(result, ScalarType.bool_);
     }
 

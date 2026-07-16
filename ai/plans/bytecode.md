@@ -319,17 +319,14 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   are wired); (5) 4-byte unsigned (`uint`) addition, unsupported because the
   narrow-int addition fallback hardcodes a signed-`int` result instead of
   using the expression's own scalar type the way its `or`/`and`/`xor`
-  siblings already do; (6) boolean-condition truthiness
-  (`if`/`while`/ternary/`!`/`&&`/`||`) for a non-bool, non-pointer scalar,
-  which today reads only the operand's first byte, not its full width, so
-  e.g. `ulong v = 256; if (!v)` misclassifies as false; and (7) inlining a
-  void IIFE whose body is a single expression statement (Phobos's common
-  `(() @trusted { ... })()` escape idiom), the same way a single-`return`
-  IIFE already inlines, so a local it reads does not need a full closure
-  environment. Items (4)-(7) surfaced only once (1)-(3) let compilation
-  reach far enough; a further, still-unisolated crash (an out-of-bounds
-  `copySlice` while `Appender.put` assigns into a grown buffer) appears
-  after fixing (4)-(7), so at least one more gap remains beyond this list.
+  siblings already do; and (6) inlining a void IIFE whose body is a single
+  expression statement (Phobos's common `(() @trusted { ... })()` escape
+  idiom), the same way a single-`return` IIFE already inlines, so a local it
+  reads does not need a full closure environment. Items (4)-(6) surfaced
+  only once (1)-(3) let compilation reach far enough; a further, still-
+  unisolated crash (an out-of-bounds `copySlice` while `Appender.put`
+  assigns into a grown buffer) appears after fixing (4)-(6), so at least one
+  more gap remains beyond this list.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
