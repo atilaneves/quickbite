@@ -347,3 +347,21 @@
   Likewise `core.internal.atomic.atomicStore`/`atomicFetchSub` have D source
   that just forwards to a sibling primitive (`atomicExchange`/
   `atomicFetchAdd`) which contains the actual asm.
+
+- In the bytecode core, don't assume a runtime crash traces back to whatever
+  compiler change most recently altered control flow near the crashing test;
+  verify the mechanism by instrumenting the actual compiled instructions and
+  runtime values, not by reasoning from the diff alone. A crash that only
+  started reproducing after a fix that made compilation *proceed further*
+  (rather than abort early with a diagnostic) can be a pre-existing,
+  unrelated bug the earlier abort was accidentally masking. Concretely:
+  `structBaseOffsetOrMaterialise`'s `CallExp` branch used
+  `compileCall(call).offset` as a struct constructor call's (`S(args)`)
+  result location; DMD types that `CallExp` as the constructed struct even
+  though `__ctor` is declared `void`, so `compileCall`'s destination for it
+  is the shared void-call dummy slot, not the constructed value, which
+  actually lives at the call's own receiver offset (`methodReceiverOffset`).
+  This crashed any struct with an explicit constructor returned by value
+  (e.g. `std.array.appender`'s `return Appender!A(null);`), unrelated to
+  virtual dispatch or vtables despite the crash first appearing right after
+  a vtable-registration fix.
