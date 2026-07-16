@@ -10,6 +10,9 @@ stand:
   `:t` cells are frontend-answered. The prelude formatter's rendering
   surface is complete; expression-cell wiring is partial and the interim
   `displayString`/`Value.toString` scaffolding still exists (item 1).
+  Formatter-wrapped CTFE and interpreter sessions consume the guest-produced
+  string directly; only their unformatted evaluator paths retain that
+  scaffolding.
   CTFE and interpreter unittests execute directly without rendering; IR and
   Bytecode still use the interim evaluation bridge (item 2).
 - The interpreter's native-layout container layer is complete:
@@ -506,11 +509,12 @@ are done; what is still pending, in order:
    backend opts in (`Ctfe`, `Interpreter`), but some displays (range and
    template structs, nested-context structs) still run through the
    interim `displayString`/`Value.toString` scaffolding. Keep expanding
-   the gate per backend (decision 4) until the display spec is no longer
-   enforced by the path scheduled for deletion. Items 2 and 3 are blocked
-   until this wiring lands. The interpreter's `std.conv.text` hook is
-   temporary formatter scaffolding, not a general Phobos builtin: remove
-   it once the formatter no longer needs that escape hatch.
+   the gate per backend (decision 4) until every REPL expression is
+   formatter-wrapped and the unformatted evaluator paths can be deleted.
+   Items 2 and 3 are blocked until this wiring lands. The interpreter's
+   `std.conv.text` hook is temporary formatter scaffolding, not a general
+   Phobos builtin: remove it once the formatter no longer needs that escape
+   hatch.
 
 2. Complete the unittest/expression split for IR and Bytecode (decision 12).
    CTFE and Interpreter already execute unittest bodies directly and return

@@ -6,7 +6,11 @@ private:
 
 public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
+    import quickbite.backends.evaluator:
+        Evaluator,
+        EvalResult,
+        ReplSession,
+        displayString;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
@@ -54,6 +58,39 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         } catch (Exception exception) {
             return EvalResult(EvalResult.Diagnostic(exception.msg));
         }
+    }
+
+    public override ReplSession createReplSession() {
+        return new InterpreterReplSession(this);
+    }
+
+    private EvalResult evalFormattedDisplay(FuncDeclaration function_) {
+        try {
+            Walker walker;
+            scope(exit) walker.closeDurableInboundSession;
+            walker.runStatement(function_.fbody);
+            return EvalResult(walker.result.asCharArrayString);
+        } catch (Exception exception) {
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        }
+    }
+}
+
+private class InterpreterReplSession:
+    imported!"quickbite.backends.evaluator".ReplSession {
+    private Interpreter _interpreter;
+
+    public this(Interpreter interpreter) {
+        _interpreter = interpreter;
+    }
+
+    public override imported!"quickbite.backends.evaluator".EvalResult submit(
+        imported!"quickbite.frontend.repl".ReplCell cell,
+    ) {
+        if (cell.evalCell.displayIsFormatted)
+            return _interpreter.evalFormattedDisplay(cell.evalCell.function_);
+
+        return _interpreter.eval(cell.evalCell);
     }
 }
 
