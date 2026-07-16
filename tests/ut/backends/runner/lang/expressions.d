@@ -3609,7 +3609,7 @@ static foreach (backend; Matrix!()) {
 // slice view of the captured array's OLD storage, via
 // `writeBackNestedLocals`'s own use of the same `writeCelledLocal(...,
 // arrayIsRefWriteback: true)` reconciliation. SystemLinker is the oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.nestedFunctionArrayRebindDoesNotCorruptPreexistingSliceView." ~
         backend.stringof)
     @Tags(backend.stringof)
