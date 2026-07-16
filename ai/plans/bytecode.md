@@ -6269,3 +6269,9 @@ promotion, the focused Bytecode row and focused five-backend matrix passed.
 Final `ninja bin/ut` passed. The final `bin/ut --random --quiet` crashed with
 the pre-existing signal 11 under seed `871162504`; its required
 `bin/ut --seed 871162504 --quiet` replay reproduced exit code 139.
+
+Review finding 1, stale promotion comments, 2026-07-16: removed obsolete
+omit/unconfirmed wording above ten expression fixtures that now use
+`Matrix!()`. This is documentation-only; fixture behavior and backend
+matrices are unchanged. Verification: `ninja bin/ut` and
+`bin/ut --random` (seed `94595530`).
