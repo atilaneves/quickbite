@@ -1274,10 +1274,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Bytecode omitted: lazy parameters are not yet implemented there
-// ("Unsupported call in bytecode core: expression()").
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed, "lazy parameters not yet implemented (\"Unsupported call in bytecode core: expression()\")"),
 )) {
     @("lazyForwardedAssertionThunkRunsExpression." ~ backend.stringof)
     @Tags(backend.stringof)

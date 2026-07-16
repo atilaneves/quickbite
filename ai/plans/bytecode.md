@@ -5847,9 +5847,9 @@ capacity semantics together.
 
 ### Reserved future work
 
-Keep `lazyArgumentReadsCallerDynamicArray` reserved as the next independent
-language-feature investigation. It needs lazy-parameter thunk/frame semantics;
-do not promote it as a stale-coverage change before that work is scoped.
+The minimal forwarded lazy-thunk row is claimed. Keep
+`lazyArgumentReadsCallerDynamicArray` reserved for a separately scoped
+live-caller-array capture slice.
 
 Do not schedule `stdConvTextRendersCharArrayExpressionRaw` independently: it
 belongs with the broader indirect-allocation-call prerequisite for Phobos

@@ -93,6 +93,10 @@ private struct Compiler {
     // `{functionIndex, context}` pair and the captured lambda, so `d()` reads
     // the index and context back and dispatches indirectly.
     private DelegateLocal[VarDeclaration] _delegateLocals;
+    // Lazy parameters are caller-supplied delegate pairs whose targets are
+    // known only at run time.
+    private ushort[VarDeclaration] _lazyDelegateLocals;
+    private bool[VarDeclaration] _lazyDelegateDeclarations;
     private FuncDeclaration[VarDeclaration] _staticDelegateAssocArrays;
     private FuncDeclaration _latestStaticDelegateAssocArrayFunction;
     // Locals whose 8-byte slot holds a raw `size_t` pointer to a heap-allocated
@@ -194,6 +198,7 @@ private struct Compiler {
         _complexDoubleLocals = null;
         _assocArrayLocals = null;
         _delegateLocals = null;
+        _lazyDelegateLocals = null;
         _structLocals = null;
         _structPointerLocals = null;
         _classPointerLocals = null;
@@ -245,6 +250,13 @@ private struct Compiler {
             foreach (parameterIndex; 0 .. function_.parameters.length) {
                 auto parameter = (*function_.parameters)[parameterIndex];
                 const offset = layout.offsets[parameterIndex];
+
+                if (parameterIsLazy(parameter)) {
+                    _lazyDelegateLocals[parameter] = offset;
+                    _lazyDelegateDeclarations[parameter] = true;
+                    _capturedOffsets[parameter] = offset;
+                    continue;
+                }
 
                 // A non-string dynamic-array parameter is a slice descriptor,
                 // tracked like a dynamic-array local rather than a scalar slot.
@@ -8379,6 +8391,10 @@ private struct Compiler {
             if (auto builtin = compileBuiltinCall(call, function_))
                 return *builtin;
 
+        if (function_ is null)
+            if (auto lazyDelegate = lazyDelegateLocalOf(call))
+                return compileLazyDelegateCall(*lazyDelegate, call);
+
         // `d()` through a delegate local: the callee is a VarExp of a delegate
         // local holding a `{functionIndex, context}` pair. Dispatch indirectly,
         // passing the context as the lambda's hidden `this` block.
@@ -8477,6 +8493,13 @@ private struct Compiler {
                 const slot = cast(ushort)
                     (argumentArea +
                         layout.offsets[nextArgumentIndex + argumentIndex]);
+                auto parameter = (*function_.parameters)[
+                    nextArgumentIndex + argumentIndex
+                ];
+                if (parameterIsLazy(parameter)) {
+                    emitLazyCallArgument(slot, (*call.arguments)[argumentIndex]);
+                    continue;
+                }
                 if (layout.isReference[nextArgumentIndex + argumentIndex] &&
                     evaluatedReferenceArgumentIndex !is null &&
                     evaluatedReferenceArgumentOffset !is null &&
@@ -8850,6 +8873,117 @@ private struct Compiler {
         if (declaration is null)
             return null;
         return declaration in _delegateLocals;
+    }
+
+    private LazyDelegateSource* lazyDelegateLocalOf(CallExp call) {
+        if (call.arguments !is null && call.arguments.length != 0)
+            return null;
+
+        auto variable = call.e1 is null ? null : call.e1.isVarExp;
+        if (variable is null)
+            return null;
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+        if (auto existing = declaration in _lazyDelegateLocals)
+            return new LazyDelegateSource(*existing);
+        if (declaration !in _lazyDelegateDeclarations)
+            return null;
+        if (auto captured = declaration in _capturedOffsets)
+            return new LazyDelegateSource(*captured, true);
+        return null;
+    }
+
+    private Operand compileLazyDelegateCall(
+        in LazyDelegateSource source,
+        CallExp call,
+    ) {
+        import std.conv: text;
+
+        if (call.arguments !is null && call.arguments.length != 0)
+            throw new Exception(text(
+                "Unsupported lazy call arguments in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const delegateOffset = source.isCaptured
+            ? allocateBytes(delegateValueSize, size_t.sizeof)
+            : source.offset;
+        if (source.isCaptured)
+            _code ~= Instruction(
+                Op.frameLoad,
+                delegateOffset,
+                capturedFrameIndex(source.offset),
+                cast(ushort) delegateValueSize,
+            );
+
+        const argumentArea = allocateBytes(
+            cast(uint) size_t.sizeof, size_t.sizeof,
+        );
+        _code ~= Instruction(
+            Op.copy,
+            argumentArea,
+            cast(ushort) (delegateOffset + size_t.sizeof),
+            cast(ushort) size_t.sizeof,
+        );
+
+        const returnType = resultType(call.type);
+        const destination =
+            (!returnType.isString && !returnType.isArray &&
+                !returnType.isStruct &&
+                returnType.scalar == ScalarType.void_)
+                ? cast(ushort) 0
+                : allocateBytes(size(returnType), 8);
+        _code ~= Instruction(
+            Op.callIndirect, delegateOffset, argumentArea, destination,
+        );
+        return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    private void emitLazyCallArgument(
+        in ushort destination,
+        Expression argument,
+    ) {
+        import std.conv: text;
+
+        if (auto variable = argument.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration) {
+                if (auto source = declaration in _lazyDelegateLocals) {
+                    _code ~= Instruction(
+                        Op.copy, destination, *source,
+                        cast(ushort) delegateValueSize,
+                    );
+                    return;
+                }
+                if (declaration in _lazyDelegateDeclarations) {
+                    if (auto source = declaration in _capturedOffsets) {
+                        _code ~= Instruction(
+                            Op.frameLoad, destination,
+                            capturedFrameIndex(*source),
+                            cast(ushort) delegateValueSize,
+                        );
+                        return;
+                    }
+                }
+            }
+
+        auto delegate_ = lazyDelegateInitializer(argument);
+        if (delegate_.function_ is null)
+            throw new Exception(text(
+                "Unsupported lazy argument in bytecode core: ",
+                expressionChars(argument),
+            ));
+        emitDelegateValue(destination, delegate_.function_, delegate_.contextOffset);
+    }
+
+    private DelegateInitializer lazyDelegateInitializer(Expression initializer) {
+        if (auto variable = initializer.isVarExp)
+            if (auto function_ = variable.var.isFuncDeclaration)
+                return DelegateInitializer(
+                    function_, delegateContextOffset(function_, null),
+                );
+
+        return delegateInitializer(initializer);
     }
 
     // `d()` through a delegate local: the lambda's VM index lives in the first
@@ -10870,6 +11004,16 @@ private struct Compiler {
         foreach (parameterIndex; 0 .. function_.parameters.length) {
             auto parameter = (*function_.parameters)[parameterIndex];
 
+            if (parameterIsLazy(parameter)) {
+                enum delegateAlign = cast(uint) size_t.sizeof;
+                layout.blockSize =
+                    (layout.blockSize + delegateAlign - 1) & ~(delegateAlign - 1);
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= false;
+                layout.blockSize += delegateValueSize;
+                continue;
+            }
+
             // A non-string dynamic-array `T[]` parameter holds a 16-byte slice
             // descriptor in the callee frame. By value the caller copies the
             // descriptor in; a `ref T[]` instead passes the caller-frame offset
@@ -10965,6 +11109,12 @@ private struct Compiler {
         }
 
         return layout;
+    }
+
+    private bool parameterIsLazy(VarDeclaration parameter) {
+        import dmd.astenums: STC;
+
+        return (parameter.storage_class & STC.lazy_) != STC.none;
     }
 
     // A function result is either a scalar or a string slice. Only the string
@@ -11357,6 +11507,11 @@ private struct DynamicArrayLocal {
 private struct DelegateLocal {
     ushort offset;
     imported!"dmd.func".FuncDeclaration function_;
+}
+
+private struct LazyDelegateSource {
+    ushort offset;
+    bool isCaptured;
 }
 
 private struct DelegateInitializer {
