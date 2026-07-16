@@ -4087,6 +4087,22 @@ private struct Compiler {
 
             if (auto call = expression.isCallExp) {
                 resolved = true;
+
+                // `S(args)` through an explicit constructor: DMD types the
+                // `CallExp` itself as the constructed struct even though
+                // `__ctor` is declared `void`, so `compileCall`'s own
+                // destination (the shared void-call dummy slot) is not the
+                // constructed value. The value lives at the receiver's frame
+                // offset, the same location already passed as the call's
+                // hidden `this`; resolve it once and hand it to `compileCall`
+                // so the receiver is not evaluated a second time.
+                auto function_ = callFunction(call);
+                if (function_ !is null && function_.isCtorDeclaration !is null) {
+                    const receiver = methodReceiverOffset(call);
+                    compileCall(call, &receiver);
+                    return receiver;
+                }
+
                 return compileCall(call).offset;
             }
             if (auto literal = expression.isStructLiteralExp) {
