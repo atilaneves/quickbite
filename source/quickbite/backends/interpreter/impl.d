@@ -10995,9 +10995,7 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+        mergePointerCellState(child);
         return child.thisValue;
     }
 
