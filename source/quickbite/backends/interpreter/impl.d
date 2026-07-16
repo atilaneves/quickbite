@@ -7997,9 +7997,16 @@ private struct Walker {
         foreach (index; 0 .. newLength)
             elements ~= index < oldLength
                 ? current[index]
-                : defaultValue(arrayElementType(target.e1.type));
+                : runDefaultValue(arrayElementType(target.e1.type));
 
         writeLocation(target.e1, Value.arrayValue(elements));
+    }
+
+    private Value runDefaultValue(imported!"dmd.mtype".Type type) {
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInitLiteral;
+
+        return runExpression(type.defaultInitLiteral(Loc.initial));
     }
 
     private Value storageValue(
@@ -9439,7 +9446,7 @@ private struct Walker {
         foreach (index; 0 .. newLength)
             elements ~= index < current.length
                 ? (*current)[index]
-                : defaultValue(arrayElementType(variable.type));
+                : runDefaultValue(arrayElementType(variable.type));
 
         // Go through `writeLocation`, not a direct `locals[variable] = ...`:
         // dmd's postfix `.length++`/`.length--` lowering binds a synthetic

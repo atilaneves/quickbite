@@ -279,9 +279,10 @@ a checked fact; do not relearn them.
 - `setLength`'s grow path zeroes every newly exposed byte
   unconditionally, including bytes re-exposed by shrink-then-grow.
   Compiled D gates its memset on `__traits(isZeroInit, T)` and emplaces
-  `T.init` otherwise (`char` 0xFF, `float` NaN); matching that for
-  non-zero-init element types is the wiring call site's fidelity
-  obligation, not the container's.
+  `T.init` otherwise (`char` 0xFF, `float` NaN); the walker's boxed array
+  growth evaluates DMD's `defaultInitLiteral` for every new element.
+  Native-container call sites must preserve that distinction rather than
+  treating `NativeArray.setLength`'s zeroing as guest initialization.
 - A written slice header is a snapshot of `{length, ptr}`; it goes stale
   when the array reallocates, exactly as a compiled-D slice does. Keeping
   a header in sync is the call site's problem.
@@ -728,8 +729,7 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    - Open questions from the design sketch: lifetime contracts for blocks
      borrowed from arbitrary C owners; what a guest pointer into a grown
      array should observe, and whether that deserves a diagnostic rather
-     than compiled D's silent staleness; and non-zero-init element
-     fidelity on growth (see Contracts, `setLength`).
+     than compiled D's silent staleness.
    - Latency is measured only once the correctness gates are green and a
      real suite actually reaches native storage; the benchmark suite
      never crossed the old marshaller seam. Until then, native layout is

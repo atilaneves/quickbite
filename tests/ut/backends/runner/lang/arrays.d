@@ -779,9 +779,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.lengthAssignmentDefaultInitializesStructElements." ~
         backend.stringof)
     @Tags(backend.stringof)
