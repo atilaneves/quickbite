@@ -3772,14 +3772,40 @@ private struct Walker {
         // share, and marks the rebind so a cross-frame writeback caller
         // (`classWritebackIsMutation`) knows not to refresh the parent's own
         // cell in place either.
+        //
+        // Second-pass review of value-native-20260715 (HIGH, nested-function-
+        // capture cross-frame analog of the BLOCKER above): the rebind marker
+        // used to be set only `if (value.isClassObject)`, so a rebind THROUGH
+        // an intermediate `null` (`c = null; c = new C(2); c.x = 5;`, a
+        // nested function reassigning a captured aliased class variable)
+        // dropped THIS frame's cell -- correctly, `c` no longer denotes the
+        // shared object -- without marking the rebind, because `null` is not
+        // a class object. `classWritebackIsMutation` then read an absent
+        // marker as "child never rebound this" and told the cross-frame
+        // writeback to refresh the PARENT's cell in place, splicing the
+        // child's brand-new, unrelated object into a buffer another alias
+        // (`a` in the example) still shares -- the exact corruption the
+        // BLOCKER fix closed for the same-frame case, reopened cross-frame,
+        // and nondeterministic besides (whichever captured variable
+        // `writeBackNestedLocals`'s AA-order iteration happens to reconcile
+        // last wins the shared buffer). A plain `VarExp` write to a
+        // class-typed variable is a rebind whenever it is not an
+        // authoritative same-object field refresh, independent of what kind
+        // of value it rebinds TO -- so the marker is set unconditionally in
+        // the drop branch below, matching `dropClassCell`'s own unconditional
+        // drop. The `else if` mirrors `arrayRebinds`'s own no-cell-yet branch
+        // above: a rebind reached with no live cell at all (e.g. the SECOND
+        // rebind in the chain above, once the first already dropped it) still
+        // must leave the marker set for a cross-frame caller to see.
         if (auto cell = variable in classCells) {
             if (classFieldRefresh && value.isClassObject) {
                 writeClassCellScalarFields(*cell, variable.type.toBasetype.isTypeClass.sym, value);
             } else {
                 dropClassCell(variable);
-                if (value.isClassObject)
-                    classRebinds[variable] = true;
+                classRebinds[variable] = true;
             }
+        } else if (!classFieldRefresh && variable.type.toBasetype.isTypeClass !is null) {
+            classRebinds[variable] = true;
         }
 
         locals[variable] = value;

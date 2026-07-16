@@ -8208,3 +8208,54 @@ failed, 5/5 failing as expected), ct.structs (307 run, 0 failed), ct.arrays
 run, 0 failed), bin.repl (228 run, 0 failed), evaluator.eval (71 run, 0
 failed). The full `bin/ut --random` was left to the orchestrator per the
 usual long-suite handoff.
+
+Progress 2026-07-16 (review fix: cross-frame class rebind is now marked even
+through a null intermediate, HIGH residual finding, second-pass review of
+`value-native-20260715`): the BLOCKER fix (`7e67c69c`) closed the SAME-FRAME
+class-rebind corruption but left a CROSS-FRAME / nested-function-capture
+analog open. `writeCelledLocal`'s `classCells` branch (`impl.d`) only set
+`classRebinds[variable] = true` `if (value.isClassObject)`, so a nested
+function rebinding a captured aliased class variable THROUGH an intermediate
+`null` (`c = null; c = new C(2); c.x = 5;`) dropped this frame's own cell for
+`c` (correctly) without marking the rebind (`null` fails `isClassObject`).
+`writeBackNestedLocals`'s cross-frame reconciliation
+(`classWritebackIsMutation`) read the absent marker as "child never rebound
+this" and refreshed the PARENT's still-shared cell in place with the child's
+new object instead of dropping it, splicing an unrelated object's fields into
+whatever OTHER alias (`a` in the repro) still shared that buffer --
+NONDETERMINISTICALLY, since which alias's writeback lands last depends on
+`child.locals`'s pointer-keyed AA iteration order (`VarDeclaration*` hashes by
+address, which varies run to run under ASLR). A net regression vs. the merge
+base (`65f2e98c`, no class-cell machinery, boxed-mirror reference semantics
+always correct).
+
+Fix: a plain `VarExp` write to a class-typed variable is a rebind whenever it
+is not an authoritative same-object field refresh, independent of what kind
+of value it rebinds TO -- so `classRebinds[variable] = true` is now set
+unconditionally in the drop branch (removed the `value.isClassObject` guard),
+plus a new `else if` branch (mirroring `arrayRebinds`'s own no-cell-yet
+branch) marking the rebind even when no `classCells` entry exists at all to
+drop (the second rebind in a `null`-then-real-object chain, once the first
+already dropped it).
+
+Exposing fixture (red-first; confirmed reliably RED across 10 runs pre-fix,
+diagnostic `11 != 15` -- i.e. `a.x` read back correctly as `1` but `c.x`
+lost its own `5` and read back as `1`, clobbered by the parent's later
+same-buffer refresh; asserting `a.x * 10 + c.x` in one expression means any
+AA order that loses either side fails):
+`class.nestedFunctionRebindOfCapturedAliasedVariableDoesNotCorruptOriginal`
+(`Interpreter`/`SystemLinker`, omit-don't-pin). Confirmed deterministically
+green across 10 runs post-fix. All pre-existing class-aliasing fixtures
+(`reassigningAliasedVariableDoesNotCorruptOriginalObject`,
+`aliasedFieldWriteSurvivesUnrelatedFieldWriteThroughOriginal`,
+`sameObjectPassedAsTwoParametersSharesIdentity`,
+`methodMutatingThisIsVisibleThroughAliasedParameter`, both
+`aliasedVariable*FieldWriteIsVisibleThroughOriginal` fixtures, and
+`pointer.recursiveClassDeclarationDropsStaleClassCell`) stay green.
+
+Focused suites all green (run individually): ct.expressions (587 run, 0
+failed, 5/5 failing as expected), ct.structs (307 run, 0 failed), ct.arrays
+(346 run, 0 failed), ct.exceptions (130 run, 0 failed), ct.control_flow (340
+run, 0 failed), interpreter (218 run, 0 failed), bin.repl (228 run, 0
+failed), evaluator.eval (71 run, 0 failed). The full `bin/ut --random` was
+left to the orchestrator per the usual long-suite handoff.

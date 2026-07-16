@@ -2358,6 +2358,53 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// HIGH regression (second-pass review of value-native-20260715): the
+// CROSS-FRAME / nested-function-capture analog of the BLOCKER above
+// (`class.reassigningAliasedVariableDoesNotCorruptOriginalObject`). A nested
+// function rebinding a captured aliased class variable THROUGH an
+// intermediate `null` (`c = null; c = new C(2); c.x = 5;`) used to drop this
+// frame's own `classCells` entry for `c` without marking the rebind (the
+// marker was gated on `value.isClassObject`, which `null` fails), so
+// `writeBackNestedLocals`'s cross-frame reconciliation read the absent marker
+// as "never rebound" and refreshed the PARENT's still-shared cell in place
+// with the child's brand-new object, splicing it into whatever OTHER alias
+// (`a` here) still shared that buffer -- NONDETERMINISTICALLY, depending on
+// which of `child.locals`'s AA-ordered entries (`a` or `c`) the writeback
+// reconciled last. Asserting on `a.x * 10 + c.x` in one expression means any
+// AA order that loses either side (the aliased original OR the child's own
+// final value) fails. Only Interpreter and SystemLinker (the oracle) are
+// pinned here per the omit-don't-pin convention.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.nestedFunctionRebindOfCapturedAliasedVariableDoesNotCorruptOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+
+                this(int v) {
+                    x = v;
+                }
+            }
+
+            unittest {
+                auto a = new C(1);
+                auto c = a;
+
+                void n() {
+                    c = null;
+                    c = new C(2);
+                    c.x = 5;
+                }
+
+                n();
+
+                assert(a.x * 10 + c.x == 15);
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
