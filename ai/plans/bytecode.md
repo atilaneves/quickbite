@@ -6275,3 +6275,16 @@ omit/unconfirmed wording above ten expression fixtures that now use
 `Matrix!()`. This is documentation-only; fixture behavior and backend
 matrices are unchanged. Verification: `ninja bin/ut` and
 `bin/ut --random` (seed `94595530`).
+
+Review finding 3, pre-PR CI, 2026-07-16: `./ci.sh` was run from commit
+`14a6848a`. `ninja bin/ut` had no work and passed, then
+`bin/ut --random` crashed with exit code 139 under seed `3535733087` after
+`repl.backend.displaysStaticStringArrayResults.Bytecode` raised an
+`ArraySliceError` in `bytecode/core/machine.d:437`: slice `[40 .. 56]`
+extended past a 48-byte frame. The required
+`bin/ut --seed 3535733087 --quiet` replay reproduced exit code 139. This is
+the same pre-existing random-order REPL failure recorded above under seeds
+`1487962367`, `1851098009`, and `710236760`, while the immediately preceding
+review-fix run passed all 3397 tests under seed `94595530`; no causal link to
+this branch was established. Because `ci.sh` is fail-fast, the example,
+benchmarks, `bin/qb`, and REPL integration stages did not run.
