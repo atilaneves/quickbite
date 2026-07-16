@@ -1309,7 +1309,6 @@ static foreach (backend; Matrix!(
 // backing storage, not an empty default (ai/plans/interpreter.md §9.10).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("lazyArgumentReadsCallerDynamicArray." ~ backend.stringof)

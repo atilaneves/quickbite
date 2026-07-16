@@ -5847,9 +5847,8 @@ capacity semantics together.
 
 ### Reserved future work
 
-The minimal forwarded lazy-thunk row is claimed. Keep
-`lazyArgumentReadsCallerDynamicArray` reserved for a separately scoped
-live-caller-array capture slice.
+Keep `decodeLazyForwardedRangeErrorSeesReaderState` reserved for a separately
+scoped live-caller struct-capture slice.
 
 Do not schedule `stdConvTextRendersCharArrayExpressionRaw` independently: it
 belongs with the broader indirect-allocation-call prerequisite for Phobos
