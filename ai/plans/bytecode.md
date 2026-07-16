@@ -6233,3 +6233,18 @@ suite reported the pre-existing
 `repl.backend.displaysStaticStringArrayResults.Bytecode` `ArraySliceError`
 before crashing with signal 11 under seed `710236760`; its required quiet seed
 replay reproduced exit code 139.
+
+`pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller` promoted to
+Bytecode, 2026-07-16: pre-approved promotion of the existing direct
+SystemLinker-backed fixture. The focused Bytecode row passed on its first
+candidate run, confirming that a callee writing through a pointer into the
+caller's struct field updates the same native field storage observed by both
+the pointer and direct field access. No production change was needed. This
+does not add heap structs, member-function forwarding, or broader cross-frame
+aggregate reconciliation. Before promotion, `ninja bin/ut` passed;
+`bin/ut --random --quiet` crashed with the pre-existing signal 11 under seed
+`1411348384`, and its required quiet seed replay reproduced exit code 139.
+After promotion, the focused Bytecode row, focused five-backend matrix, and
+final `ninja bin/ut` passed. The final randomized suite crashed with the
+pre-existing signal 11 under seed `809806776`; its required quiet seed replay
+reproduced exit code 139.

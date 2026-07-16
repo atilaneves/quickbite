@@ -2458,7 +2458,7 @@ static foreach (backend; Matrix!()) {
 // write falls through to the `fieldSnapshotAllocationIds` refusal check
 // (also duped) instead of aliasing. SystemLinker is the oracle; other
 // backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
