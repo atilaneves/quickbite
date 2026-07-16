@@ -4058,6 +4058,19 @@ private struct Compiler {
 
         if (expression.type !is null &&
             expression.type.toBasetype.ty == TY.Tstruct) {
+            // `arr[i]` element of a static array of structs: the element block
+            // lives inline at `arrayBase + i * elementSize`. Checked before the
+            // dynamic-array branch below because `dynamicArrayDescriptorOrNull`
+            // also accepts a static-array local (as a materialised read-only
+            // view for slicing); resolving through that view here would copy
+            // the element into a throwaway temporary, silently discarding any
+            // write through the returned offset.
+            if (auto index = expression.isIndexExp)
+                if (staticArrayOffsetOf(index.e1) !is null) {
+                    resolved = true;
+                    return locateStaticArrayElement(index).offset;
+                }
+
             // `arr[i]` element of a dynamic array of structs: copy the heap
             // element into a fresh inline block so struct field reads can use
             // normal `base + field.offset` addressing.
@@ -4070,14 +4083,6 @@ private struct Compiler {
                         index.e2,
                         expression.type,
                     ).offset;
-                }
-
-            // `arr[i]` element of a static array of structs: the element block
-            // lives inline at `arrayBase + i * elementSize`.
-            if (auto index = expression.isIndexExp)
-                if (staticArrayOffsetOf(index.e1) !is null) {
-                    resolved = true;
-                    return locateStaticArrayElement(index).offset;
                 }
 
             if (auto call = expression.isCallExp) {
