@@ -2504,9 +2504,9 @@ static foreach (backend; Matrix!()) {
 // A pointer minted inside such a ctor could numerically collide with an
 // already-live field-snapshot id from an unrelated `&s.field`, so a later
 // legitimate write through it was wrongly refused as an aliasing write.
-// Ctfe/Bytecode omitted: `new`-with-user-ctor pointer indirection through a
-// class field is not exercised on those backends yet (unrelated gaps, not
-// this fix). LLVMJit omitted: allocation ids are Interpreter-only
+// Ctfe omitted: `new`-with-user-ctor pointer indirection through a class
+// field is not exercised on that backend yet. LLVMJit omitted: allocation ids
+// are Interpreter-only
 // bookkeeping with no compiled-code analogue, so promoting LLVMJit here
 // would trivially pass without pinning anything meaningful.
 static foreach (backend; Matrix!(
