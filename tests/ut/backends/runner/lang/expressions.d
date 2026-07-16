@@ -1690,7 +1690,6 @@ static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.diverges,
         "see Interpreter pin below (throws loudly instead of writing " ~
         "memory)"),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory." ~
