@@ -18,7 +18,6 @@ import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
 +/
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("pollution.staleParseCompilesAfterOtherFixture." ~ backend.stringof)
     @Tags(backend.stringof)

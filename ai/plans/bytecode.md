@@ -5855,6 +5855,11 @@ Do not schedule `stdConvTextRendersCharArrayExpressionRaw` independently: it
 belongs with the broader indirect-allocation-call prerequisite for Phobos
 array materialisation.
 
+Keep the host-boundary matrices (`file.createWriteRead`,
+`random.unpredictableSeedReadsNonRootInitializer`, and `concurrency.thisTid`)
+as separate native-runtime and Phobos-support investigations; do not combine
+them with fixture-isolation work.
+
 The randomized suite has an unresolved order-dependent failure in
 `repl.backend.displaysStaticStringArrayResults.Bytecode`: an `ArraySliceError`
 at `bytecode/core/machine.d:437` can be followed by exit code 139. Focused
