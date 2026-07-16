@@ -6119,7 +6119,8 @@ focused Bytecode row and final `ninja bin/ut` passed. The final
 `2768092839`; its required `bin/ut --seed 2768092839` replay reproduced the
 crash.
 
-`pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlierCallerPointer`
+`pointer.arrayElementWrittenThroughRefParameterPointerVisibleToEarlier`<!--
+-->`CallerPointer`
 promoted to Bytecode, 2026-07-16: pre-approved promotion of the existing
 direct SystemLinker-backed fixture. The focused Bytecode row passed on its
 first candidate run, confirming that a callee taking an element pointer
