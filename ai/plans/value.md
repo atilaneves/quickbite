@@ -617,11 +617,11 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      (`Walker.forkPerFrameCellsInto`), and field-pointer registry families
      merge through one return-side dispatch point
      (`Walker.mergeFieldPointerState`). Fresh-binding drops shared by locals
-     and parameters dispatch through `Walker.dropNonClassCells`; class-cell
-     drop remains declaration-only. Allocation and field-pointer cell state
-     shared by free and member calls merges through
-     `Walker.mergePointerCellState`; the remaining class-drop distinction
-     still needs consolidation without changing alias semantics.
+     and parameters dispatch through `Walker.dropNonClassCells`; declarations
+     dispatch all families through `Walker.dropDeclarationCells`, preserving
+     class cells only for parameter aliasing. Allocation and field-pointer
+     cell state shared by free and member calls merges through
+     `Walker.mergePointerCellState`.
    - `runNewStructPointerExpression`'s fork site still duplicates a
      narrow three-field subset with no recorded rationale; confirm it is
      deliberate or fold it into the common path.

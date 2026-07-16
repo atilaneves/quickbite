@@ -3657,6 +3657,14 @@ private struct Walker {
         dropStructCell(variable);
     }
 
+    // A declaration introduces fresh storage for every cell family. Keep this
+    // separate from `dropNonClassCells`: parameter binding deliberately
+    // preserves class cells because they carry the caller's object alias.
+    private void dropDeclarationCells(VarDeclaration variable) {
+        dropNonClassCells(variable);
+        dropClassCell(variable);
+    }
+
     // Reads `variable`'s current value: a promoted `scalarCells` entry (the
     // byte-level authority once `&variable` has promoted one) takes
     // priority over the boxed `locals` mirror, which in turn takes priority
@@ -11231,8 +11239,7 @@ private struct Walker {
         // recursion at all -- including a nested `foreach`'s per-iteration
         // slice temporary, whose source array is promoted eagerly by
         // `promoteSliceArrayCell` with no address-of needed at all.
-        dropNonClassCells(variable);
-        dropClassCell(variable);
+        dropDeclarationCells(variable);
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {
             uninitializedLocals[variable] = true;
