@@ -2882,9 +2882,9 @@ unittest {
 // `void*` field lives inside a boxed Value, and every place the interpreter
 // keeps Values (the locals AA, the host stack) is GC-scanned memory — so a
 // collection between the factory call and a later use keeps the object alive,
-// with no explicit rooting. The plan's feared hole exists only where a
-// handle's sole reference lives in NO_SCAN memory (the native-layout
-// backend's raw byte frames); that is the value.md handle-table work, not a
+// with no explicit rooting. A gap would exist only where a handle's sole
+// reference lives in NO_SCAN memory (the native-layout backend's raw byte
+// frames); that is future native-layout handle-table work, not a
 // boxed-interpreter defect.
 @("dependencyImage.externDClassHandleSurvivesCollection." ~ backend.stringof)
 @Tags(backend.stringof)

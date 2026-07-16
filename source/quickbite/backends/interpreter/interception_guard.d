@@ -119,7 +119,7 @@ private bool isExemptInterception(
         return true;
 
     // `std.conv.text`: the one pre-existing, deliberate exemption named in
-    // §8 (perf scaffolding). Retire per value.md's remaining work item 1.
+    // §8 (perf scaffolding).
     if (isStdConvTextName(function_))
         return true;
 
@@ -127,9 +127,8 @@ private bool isExemptInterception(
     // generated element-wise loop); `Walker.runArrayOpAddAssignCall`
     // interprets the element-wise semantics directly instead. Discovered
     // while adding this guard, not previously in §9.10's inventory. Retire
-    // together with §9.10's native-layout-aggregates item: once arrays are
-    // native layout the druntime body can execute directly and this
-    // intercept can be deleted.
+    // together with §9.10: once arrays are native layout the druntime body
+    // can execute directly and this intercept can be deleted.
     if (prettyName.startsWith("core.internal.array.operations.arrayOp!("))
         return true;
 
@@ -169,9 +168,8 @@ private bool isExemptInterception(
     // alongside `core.internal.atomic`'s genuinely asm-bodied primitives, and
     // `AtomicHook.aligned` intercepts them by name regardless. Discovered
     // while adding this guard, not previously in §9.10's inventory. Retire
-    // once interpreter values carry real addresses (value.md native layout),
-    // so alignment can be computed from an actual pointer instead of
-    // assumed.
+    // once interpreter values carry real addresses (native layout), so
+    // alignment can be computed from an actual pointer instead of assumed.
     if (
         prettyName.startsWith("core.atomic.atomicValueIsProperlyAligned!") ||
         prettyName.startsWith("core.atomic.atomicPtrIsProperlyAligned!")

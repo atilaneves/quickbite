@@ -180,9 +180,9 @@ private QuotedStringDisplay quotedStringDisplay(in string display) @safe pure {
     );
 }
 
-// Carries the backend's rendered display string (decision 1 of
-// ai/plans/value.md) plus a flag for a frontend-answered type-expression cell,
-// whose bare name scrubs differently (see `toString`).
+// Carries the backend's rendered display string plus a flag for a
+// frontend-answered type-expression cell, whose bare name scrubs
+// differently (see `toString`).
 private struct ReplResult {
     public string display;
     private bool _isTypeName;

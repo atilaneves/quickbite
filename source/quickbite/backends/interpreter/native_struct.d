@@ -4,9 +4,9 @@ module quickbite.backends.interpreter.native_struct;
 private:
 
 
-// The struct-native block handle (ai/plans/value.md item 7's struct phase,
-// "a struct is one block laid out with DMD field offsets"): an
-// interpreter-owned struct value carrying a stable block and the DMD
+// The struct-native block handle -- a struct is one block laid out with
+// DMD field offsets: an interpreter-owned struct value carrying a stable
+// block and the DMD
 // `TypeStruct`, reusing the same block/offset machinery `NativeArray`
 // established for arrays. `allocate` picks the block's GC scan policy from
 // whether the struct type carries pointers, exactly as `NativeArray.
@@ -25,8 +25,8 @@ public struct NativeStruct {
 
     // Allocates one block of `layout.typeByteSize(type)` bytes -- DMD's own
     // `structsize`, padding included. This never sums field sizes itself:
-    // that would be a second, driftable copy of DMD's own layout (item 7's
-    // guardrail). The block's scan policy follows `layout.
+    // that would be a second, driftable copy of DMD's own layout. The
+    // block's scan policy follows `layout.
     // typeHasPointers(type)` exactly as `NativeArray.allocate` chooses it
     // from the element type: a struct with any pointer/slice/class/AA field
     // gets a conservatively scanned block, since a block's scan policy is

@@ -433,7 +433,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7's SLICE guest-local, reverse direction: `int[] s = a[];`
+// The reverse direction of a full-array slice alias: `int[] s = a[];`
 // should alias `a`'s storage exactly like `&a[0]` does, so a later direct
 // write to `a` is visible through `s` too -- the opposite direction from
 // `nestedSliceWritesPropagateToOriginalArray` above (a write through the
@@ -1627,7 +1627,8 @@ static foreach (backend; Matrix!()) {
 // per-element alias reaches `Walker.writeThroughSliceAlias` (impl.d), which
 // read the alias source's `locals` entry as-is. A `ref` parameter bound to
 // the caller's `= void` local carries the bare `Value.void_` placeholder
-// there (interpreter.md §9.7's deferred-read seeding), not a real `Array`,
+// there (the interpreter's deferred-read seeding for `ref` parameters), not
+// a real `Array`,
 // so rebuilding it via `withArrayElement` threw "Expected array." instead of
 // writing the first element. `Bytecode` omitted: still under active
 // development, does not yet write through this `ref` foreach loop variable
@@ -1664,8 +1665,8 @@ static foreach (backend; Matrix!()) {
 }
 
 // A zero-length slice assignment through a null pointer is a no-op in
-// compiled D: nothing is written, so the null provenance never matters
-// (ai/plans/interpreter.md Rung 3). ScopeBuffer's own unittest hits this by
+// compiled D: nothing is written, so the null provenance never matters.
+// ScopeBuffer's own unittest hits this by
 // `put`ting an empty slice into a default-initialised buffer.
 enum pointerEmptyNullSliceAssignSource = q{
     struct Buffer {
@@ -1728,14 +1729,13 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Owed §9.10 gap fixture (ai/plans/interpreter.md): the oracle's real
-// `reserve` contract, not the gc_reserveArrayCapacity shim's echoed return
-// value. Interpreter omitted: the shim fabricates a capacity number without
-// growing the value model's backing allocation, so `arr.ptr` before and
-// after filling to the reserved capacity compares unequal (representation
-// debt, retires with value.md's native-layout track). Ctfe omitted:
-// pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE
-// refuses at compile time. Bytecode omitted: `.ptr` of an array is
+// This fixture pins the oracle's real `reserve` contract, not the
+// gc_reserveArrayCapacity shim's echoed return value. Interpreter omitted:
+// the shim fabricates a capacity number without growing the value model's
+// backing allocation, so `arr.ptr` before and after filling to the reserved
+// capacity compares unequal (a representation gap in the shim). Ctfe
+// omitted: pointer-identity `is` on a GC-backed slice lowers to an address
+// cast CTFE refuses at compile time. Bytecode omitted: `.ptr` of an array is
 // not yet implemented there.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
@@ -1764,14 +1764,13 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Owed §9.10 gap fixture (ai/plans/interpreter.md): `assumeSafeAppend`
-// through an interior pointer (a slice that does not start at its backing
-// block's base). Interpreter omitted: `gc_getArrayUsed` rebuilds its walk
-// from the incoming pointer's offset but loops the full backing-block
-// length, so it overruns and throws for any interior pointer
-// (representation debt, retires with value.md's native-layout track). Ctfe
-// omitted: `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at
-// all. Bytecode omitted: same `.ptr`-of-array gap as above.
+// This fixture pins `assumeSafeAppend` through an interior pointer (a slice
+// that does not start at its backing block's base). Interpreter omitted:
+// `gc_getArrayUsed` rebuilds its walk from the incoming pointer's offset but
+// loops the full backing-block length, so it overruns and throws for any
+// interior pointer (a representation gap in the shim). Ctfe omitted:
+// `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at all.
+// Bytecode omitted: same `.ptr`-of-array gap as above.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "gc_getArrayUsed has no D source, so Ctfe cannot intercept it at all"),
@@ -1808,10 +1807,11 @@ static foreach (backend; Matrix!(
 // element it just appended via `$` (`val.length++; cereal.grain(val[$ - 1])`,
 // cereal.d's grainRawArray/grainWithLengthInBytesAttr): `$` must reflect the
 // array's length as of *this* index expression, computed after the growth
-// that precedes it, not a stale value from before the growth ran.
-// ai/plans/interpreter.md §9.7 (size_t underflow rung). The write inside
-// `grown` deliberately indexes via `arr.length - 1`, not `$`, so this fixture
-// isolates the read-side `$` defect the fix targets.
+// that precedes it, not a stale value from before the growth ran -- reading
+// it before the update underflows `size_t` instead of yielding the true
+// index. The write inside `grown` deliberately indexes via
+// `arr.length - 1`, not `$`, so this fixture isolates the read-side `$`
+// defect the fix targets.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.dollarReflectsLengthAfterInPlaceGrowth." ~
         backend.stringof)
@@ -1836,8 +1836,8 @@ static foreach (backend; Matrix!()) {
 
 // cerealed's `grainWithLengthInBytesAttr` shape:
 // `cereal.grain(val.arr[$ - 1])`, where `grain` takes a `ref T` parameter,
-// so the callee's write must land back in the caller's array element.
-// ai/plans/interpreter.md §9.7 (ref-argument array-element write-back root).
+// so the callee's write must land back in the caller's array element --
+// this fixture pins that ref-argument array-element write-back.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.refParamWriteBackThroughIndexArgument." ~
         backend.stringof)
@@ -1858,7 +1858,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review, finding 1: a nested `foreach` re-declares the
+// A nested `foreach` re-declares the
 // inner loop's slice temporary (dmd lowers `foreach (v; row)` to a fresh
 // `auto __r = row[];` every OUTER iteration) over the SAME `VarDeclaration`
 // at every outer pass. `promoteSliceArrayCell` promotes `row` itself
@@ -1900,7 +1900,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review, finding 2: `writeCelledLocal`'s `arrayCells`
+// `writeCelledLocal`'s `arrayCells`
 // branch treated ANY same-length whole-array assignment as an in-place byte
 // mutation -- correct for the ref-writeback case it was built for, but a
 // plain source-level `s = b;` REBINDS `s` to `b`'s storage; it must not
@@ -1944,7 +1944,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review, finding 3: `a ~= x` (`runArrayAppendAssignExpression`'s
+// `a ~= x` (`runArrayAppendAssignExpression`'s
 // plain-`VarExp` arm) grew `locals` but left a promoted `arrayCells` entry at
 // its OLD length -- a slice (`int[] s = a[];`) eagerly promotes `a`'s cell via
 // `promoteSliceArrayCell`, with no address-of needed at all. A later read of
@@ -1978,7 +1978,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review, finding 4: `runSliceAssignExpression` (`a[] = x` /
+// `runSliceAssignExpression` (`a[] = x` /
 // `a[i .. j] = x`) writes `locals[variable]` directly but never refreshes a
 // promoted `arrayCells` entry, which `readIndexExpression`'s cell arm reads
 // in preference to the boxed mirror. Here `s = a[]` promotes `a`'s cell
@@ -2019,7 +2019,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review, final-review finding 7: `runSliceAssignExpression`'s
+// `runSliceAssignExpression`'s
 // cell-refresh loop indexed `lower .. upper` unconditionally against
 // `elements` (built with only `current.length` entries), so an out-of-bounds
 // guest `a[0 .. 5] = x` on a 2-element array indexed `elements` past its own

@@ -1427,7 +1427,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Once `&f` promotes an authoritative native-scalar cell (value.md item 7),
+// Once `&f` promotes an authoritative native-scalar cell,
 // a later DIRECT reassignment (`f = threePointZero`, not a pointer write)
 // must keep that cell current too: both the direct read of `f` and a read
 // through the pointer must see the new value's bits, not the stale ones from
@@ -1466,7 +1466,7 @@ static foreach (backend; Matrix!(
 // the callee writes raw bits into the parameter's slot via a same-size
 // pointer cast, and the CALLER's variable (bound to that `ref` parameter)
 // must observe the write after the call returns. This is the guest-level
-// call-site frontier of value.md item 7: a freshly promoted native cell for
+// call-site frontier: a freshly promoted native cell for
 // the `ref` parameter must stay connected to the caller's own cell/box.
 // SystemLinker is the oracle; Bytecode runs this confirmed typed-frame path.
 // Other backends remain omitted per the omit-don't-pin convention
@@ -1503,7 +1503,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 1 (value.md item 7 review): a fresh `DeclarationExp` binding is a
+// A fresh `DeclarationExp` binding is a
 // new stack slot, but the interpreter never dropped a stale `scalarCells`
 // entry inherited for the same `VarDeclaration`. Recursion reuses the same
 // AST `VarDeclaration` for `x` at every call depth, and `child.scalarCells =
@@ -1536,7 +1536,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Same Finding 1 bug, loop-shaped: a `foreach` body re-executes the same
+// The same stale scalar-cell bug as the recursion case above, loop-shaped: a `foreach` body re-executes the same
 // `DeclarationExp` for `x` every iteration, so the first iteration's
 // promoted cell must not leak into the second iteration's fresh `x`.
 static foreach (backend; Matrix!(
@@ -1562,7 +1562,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 2 (value.md item 7 review): post-increment's `VarExp` arm read
+// Post-increment's `VarExp` arm read
 // `variable in locals` directly, bypassing a promoted `scalarCells` entry --
 // stale once a cross-frame pointer write (`setToFive`) refreshes only the
 // cell.
@@ -1592,7 +1592,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 3 (value.md item 7 review): `(*p)++` reads and writes through
+// `(*p)++` reads and writes through
 // `localPointerTarget`/`writePointerTarget`'s local-pointer arm, which only
 // consulted the boxed `locals` mirror -- the same bypass post-increment's
 // `VarExp` arm had, but for the pointer-deref path.
@@ -1619,7 +1619,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 5 (value.md item 7 review): `writeLocation`'s `PtrExp` cell arm
+// `writeLocation`'s `PtrExp` cell arm
 // required the pointee to be exactly the cell's own width, throwing for a
 // narrower native-scalar pointee (a `ubyte*` reinterpret of a `uint`)
 // instead of writing into the low bytes the way the read side
@@ -1647,7 +1647,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 1 (value.md item 7 review): `&g` on a dataseg variable (module-
+// `&g` on a dataseg variable (module-
 // level/`__gshared`/`static`) routed through `promoteScalarCell`, which
 // seeded the cell from `defaultValue` (0) because a dataseg variable's real
 // initializer is materialized lazily on first read, and the `VarExp` read
@@ -1674,7 +1674,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Finding 2 (value.md item 7 review): once `&i` has promoted a native-scalar
+// Once `&i` has promoted a native-scalar
 // cell, `writeLocation`'s `PtrExp` arm required the pointee to be a
 // native-scalar type no wider than the cell; a struct-typed (or wider)
 // pointee used to fall through to a mirror-only `locals` write, leaving the
@@ -1739,7 +1739,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
-// value.md item 7's array-native-storage guest call site: `&a[0]` takes a
+// Array-native-storage guest call site: `&a[0]` takes a
 // pointer into a dynamic array local, then the array is written DIRECTLY
 // (`a[0] = ...`, not through the pointer). SystemLinker's `p` aliases `a`'s
 // real storage, so the direct write is visible through `*p`.
@@ -1771,7 +1771,47 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7's write-side counterpart of the fixture above: a write
+// The static-array-local sibling of the fixture above: `&a[0]` into a
+// plain LOCAL static array (`int[3] a;`, not a struct/class field, and not
+// a dynamic array), then a direct element write. `promoteArrayCell` (the
+// eager `arrayCells` promotion `arrayPointer` calls at address-of time)
+// guards on `isDynamicArrayType`, so a static array local never gets an
+// `arrayCells` entry at all -- unlike the dynamic-array case above, none of
+// `runPointerExpression`'s `*cellValue` checks can ever fire for it. Its
+// pointer is still array-allocation-backed (minted via `allocationId`, the
+// same mechanism the dynamic-array case uses), so `arrayPointerVariable`
+// still resolves it back to `a` -- but the dereference fallback returned
+// the STALE boxed snapshot taken at address-of time instead of re-reading
+// `locals`, so a later direct write was invisible through the earlier
+// pointer. SystemLinker's `p` aliases `a`'s real storage, so the direct
+// write is visible through `*p`. Other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; Matrix!()) {
+    @("pointer.staticArrayLocalElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[3] a;
+                a[0] = one();
+                int* p = &a[0];
+                a[0] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
+// Write-side counterpart of the fixture above: a write
 // THROUGH one pointer into a dynamic array element must be visible through a
 // SECOND, independently-taken pointer into the same element. SystemLinker's
 // `p`/`q` both alias `a`'s real storage, so a write through `p` is visible
@@ -1805,7 +1845,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 candidate slice: `foreach (ref e; a)` mutation must be
+// `foreach (ref e; a)` mutation must be
 // visible through an earlier-taken pointer into `a`. SystemLinker's `p`
 // aliases `a`'s real storage, so the loop's writes are visible through `*p`.
 // The mature backend matrix now confirms the same aliasing behavior.
@@ -1838,7 +1878,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 candidate slice: a compound/post-increment write THROUGH an
+// A compound/post-increment write THROUGH an
 // array-element pointer (`(*p)++`) must be visible both through the pointer
 // itself and directly on the array. SystemLinker's `p` aliases `a`'s real
 // storage, so the increment is visible both ways. The mature backend matrix
@@ -1867,7 +1907,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7's cross-frame array-pointer aliasing candidate: a callee
+// Cross-frame array-pointer aliasing: a callee
 // takes `&a[i]` of a caller's array passed by `ref` and writes through it.
 // SystemLinker's `ref` parameter aliases the caller's real storage, so `p`
 // (taken in the caller BEFORE the call, into the SAME backing array) must
@@ -1906,7 +1946,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 candidate: a pointer taken into a SLICE (not the source
+// A pointer taken into a SLICE (not the source
 // array itself) must still see a later direct write to the source. This is
 // a genuine characterization test, not a gap fixture: `promoteSliceArrayCell`
 // already gives a slice local an `arrayCells` entry sharing the SAME
@@ -1950,7 +1990,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7's struct phase, first guest call site: `&s.x` snapshotted
+// Struct phase, first guest call site: `&s.x` snapshotted
 // the field's value at address-of time instead of aliasing `s`'s own
 // storage, so a later direct write to the field (`s.x = ninetyNine()`) was
 // invisible through the earlier pointer -- the same snapshot gap the array
@@ -1985,6 +2025,455 @@ static foreach (backend; Matrix!()) {
                 int* p = &s.x;
                 s.x = ninetyNine();
                 assert(*p == 99);
+            }
+        });
+    }
+}
+
+// Class sibling of the struct fixture above: a class object's scalar
+// field, address-taken via `&c.x`, must
+// alias the SAME storage a later direct field write updates. Other backends
+// omitted per the omit-don't-pin convention (unconfirmed there), matching
+// the struct fixture's own backend set.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
+)) {
+    @("pointer.classFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.x = one();
+                c.y = two();
+                int* p = &c.x;
+                c.x = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
+// Write-through-pointer sibling of the direct-write fixture above: the
+// same `&c.x` cell must also accept a
+// write THROUGH the pointer (`*p = v`), visible via a later direct field
+// read, mirroring the struct phase's own
+// `pointer.addressOfStructFieldWriteThroughUpdatesField`. Other backends
+// omitted per the omit-don't-pin convention, matching the direct-write class
+// fixture's own backend set.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
+)) {
+    @("pointer.classFieldWriteThroughPointerUpdatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.x = one();
+                c.y = two();
+                int* p = &c.x;
+                *p = ninetyNine();
+                assert(c.x == 99);
+            }
+        });
+    }
+}
+
+// Cross-frame sibling of the write-through fixture above: the caller
+// takes `&c.x` (promoting a `classCells`
+// entry and a `classFieldPointerVariables`/`classFieldPointerFieldIndices`
+// reverse-lookup entry in the CALLER's own frame), then passes the pointer
+// into a callee that writes through it, mirroring the struct phase's own
+// `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller`. Other
+// backends omitted per the omit-don't-pin convention, matching the other
+// class fixtures' own backend set.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
+)) {
+    @("pointer.classFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+                int y;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                C c = new C();
+                c.x = one();
+                c.y = two();
+                int* p = &c.x;
+                put(p, ninetyNine());
+                return *p + c.x;
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}
+
+// Same-frame plain-variable class aliasing: `C c2 = c;` copies a
+// REFERENCE, not an object, so
+// `c` and `c2` must observe the same underlying object -- a write through
+// one alias's field must be visible through the other, with no `&`/pointer
+// involved at all. Before this slice each class-typed local boxed its own
+// independent copy of the field array (`Value.withClassField` writes only
+// into the target variable's own `locals` entry), so the interpreter
+// silently dropped the write. Only Interpreter and SystemLinker (the
+// oracle) are pinned here per the omit-don't-pin convention; the other
+// backends are untouched by this slice.
+static foreach (backend; Matrix!()) {
+    @("class.aliasedVariableWriteIsVisibleThroughOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                C c2 = c;
+                c2.x = ninetyNine();
+                assert(c.x == 99);
+            }
+        });
+    }
+}
+
+// Same-frame plain-variable class aliasing, non-scalar field:
+// `classCellFieldValue` -- the DIRECT (non-pointer) class-field
+// read's authoritative-cell dispatcher -- only consults the shared
+// `classCells` cell for a `native_scalar.isNativeScalarType` field; a
+// scalar-element static-array field still falls back to the boxed `locals`
+// mirror, which the OTHER alias's write never touches. `c2.arr[0] = 99;`
+// already reaches the shared cell (the write side's
+// `writeClassCellScalarFields` widens every scalar-element static-array
+// field), but reading `c.arr[0]` back through the ORIGINAL
+// alias, with no `&`/pointer involved, still sees the stale independent copy.
+// Only Interpreter and SystemLinker (the oracle) are pinned here per the
+// omit-don't-pin convention.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c2.arr[0] = ninetyNine()\" for this shape, not a wrong value"),
+)) {
+    @("class.aliasedVariableArrayFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[2] arr;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                C c2 = c;
+                c2.arr[0] = ninetyNine();
+                assert(c.arr[0] == 99);
+            }
+        });
+    }
+}
+
+// Same-frame plain-variable class aliasing, struct-typed field:
+// `classCellFieldValue` -- the DIRECT (non-pointer)
+// class-field read's authoritative-cell dispatcher -- widened the scalar and
+// scalar-element-static-array field shapes so far; a struct-typed field
+// still falls back to the boxed `locals` mirror, which the OTHER alias's
+// write never touches. `c2.inner.x = 99;` already reaches the shared cell
+// (the write side's `writeClassCellScalarFields` already recurses one level
+// into a struct-typed field), but
+// reading `c.inner.x` back through the ORIGINAL alias, with no `&`/pointer
+// involved, still sees the stale independent copy. Only Interpreter and
+// SystemLinker (the oracle) are pinned here per the omit-don't-pin
+// convention.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
+)) {
+    @("class.aliasedVariableStructFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            class C {
+                Inner inner;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                C c2 = c;
+                c2.inner.x = ninetyNine();
+                assert(c.inner.x == 99);
+            }
+        });
+    }
+}
+
+// Cross-frame class reference aliasing: passing the SAME object as TWO
+// different by-value
+// parameters must leave both parameters observing the SAME object, since a
+// class argument is reference-passed -- exactly as if both parameters were
+// `C c2 = c;` aliases of one another, except the aliasing happens at the
+// call boundary (parameter binding) rather than a declaration. The existing
+// `writeBackByValueClassArguments` shim only writes the mutated
+// value back into the ONE argument expression location it was invoked with
+// (`locals[b]`'s own caller-side location) after the call returns -- it has
+// no mechanism linking the SEPARATE `VarDeclaration`s `a` and `b` DURING the
+// call, so a read of `a.x` immediately after `b.x = 99` inside the callee's
+// own frame still sees the stale, independently-boxed copy bound for `a`.
+// Only Interpreter and SystemLinker (the oracle) are pinned here per the
+// omit-don't-pin convention.
+static foreach (backend; Matrix!()) {
+    @("class.sameObjectPassedAsTwoParametersSharesIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            void combine(C a, C b) {
+                b.x = 99;
+                assert(a.x == 99);
+            }
+
+            unittest {
+                C c = new C();
+                combine(c, c);
+            }
+        });
+    }
+}
+
+// `this`-reached class aliasing: a METHOD mutating `this.x` must be visible to
+// another caller-side alias of the SAME object through the shared class
+// cell, exactly like the `combine(a, b)` cross-frame aliasing case above,
+// except the mutating write happens through `this` rather than an ordinary
+// by-value parameter. `c.mutateAndCheck(c)` binds the receiver AND the
+// by-value parameter `other` from the SAME argument expression `c`, so
+// `other` gets a `classCells` entry shared with the caller's `c`
+// (`registerClassArgumentAliases`) -- but `this` itself is bound from
+// `receiver`, a plain boxed `Value` with no cell at all, so `this.x = 99`
+// only updates the callee's own boxed `thisValue`, never the shared cell.
+// `writeBackThis`'s post-call whole-value copy into the receiver's own
+// location cannot save this: the divergence is observed DURING the call,
+// inside the method's own frame, before that writeback ever runs. Only
+// Interpreter and SystemLinker (the oracle) are pinned here per the
+// omit-don't-pin convention.
+static foreach (backend; Matrix!()) {
+    @("class.methodMutatingThisIsVisibleThroughAliasedParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+
+                void mutateAndCheck(C other) {
+                    this.x = 99;
+                    assert(other.x == 99);
+                }
+            }
+
+            unittest {
+                C c = new C();
+                c.mutateAndCheck(c);
+            }
+        });
+    }
+}
+
+// `writeCelledLocal`'s `classCells` branch could not tell a reference REBIND
+// (`c = b;`) apart from a whole-object field-write refresh, and unconditionally
+// overwrote the (possibly SHARED) cell in place with the new object's fields --
+// `c = b;` clobbered `a`'s own field values through the cell `a` and the OLD
+// `c` shared, even though `registerClassAliasIfPlainVar` correctly re-points
+// `c` at `b`'s own cell right afterwards: the damage to the shared cell already
+// happened before that re-point ran. Only Interpreter and SystemLinker (the
+// oracle) are pinned here per the omit-don't-pin convention.
+static foreach (backend; Matrix!()) {
+    @("class.reassigningAliasedVariableDoesNotCorruptOriginalObject." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+
+                this(int v) {
+                    x = v;
+                }
+            }
+
+            int one() { return 1; }
+            int two() { return 2; }
+
+            unittest {
+                auto a = new C(one());
+                auto b = new C(two());
+                auto c = a;
+                c = b;
+                assert(a.x == one());
+            }
+        });
+    }
+}
+
+// `writeLocation`'s `DotVarExp` class arm re-derived the receiver via
+// `runExpression(dot.e1)`, which for a class local is the STALE boxed
+// `locals[variable]` mirror -- the plain `VarExp` read path has no
+// `classValueFromCell` overlay, unlike the 3 cross-frame writeback helpers.
+// Writing ONE field (`a.y = seven();`) then folded that stale receiver's OTHER
+// fields back into the shared cell via `writeCelledLocal`'s whole-cell refresh,
+// clobbering a DIFFERENT alias's earlier field write (`c.x = five();`) that
+// `writeClassCellFieldIfPresent` had already correctly landed in the cell.
+// Only Interpreter and SystemLinker (the oracle) are pinned here per the
+// omit-don't-pin convention.
+static foreach (backend; Matrix!()) {
+    @("class.aliasedFieldWriteSurvivesUnrelatedFieldWriteThroughOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+                int y;
+            }
+
+            int one() { return 1; }
+            int five() { return 5; }
+            int seven() { return 7; }
+
+            unittest {
+                auto a = new C();
+                a.x = one();
+                auto c = a;
+                c.x = five();
+                a.y = seven();
+                assert(c.x == five());
+            }
+        });
+    }
+}
+
+// The CROSS-FRAME / nested-function-capture analog of the reference-rebind
+// aliasing bug above
+// (`class.reassigningAliasedVariableDoesNotCorruptOriginalObject`). A nested
+// function rebinding a captured aliased class variable THROUGH an
+// intermediate `null` (`c = null; c = new C(2); c.x = 5;`) used to drop this
+// frame's own `classCells` entry for `c` without marking the rebind (the
+// marker was gated on `value.isClassObject`, which `null` fails), so
+// `writeBackNestedLocals`'s cross-frame reconciliation read the absent marker
+// as "never rebound" and refreshed the PARENT's still-shared cell in place
+// with the child's brand-new object, splicing it into whatever OTHER alias
+// (`a` here) still shared that buffer -- NONDETERMINISTICALLY, depending on
+// which of `child.locals`'s AA-ordered entries (`a` or `c`) the writeback
+// reconciled last. Asserting on `a.x * 10 + c.x` in one expression means any
+// AA order that loses either side (the aliased original OR the child's own
+// final value) fails. Only Interpreter and SystemLinker (the oracle) are
+// pinned here per the omit-don't-pin convention.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c = null\" for this shape, not a wrong value"),
+)) {
+    @("class.nestedFunctionRebindOfCapturedAliasedVariableDoesNotCorruptOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+
+                this(int v) {
+                    x = v;
+                }
+            }
+
+            unittest {
+                auto a = new C(1);
+                auto c = a;
+
+                void n() {
+                    c = null;
+                    c = new C(2);
+                    c.x = 5;
+                }
+
+                n();
+
+                assert(a.x * 10 + c.x == 15);
             }
         });
     }
@@ -2098,7 +2587,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Rung 7 review finding: addressOfExpression's DotVarExp branch minted a
+// addressOfExpression's DotVarExp branch minted a
 // fresh `++allocationCount` identity on *every* evaluation of `&s.field`, so
 // re-taking the same field's address gave a different identity each time
 // (`&a.value !is &a.value`) — real D gives the same address back. Fixed by
@@ -2135,14 +2624,13 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Rung 7 review finding, sibling of the identity fix above: writing through
+// Sibling of the identity fix above: writing through
 // a `&s.field` pointer used to silently write into the pointer's own
 // throwaway value snapshot instead of `s`'s storage, losing the write with
 // no diagnostic. SystemLinker pins real D's actual (aliasing) write-through
 // behaviour.
 //
-// Promoted 2026-07-14 (value.md item 7's struct phase, write-through-pointer
-// slice): `Holder` has exactly one scalar field of a plain struct LOCAL,
+// `Holder` has exactly one scalar field of a plain struct LOCAL,
 // address-taken via `&a.value` -- precisely the case the `structCells`
 // native cell (already promoted at address-of time) now supports end to
 // end. The Interpreter used to refuse this write outright
@@ -2180,7 +2668,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// value.md item 7 review, finding 1, extended to arrays: the same
+// Extended to arrays: the same
 // stale-cell bug `pointer.recursiveDeclarationDropsStaleScalarCell` names
 // for `scalarCells`, but for `arrayCells`. Recursion reuses the same AST
 // `VarDeclaration` for `a` at every call depth, and `child.arrayCells =
@@ -2273,7 +2761,71 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Final-review finding 3 (BLOCKER): `allocationId`/`fieldSnapshotAllocationId`
+// Class sibling of `recursiveStructDeclarationDropsStaleStructCell` above:
+// unlike the struct
+// and array phases, the class phase has NO `dropClassCell` mirroring
+// `dropStructCell`/`dropArrayCell`, so `runDeclarationExpression`'s fresh-
+// binding cleanup never drops a stale `classCells` entry inherited via
+// `child.classCells = classCells.dup`. Recursion reuses the same AST
+// `VarDeclaration` for `c` at every call depth: depth 1 promotes a
+// `classCells[c]` cell via `&c.x`, and `NativeBlock`'s `_bytes` is a slice
+// (copying the handle, not the bytes), so the child depth-0 frame's duped
+// `classCells[c]` entry shares the SAME underlying bytes as depth 1's. At
+// depth 0, `c`'s fresh `C c = new C();` does not drop that stale/shared
+// entry, so `c.x = valueForDepth(0);`'s whole-object refresh
+// (`writeCelledLocal`'s `classCells` branch, unlike the struct branch which
+// has nothing to refresh once `dropStructCell` removed it) mutates the
+// SHARED bytes in place -- corrupting depth 1's own cell with depth 0's
+// value. Depth 1's later `c.x` read (`classCellFieldValue`, authoritative
+// over the boxed `locals` mirror) then observes depth 0's value instead of
+// its own. SystemLinker (real, independent `new C()` allocations per depth)
+// returns 1100, matching the struct sibling; before any production change
+// Interpreter returned 100100 -- depth 0's own value corrupting depth 1's
+// read twice over. SystemLinker is the oracle; other backends omitted per
+// the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
+)) {
+    @("pointer.recursiveClassDeclarationDropsStaleClassCell." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int hundred() {
+                return 100;
+            }
+
+            int valueForDepth(int depth) {
+                return depth == 0 ? hundred() : one();
+            }
+
+            int rec(int depth) {
+                C c = new C();
+                c.x = valueForDepth(depth);
+                int* p = &c.x;
+                if (depth == 0)
+                    return *p;
+                const inner = rec(depth - 1);
+                return c.x * 1000 + inner;
+            }
+
+            unittest {
+                assert(rec(1) == 1100);
+            }
+        });
+    }
+}
+
+// `allocationId`/`fieldSnapshotAllocationId`
 // memoize their id per `VarDeclaration` and were never removed alongside the
 // cell drop the two fixtures above already exercise, so a pointer minted at
 // an OUTER recursion depth and passed DOWN into a call that re-declares the
@@ -2394,7 +2946,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Final-review finding 4 (SHOULD-FIX): `structFieldPointerVariables`/
+// `structFieldPointerVariables`/
 // `FieldIndices` are copied back wholesale after a call returns. A
 // recursive callee's own fresh `S s = ...;` re-declaration drops the
 // reverse-lookup entry for `s` from the CALLEE's own (duped) copy via
@@ -2445,8 +2997,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7's struct phase left cross-frame struct-field-pointer
-// write-through unexercised: the caller takes `&s.x` (promoting a
+// Cross-frame struct-field-pointer
+// write-through: the caller takes `&s.x` (promoting a
 // `structCells` entry and a `structFieldPointerVariables`/
 // `structFieldPointerFieldIndices` reverse-lookup entry in the CALLER's own
 // frame), then passes the pointer into a callee that writes through it. The
@@ -2905,7 +3457,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review, finding 3: `a ~= x` grew the boxed array but left
+// `a ~= x` grew the boxed array but left
 // a promoted `arrayCells` entry (here promoted by `&a[0]`) at its OLD
 // length. A subsequent in-bounds write to the newly-appended element
 // (`a[1] = five();`) is unaffected -- `writeThroughArrayCell` is a silent
@@ -2946,7 +3498,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md item 7 review, finding 4: `runSliceAssignExpression`'s bounded
+// `runSliceAssignExpression`'s bounded
 // form (`a[i .. j] = x`) writes `locals[variable]` directly but never
 // refreshes a promoted `arrayCells` entry -- here promoted by `&a[0]` --
 // which `readIndexExpression`'s cell arm reads in preference to the boxed
@@ -2990,7 +3542,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md review (finding 5): `bump(int[] s)` binds `s` via
+// `bump(int[] s)` binds `s` via
 // `recordParameterSliceAlias` -- a slice-expression argument never calls
 // `promoteSliceArrayCell`, so `s` itself never gets an `arrayCells` entry --
 // while `a`, the slice's source, already has one (promoted here by
@@ -3036,7 +3588,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md review (finding 6): `writePointerTarget` called
+// `writePointerTarget` called
 // `writeThroughArrayPointer` but not `writeThroughStructFieldPointer`, so
 // `(*p)++` through a struct-field pointer read the promoted `structCells`
 // entry (via `pointerTargetValue`/`structFieldPointerCellValue`) but wrote
@@ -3077,7 +3629,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md review (finding 7): once `&s.x` has promoted a `structCells`
+// Once `&s.x` has promoted a `structCells`
 // entry for `s`, a `ref` LOCAL bound directly to `s.x` (recorded via
 // `recordStructFieldAlias`/`structFieldAliases`, the only reachable path to
 // `writeThroughStructFieldAlias`) writes `ninetyNine()` through
@@ -3174,7 +3726,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md final review (finding 1): `recordStructFieldAlias` records ANY
+// `recordStructFieldAlias` records ANY
 // `DotVarExp` initializer bound to a `ref` local -- including a non-scalar
 // (array/nested-struct) field -- so `writeThroughStructFieldAlias` reached a
 // promoted `structCells` entry for a field it cannot represent as a native
@@ -3222,11 +3774,11 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Re-review finding 2 (BLOCKER, 2026-07-14): `writeCelledLocal`'s plain
+// `writeCelledLocal`'s plain
 // rebind arm (`a = [...]`, no recursion involved at all) dropped
 // `arrayCells[variable]` but never the memoized `arrayAllocations`/
 // `arrayAllocationVariables` id -- the same per-binding fresh-id principle
-// finding 3 above established, applied incompletely to this arm. A pointer
+// established above, applied incompletely to this arm. A pointer
 // taken BEFORE the rebind (`p`) kept resolving, via the still-live reverse
 // map, into the REBOUND array's own freshly-promoted cell instead of
 // declining to its own frozen snapshot. Before any production change,
@@ -3362,10 +3914,11 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// New finding 3 (BLOCKER, re-review 2026-07-14): `mergeArrayAllocationMaps`
+// `mergeArrayAllocationMaps`
 // unconditionally unions a child's reverse (`arrayAllocationVariables`)
 // entries into the parent. A child's OWN fresh rebind of a shared
-// `VarDeclaration` mints a FRESH id for its own cell (finding 3 above), and
+// `VarDeclaration` mints a FRESH id for its own cell (per the per-binding
+// fresh-id principle above), and
 // dynamic-array elements are GC-allocated, so a pointer into that fresh
 // child cell may legally escape upward (returned from the child). The
 // reverse map is keyed by `VarDeclaration`, not by binding, so routing that
@@ -3406,7 +3959,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Re-review BLOCKER (2026-07-14, cross-frame cell staleness): the parent's
+// Cross-frame cell staleness: the parent's
 // promoted `arrayCells` entry is READ-AUTHORITATIVE (`runIndexExpression`'s
 // cell arm shadows the boxed `locals` mirror), but `writeBackNestedLocals`
 // only ever refreshed the parent's boxed `locals` mirror with a bare
@@ -3462,7 +4015,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Crash twin of the BLOCKER above: a nested function GROWING a captured
+// Crash twin of the cross-frame cell staleness bug above: a nested function GROWING a captured
 // array (`a ~= x`) changes its length, so the parent's stale `arrayCells`
 // entry -- never reconciled by `writeBackNestedLocals` -- is not merely
 // wrong but too SHORT for the post-append index, and
@@ -3509,7 +4062,7 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
     }
 }
 
-// Recursion twin of the BLOCKER above, with no nesting at all: a dynamic-
+// Recursion twin of the cross-frame cell staleness bug above, with no nesting at all: a dynamic-
 // array PARAMETER (not `ref`) shares its backing storage across recursive
 // calls exactly like real D. `writeBackArrayPointerTargets` -- the
 // `writeBackNestedLocals` counterpart for a variable whose address was
@@ -3552,8 +4105,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Cross-frame sibling of the same-frame `s = b;` rebind fixture (value.md
-// item 7 review round 2, finding 2): a `ref int[]` parameter REBOUND to a
+// Cross-frame sibling of the same-frame `s = b;` rebind fixture: a `ref
+// int[]` parameter REBOUND to a
 // new same-length array inside the callee must give the caller's own
 // variable fresh storage WITHOUT corrupting a pre-existing slice VIEW of
 // the caller's OLD storage. `writeBackRefArguments` routes the parameter's
@@ -3654,6 +4207,867 @@ static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
 
             unittest {
                 assert(f() == 71);
+            }
+        });
+    }
+}
+
+
+// Array-of-struct widening: `promoteArrayCell` previously
+// only gave `arrayCells` an entry when the element type was `native_scalar.
+// isNativeScalarType`, so `&a[i]` on an array of structs stayed on the
+// boxed-snapshot path (`arrayPointer`'s VarExp branch still minted an
+// `arrayAllocationVariables` id via `allocationId`, but no cell backed it,
+// so `runPointerExpression`'s `arrayPointerCellValue` check always missed
+// and fell to the frozen `pointer.pointerTarget` snapshot taken at
+// address-of time). A direct whole-element write (`a[i] = S(...)`) after
+// `&a[i]` was taken was therefore invisible through the earlier pointer.
+// Before any production change, Interpreter returned 1 (the pre-write
+// snapshot) instead of 99. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.structArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S[] a = [S(one()), S(one())];
+                S* p = &a[0];
+                a[0] = S(ninetyNine());
+                assert((*p).x == 99);
+            }
+        });
+    }
+}
+
+// Array-element/nested-field composition follow-up:
+// composing the two slices above -- a nested struct field OF an
+// array-of-struct element, `&a[i].inner.x`. `addressOfExpression`'s
+// `DotVarExp` branch only called `promoteNestedStructFieldCell`, which
+// requires the nested field's own receiver (`innerDot.e1`) to be a plain
+// `VarExp`; here it is an `IndexExp` (`a[0]`), so no cell ever backed this
+// pointer and it stayed on the boxed snapshot taken at address-of time.
+// Before any production change, Interpreter returned 1 (the pre-write
+// snapshot) instead of 99. SystemLinker is the oracle. Ctfe/Bytecode/LLVMJit
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "computes a wrong value for this shape (`1 != 99`), not a refusal"),
+)) {
+    @("pointer.arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S[] a = [S(Inner(one()))];
+                int* p = &a[0].inner.x;
+                a[0].inner.x = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
+// `dropArrayCell` cleaned only
+// `arrayCells` plus the `arrayAllocations`/`arrayAllocationVariables` memo --
+// it never invalidated the `arrayNestedStructFieldPointer*` reverse-lookup
+// maps the fixture above populates, unlike every OTHER pointer family
+// (`dropStructCell`/`dropClassCell` both clean their own reverse lookups on a
+// fresh binding). A `foreach` body re-executes the same `DeclarationExp` for
+// `a` every iteration; the first iteration's `&a[0].inner.x` pointer's id
+// stayed mapped, via the uncleaned maps, to the SAME `VarDeclaration`, so
+// dereferencing it after the second iteration's fresh binding resolved into
+// THAT binding's freshly-promoted cell instead of correctly declining to the
+// first iteration's own frozen snapshot. Before any production change,
+// Interpreter returned 99 (the second iteration's value) instead of 5 (the
+// first iteration's value, read through the pointer saved back then).
+// SystemLinker is the oracle; other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; Matrix!()) {
+    @("pointer.loopRedeclaredArrayNestedStructFieldPointerKeepsPreRebindValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int five() {
+                return 5;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                int result;
+                int* saved;
+                foreach (iter; 0 .. 2) {
+                    S[] a = [S(Inner(iter == 0 ? five() : ninetyNine()))];
+                    if (iter == 0) {
+                        saved = &a[0].inner.x;
+                    } else {
+                        int* q = &a[0].inner.x;
+                        result = *saved;
+                    }
+                }
+                return result;
+            }
+
+            unittest {
+                assert(f() == 5);
+            }
+        });
+    }
+}
+
+// Struct-static-array-field follow-up:
+// `&s.arr[i]` where `arr` is a static-array field of a plain struct local.
+// `arrayPointer`'s `array.isDotVarExp` branch minted a fresh `++
+// allocationCount` id for this shape with no reverse-lookup registration at
+// all, so a direct element write to the field (`s.arr[0] = ...`) after the
+// pointer was taken stayed invisible through it -- the same snapshot gap the
+// struct-scalar-field phase closed for `&s.field`, and the array phase
+// closed for `&a[i]`. SystemLinker's `p` aliases `s`'s real storage, so the
+// direct write is visible through `*p`. Other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; Matrix!()) {
+    @("pointer.structStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S s;
+                s.arr[0] = one();
+                int* p = &s.arr[0];
+                s.arr[0] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
+// Struct-static-array-field follow-up, foreach-ref
+// mutation shape: `foreach (ref e; s.arr) e = ...;` lowers (dmd's own
+// foreach-to-for rewrite) to `T[] __r = s.arr[]; ... ref T e = __r[__key];`,
+// so the write lands through a SLICE alias of the field, not a direct
+// `s.arr[i] = ...` assignment -- the write-through path the fixture above
+// exercises. SystemLinker's `p` aliases `s`'s real storage, so the write is
+// visible through `*p`. `Ctfe`/`LLVMJit` omitted per the omit-don't-pin
+// convention (unconfirmed there).
+static foreach (backend; Matrix!()) {
+    @("pointer.structStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                S s;
+                s.arr[0] = one();
+                int* p = &s.arr[0];
+                foreach (ref e; s.arr)
+                    e = e + ninetyNine();
+                assert(*p == 1 + 99);
+            }
+        });
+    }
+}
+
+// Class sibling of the struct-static-array-field fixture above:
+// `&c.arr[i]` where
+// `arr` is a scalar-element static-array field of a plain class local `c`.
+// `arrayPointer`'s `array.isDotVarExp` branch only calls
+// `promoteStructArrayFieldCell`, which requires `variable.type.toBasetype.
+// isTypeStruct` (a no-op for a class receiver), so no cell backs this
+// pointer and a direct element write (`c.arr[0] = ...`) after the pointer
+// was taken stays invisible through it -- the same snapshot gap the
+// struct-static-array-field slice closed for a struct receiver. SystemLinker's
+// `p` aliases `c`'s real storage, so the direct write is visible through
+// `*p`. Other backends omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
+)) {
+    @("pointer.classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr[0] = one();
+                int* p = &c.arr[0];
+                c.arr[0] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
+// Class-static-array-field follow-up, foreach-ref
+// mutation shape: the class sibling of `pointer.
+// structStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer`
+// above -- `foreach (ref e; c.arr) e = ...;` lowers (dmd's own foreach-to-for
+// rewrite) to `T[] __r = c.arr[]; ... ref T e = __r[__key];`, so the write
+// reaches `c` through a SLICE alias of the field, not the direct
+// `c.arr[i] = ...` write path `pointer.
+// classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+// already covers. `recordSliceAlias`'s `DotVarExp` branch computed the
+// field index via `structFieldIndex(dot)` unconditionally, which requires
+// `receiverStructType` and throws "Unsupported interpreter field access."
+// immediately for a class receiver -- this shape was entirely unsupported
+// (not merely missing pointer-aliasing), so a plain (pointer-free)
+// `foreach (ref e; c.arr) e = ...;` already threw. SystemLinker's `p`
+// aliases `c`'s real storage, so the write is visible through `*p`.
+// `Ctfe`/`LLVMJit` omitted per the omit-don't-pin convention (unconfirmed
+// there), matching the struct sibling fixture's own backend set.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
+)) {
+    @("pointer.classStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr[0] = one();
+                int* p = &c.arr[0];
+                foreach (ref e; c.arr)
+                    e = e + ninetyNine();
+                assert(*p == 1 + 99);
+            }
+        });
+    }
+}
+
+// Write-through-pointer follow-up: the opposite direction of `pointer.
+// classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer`
+// above -- write THROUGH `&c.arr[i]`, then read `c.arr[i]` directly --
+// mirroring `pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly`'s
+// shape but for the static-array-field aggregate-composition shape instead
+// of the nested-struct-field one. Other backends omitted per the
+// omit-don't-pin convention, matching the other class fixtures' own backend
+// set.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
+)) {
+    @("pointer.classArrayFieldElementWrittenThroughPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr[0] = one();
+                int* p = &c.arr[0];
+                *p = 5;
+
+                assert(c.arr[0] == 5);
+            }
+        });
+    }
+}
+
+// Cross-frame follow-up: the
+// class-receiver sibling of `pointer.
+// structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
+// caller takes `&c.arr[0]` (promoting a `classCells` entry and a
+// `classArrayFieldPointerVariables`/`classArrayFieldPointerFieldIndices`
+// reverse-lookup entry in the CALLER's own frame), then passes the pointer
+// into a callee that writes through it. The callee's own child `Walker` dupes
+// `classCells` (so the cell's bytes are shared) but, before this slice, never
+// duped the reverse-lookup maps themselves, so the callee's
+// `writeThroughClassArrayFieldPointer` reverse-lookup missed and the write
+// fell through to the `fieldSnapshotAllocationIds` refusal check (also duped)
+// instead of aliasing. SystemLinker is the oracle; Bytecode omitted per the
+// omit-Bytecode convention.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
+)) {
+    @("pointer.classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                C c = new C();
+                c.arr[0] = one();
+                int* p = &c.arr[0];
+                put(p, ninetyNine());
+                return *p + c.arr[0];
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}
+
+// Nested-struct-field follow-up: `&s.inner.x` where `inner` is a
+// (non-union) struct field of a
+// plain struct local and `x` is a scalar field of `inner`.
+// `addressOfExpression`'s `DotVarExp` branch resolves `fieldSnapshotAllocationId`/
+// `promoteStructFieldCell` only for a `dot.e1.isVarExp` receiver; here
+// `dot.e1` (`s.inner`) is itself a `DotVarExp`, so neither ever registers a
+// reverse lookup for the minted id, and `writeLocation`'s `PtrExp` arm falls
+// through to its "every other `&s.field` snapshot" guard and throws
+// "Unsupported interpreter assignment target." SystemLinker's `p` aliases
+// `s`'s real storage, so the write through `*p` is visible via `s.inner.x`.
+// Other backends omitted per the omit-don't-pin convention (unconfirmed
+// there).
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfNestedStructFieldWriteThroughUpdatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                S s = S(Inner(seed()));
+                int* p = &s.inner.x;
+                *p = 5;
+
+                assert(s.inner.x == 5);
+            }
+        });
+    }
+}
+
+// Pointer-identity memoization follow-up, the nested-field
+// sibling of `pointer.addressOfStructFieldIsStableAcrossReEvaluation` above:
+// `fieldSnapshotAllocationId` only memoizes an id per (receiver variable,
+// field index) when `dot.e1` resolves directly to a `VarExp` -- for
+// `&s.inner.x`, `dot.e1` is itself a `DotVarExp` (`s.inner`), so the
+// function always took its non-`VarExp`-receiver fresh-id fallback
+// (`++allocationCount` every evaluation), a real, previously-documented and
+// deferred gap ("the full field-PATH generalization"). SystemLinker is the
+// oracle; Ctfe/Bytecode/LLVMJit omitted per the omit-don't-pin convention
+// (unconfirmed there).
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfNestedStructFieldIsStableAcrossReEvaluation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                S s = S(Inner(seed()));
+                int* p = &s.inner.x;
+
+                assert(p is &s.inner.x);
+                assert(*p == 7);
+            }
+        });
+    }
+}
+
+// Cross-frame pointer-identity follow-up (54d0bb99's own
+// deferred gap): `nestedFieldAddressAllocations` memoizes `&s.inner.x`'s
+// allocation id only within the SAME `Walker` frame -- a nested function
+// closing over `s` (the identical `VarDeclaration`, no rebind at all) runs
+// in its own child frame, and since that memo map was never duped into a
+// child frame, re-taking `&s.inner.x` from inside the nested function
+// minted a brand-new id instead of returning the outer frame's own
+// memoized one. Real D shares the exact same stack storage between an
+// outer function and a nested function closing over its locals, so the two
+// addresses must compare equal. SystemLinker is the oracle; Ctfe/Bytecode/
+// LLVMJit omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported expression in bytecode core: &s.inner.x\" for this shape, not a wrong value"),
+)) {
+    @("pointer.addressOfNestedStructFieldIsStableAcrossNestedFunctionCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            bool sameAddressAcrossNestedCall() {
+                S s = S(Inner(seed()));
+                int* p = &s.inner.x;
+                int* q;
+
+                void capture() {
+                    q = &s.inner.x;
+                }
+
+                capture();
+                return p is q;
+            }
+
+            unittest {
+                assert(sameAddressAcrossNestedCall());
+            }
+        });
+    }
+}
+
+// `&a[i]` on a dynamic array whose element type is itself a scalar-element
+// static array (`int[2][]`) -- the array-of-static-array sibling of the
+// array-of-struct fixture above. `promoteArrayCell` previously stopped at
+// `isNativeScalarType`/struct element types, so a static-array element
+// stayed on the boxed-snapshot path exactly as struct elements once did:
+// `arrayPointer`'s VarExp branch still mints an `arrayAllocationVariables`
+// id, but no cell backed it, so `arrayPointerCellValue` always missed and
+// fell to the frozen `pointer.pointerTarget` snapshot taken at address-of
+// time. Before any production change, Interpreter returned 1 (the pre-write
+// snapshot) instead of 99; confirmed via an unnamed scratch probe with the
+// identical body before the fixture was given its real name and committed.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "computes a wrong value for this shape (`-1849532000 != 99`), not a refusal"),
+)) {
+    @("pointer.staticArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[2][] a = [[one(), one()], [one(), one()]];
+                int[2]* p = &a[0];
+                a[0] = [ninetyNine(), ninetyNine()];
+                assert((*p)[0] == 99);
+            }
+        });
+    }
+}
+
+// Struct-static-array-field cross-frame follow-up: the
+// array-typed-field sibling of `pointer.
+// structFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The caller
+// takes `&s.arr[0]` (promoting a `structCells` entry and a
+// `structArrayFieldPointerVariables`/`structArrayFieldPointerFieldIndices`
+// reverse-lookup entry in the CALLER's own frame), then passes the pointer
+// into a callee that writes through it. The callee's own child `Walker`
+// dupes `structCells` (so the cell's bytes are shared) but, before this
+// slice, never duped the reverse-lookup maps themselves, so the callee's
+// `writeThroughStructArrayFieldPointer` reverse-lookup missed and the write
+// fell through to the `fieldSnapshotAllocationIds` refusal check (also
+// duped) instead of aliasing. SystemLinker is the oracle; Bytecode omitted
+// per the omit-Bytecode convention.
+static foreach (backend; Matrix!()) {
+    @("pointer.structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] arr;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                S s;
+                s.arr[0] = one();
+                int* p = &s.arr[0];
+                put(p, ninetyNine());
+                return *p + s.arr[0];
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}
+
+// Nested-struct-field cross-frame follow-up: the
+// nested-field sibling of `pointer.
+// structArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
+// caller takes `&s.inner.x` (promoting a `structCells` entry and a
+// `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
+// `...InnerFieldIndices` reverse-lookup entry in the CALLER's own frame),
+// then passes the pointer into a callee that writes through it. The
+// callee's own child `Walker` dupes `structCells` (so the cell's bytes are
+// shared) but, before this slice, never duped the reverse-lookup maps
+// themselves, so the callee's `writeThroughNestedStructFieldPointer`
+// reverse-lookup missed and the write fell through to the
+// `fieldSnapshotAllocationIds` refusal check (also duped) instead of
+// aliasing. SystemLinker is the oracle; Bytecode omitted per the
+// omit-Bytecode convention.
+static foreach (backend; Matrix!()) {
+    @("pointer.nestedStructFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                S s = S(Inner(one()));
+                int* p = &s.inner.x;
+                put(p, ninetyNine());
+                return *p + s.inner.x;
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}
+
+// The class
+// sibling of `pointer.structFieldWrittenDirectlyIsVisibleThroughEarlierPointer`
+// one level deeper, mirroring `pointer.
+// addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but with a
+// class RECEIVER instead of a struct one -- `inner` is a (non-union) struct
+// FIELD of class `C`, and `x` is a scalar field of `inner`. Other backends
+// omitted per the omit-don't-pin convention, matching the other class
+// fixtures' own backend set.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
+)) {
+    @("pointer.nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+                int y;
+            }
+
+            class C {
+                Inner inner;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C c = new C();
+                c.inner.x = one();
+                c.inner.y = two();
+                int* p = &c.inner.x;
+                c.inner.x = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
+// Write-through-pointer follow-up: the opposite direction of `pointer.
+// nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer` above
+// -- write THROUGH `&c.inner.x`, then read `c.inner.x` directly -- mirroring
+// `pointer.addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but
+// with a class RECEIVER instead of a struct one. Other backends omitted per
+// the omit-don't-pin convention, matching the other class fixtures' own
+// backend set.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
+)) {
+    @("pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            class C {
+                Inner inner;
+            }
+
+            int seed() {
+                return 7;
+            }
+
+            unittest {
+                C c = new C();
+                c.inner.x = seed();
+                int* p = &c.inner.x;
+                *p = 5;
+
+                assert(c.inner.x == 5);
+            }
+        });
+    }
+}
+
+// Cross-frame follow-up: the
+// nested-class-struct-field sibling of `pointer.
+// classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
+// caller takes `&c.inner.x` (promoting a `classCells` entry and a
+// `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
+// `...InnerFieldIndices` reverse-lookup entry in the CALLER's own frame),
+// then passes the pointer into a callee that writes through it. The callee's
+// own child `Walker` dupes `classCells` (so the cell's bytes are shared) but,
+// before this slice, never duped the reverse-lookup maps themselves, so the
+// callee's `writeThroughNestedClassStructFieldPointer` reverse-lookup missed
+// and the write fell through to the `fieldSnapshotAllocationIds` refusal
+// check (also duped) instead of aliasing. SystemLinker is the oracle;
+// Bytecode omitted per the omit-Bytecode convention.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
+)) {
+    @("pointer.nestedClassStructFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            class C {
+                Inner inner;
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            void put(int* p, int v) {
+                *p = v;
+            }
+
+            int f() {
+                C c = new C();
+                c.inner.x = one();
+                int* p = &c.inner.x;
+                put(p, ninetyNine());
+                return *p + c.inner.x;
+            }
+
+            unittest {
+                assert(f() == 198);
+            }
+        });
+    }
+}
+
+// `promoteArrayNestedStructFieldCell`
+// evaluated `index.e2` itself (to seed the
+// `arrayNestedStructFieldPointer*ElementIndices` reverse-lookup entry), then
+// `addressOfExpression`'s `DotVarExp` branch unconditionally called
+// `runExpression(dot)` to build the pointer's boxed snapshot -- re-running
+// the WHOLE `a[i++].inner.x` chain, including `i++` a second time. A
+// side-effecting index (`i++`) therefore ran twice: once inside the promote
+// call, once again building the snapshot. SystemLinker's `p` aliases real
+// storage and evaluates the index expression exactly once. Other backends
+// omitted per the omit-don't-pin convention (unconfirmed there).
+static foreach (backend; Matrix!()) {
+    @("pointer.arrayNestedStructFieldIndexWithSideEffectEvaluatedOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            unittest {
+                S[] a = [S(Inner(1)), S(Inner(2))];
+                int i = 0;
+                auto p = &a[i++].inner.x;
+                assert(i == 1);
             }
         });
     }

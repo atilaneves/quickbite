@@ -12,9 +12,9 @@ public interface Evaluator {
     // The single execution primitive each backend implements. Failure is
     // data: a backend catches its own internal exceptions and returns them
     // as the diagnostic rather than throwing. The successful result is the
-    // value rendered to its display string (decision 1 of ai/plans/value.md);
-    // each backend renders its internally-reified `Value` to that string via
-    // the shared `displayString` helper below.
+    // value rendered to its display string; each backend renders its
+    // internally-reified `Value` to that string via the shared
+    // `displayString` helper below.
     public EvalResult eval(FuncDeclaration function_);
 
     public ReplSession createReplSession();
@@ -115,9 +115,8 @@ public struct EvalResult {
     // empty string for a statement that produces nothing); a failed one carries
     // a Diagnostic. Representing this as a sum type makes the "value and error
     // message at once" state unrepresentable. The string is produced by the
-    // backend via `displayString` (decision 1/4 of ai/plans/value.md): the
-    // backend keeps its reify -> Value -> toString chain private and only
-    // exposes the final string here.
+    // backend via `displayString`: the backend keeps its reify -> Value ->
+    // toString chain private and only exposes the final string here.
     private SumType!(string, Diagnostic) _payload;
 
     public this(in string display) {
@@ -164,9 +163,9 @@ public EvalResult displayEvalResult(
 }
 
 // Renders a backend-reified `Value` to its display string at the
-// `eval(FuncDeclaration)` boundary. This is the single shared renderer (decision
-// 4 of ai/plans/value.md) so every backend and the `eval(Cell)`/`eval(string)`
-// paths produce identical output: `void` renders to the empty string; a
+// `eval(FuncDeclaration)` boundary. This is the single shared renderer so
+// every backend and the `eval(Cell)`/`eval(string)` paths produce
+// identical output: `void` renders to the empty string; a
 // function whose return type is a character array renders the quoted string
 // form (with its width suffix); everything else renders via `Value.toString`.
 // The renderer is intentionally free of the REPL-layer synthetic-name
