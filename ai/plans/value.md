@@ -298,6 +298,10 @@ a checked fact; do not relearn them.
 
 ### Cell coherence (guest-visible native cells)
 
+- Cell and boxed-local state belongs to one execution, not to the reusable
+  `Interpreter` adapter. Running a module parsed before an earlier module's
+  execution must start from fresh value state; frontend AST age is not a
+  reason to retain or replay a prior walker's cells.
 - Every cell family must honour three obligations — dup on frame fork,
   merge on return, drop on rebind — and a missed one is invisible until
   it corrupts. (See item 7's consolidation debt before adding a family.)

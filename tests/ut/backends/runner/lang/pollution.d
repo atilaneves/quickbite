@@ -16,9 +16,7 @@ import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     the spike scenario slice 1 could not run: a cached parse, codegen'd after
     another fixture's compilation.
 +/
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("pollution.staleParseCompilesAfterOtherFixture." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
