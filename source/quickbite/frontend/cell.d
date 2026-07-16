@@ -371,59 +371,10 @@ private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
         case Tarray, Tsarray:
             return arrayElementCanUsePreludeFormat(baseType);
         case Tstruct:
-            return structTypeNeedsPreludeFormat(baseType);
+            return true;
         default:
             return false;
     }
-}
-
-private bool structTypeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    auto structType = type.isTypeStruct;
-    if (structType is null || structType.sym.isInstantiated !is null)
-        return false;
-
-    return structNeedsPreludeFormat(type) || ordinaryStructNeedsPreludeFormat(type);
-}
-
-private bool structNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
-    auto structType = type.isTypeStruct;
-    foreach (field; structType.sym.fields)
-        if (field !is null && field.type !is null) {
-            if (field.type.ty == TY.Tenum)
-                return true;
-
-            auto fieldType = field.type.toBasetype;
-            with (TY) switch (fieldType.ty) {
-                case Tint64, Tuns64:
-                    return true;
-                case Tclass:
-                    return true;
-                case Tdelegate:
-                    return true;
-                case Taarray:
-                    return true;
-                case Tarray, Tsarray:
-                    return arrayElementCanUsePreludeFormat(fieldType);
-                case Tpointer:
-                    if (field.isThisDeclaration is null)
-                        return true;
-                    break;
-                default:
-                    break;
-            }
-        }
-
-    return false;
-}
-
-private bool ordinaryStructNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    auto structType = type.isTypeStruct;
-    if (structType is null || structType.sym.isInstantiated !is null)
-        return false;
-
-    return true;
 }
 
 private bool arrayElementCanUsePreludeFormat(imported!"dmd.mtype".Type type) {

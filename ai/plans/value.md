@@ -11,9 +11,9 @@ stand:
   surface is complete; expression-cell wiring is partial and the interim
   `displayString`/`Value.toString` scaffolding still exists (item 1).
   Formatter-wrapped CTFE and interpreter sessions consume the guest-produced
-  string directly; nested-context structs are formatter-wrapped and render
-  only their declared fields. Only their unformatted evaluator paths retain
-  the scaffolding.
+  string directly; every struct expression is formatter-wrapped, including
+  nested-context, template, and range structs. Only unformatted evaluator
+  paths retain the scaffolding.
   CTFE and interpreter unittests execute directly without rendering; IR and
   Bytecode still use the interim evaluation bridge (item 2).
 - The interpreter's native-layout container layer is complete:
@@ -509,11 +509,12 @@ are done; what is still pending, in order:
    the round-trip spec, and the `text(value)` catch-all covers only the
    rule-7 no-contract values. Expression cells are synthesized as
    `__quickbiteFormat(expr)` for a broad set of return types when the
-   backend opts in (`Ctfe`, `Interpreter`). The remaining gate exclusions are
-   range and template structs, which still run through the interim
-   `displayString`/`Value.toString` scaffolding. Keep expanding the gate per
-   backend (decision 4) until every REPL expression is
-   formatter-wrapped and the unformatted evaluator paths can be deleted.
+   backend opts in (`Ctfe`, `Interpreter`). Every struct expression, including
+   template and range structs, is now formatter-wrapped. The remaining gate
+   exclusions are rule-7 values without D expression forms (class references,
+   functions, delegates, and pointers). Keep expanding the gate per backend
+   (decision 4) until every REPL expression is formatter-wrapped and the
+   unformatted evaluator paths can be deleted.
    Items 2 and 3 are blocked until this wiring lands. The interpreter's
    `std.conv.text` hook is temporary formatter scaffolding, not a general
    Phobos builtin: remove it once the formatter no longer needs that escape
