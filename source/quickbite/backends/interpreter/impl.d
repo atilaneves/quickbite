@@ -8,7 +8,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
     import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
     import quickbite.lang: Value;
-    import dmd.func: FuncDeclaration;
+    import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
 
@@ -38,6 +38,20 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             // DMD's CTFE engine (as an earlier revision did) replaced the
             // real, actionable error with whichever body-less leaf CTFE
             // happened to reject.
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        }
+    }
+
+    protected override EvalResult executeUnitTest(
+        UnitTestDeclaration unitTest,
+    ) {
+        try {
+            Walker walker;
+            scope(exit) walker.closeDurableInboundSession;
+            walker.inUnitTest = true;
+            walker.runStatement(unitTest.fbody);
+            return EvalResult("");
+        } catch (Exception exception) {
             return EvalResult(EvalResult.Diagnostic(exception.msg));
         }
     }
