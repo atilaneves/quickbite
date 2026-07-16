@@ -8365,22 +8365,12 @@ private struct Compiler {
             ));
 
         auto elementType = arrayType.toBasetype.nextOf;
-        if (elementType.toBasetype.ty == TY.Tarray) {
-            foreach (elementIndex; 0 .. literal.elements.length) {
-                const value = compileExpression(
-                    (*literal.elements)[elementIndex],
-                );
-                _code ~= Instruction(
-                    Op.copy,
-                    cast(ushort) (offset +
-                        elementIndex * sliceDescriptorSize),
-                    value.offset,
-                    cast(ushort) sliceDescriptorSize,
-                );
-            }
-            return;
-        }
 
+        // A string element (`string[2]`) uses the compact 8-byte
+        // {data offset, length} descriptor, not the 16-byte native slice
+        // descriptor a real dynamic-array element uses; check it before the
+        // general Tarray case below, whose element basetype a string also
+        // matches.
         if (isStringType(elementType)) {
             const elementSize = cast(uint) staticArraySize(elementType);
             foreach (elementIndex; 0 .. literal.elements.length) {
@@ -8397,6 +8387,22 @@ private struct Compiler {
                     cast(ushort) (offset + elementIndex * elementSize),
                     value.offset,
                     cast(ushort) stringSliceSize,
+                );
+            }
+            return;
+        }
+
+        if (elementType.toBasetype.ty == TY.Tarray) {
+            foreach (elementIndex; 0 .. literal.elements.length) {
+                const value = compileExpression(
+                    (*literal.elements)[elementIndex],
+                );
+                _code ~= Instruction(
+                    Op.copy,
+                    cast(ushort) (offset +
+                        elementIndex * sliceDescriptorSize),
+                    value.offset,
+                    cast(ushort) sliceDescriptorSize,
                 );
             }
             return;
