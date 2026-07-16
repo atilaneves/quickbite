@@ -234,13 +234,12 @@ private struct Walker {
     // `addressOfExpression`'s `DotVarExp` branch alongside
     // `promoteStructFieldCell` (mirroring how `arrayPointer`'s `DotVarExp`
     // branch already combines `promoteStructArrayFieldCell` with the same
-    // memoized id). Narrower than `structFieldPointerVariables` in one
-    // respect that remains open: the id is NOT memoized per (receiver, field
-    // path) -- a `dot.e1` that is itself a `DotVarExp` always takes
-    // `fieldSnapshotAllocationId`'s non-`VarExp`-receiver fresh-id fallback,
-    // a real gap left for the full field-PATH generalization. Cross-frame
-    // follow-up (2026-07-15): now duplicated into child-frame walkers and
-    // merged back exactly like `structArrayFieldPointerVariables`/
+    // memoized id). Like `structFieldPointerVariables`, the id is memoized --
+    // here per (root variable, outer field index, inner field index) via
+    // `nestedFieldAddressAllocations` -- so repeated `&s.inner.x` evaluations
+    // share one identity, matching real addresses. Duplicated into
+    // child-frame walkers and merged back exactly like
+    // `structArrayFieldPointerVariables`/
     // `FieldIndices` (`mergeNestedStructFieldPointerVariableMaps`), so a
     // `&s.inner.x` pointer does survive being passed into another function;
     // see `nestedStructFieldPointerWritebacks` below for the write-through
@@ -2000,11 +1999,11 @@ private struct Walker {
             // through THIS pointer's deref-read
             // (`structFieldPointerCellValue`) -- closing the reverse-
             // propagation gap the array phase already closed for `&a[i]`.
-            // For the nested-struct-field case, `&s.inner.x`
-            // shares the SAME id above (`dot.e1.isVarExp` is null for it, so
-            // `fieldSnapshotAllocationId` already took its non-`VarExp`-
-            // receiver fresh-id fallback), but `promoteStructFieldCell`
-            // itself no-ops for it (same reason). `promoteNestedStructFieldCell`
+            // For the nested-struct-field case, `&s.inner.x` shares the SAME
+            // id above -- `fieldSnapshotAllocationId` memoizes that shape per
+            // (root variable, outer field index, inner field index) -- but
+            // `promoteStructFieldCell` itself no-ops for it, since its
+            // receiver is not a plain `VarExp`. `promoteNestedStructFieldCell`
             // recognises the one-level-nested shape on its own and registers
             // this id in its own reverse lookup when it applies; a no-op
             // otherwise.
@@ -5793,7 +5792,8 @@ private struct Walker {
     // this frame already has an id for keeps it; only a triple this frame
     // has never seen adopts the callee's. Needed now that
     // `nestedFieldAddressAllocations` is duped into every child `Walker`
-    // (the same 8 sites `fieldAddressAllocations` is duped at), so a nested
+    // (by `forkPerFrameCellsInto`, with the rest of the per-frame cell
+    // state), so a nested
     // function that FIRST takes `&s.inner.x` (this frame never having seen
     // that triple before) hands its freshly-minted id back up to the
     // enclosing frame, exactly mirroring how a nested function first taking
