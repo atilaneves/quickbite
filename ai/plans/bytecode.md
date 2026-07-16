@@ -435,6 +435,10 @@ and Cerealed gate no longer expose earlier gaps.
 - Keep unsupported behaviour explicit and diagnostic while it is outside the
   currently promoted row. Never silently lower, guess, or emulate `Ctfe` when
   it differs from compiled D.
+- Admit an inline-asm subset only from a frontend-preserved stream containing
+  every token's kind and spelling, with exact whole-instruction-sequence
+  validation. Punctuation, size qualifiers, memory operands, literals, and
+  extra instructions must not collapse into a supported identifier shape.
 - Do not infer code structure from source text. Ask the frontend for structured
   cells, declarations, statements, and expressions.
 - Make opcodes and metadata earn their shape from a behaviour. Prefer existing

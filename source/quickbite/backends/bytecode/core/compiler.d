@@ -516,81 +516,109 @@ private struct Compiler {
         if (instructions.length == 0)
             throw new Exception("Inline asm was not preserved by the frontend.");
 
-        ushort accumulator = ushort.max;
-        ushort carry = ushort.max;
-        ScalarType accumulatorType;
-        foreach (identifiers; instructions) {
-            if (identifiers.length == 3 && identifiers[0] == "mov") {
-                if (identifiers[1] == "EAX" || identifiers[1] == "RAX") {
-                    const source = asmLocal(identifiers[2]);
-                    accumulator = source.offset;
-                    accumulatorType = source.type;
-                    continue;
-                }
-                if (identifiers[2] == "EAX" || identifiers[2] == "RAX") {
-                    const destination = asmLocal(identifiers[1]);
-                    if (accumulator == ushort.max ||
-                        destination.type != accumulatorType)
-                        throw new Exception("Unsupported inline asm `mov`.");
-                    _code ~= Instruction(
-                        Op.copy,
-                        destination.offset,
-                        accumulator,
-                        cast(ushort) size(accumulatorType),
-                    );
-                    continue;
-                }
-            }
-
-            if (identifiers.length == 2 && identifiers[0] == "mul") {
-                const rhs = asmLocal(identifiers[1]);
-                if (accumulator == ushort.max || rhs.type != accumulatorType ||
-                    (size(accumulatorType) != uint.sizeof &&
-                        size(accumulatorType) != ulong.sizeof))
-                    throw new Exception("Unsupported inline asm `mul`.");
-                const result = allocateBytes(
-                    cast(uint) (size(accumulatorType) + bool.sizeof),
-                    cast(uint) size(accumulatorType),
-                );
-                _code ~= Instruction(
-                    size(accumulatorType) == uint.sizeof
-                        ? Op.mulUnsignedInt4WithCarry
-                        : Op.mulUnsignedInt8WithCarry,
-                    result,
-                    accumulator,
-                    rhs.offset,
-                );
-                accumulator = result;
-                carry = cast(ushort) (result + size(accumulatorType));
-                continue;
-            }
-
-            if (identifiers.length == 2 && identifiers[0] == "setc") {
-                const destination = asmLocal(identifiers[1]);
-                if (carry == ushort.max || destination.type != ScalarType.bool_)
-                    throw new Exception("Unsupported inline asm `setc`.");
-                _code ~= Instruction(
-                    Op.copy,
-                    destination.offset,
-                    carry,
-                    cast(ushort) bool.sizeof,
-                );
-                continue;
-            }
-
+        if (instructions.length != 4 ||
+            instructions[0].length != 4 ||
+            instructions[1].length != 2 ||
+            instructions[2].length != 4 ||
+            instructions[3].length != 2 ||
+            !isAsmIdentifier(instructions[0], 0, "mov") ||
+            !isAsmIdentifier(instructions[0], 1, "EAX", "RAX") ||
+            !isAsmPunctuation(instructions[0], 2, ",") ||
+            !isAsmIdentifier(instructions[0], 3) ||
+            !isAsmIdentifier(instructions[1], 0, "mul") ||
+            !isAsmIdentifier(instructions[1], 1) ||
+            !isAsmIdentifier(instructions[2], 0, "mov") ||
+            !isAsmIdentifier(instructions[2], 1) ||
+            !isAsmPunctuation(instructions[2], 2, ",") ||
+            !isAsmIdentifier(instructions[2], 3) ||
+            !isAsmIdentifier(instructions[3], 0, "setc") ||
+            !isAsmIdentifier(instructions[3], 1) ||
+            instructions[0][1].spelling != instructions[2][3].spelling)
             throw new Exception(text(
-                "Unsupported inline asm instruction: ", identifiers,
+                "Unsupported inline asm instruction sequence: ",
+                instructions,
             ));
-        }
+
+        const source = asmLocal(instructions[0][3].spelling);
+        const rhs = asmLocal(instructions[1][1].spelling);
+        const destination = asmLocal(instructions[2][1].spelling);
+        const carryDestination = asmLocal(instructions[3][1].spelling);
+        if (rhs.type != source.type || destination.type != source.type ||
+            carryDestination.type != ScalarType.bool_ ||
+            (source.type != ScalarType.uint_ &&
+                source.type != ScalarType.ulong_) ||
+            (size(source.type) == uint.sizeof &&
+                instructions[0][1].spelling != "EAX") ||
+            (size(source.type) == ulong.sizeof &&
+                instructions[0][1].spelling != "RAX"))
+            throw new Exception("Unsupported inline asm checked multiply.");
+
+        const result = allocateBytes(
+            cast(uint) (size(source.type) + bool.sizeof),
+            cast(uint) size(source.type),
+        );
+        _code ~= Instruction(
+            size(source.type) == uint.sizeof
+                ? Op.mulUnsignedInt4WithCarry
+                : Op.mulUnsignedInt8WithCarry,
+            result,
+            source.offset,
+            rhs.offset,
+        );
+        _code ~= Instruction(
+            Op.copy,
+            destination.offset,
+            result,
+            cast(ushort) size(source.type),
+        );
+        _code ~= Instruction(
+            Op.copy,
+            carryDestination.offset,
+            cast(ushort) (result + size(source.type)),
+            cast(ushort) bool.sizeof,
+        );
+    }
+
+    private static bool isAsmIdentifier(
+        in imported!"quickbite.frontend.dmd.functions".InlineAsmToken[] tokens,
+        in size_t index,
+        in string spelling = null,
+        in string alternativeSpelling = null,
+    ) @safe pure nothrow @nogc {
+        return index < tokens.length && tokens[index].kind == "identifier" &&
+            (spelling is null || tokens[index].spelling == spelling ||
+                tokens[index].spelling == alternativeSpelling);
+    }
+
+    private static bool isAsmPunctuation(
+        in imported!"quickbite.frontend.dmd.functions".InlineAsmToken[] tokens,
+        in size_t index,
+        in string spelling,
+    ) @safe pure nothrow @nogc {
+        return index < tokens.length && tokens[index].kind == spelling &&
+            tokens[index].spelling == spelling;
     }
 
     private Operand asmLocal(in string name) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
-        foreach (declaration, offset; _locals)
+        foreach (declaration, offset; _locals) {
             if (declaration.ident !is null &&
-                declaration.ident.toString == name)
-                return Operand(offset, scalarType(declaration.type));
+                declaration.ident.toString == name) {
+                const type = declaration.type.toBasetype.ty;
+                if (type == TY.Tbool)
+                    return Operand(offset, ScalarType.bool_);
+                if (type == TY.Tuns32)
+                    return Operand(offset, ScalarType.uint_);
+                if (type == TY.Tuns64)
+                    return Operand(offset, ScalarType.ulong_);
+                throw new Exception(text(
+                    "Unsupported inline asm operand type: ",
+                    typeChars(declaration.type),
+                ));
+            }
+        }
         throw new Exception(text("Unsupported inline asm operand: ", name));
     }
 

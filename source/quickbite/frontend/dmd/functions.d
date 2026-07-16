@@ -36,13 +36,19 @@ public string noAvailableSourceMessage(
 
 // DMD consumes the individual statements inside a CompoundAsmStatement during
 // semantic3 and keeps their lowered representation in backend-private data.
-// Preserve the identifier stream before that boundary so non-native backends
-// can recognise the instruction subsets they implement without importing DMD
-// backend internals.
-private string[][][
+// Preserve every token before that boundary so non-native backends can
+// recognise only the exact instruction subsets they implement without
+// importing DMD backend internals.
+public struct InlineAsmToken {
+    public string kind;
+    public string spelling;
+}
+
+private InlineAsmToken[][][
     imported!"dmd.statement".CompoundAsmStatement
 ] _inlineAsmInstructions;
-private string[][][InlineAsmSourceLocation] _inlineAsmInstructionsByLocation;
+private InlineAsmToken[][][InlineAsmSourceLocation]
+    _inlineAsmInstructionsByLocation;
 private bool[imported!"dmd.dmodule".Module] _inlineAsmReparsedModules;
 
 private struct InlineAsmSourceLocation {
@@ -63,7 +69,7 @@ public void snapshotInlineAsmInstructions() {
     }
 }
 
-public const(string[][]) inlineAsmInstructions(
+public const(InlineAsmToken[][]) inlineAsmInstructions(
     imported!"dmd.statement".CompoundAsmStatement statement,
 ) {
     const saved = statement in _inlineAsmInstructions;
@@ -144,21 +150,20 @@ private void reparseInlineAsmInstructions(
         if (token == TOK.endOfFile)
             break;
 
-        string[][] instructions;
-        string[] identifiers;
+        InlineAsmToken[][] instructions;
+        InlineAsmToken[] instruction;
         for (token = lexer.nextToken;
                 token != TOK.rightCurly && token != TOK.endOfFile;
                 token = lexer.nextToken) {
-            if (token == TOK.identifier)
-                identifiers ~= lexer.token.ident.toString.idup;
             if (token == TOK.semicolon) {
-                if (identifiers.length != 0)
-                    instructions ~= identifiers;
-                identifiers = null;
-            }
+                if (instruction.length != 0)
+                    instructions ~= instruction;
+                instruction = null;
+            } else
+                instruction ~= inlineAsmToken(lexer.token);
         }
-        if (identifiers.length != 0)
-            instructions ~= identifiers;
+        if (instruction.length != 0)
+            instructions ~= instruction;
         if (instructions.length != 0)
             _inlineAsmInstructionsByLocation[location] = instructions;
         if (token != TOK.endOfFile)
@@ -171,19 +176,16 @@ private void snapshotStatement(imported!"dmd.statement".Statement statement) {
         return;
 
     if (auto asm_ = statement.isCompoundAsmStatement) {
-        import dmd.tokens: TOK;
-
-        string[][] instructions;
+        InlineAsmToken[][] instructions;
         foreach (child; *asm_.statements) {
             auto instruction = child is null ? null : child.isAsmStatement;
             if (instruction is null)
                 continue;
-            string[] identifiers;
+            InlineAsmToken[] tokens;
             for (auto token = instruction.tokens;
                     token !is null; token = token.next)
-                if (token.value == TOK.identifier)
-                    identifiers ~= token.ident.toString.idup;
-            instructions ~= identifiers;
+                tokens ~= inlineAsmToken(*token);
+            instructions ~= tokens;
         }
         if (instructions.length != 0) {
             _inlineAsmInstructions[asm_] = instructions;
@@ -249,6 +251,17 @@ private void snapshotStatement(imported!"dmd.statement".Statement statement) {
     }
     if (auto default_ = statement.isDefaultStatement)
         snapshotStatement(default_.statement);
+}
+
+private InlineAsmToken inlineAsmToken(
+    ref imported!"dmd.tokens".Token token,
+) {
+    import dmd.tokens: Token;
+
+    return InlineAsmToken(
+        Token.toString(token.value).idup,
+        token.toString.idup,
+    );
 }
 
 private InlineAsmSourceLocation inlineAsmSourceLocation(
