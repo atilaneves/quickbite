@@ -6288,3 +6288,12 @@ the same pre-existing random-order REPL failure recorded above under seeds
 review-fix run passed all 3397 tests under seed `94595530`; no causal link to
 this branch was established. Because `ci.sh` is fail-fast, the example,
 benchmarks, `bin/qb`, and REPL integration stages did not run.
+
+Final re-review finding 1, stale array promotion comments, 2026-07-16:
+removed obsolete omit/unconfirmed wording above the remaining three promoted
+array fixtures and collapsed their empty backend matrices to `Matrix!()`.
+The sibling nested-foreach fixture already had current wording and formatting.
+This is documentation and formatting only; fixture behavior and backend
+coverage are unchanged. Verification: `ninja bin/ut` passed;
+`bin/ut --random` hit the documented pre-existing exit-139 failure under seed
+`3494568850`, and `bin/ut --seed 3494568850 --quiet` reproduced exit code 139.

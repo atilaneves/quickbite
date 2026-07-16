@@ -1906,10 +1906,8 @@ static foreach (backend; Matrix!()) {
 // plain source-level `s = b;` REBINDS `s` to `b`'s storage; it must not
 // write `b`'s bytes into whatever `s` used to alias. Here `s` is a slice
 // view over `a`'s cell, so the buggy in-place refresh corrupted `a` itself.
-// SystemLinker is the oracle; other backends omitted per the omit-don't-pin
-// convention (unconfirmed there).
-static foreach (backend; Matrix!(
-)) {
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.wholeArrayRebindDoesNotWriteThroughStaleSliceCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1951,10 +1949,8 @@ static foreach (backend; Matrix!(
 // its OLD length -- a slice (`int[] s = a[];`) eagerly promotes `a`'s cell via
 // `promoteSliceArrayCell`, with no address-of needed at all. A later read of
 // the newly-appended element then goes through `readIndexExpression`'s cell
-// arm against the stale, too-short cell. SystemLinker is the oracle; other
-// backends omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-)) {
+// arm against the stale, too-short cell. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.appendRefreshesSlicePromotedStaleCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1990,10 +1986,8 @@ static foreach (backend; Matrix!(
 // a later `a[0]` read returns the stale cell's original value instead. See
 // the sibling `pointer.boundedSliceAssignmentWritesThroughAddressOfPromotedCell`
 // fixture in expressions.d for the bounded/`&a[0]` variant. SystemLinker is
-// the oracle; other backends omitted per the omit-don't-pin convention
-// (unconfirmed there).
-static foreach (backend; Matrix!(
-)) {
+// the oracle.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.sliceFillAssignmentWritesThroughSlicePromotedCell." ~
         backend.stringof)
     @Tags(backend.stringof)
