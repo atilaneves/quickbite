@@ -622,12 +622,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      class cells only for parameter aliasing. Allocation and field-pointer
      cell state shared by free and member calls merges through
      `Walker.mergePointerCellState`.
-   - `runNewStructPointerExpression`'s fork site still duplicates a
-     narrow three-field subset with no recorded rationale; confirm it is
-     deliberate or fold it into the common path.
-   - `runNewClassExpression`'s child neither dupes nor merges the
-     array/struct pointer maps at all — a pre-existing asymmetry to
-     resolve when the fork/merge points are unified.
+   - `runNewClassExpression` forks all cell state but still merges only
+     field-address allocation maps — fold its return side into the common
+     merge path without changing constructor alias semantics.
 
    **Design sketch** (the frame for all of this work). A *native block*
    is a stable byte range laid out with DMD's own offsets, stride, and
