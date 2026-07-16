@@ -19,13 +19,29 @@ dmd-as-a-library.
 
 Consult `ai/plans` for implementation plans.
 
+A plan exists for one reason: so the next agent knows what to do and
+why. It carries the decisions and their rationale, the contracts and
+invariants the code depends on, the alternatives already rejected, and
+the work that remains. It is not a record of what was done — git
+history already carries that, in more detail and more reliably, and a
+plan that narrates completed work buries the part a reader actually
+needs.
+
+So do not append progress or ledger entries, and do not restate in
+prose what the diff already says. When your change settles a question,
+*edit* the decision, contract, or remaining-work item it affects and
+delete whatever it made untrue. The test for a sentence in a plan: if
+it would still be worth reading a year from now by someone who will
+never look at this commit, keep it; otherwise it belongs in the commit
+message.
+
 When parallel work tracks are running (e.g. the bytecode rewrite, the
-value/formatter track, the interpreter FFI track), append progress and
-ledger notes only to the plan that owns your track — bytecode work to
-`ai/plans/bytecode.md`, formatter/display work to `ai/plans/value.md`,
-FFI work to `ai/plans/ffi.md`. A cross-track observation goes in your
-own plan with a reference to the other, not as an edit to the other
-plan. This keeps concurrent PRs from conflicting in the plan ledgers.
+value/formatter track, the interpreter FFI track), edit only the plan
+that owns your track — bytecode work in `ai/plans/bytecode.md`,
+formatter/display work in `ai/plans/value.md`, FFI work in
+`ai/plans/ffi.md`. A cross-track observation goes in your own plan with
+a reference to the other, not as an edit to the other plan. This keeps
+concurrent PRs from conflicting.
 
 # Coding Guidelines
 
