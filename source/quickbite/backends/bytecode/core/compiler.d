@@ -7986,15 +7986,21 @@ private struct Compiler {
         return result;
     }
 
-    // Write the rhs scalar to `[pointer + index * size]`, the shared store for
-    // `*p = v` and `p[i] = v`.
+    // Write the rhs to `[pointer + index * size]`, the shared store for
+    // `*p = v` and `p[i] = v`. A scalar pointee's width is the opcode type's
+    // fixed size; a non-scalar pointee (struct, e.g. `S* p; *p = S(42);`)
+    // has no opcode scalar type at all (`pointerElement` is `void_`), so its
+    // width must come from DMD's own `Type.size()` for the value actually
+    // being written, never guessed from the (absent) scalar type.
     private Operand storeThroughPointer(
         in Operand pointer,
         in ushort indexSlot,
         Expression rhs,
     ) {
         const value = compileExpression(rhs);
-        const elementSize = size(pointer.pointerElement);
+        const elementSize = pointer.pointerElement == ScalarType.void_
+            ? cast(uint) staticArraySize(rhs.type)
+            : size(pointer.pointerElement);
         _code ~= Instruction(
             pointerStoreOp(elementSize),
             value.offset,
