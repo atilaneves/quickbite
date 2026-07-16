@@ -7975,6 +7975,101 @@ same fallback path, since those shapes already have their own promoted
 `structCells`/`classCells` entries and take an earlier `*CellValue` branch,
 never reaching the fallback this fix changed.
 
+Progress 2026-07-16 (review fix: two BLOCKER regressions in class
+reference identity, both from `writeCelledLocal`'s `classCells` branch
+conflating a reference REBIND with a same-object field-write refresh):
+code review of the class-reference-identity work above found two
+regressions this PR itself introduced, both traced to the same root
+cause. Finding 1: `c = b;` (a plain rebind) went through `writeLocation`'s
+`VarExp` arm into `writeCelledLocal`, whose `classCells` branch
+unconditionally called `writeClassCellScalarFields` on ANY class-typed
+value -- splicing `b`'s fields into the cell `c` still shared with `a`
+(`auto c = a;`) BEFORE `runAssignExpression`'s trailing
+`registerClassAliasIfPlainVar` call re-pointed `c` at `b`'s own cell,
+corrupting `a`'s value in the process. Finding 2: `writeLocation`'s
+`DotVarExp` class arm re-derived its receiver via `runExpression(dot.e1)`,
+the plain `VarExp`/`ThisExp` read path, which has no `classValueFromCell`
+overlay (only the 3 cross-frame writeback helpers use one) -- so writing
+ONE field folded every OTHER (possibly stale) field from that boxed
+snapshot back into the shared cell via the same unconditional
+`writeClassCellScalarFields` call, clobbering a DIFFERENT alias's earlier
+field write that `writeClassCellFieldIfPresent` had already correctly
+landed in the cell.
+
+Fixtures, both in `tests/ut/backends/runner/ct/expressions.d`, right
+after `class.methodMutatingThisIsVisibleThroughAliasedParameter`, pinned
+on `Interpreter`/`SystemLinker` (the oracle) only, using function-
+returning seed values throughout: `class.
+reassigningAliasedVariableDoesNotCorruptOriginalObject` (`auto a = new
+C(one()); auto b = new C(two()); auto c = a; c = b; assert(a.x ==
+one());`) and `class.
+aliasedFieldWriteSurvivesUnrelatedFieldWriteThroughOriginal` (`auto a =
+new C(); a.x = one(); auto c = a; c.x = five(); a.y = seven();
+assert(c.x == five());`). RED confirmed on `Interpreter` before any
+production change, matching the review's own diagnosis exactly: `2 != 1`
+for the first (`a.x` read back the NEW object's field) and `1 != 5` for
+the second (`c.x` read back the value from BEFORE the unrelated `a.y`
+write clobbered it). Both green on `SystemLinker` throughout.
+
+Fix, in `impl.d`: `writeCelledLocal` gains a `classFieldRefresh` parameter
+(default `false`), the class-typed sibling of the pre-existing
+`arrayIsRefWriteback`, with inverted polarity -- `true` means "this value
+is an AUTHORITATIVE same-object field-write refresh, safe to overwrite the
+cell in place"; the default `false` covers every other caller (a plain
+`c = b;`, a fresh declaration, a cross-frame writeback), which the
+language's own semantics (classes have no `opAssign`) make a reference
+REBIND, never a same-object mutation. Its `classCells` branch now only
+calls `writeClassCellScalarFields` when `classFieldRefresh` is `true`;
+otherwise it drops the cell via `dropClassCell` (not a bare
+`classCells.remove`, so stale field-pointer reverse-lookup entries do not
+survive either) and records the rebind in a new `classRebinds` marker map
+(the class sibling of `arrayRebinds`), leaving the caller's own alias
+bookkeeping (`registerClassAliasIfPlainVar`/`registerClassArgumentAliases`/
+`registerClassThisAlias`, which every known rebind site already calls
+right after) to associate the correct new cell -- this alone fixes
+finding 1. `writeLocation` threads the same flag through to
+`writeCelledLocal`; its `DotVarExp` class arm, `writeIndexLocation`'s and
+`runIndexAssignExpression`'s class-array-field arms, and
+`writeThroughSliceAlias`'s class-field arm (the foreach-ref-over-a-class-
+static-array-field write path) all pass `true`, and each first re-derives
+its receiver from the shared cell via a new `classCellOverlaidValue`
+helper (a thin wrapper reusing the existing `classCellKeyVariable` +
+`classValueFromCell`) before folding in the one field/element that
+changed -- this closes finding 2, and the same staleness hazard in the
+two array-field write arms and the slice-alias arm it shares the exact
+read pattern with, even though only the `DotVarExp` scalar-field shape was
+the review's own repro. `writeBackNestedLocals` (the one OTHER
+`writeCelledLocal` call site that iterates every variable in a callee's
+frame, including untouched class locals sharing a cell) gains a new
+`classWritebackIsMutation` per-variable check (reading `child.
+classRebinds`, mirroring the pre-existing `arrayWritebackIsMutation`/
+`arrayRebinds` pair) so a nested/captured class variable the callee never
+rebound still gets its parent-frame cell refreshed rather than needlessly
+dropped.
+
+Focused suites all green (run individually): ct.expressions (581 run, 0
+failed, 5/5 failing as expected), ct.structs (305 run, 0 failed),
+ct.arrays (346 run, 0 failed), ct.exceptions (130 run, 0 failed),
+ct.control_flow (340 run, 0 failed), interpreter (218 run, 0 failed),
+bin.repl (228 run, 0 failed), evaluator.eval (71 run, 0 failed). All 5
+pre-existing must-stay-green class-aliasing fixtures (`aliasedVariable
+WriteIsVisibleThroughOriginal`, `sameObjectPassedAsTwoParametersShares
+Identity`, `methodMutatingThisIsVisibleThroughAliasedParameter`,
+`aliasedVariableArrayFieldWriteIsVisibleThroughOriginal`,
+`aliasedVariableStructFieldWriteIsVisibleThroughOriginal`) plus the
+polymorphic-dispatch fixture (`typeid.classReferenceUsesDynamicClass`,
+base-vs-derived cell sizing) and the recursive-class-cell fixture
+(`pointer.recursiveClassDeclarationDropsStaleClassCell`) reconfirmed green
+alongside both new fixtures. The full `bin/ut --random` was left to the
+orchestrator per the usual long-suite handoff.
+
+Remaining follow-up (unchanged from the prior entry, not addressed by
+this fix): recursive-frame cell distinctness, and class-reference
+reassignment not decoupling an earlier field pointer from the old object,
+both still need an activation-frame- or object-identity-scoped cell
+rather than a variable-slot-scoped one -- structural changes out of this
+surgical fix's scope.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

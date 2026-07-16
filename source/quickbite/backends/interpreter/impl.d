@@ -140,6 +140,25 @@ private struct Walker {
     // its writeback decision against.
     private bool[VarDeclaration] arrayRebinds;
 
+    // Class sibling of `arrayRebinds` above (BLOCKER fix, review of
+    // value-native-20260715 finding 1): set (never cleared once true within a
+    // frame) by `writeCelledLocal` whenever it drops `variable`'s `classCells`
+    // entry rather than refreshing it in place -- a plain reference REBIND
+    // (`c = b;`), as opposed to a same-object field-write refresh
+    // (`writeLocation`'s `DotVarExp`/class-array-field arms, which pass
+    // `writeCelledLocal`'s own `classFieldRefresh` flag as `true`). A class
+    // has no `opAssign`, so every OTHER plain-`VarExp` assignment of a class
+    // value is, by the language's own semantics, always a rebind -- never a
+    // field mutation of the SAME object -- and the shared cell (if any) can
+    // no longer represent the new value in place without corrupting whatever
+    // OTHER alias still shares it (exactly the corruption this fix closes).
+    // `writeBackNestedLocals` reads THIS map on `child` (`classWritebackIsMutation`,
+    // mirroring `arrayWritebackIsMutation`) to tell a nested/captured
+    // variable's genuine in-frame field mutation apart from the callee
+    // rebinding it to a different object, before deciding whether the
+    // parent's own cell may be refreshed in place or must be dropped too.
+    private bool[VarDeclaration] classRebinds;
+
     // Authoritative native bytes for a struct local that has had one of its
     // `native_scalar.isNativeScalarType` fields address-taken (value.md item
     // 7's struct phase starts, mirroring `arrayCells` above): populated
@@ -3571,10 +3590,34 @@ private struct Walker {
     // own `arrayRebinds` marker (set by THIS function, below) to tell a
     // genuine mutation apart from a rebind before deciding whether the
     // parent's own cell may be refreshed in place or must be dropped.
+    // `classFieldRefresh` (BLOCKER fix, review of value-native-20260715
+    // findings 1 and 2) is the class-typed sibling of `arrayIsRefWriteback`
+    // just above, with the polarity flipped: `true` means "this value is an
+    // AUTHORITATIVE same-object field-write refresh" (only
+    // `writeLocation`'s `DotVarExp`/class-array-field write arms, and
+    // `writeThroughSliceAlias`'s class-field arm, pass `true` -- each first
+    // re-derives its receiver from the shared cell via
+    // `classCellOverlaidValue`/`classValueFromCell` before folding in the ONE
+    // field that changed, so refreshing every scalar field from `value` here
+    // is safe). The default `false` covers every other caller reached via
+    // `writeLocation`'s plain-`VarExp` arm -- a same-frame `c = b;`
+    // (`runAssignExpression`), a fresh declaration's initializer, or a
+    // cross-frame writeback -- and a class has no `opAssign`, so the
+    // language's own semantics make every one of those a reference REBIND,
+    // never a field mutation of the SAME object. Refreshing a (possibly
+    // SHARED) cell in place from a rebind's new value would silently splice
+    // the new object's fields into whatever OTHER alias still shares the old
+    // cell (finding 1's exact corruption); dropping it instead (`dropClassCell`)
+    // and marking `classRebinds` matches `arrayCells`'s own decline-rather-
+    // than-corrupt choice for a changed-identity rebind, and leaves the
+    // caller's own alias bookkeeping (`registerClassAliasIfPlainVar`/
+    // `registerClassArgumentAliases`/`registerClassThisAlias`, which every
+    // known rebind site calls right after) to associate the correct new cell.
     private void writeCelledLocal(
         VarDeclaration variable,
         in Value value,
         in bool arrayIsRefWriteback = false,
+        in bool classFieldRefresh = false,
     ) {
         import quickbite.backends.interpreter.native_scalar:
             readScalar, writeScalar;
@@ -3645,18 +3688,31 @@ private struct Walker {
         }
 
         // Class sibling of the struct refresh above (value.md item 7's class
-        // phase starts): `writeLocation`'s `DotVarExp` arm rewrites the WHOLE
-        // class object the same way it does a struct (`receiver.
-        // withClassField(fieldIndex, value)`), so this refreshes every
-        // scalar field's bytes from the new boxed value. A boxed value that
-        // is no longer a class object cannot be represented in the cell, so
-        // the cell is dropped rather than corrupted, mirroring the struct
-        // branch's own decline-rather-than-corrupt choice.
+        // phase starts). BLOCKER fix (review of value-native-20260715,
+        // findings 1 and 2): unlike the struct branch above, a plain class
+        // assignment through a `VarExp` target is NOT always a refresh of the
+        // SAME object -- classes have no `opAssign`, so `writeLocation`'s
+        // plain-`VarExp` arm serves both a genuine reference REBIND (`c =
+        // b;`) and a same-object field-write refresh recursing back from the
+        // `DotVarExp`/class-array-field write arms, and only the caller knows
+        // which via `classFieldRefresh`. Only an authoritative refresh
+        // (`classFieldRefresh` AND still a class object) may overwrite the
+        // cell in place; every other case -- a rebind, or a boxed value that
+        // is no longer a class object -- drops the cell (`dropClassCell`, not
+        // a bare `classCells.remove`, so stale field-pointer reverse-lookup
+        // entries do not survive it either) rather than splicing a possibly
+        // unrelated object's fields into a cell another alias may still
+        // share, and marks the rebind so a cross-frame writeback caller
+        // (`classWritebackIsMutation`) knows not to refresh the parent's own
+        // cell in place either.
         if (auto cell = variable in classCells) {
-            if (value.isClassObject)
+            if (classFieldRefresh && value.isClassObject) {
                 writeClassCellScalarFields(*cell, variable.type.toBasetype.isTypeClass.sym, value);
-            else
-                classCells.remove(variable);
+            } else {
+                dropClassCell(variable);
+                if (value.isClassObject)
+                    classRebinds[variable] = true;
+            }
         }
 
         locals[variable] = value;
@@ -5794,6 +5850,27 @@ private struct Walker {
         return (childVariable in child.arrayRebinds) is null;
     }
 
+    // Class sibling of `arrayWritebackIsMutation` above (BLOCKER fix, review
+    // of value-native-20260715 finding 1): `writeBackNestedLocals` below
+    // iterates over EVERY variable in `child.locals`, including class-typed
+    // ones this frame may already share a `classCells` entry for -- most of
+    // which `child` never touched at all, let alone rebound. Reading
+    // `child`'s own `classRebinds` marker (set by `writeCelledLocal` the
+    // moment it drops a cell rather than refreshing it in place) tells an
+    // untouched or genuinely-mutated-in-place variable (absent from the map:
+    // safe to refresh, or a no-op if `child` never promoted/shared a cell for
+    // it at all) apart from one `child` actually rebound to a different
+    // object (present in the map: this frame's own cell must be dropped too,
+    // matching a same-frame `c = b;` rebind's own decline-rather-than-corrupt
+    // choice), rather than the unconditional whole-cell refresh that
+    // corrupted a shared cell for every OTHER alias (finding 1).
+    private bool classWritebackIsMutation(
+        VarDeclaration childVariable,
+        ref Walker child,
+    ) {
+        return (childVariable in child.classRebinds) is null;
+    }
+
     // Re-review BLOCKER (2026-07-14, cross-frame cell staleness):
     // `runIndexExpression`'s cell arm makes a promoted `arrayCells` entry
     // READ-AUTHORITATIVE over the boxed `locals` mirror, but this used to
@@ -5832,6 +5909,7 @@ private struct Walker {
                     variable,
                     value,
                     /* arrayIsRefWriteback */ arrayWritebackIsMutation(variable, child),
+                    /* classFieldRefresh */ classWritebackIsMutation(variable, child),
                 );
     }
 
@@ -7225,6 +7303,44 @@ private struct Walker {
         return null;
     }
 
+    // BLOCKER fix (review of value-native-20260715, finding 2): re-derives
+    // `receiverExpression`'s CURRENT value from its own `classCells` entry,
+    // when one exists, before a whole-object field write folds ONE field's
+    // new value into it. Without this, `writeLocation`'s `DotVarExp` arm (and
+    // the class-array-field write arms) read `boxedValue` from the STALE
+    // plain-`VarExp` path (`runExpression`'s `VarExp` arm has no
+    // `classValueFromCell` overlay -- only the 3 cross-frame writeback
+    // helpers use one), so every OTHER field of `boxedValue` could already be
+    // out of date with a cell another alias had just written through
+    // (`writeClassCellFieldIfPresent`/`writeClassCellScalarFields`). Folding
+    // the new field into that stale snapshot and refreshing the (possibly
+    // SHARED) cell from it -- via `writeCelledLocal`'s own
+    // `classFieldRefresh` refresh -- would silently overwrite the other
+    // alias's write with the stale value it had before that write ever
+    // happened. A no-op (returns `boxedValue` unchanged) when
+    // `classCellKeyVariable` cannot resolve `receiverExpression`, or the
+    // resolved variable has no `classCells` entry -- the common unaliased/
+    // unpromoted case -- reusing `classValueFromCell`, the same read-side
+    // overlay the cross-frame writeback helpers already trust.
+    private Value classCellOverlaidValue(
+        imported!"dmd.expression".Expression receiverExpression,
+        in Value boxedValue,
+    ) {
+        auto variable = classCellKeyVariable(receiverExpression);
+        if (variable is null)
+            return boxedValue;
+
+        auto cell = variable in classCells;
+        if (cell is null)
+            return boxedValue;
+
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return boxedValue;
+
+        return classValueFromCell(boxedValue, *cell, classType.sym);
+    }
+
     // Read-side counterpart of `writeClassCellFieldIfPresent` below, and the
     // direct-field-read sibling of `classFieldPointerCellValue` (which
     // serves pointer DEREF reads): `receiverExpression` must resolve to a
@@ -7515,13 +7631,29 @@ private struct Walker {
     // computes this per call via `arrayWritebackIsMutation` rather than
     // hardcoding `true`. See `writeCelledLocal`'s own doc comment for why
     // the distinction matters and how it is resolved.
+    // `classFieldRefresh` (BLOCKER fix, review of value-native-20260715
+    // findings 1 and 2): `true` only from THIS function's own `DotVarExp` and
+    // class-array-field-write recursions below, and from
+    // `writeIndexLocation`/`runIndexAssignExpression`'s own class-array-field
+    // arms and `writeThroughSliceAlias`'s class-field arm -- every one of
+    // those first re-derives its receiver from the shared cell
+    // (`classCellOverlaidValue`) before folding in the one field that
+    // changed, so the recursive `writeLocation` call below may safely tell
+    // `writeCelledLocal` this is an authoritative same-object refresh. Every
+    // OTHER caller (a plain source-level `s = b;`, a fresh declaration, a
+    // cross-frame writeback) keeps the default `false`: a class-typed
+    // `VarExp` assignment reached any other way is, per the language's own
+    // semantics (classes have no `opAssign`), always a reference REBIND, not
+    // a field mutation of the SAME object -- see `writeCelledLocal`'s own
+    // doc comment for why conflating the two corrupts a shared cell.
     private void writeLocation(
         imported!"dmd.expression".Expression target,
         in Value value,
         in bool arrayRefWriteback = false,
+        in bool classFieldRefresh = false,
     ) {
         if (auto cast_ = target.isCastExp) {
-            writeLocation(cast_.e1, value, arrayRefWriteback);
+            writeLocation(cast_.e1, value, arrayRefWriteback, classFieldRefresh);
             return;
         }
 
@@ -7556,7 +7688,12 @@ private struct Walker {
             // resurfaces on the next direct read even though `locals` (and
             // any pointer aliasing the cell) already moved on.
             // `writeCelledLocal` is exactly this cell-then-mirror pattern.
-            writeCelledLocal(variable, storageValue(variable.type, value), arrayRefWriteback);
+            writeCelledLocal(
+                variable,
+                storageValue(variable.type, value),
+                arrayRefWriteback,
+                classFieldRefresh,
+            );
 
             writeThroughArrayElementAlias(variable, locals[variable]);
             writeThroughStructFieldAlias(variable, locals[variable]);
@@ -7590,6 +7727,17 @@ private struct Walker {
             if (receiver.isClassObject) {
                 const fieldIndex = classFieldIndex(dot, receiver);
 
+                // BLOCKER fix (review of value-native-20260715, finding 2):
+                // `receiver` above came from the plain `VarExp`/`ThisExp`
+                // read path, which has no `classCells` overlay, so its OTHER
+                // fields may already be stale relative to a cell another
+                // alias just wrote through. Re-derive an authoritative
+                // receiver from the cell (a no-op when `dot.e1` has none)
+                // before folding in this field's write, so the whole-object
+                // refresh below cannot clobber a sibling alias's write with
+                // stale field values.
+                const authoritative = classCellOverlaidValue(dot.e1, receiver);
+
                 // value.md item 7 decomposition item 1: mirror the write
                 // into `dot.e1`'s own `classCells` entry, when present,
                 // BEFORE the boxed write below -- a no-op unless `dot.e1`
@@ -7598,7 +7746,12 @@ private struct Walker {
                 // read-side authority so a later read through either
                 // variable sees this write.
                 writeClassCellFieldIfPresent(dot.e1, fieldIndex, value);
-                writeLocation(dot.e1, receiver.withClassField(fieldIndex, value));
+                writeLocation(
+                    dot.e1,
+                    authoritative.withClassField(fieldIndex, value),
+                    /* arrayRefWriteback */ false,
+                    /* classFieldRefresh */ true,
+                );
                 return;
             }
 
@@ -8597,9 +8750,19 @@ private struct Walker {
             if (receiverClassType(dot.e1) !is null) {
                 const receiver = runExpression(dot.e1);
                 const fieldIndex = classFieldIndex(dot, receiver);
-                const updatedArray = receiver.classFieldAt(fieldIndex)
+                // BLOCKER fix (review of value-native-20260715, finding 2):
+                // same stale-receiver hazard `writeLocation`'s `DotVarExp`
+                // arm closes -- re-derive from the shared cell before folding
+                // in this element's write.
+                const authoritative = classCellOverlaidValue(dot.e1, receiver);
+                const updatedArray = authoritative.classFieldAt(fieldIndex)
                     .withArrayElement(arrayIndex, value);
-                writeLocation(dot.e1, receiver.withClassField(fieldIndex, updatedArray));
+                writeLocation(
+                    dot.e1,
+                    authoritative.withClassField(fieldIndex, updatedArray),
+                    /* arrayRefWriteback */ false,
+                    /* classFieldRefresh */ true,
+                );
                 return;
             }
 
@@ -8858,13 +9021,23 @@ private struct Walker {
             if (receiverClassType(dot.e1) !is null) {
                 const receiver = runExpression(dot.e1);
                 const fieldIndex = classFieldIndex(dot, receiver);
-                const source = receiver.classFieldAt(fieldIndex);
+                // BLOCKER fix (review of value-native-20260715, finding 2):
+                // same stale-receiver hazard `writeLocation`'s `DotVarExp`
+                // arm closes -- re-derive from the shared cell before folding
+                // in this element's write.
+                const authoritative = classCellOverlaidValue(dot.e1, receiver);
+                const source = authoritative.classFieldAt(fieldIndex);
                 if (index.lengthVar !is null)
                     locals[index.lengthVar] = Value(source.length);
                 const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
                 const value = runExpression(rhs);
                 const updatedArray = source.withArrayElement(arrayIndex, value);
-                writeLocation(dot.e1, receiver.withClassField(fieldIndex, updatedArray));
+                writeLocation(
+                    dot.e1,
+                    authoritative.withClassField(fieldIndex, updatedArray),
+                    /* arrayRefWriteback */ false,
+                    /* classFieldRefresh */ true,
+                );
                 return value;
             }
 
@@ -11036,14 +11209,31 @@ private struct Walker {
             // `writeCelledLocal` already dispatches its own refresh on the
             // VALUE's runtime kind (`isStruct`/`isClassObject`), so no
             // change is needed there.
+            //
+            // BLOCKER fix (review of value-native-20260715, finding 2):
+            // `*source` is the plain `locals[alias_.source]` boxed mirror,
+            // the same stale-relative-to-a-shared-cell snapshot
+            // `writeLocation`'s `DotVarExp` arm used to read -- re-derive an
+            // authoritative owner from `alias_.source`'s own `classCells`
+            // entry (a no-op when it has none) before folding in this
+            // element's write, for exactly the same reason.
+            Value authoritativeSource = *source;
+            if (alias_.isClassField)
+                if (auto cell = alias_.source in classCells) {
+                    auto classType = alias_.source.type.toBasetype.isTypeClass;
+                    if (classType !is null && classType.sym !is null)
+                        authoritativeSource =
+                            classValueFromCell(authoritativeSource, *cell, classType.sym);
+                }
+
             const updatedField = alias_.isClassField
-                ? source.classFieldAt(alias_.fieldIndex)
+                ? authoritativeSource.classFieldAt(alias_.fieldIndex)
                     .withArrayElement(alias_.lower + index, value)
-                : source.structFieldAt(alias_.fieldIndex)
+                : authoritativeSource.structFieldAt(alias_.fieldIndex)
                     .withArrayElement(alias_.lower + index, value);
             const updatedOwner = alias_.isClassField
-                ? source.withClassField(alias_.fieldIndex, updatedField)
-                : source.withStructField(alias_.fieldIndex, updatedField);
+                ? authoritativeSource.withClassField(alias_.fieldIndex, updatedField)
+                : authoritativeSource.withStructField(alias_.fieldIndex, updatedField);
             // value.md item 7's struct-static-array-field foreach-ref
             // follow-up: `alias_.source` (the struct owning the field) may
             // already have a `structCells` entry (an earlier `&s.arr[0]` in
@@ -11052,8 +11242,15 @@ private struct Walker {
             // `writeLocation`, so a later deref-read through that cell
             // (`structArrayFieldPointerCellValue`) sees this slice-routed
             // write too instead of stale bytes. A no-op when no cell was
-            // ever promoted for `alias_.source`.
-            writeCelledLocal(alias_.source, updatedOwner);
+            // ever promoted for `alias_.source`. `classFieldRefresh` (BLOCKER
+            // fix above) marks this the same authoritative same-object
+            // refresh the `DotVarExp` write arm performs, not a rebind.
+            writeCelledLocal(
+                alias_.source,
+                updatedOwner,
+                /* arrayIsRefWriteback */ false,
+                /* classFieldRefresh */ true,
+            );
             return;
         }
 

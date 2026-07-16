@@ -2285,6 +2285,79 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// BLOCKER regression (review of value-native-20260715, finding 1):
+// `writeCelledLocal`'s `classCells` branch could not tell a reference REBIND
+// (`c = b;`) apart from a whole-object field-write refresh, and unconditionally
+// overwrote the (possibly SHARED) cell in place with the new object's fields --
+// `c = b;` clobbered `a`'s own field values through the cell `a` and the OLD
+// `c` shared, even though `registerClassAliasIfPlainVar` correctly re-points
+// `c` at `b`'s own cell right afterwards: the damage to the shared cell already
+// happened before that re-point ran. Only Interpreter and SystemLinker (the
+// oracle) are pinned here per the omit-don't-pin convention.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.reassigningAliasedVariableDoesNotCorruptOriginalObject." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+
+                this(int v) {
+                    x = v;
+                }
+            }
+
+            int one() { return 1; }
+            int two() { return 2; }
+
+            unittest {
+                auto a = new C(one());
+                auto b = new C(two());
+                auto c = a;
+                c = b;
+                assert(a.x == one());
+            }
+        });
+    }
+}
+
+// BLOCKER regression (review of value-native-20260715, finding 2):
+// `writeLocation`'s `DotVarExp` class arm re-derived the receiver via
+// `runExpression(dot.e1)`, which for a class local is the STALE boxed
+// `locals[variable]` mirror -- the plain `VarExp` read path has no
+// `classValueFromCell` overlay, unlike the 3 cross-frame writeback helpers.
+// Writing ONE field (`a.y = seven();`) then folded that stale receiver's OTHER
+// fields back into the shared cell via `writeCelledLocal`'s whole-cell refresh,
+// clobbering a DIFFERENT alias's earlier field write (`c.x = five();`) that
+// `writeClassCellFieldIfPresent` had already correctly landed in the cell.
+// Only Interpreter and SystemLinker (the oracle) are pinned here per the
+// omit-don't-pin convention.
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.aliasedFieldWriteSurvivesUnrelatedFieldWriteThroughOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+                int y;
+            }
+
+            int one() { return 1; }
+            int five() { return 5; }
+            int seven() { return 7; }
+
+            unittest {
+                auto a = new C();
+                a.x = one();
+                auto c = a;
+                c.x = five();
+                a.y = seven();
+                assert(c.x == five());
+            }
+        });
+    }
+}
+
 // `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
 // SymOffExp produced for a plain local; the interpreter must take the address
 // of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
