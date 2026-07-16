@@ -9,7 +9,7 @@ public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends.evaluator: Evaluator, EvalResult, ReplSession,
         displayString;
     import quickbite.lang: Value;
-    import dmd.func: FuncDeclaration;
+    import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
 
@@ -26,6 +26,16 @@ public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
         );
         return diagnostic.length == 0
             ? EvalResult(displayString(ctfeValue(interpreted), function_))
+            : EvalResult(EvalResult.Diagnostic(diagnostic));
+    }
+
+    protected override EvalResult executeUnitTest(
+        UnitTestDeclaration unitTest,
+    ) {
+        string diagnostic;
+        interpretCtfeWithDiagnostic(callExpression(unitTest), diagnostic);
+        return diagnostic.length == 0
+            ? EvalResult("")
             : EvalResult(EvalResult.Diagnostic(diagnostic));
     }
 

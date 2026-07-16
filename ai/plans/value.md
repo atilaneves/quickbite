@@ -10,8 +10,8 @@ stand:
   `:t` cells are frontend-answered. The prelude formatter's rendering
   surface is complete; expression-cell wiring is partial and the interim
   `displayString`/`Value.toString` scaffolding still exists (item 1).
-  Interpreter unittests execute directly without rendering; the other tree
-  backends still use the interim evaluation bridge (item 2).
+  CTFE and interpreter unittests execute directly without rendering; IR and
+  Bytecode still use the interim evaluation bridge (item 2).
 - The interpreter's native-layout container layer is complete:
   `NativeBlock`/`NativeArray`/`NativeStruct` under
   `source/quickbite/backends/interpreter/`, with a symmetric composition
@@ -512,14 +512,13 @@ are done; what is still pending, in order:
    temporary formatter scaffolding, not a general Phobos builtin: remove
    it once the formatter no longer needs that escape hatch.
 
-2. Complete the unittest/expression split for the remaining tree backends
-   (decision 12). Interpreter `runTests` already executes the unittest body
-   directly and returns only success/diagnostic; CTFE, IR, and Bytecode still
-   inherit the interim `eval(FuncDeclaration)` bridge. Then delete the
-   private reify -> `Value` -> `toString` scaffolding per backend (decision
-   4) as each gains the formatter. Only a REPL expression cell executes the
-   prelude formatter and consumes its returned string. Do not retain `Value`
-   or render a dummy `void` result just to reuse the evaluator path.
+2. Complete the unittest/expression split for IR and Bytecode (decision 12).
+   CTFE and Interpreter already execute unittest bodies directly and return
+   only success/diagnostic. Then delete the private reify -> `Value` ->
+   `toString` scaffolding per backend (decision 4) as each gains the
+   formatter. Only a REPL expression cell executes the prelude formatter and
+   consumes its returned string. Do not retain `Value` or render a dummy
+   `void` result just to reuse the evaluator path.
 
 3. Remove the *shared* `quickbite.lang.Value` (decision 7): once no
    backend depends on it as a cross-backend type, relocate the tree-
