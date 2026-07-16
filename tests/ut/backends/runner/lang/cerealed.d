@@ -1566,8 +1566,8 @@ static foreach (backend; Matrix!()) {
 // construction-side-effect gap. Verbatim red: `assert(counters[0].value ==
 // 42)` passes (the shim moves the correct bits) but
 // `assert(counters[0].postblitCount == 1)` fails with `0 != 1` — the
-// postblit body never runs. Retire the omission when value.md's
-// native-layout track lands and the shim is deleted (§9.10).
+// postblit body never runs. Retire the omission when the interpreter
+// moves to native layout and the shim is deleted (§9.10).
 // Bytecode must preserve this one postblit while its `emplaceRef` wrapper
 // writes the indexed destination.
 static foreach (backend; Matrix!(

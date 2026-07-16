@@ -132,6 +132,59 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// dmd's own semantic3 merges a synthesized
+// zero-init statement for every `out` parameter of a zero-init struct type
+// into the callee's body (`BlitExp(VarExp(param), IntegerExp(0))`, with the
+// literal's own `.type` retyped to the struct type as a "memset" marker --
+// semantic3.d's own comment: "Must do same check in interpreter"). This
+// interpreter's `runDeclarationExpression` already special-cases that exact
+// shape for a plain local declaration (`S s = 0;`), materializing the
+// struct's real default value instead of writing the literal through
+// naively -- but this synthesized statement is a bare top-level assignment,
+// not wrapped in a `DeclarationExp`, so it fell through
+// `runAssignExpression`'s generic `runExpression(assign.e2)` path, which
+// evaluated the `IntegerExp` as a scalar `Value(0)` and clobbered `s`'s
+// boxed struct value with a bare int. The following `s.x = one();` field
+// write then threw ("Expected struct.") from `Value.withStructField`, which
+// requires a `Value.Struct` receiver. `Bytecode` (a separate, actively
+// developed backend) is omitted per the "never pin an in-development
+// backend's refusal" convention: it throws its own unrelated "Unsupported
+// assignment in bytecode core: s = 0" for this shape, not a wrong value.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws its own unrelated \"Unsupported assignment in bytecode " ~
+        "core: s = 0\" for this shape, not a wrong value"),
+)) {
+    @("function.outStructParameterFieldWriteIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int one() { return 1; }
+            int two() { return 2; }
+
+            void makeS(out S s) {
+                s.x = one();
+                s.y = two();
+            }
+
+            unittest {
+                S s;
+
+                makeS(s);
+
+                assert(s.x == 1);
+                assert(s.y == 2);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("function.nestedLambdaReadsEnclosingThisField." ~ backend.stringof)
     @Tags(backend.stringof)

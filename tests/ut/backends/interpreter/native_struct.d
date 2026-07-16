@@ -679,8 +679,8 @@ unittest {
 }
 
 
-// item 7's "unions and overlapping fields" open question: a D `union` is a
-// `TypeStruct` whose `sym` is DMD's `UnionDeclaration` (`dstruct.d`'s
+// Unions and overlapping fields: a D `union` is a `TypeStruct` whose `sym`
+// is DMD's `UnionDeclaration` (`dstruct.d`'s
 // `UnionDeclaration` extends `StructDeclaration` and adds nothing to
 // `fields`/`structsize`/`hasPointerField` -- only its `kind()` differs), so
 // `structTypeOf` -- whose search loop uses `member.isStructDeclaration`,
@@ -800,9 +800,9 @@ unittest {
 }
 
 
-// The authoritative overlap fact, per item 7's guardrail ("DMD-derived
-// layout facts stay the source of truth; the interpreter must not grow a
-// second set of D layout rules"): DMD's own `VarDeclaration.overlapped`,
+// The authoritative overlap fact: DMD-derived layout facts stay the
+// source of truth, the interpreter must not grow a second set of D layout
+// rules, so this reads DMD's own `VarDeclaration.overlapped`,
 // computed by `dsymbolsem.d`'s `checkOverlappedFields` from the fields'
 // own offset/size ranges -- not a second, hand-rolled "do these offsets
 // coincide" check of this codebase's own. `tag` overlaps nothing; `i` and

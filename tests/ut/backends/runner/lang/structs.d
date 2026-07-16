@@ -1403,16 +1403,15 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// cerealed's `grainWithLengthInBytesAttr` (ffi.md/interpreter.md §9.7,
-// 2026-07-13 follow-up) grows an array-typed FIELD of a `ref` struct
-// parameter with `__traits(getMember, val, member).length++;`. dmd lowers
-// postfix `.length++` on a field access through a synthetic `ref` local
-// (`ref int[] __tmp = h.arr; ... _d_arraysetlengthT(__tmp, ...)`), unlike
-// plain `.length = .length + 1`, which resizes the field directly. Keep
-// this fixture's index deliberately `$`-free (`arr[arr.length - 1]`): a
+// cerealed's `grainWithLengthInBytesAttr` grows an array-typed FIELD of a
+// `ref` struct parameter with `__traits(getMember, val, member).length++;`.
+// dmd lowers postfix `.length++` on a field access through a synthetic `ref`
+// local (`ref int[] __tmp = h.arr; ... _d_arraysetlengthT(__tmp, ...)`),
+// unlike plain `.length = .length + 1`, which resizes the field directly.
+// Keep this fixture's index deliberately `$`-free (`arr[arr.length - 1]`): a
 // distinct `$`/`lengthVar`-ordering bug in the assignment-target path
 // (`Walker.runIndexAssignExpression`'s `DotVarExp` branch) affects
-// `h.arr[$ - 1] = ...` and is tracked separately in interpreter.md §9.7,
+// `h.arr[$ - 1] = ...` and is exercised separately (see the fixture below),
 // not fixed here, to keep this fixture pinned to the one root it exposes.
 static foreach (backend; Matrix!()) {
     @("struct.postfixLengthIncrementGrowsRefParamArrayField." ~ backend.stringof)
@@ -1436,7 +1435,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// The third root named in the fixture above (interpreter.md §9.7):
+// This is the `$`/`lengthVar`-ordering bug named in the fixture above:
 // `Walker.runIndexAssignExpression`'s `DotVarExp` branch (impl.d) used to
 // evaluate `index.e2` before running `index.e1`/seeding `index.lengthVar`,
 // so `$` inside an index-ASSIGN target through a struct FIELD (`h.arr[$ -
@@ -1469,7 +1468,7 @@ static foreach (backend; Matrix!()) {
 // cerealed's cereal.d (`ubyte b = void; cereal.grain(b);` inside the
 // isOutputRange `grain(U, C, T)` template, then `val.put(b)`) writes a
 // void-initialised local through two nested `ref`-forwarding calls before
-// reading it back. interpreter.md §9.7 (void-init `ref`-argument reads).
+// reading it back.
 static foreach (backend; Matrix!()) {
     @("refArgument.voidLocalIsReadableAfterNestedRefWrite." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1507,7 +1506,7 @@ static foreach (backend; Matrix!()) {
 // a bogus `RangeError` instead of the intended comparison. Real D never
 // re-evaluates a `ref` argument's lvalue after the call: it binds the
 // address once. Root: skip the write-back (and its re-evaluation) whenever
-// the parameter's value is unchanged after the call. interpreter.md §9.7.
+// the parameter's value is unchanged after the call.
 static foreach (backend; Matrix!()) {
     @("refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten." ~
         backend.stringof)
@@ -1539,7 +1538,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Rung 7 review finding, sibling of the fix just above: the unchanged-
+// Sibling of the fix just above: the unchanged-
 // parameter skip check compared `Value`s with plain `==`, which is wrong for
 // floating scalars two ways. `-0.0 == 0.0` is true, so a callee that
 // genuinely rewrites a negative zero to a positive zero got its write-back
@@ -1579,7 +1578,7 @@ static foreach (backend; Matrix!()) {
 // (a struct field, here `val.units`) left `__r` untracked as a slice alias:
 // writes to `e`'s fields updated the interpreter's local snapshot of `__r`
 // but never propagated back to `val.units`, so the caller's array element
-// silently kept its default value. interpreter.md §9.7.
+// silently kept its default value.
 static foreach (backend; Matrix!()) {
     @("struct.foreachRefOverFieldArrayPersistsElementWrites." ~
         backend.stringof)
@@ -1666,7 +1665,7 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
 // default-initialised enum field (a plain scalar `Value`, per
 // `defaultValue`'s `toBasetype`-driven dispatch) against the same enum
 // member from a literal-constructed struct. No cast, pointer, or cereal
-// machinery needed. interpreter.md §9.7.
+// machinery needed.
 static foreach (backend; Matrix!()) {
     @("struct.equalityComparesEnumFieldByValueAcrossOrigin." ~
         backend.stringof)
@@ -1698,7 +1697,7 @@ static foreach (backend; Matrix!()) {
 // callee's own frame, so a nested `DotVarExp` field read through it saw
 // a bare `Value.void_` instead of the materialised default struct
 // `runExpression`'s `VarExp` branch already produces for a directly
-// uninitialized local. interpreter.md §9.7.
+// uninitialized local.
 static foreach (backend; Matrix!()) {
     @("refArgument.voidStructLocalFieldWritableThroughNestedRefWrite." ~
         backend.stringof)
@@ -1728,9 +1727,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// value.md final review (finding 2): once `foreach (v; a)` has promoted an
-// `arrayCells` entry for `a` (`promoteSliceArrayCell` needs no address-of at
-// all), a member-function write to that same array reached through a
+// Once `foreach (v; a)` has promoted an `arrayCells` entry for `a`
+// (`promoteSliceArrayCell` needs no address-of at all), a member-function
+// write to that same array reached through a
 // struct field (`Holder(a).bump()`, funnelled through
 // `writeThroughThisStructArrayFieldAlias`) updated only the boxed mirror,
 // never `a`'s promoted cell. `a[0]` reads through the cell-authoritative
@@ -1783,7 +1782,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// New finding 1 (BLOCKER, re-review 2026-07-14): `ff93e303` added
+// Commit `ff93e303` added
 // `child.structFieldPointerWritebacks.remove(variable)` in
 // `writeBackStructFieldPointerTargets` as "behaviour-neutral hardening" --
 // it is not neutral. An intermediate member-function frame (`Poker.poke`,
@@ -1834,6 +1833,288 @@ static foreach (backend; Matrix!(
 
             unittest {
                 assert(f() == 42);
+            }
+        });
+    }
+}
+
+// SystemLinker (the oracle) zero-initializes a union's whole storage block
+// from its FIRST declared member's own default value, so an untouched
+// sibling scalar reads the first member's bits reinterpreted as its own
+// type: here `U`'s first member `float f`'s default is NaN
+// (`0x7FC00000`), so `u.i` reads that same bit pattern, not `int.init`
+// (`0`). `Ctfe` is deliberately omitted (omit-don't-pin, `ai/mistakes.md`):
+// real DMD's own CTFE engine refuses this exact read with `reinterpretation
+// through overlapped field 'i' is not allowed in CTFE` -- a genuine
+// Ctfe/SystemLinker divergence in DMD itself, not something this repo's
+// backends can or should paper over.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"reinterpretation through overlapped field 'i' is not allowed " ~
+        "in CTFE\""),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct initializer in bytecode core: u\""),
+)) {
+    @("union.untouchedSiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float f;
+                int i;
+            }
+
+            unittest {
+                U u;
+                assert(u.i == 0x7FC00000);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"reinterpretation through overlapped field 'f' is not allowed " ~
+        "in CTFE\""),
+)) {
+    @("union.writeThroughOneMemberIsVisibleThroughAnother." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int i;
+                float f;
+            }
+
+            unittest {
+                U u;
+                int bits = 1065353216;
+                u.i = bits;
+                assert(u.f == 1.0f);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"reinterpretation through overlapped field 'f' is not allowed " ~
+        "in CTFE\""),
+)) {
+    @("union.addressTakenFieldSeesWriteThroughSiblingMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int i;
+                float f;
+            }
+
+            unittest {
+                U u;
+                int* p = &u.i;
+                float value = 1.0f;
+                u.f = value;
+                assert(*p == 1065353216);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"cannot read uninitialized variable 'a' in CTFE\""),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported left shift in bytecode core: " ~
+        "cast(long)high << 32\""),
+)) {
+    @("union.writeThroughScalarMemberIsVisibleThroughStructMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int a;
+                int b;
+            }
+
+            union U {
+                P p;
+                long l;
+            }
+
+            unittest {
+                U u;
+                int low = 7;
+                int high = 13;
+                long bits = (cast(long) high << 32) | cast(long) low;
+                u.l = bits;
+                assert(u.p.a == low && u.p.b == high);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"'u.a[0]' is used before initialized\""),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported left shift in bytecode core: " ~
+        "cast(long)high << 32\""),
+)) {
+    @("union.writeThroughScalarMemberIsVisibleThroughArrayMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int[2] a;
+                long l;
+            }
+
+            unittest {
+                U u;
+                int low = 7;
+                int high = 13;
+                long bits = (cast(long) high << 32) | cast(long) low;
+                u.l = bits;
+                assert(u.a[0] == low && u.a[1] == high);
+            }
+        });
+    }
+}
+
+// The WRITTEN-side counterpart of the fixture above: assigning the WHOLE
+// static-array member and reading an overlapping scalar sibling back.
+// fa6b5e12's own follow-up flagged this direction as unwidened --
+// `withUnionFieldWrite` only handles a scalar-or-struct WRITTEN member, so
+// `u.a = [...]` fell through its `!writtenScalar && !writtenStruct` decline
+// and left `u.l` on its stale prior value.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with " ~
+        "\"reinterpretation through overlapped field 'l' is not allowed " ~
+        "in CTFE\""),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported type in bytecode core: int[2]\""),
+)) {
+    @("union.writeThroughArrayMemberIsVisibleThroughScalarMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int[2] a;
+                long l;
+            }
+
+            unittest {
+                U u;
+                int low = 7;
+                int high = 13;
+                u.a = [low, high];
+                long bits = (cast(long) high << 32) | cast(long) low;
+                assert(u.l == bits);
+            }
+        });
+    }
+}
+
+// `withUnionFieldWrite` allocated a FRESH, ZEROED transient cell and seeded
+// ONLY the just-written member's own bytes before re-deriving every
+// sibling's FULL extent from it -- any sibling WIDER than the written
+// member read zeros in the bytes outside the written member's extent
+// instead of the union's PRIOR bytes there. Here `a` (8 bytes) is written
+// first, then the narrower `i` (4 bytes, aliasing only `a[0]`) is written;
+// `a[1]` (the tail outside `i`'s extent) must keep its prior value, not
+// read back as zero. `Ctfe` is omitted (omit-don't-pin, `ai/mistakes.md`):
+// real DMD's own CTFE engine refuses this overlapped-field read exactly as
+// the other write-then-read-a-sibling union fixtures above already found.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this overlapped-field read " ~
+        "exactly as the other write-then-read-a-sibling union fixtures " ~
+        "above already found"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported type in bytecode core: int[2]\""),
+)) {
+    @("union.writeThroughScalarMemberPreservesWiderArraySiblingTail." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seven() {
+                return 7;
+            }
+
+            int thirteen() {
+                return 13;
+            }
+
+            int nine() {
+                return 9;
+            }
+
+            union U {
+                int[2] a;
+                int i;
+            }
+
+            unittest {
+                U u;
+                u.a = [seven(), thirteen()];
+                u.i = nine();
+                assert(u.a[1] == thirteen());
+            }
+        });
+    }
+}
+
+// The aggregate-first-member counterpart of
+// `union.untouchedSiblingDefaultsFromFirstMemberBits`: `379ef066`'s own
+// follow-up flagged that when the FIRST declared member is itself an
+// aggregate (here a struct with one scalar field), an untouched sibling
+// still fell back to its own independent `defaultValue` instead of
+// reinterpreting the first member's default bytes. `P`'s single field
+// `x`'s default is NaN (`0x7FC00000`), so `u.i` must read that same bit
+// pattern. `Ctfe` is omitted (omit-don't-pin, `ai/mistakes.md`): real
+// DMD's own CTFE engine refuses this exact read with the same
+// `reinterpretation through overlapped field 'i' is not allowed in CTFE`
+// diagnostic as the scalar-first-member sibling fixture.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses this exact read with the " ~
+        "same \"reinterpretation through overlapped field 'i' is not " ~
+        "allowed in CTFE\" diagnostic as the scalar-first-member " ~
+        "sibling fixture"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct initializer in bytecode core: u\""),
+)) {
+    @("union.untouchedSiblingDefaultsFromStructFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                float x;
+            }
+
+            union U {
+                P p;
+                int i;
+            }
+
+            unittest {
+                U u;
+                assert(u.i == 0x7FC00000);
             }
         });
     }

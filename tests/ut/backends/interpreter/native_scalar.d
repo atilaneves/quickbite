@@ -272,10 +272,8 @@ unittest {
 // The newly-succeeding case: `float`/`double` through the same boxed-byte
 // splat/reassemble composition. `impl.d`'s old hand-written
 // `scalarFromBytes` threw "Unsupported scalar byte writeback." for these
-// two types; nothing in `tests/` pinned that throw (see `ai/plans/
-// value.md`'s 2026-07-10 "single scalar<->bytes authority" progress note),
-// so routing through this codec instead now succeeds here too, matching
-// `SystemLinker`.
+// two types; nothing in `tests/` pinned that throw, so routing through
+// this codec instead now succeeds here too, matching `SystemLinker`.
 @("writeScalar.thenReadScalar.roundTripsFloatAndDoubleThroughAnIndividuallyBoxedByteArray")
 unittest {
     foreach (type; [Type.tfloat32, Type.tfloat64]) {
