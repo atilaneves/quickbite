@@ -8877,7 +8877,7 @@ private struct Compiler {
             // `typeof(null)` static type, not the declared pointer type
             // (compilePointerDeclaration's `= null` finding applies here
             // too); take the pointer type from the callee's own parameter
-            // instead, and emit a zeroed slot.
+            // instead, and emit a zero pointer value into its slot.
             if (argument.isNullExp !is null) {
                 auto parameterList =
                     function_.type.toBasetype.isTypeFunction.parameterList;
@@ -8888,7 +8888,7 @@ private struct Compiler {
                 argumentTypes[index] = parameter.type.toBasetype;
                 _code ~= Instruction(
                     Op.loadConstant, slot, constantIndex(0),
-                    cast(ushort) nativeArgumentSlotSize,
+                    cast(ushort) size_t.sizeof,
                 );
                 continue;
             }

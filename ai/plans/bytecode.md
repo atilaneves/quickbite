@@ -216,6 +216,11 @@ rendering knowledge beyond "these bytes at this type".
   values cross unchanged; the call goes through a cached FFI descriptor.
   `real` in signatures is a known libffi hazard on x86_64 and gets explicit
   fixtures (matching the compiled oracle's `real` precision).
+- Native argument slot stride is an addressing contract only: it is wide
+  enough for the widest bridge value, but every emitter and marshaller reads
+  or writes the argument's actual ABI width. Scalar constant loads must never
+  use the stride as their copy width; for example, a null pointer writes
+  `size_t.sizeof` bytes while an array descriptor writes two native words.
 - Every outbound call carries an exception guard converting native
   `Throwable`s into VM unwinding (see Exception Handling); "pass values
   as-is" describes the arguments, not the call.
