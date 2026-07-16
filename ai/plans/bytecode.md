@@ -5855,6 +5855,11 @@ Do not schedule `stdConvTextRendersCharArrayExpressionRaw` independently: it
 belongs with the broader indirect-allocation-call prerequisite for Phobos
 array materialisation.
 
+Treat `archiveBackedImportLinksFromArchive` as a separate static-archive
+bridge design: archive-provided symbols must resolve without falling back to
+the deliberately stale import-source body. Do not fold that work into either
+fixture isolation or the host-boundary matrices.
+
 Keep the host-boundary matrices (`file.createWriteRead`,
 `random.unpredictableSeedReadsNonRootInitializer`, and `concurrency.thisTid`)
 as separate native-runtime and Phobos-support investigations; do not combine

@@ -10177,6 +10177,10 @@ private struct Compiler {
             return slice;
         }
 
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryExceptionStringField(dot))
+                return new Operand(field.offset, ScalarType.void_, true);
+
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (declaration in _stringLocals)
@@ -10381,7 +10385,7 @@ private struct Compiler {
         Expression lhsExpression,
         Expression rhsExpression,
     ) {
-        if (!isStringType(lhsExpression.type) || !isStringType(rhsExpression.type))
+        if (!isStringOperand(lhsExpression) || !isStringOperand(rhsExpression))
             return false;
 
         const lhs = compileExpression(lhsExpression);
@@ -10401,6 +10405,16 @@ private struct Compiler {
             cast(ushort) diagnostic,
         );
         return true;
+    }
+
+    private bool isStringOperand(Expression expression) {
+        if (isStringType(expression.type))
+            return true;
+
+        if (auto dot = expression.isDotVarExp)
+            return tryExceptionStringField(dot) !is null;
+
+        return false;
     }
 
     // Assert the already-lowered boolean condition `condition` is true, throwing
