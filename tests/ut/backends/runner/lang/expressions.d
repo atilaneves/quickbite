@@ -3469,7 +3469,7 @@ static foreach (backend; Matrix!()) {
 // boxed `locals` mirror's length, not the cell's, so the out-of-range cell
 // read crashes the host instead of throwing a `RangeError`. SystemLinker is
 // the oracle.
-static foreach (backend; Matrix!(Omit!(Bytecode, Because.unconfirmed))) {
+static foreach (backend; Matrix!()) {
     @("pointer.nestedFunctionArrayAppendGrowsArrayVisibleThroughParentCell." ~
         backend.stringof)
     @Tags(backend.stringof)
