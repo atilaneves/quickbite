@@ -306,6 +306,30 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `bin/ut --random` runs must be green and stable. An order-dependent crash or
   hang is a blocker to reproduce with the reported seed and fix; it is not
   acceptable handoff noise.
+- `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is the one
+  remaining red enabled row (`std.conv.text` rendering a `ubyte[]` into an
+  exception message through `std.array.Appender`). It needs, in dependency
+  order: (1) the native bridge accepting a `TY.Tclass`-typed defaulted `null`
+  argument, not only `TY.Tpointer` (every `core.memory.GC.*` leaf defaults a
+  trailing `TypeInfo ti = null`); (2) struct-by-value native returns (e.g.
+  `GC.qalloc`'s `BlkInfo`), the same aggregate-return capability `div`/`ldiv`
+  below already needs; (3) the nested-function `this`-receiver capture
+  described under Closures; (4) `DivAssignExp` (`x /= y`), which has no
+  compiler support at all today (only add/sub/mul/shr/shl/or compound-assign
+  are wired); (5) 4-byte unsigned (`uint`) addition, unsupported because the
+  narrow-int addition fallback hardcodes a signed-`int` result instead of
+  using the expression's own scalar type the way its `or`/`and`/`xor`
+  siblings already do; (6) boolean-condition truthiness
+  (`if`/`while`/ternary/`!`/`&&`/`||`) for a non-bool, non-pointer scalar,
+  which today reads only the operand's first byte, not its full width, so
+  e.g. `ulong v = 256; if (!v)` misclassifies as false; and (7) inlining a
+  void IIFE whose body is a single expression statement (Phobos's common
+  `(() @trusted { ... })()` escape idiom), the same way a single-`return`
+  IIFE already inlines, so a local it reads does not need a full closure
+  environment. Items (4)-(7) surfaced only once (1)-(3) let compilation
+  reach far enough; a further, still-unisolated crash (an out-of-bounds
+  `copySlice` while `Appender.put` assigns into a grown buffer) appears
+  after fixing (4)-(7), so at least one more gap remains beyond this list.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
@@ -520,6 +544,27 @@ lifetime as the dependency bytecode cache.
   already determined `needsClosure()` and `closureVars`.
 - Native callbacks that receive delegates use the inbound trampoline described
   under Native bridge.
+- A nested function that reads its enclosing struct method's `this` (a
+  capturing lambda literal, e.g. `() => this.field`, or a plain nested named
+  function, e.g. `auto helper() { return this.field; }`) needs a hidden
+  `this` receiver, not a captured-locals environment: DMD gives both shapes
+  an identical `vthis` context pointer (`FuncDeclaration.isNested`, set for
+  any non-`static` function whose `toParent2` is a function, regardless of
+  whether it is a `FuncLiteralDeclaration`), and `ThisExp` resolution inside
+  either one resolves to the nearest enclosing method's own `vthis`
+  (`hasThis(sc)` walking up through nested scopes). The compiler's existing
+  literal-only recognition of this case generalizes by dropping the
+  `isFuncLiteralDeclaration` restriction; a direct unqualified call to such a
+  named nested function additionally needs a call-site receiver branch,
+  since the callee there is a plain `VarExp` naming the function rather than
+  the `DotVarExp`/`FuncExp` shapes already handled. This is a `this`-receiver
+  question, not the captured-locals-environment work above, and does not by
+  itself require a closure environment. A lambda that captures a plain
+  enclosing *local* (not `this`) remains unmodelled and does need the
+  captured-locals environment described above; an immediately-invoked void
+  lambda whose body is a single expression statement can avoid needing that
+  environment by inlining the statement into the caller the same way a
+  single-`return`-expression IIFE already inlines.
 
 The compiled-D exposing behaviour is:
 
