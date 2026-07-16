@@ -8110,6 +8110,46 @@ failed), bin.repl (228 run, 0 failed), evaluator.eval (71 run, 0 failed).
 The full `bin/ut --random` was left to the orchestrator per the usual
 long-suite handoff.
 
+Progress 2026-07-16 (review fix: `dropArrayCell` never invalidated the
+`arrayNestedStructFieldPointer*` maps, SHOULD-FIX finding 4, review of
+`value-native-20260715`): `promoteArrayNestedStructFieldCell` (`impl.d`,
+the array-element/nested-field composition follow-up above, `&a[i].
+inner.x`) populates four reverse-lookup maps
+(`arrayNestedStructFieldPointerVariables`/`...ElementIndices`/
+`...OuterFieldIndices`/`...InnerFieldIndices`) but, unlike every OTHER
+pointer family's own reverse lookup, `dropArrayCell` never cleaned them
+on a fresh binding -- it dropped only `arrayCells` plus the
+`arrayAllocations`/`arrayAllocationVariables` memo. A loop body
+re-executing the same `DeclarationExp` for the array local left an
+EARLIER iteration's pointer id still mapped to that `VarDeclaration`, so
+dereferencing it after the fresh binding resolved into the NEW binding's
+freshly-promoted cell instead of correctly declining to the earlier
+binding's own frozen snapshot. Fix, in `impl.d`'s `dropArrayCell` only:
+collects and removes every stale id (mirroring `dropStructCell`'s own
+reverse-lookup cleanup idiom exactly) from all four maps. No extra memo
+to clear here -- this shape's receiver is never a plain `VarExp`, so
+`fieldSnapshotAllocationId` always takes its fresh-id fallback and there
+is nothing memoized per-variable the way `fieldAddressAllocations` is for
+the struct/class cases. Exposing fixture (red-first; Interpreter read
+`99`, expected `5`, matching the finding's own repro exactly):
+`pointer.loopRedeclaredArrayNestedStructFieldPointerKeepsPreRebindValue`
+(`Interpreter`/`SystemLinker`; other backends omitted, omit-don't-pin,
+unconfirmed there).
+
+All existing array-cell and array-nested-struct-field fixtures
+reconfirmed green together, including
+`pointer.arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer`
+(the fixture the four maps exist for) and the other stale-cell
+regressions (`recursiveArrayDeclarationDropsStaleArrayCell`,
+`arrayPointerTakenBeforePlainRebindKeepsPreRebindValue`,
+`arrayPointerTakenBeforePlainRebindToShorterArrayDoesNotCrash`). Focused
+suites all green (run individually): ct.expressions (583 run, 0 failed,
+5/5 failing as expected), ct.structs (307 run, 0 failed), ct.arrays (346
+run, 0 failed), ct.exceptions (130 run, 0 failed), ct.control_flow (340
+run, 0 failed), interpreter (218 run, 0 failed), bin.repl (228 run, 0
+failed), evaluator.eval (71 run, 0 failed). The full `bin/ut --random`
+was left to the orchestrator per the usual long-suite handoff.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

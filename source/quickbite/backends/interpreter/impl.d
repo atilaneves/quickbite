@@ -3523,12 +3523,44 @@ private struct Walker {
     // past a shorter re-declared array) instead of correctly declining to
     // its own frozen boxed snapshot. Called from every fresh-binding site
     // alongside `scalarCells.remove`/`dropStructCell`.
+    //
+    // Also drops every `arrayNestedStructFieldPointerVariables` reverse-
+    // lookup entry (and its `...ElementIndices`/`...OuterFieldIndices`/
+    // `...InnerFieldIndices` siblings) that pointed at `variable` (review
+    // finding 4, 2026-07-16): `promoteArrayNestedStructFieldCell` (`&a[i].
+    // inner.x`) populates these four maps but, unlike every other pointer
+    // family's own reverse lookup (`structFieldPointerVariables`/
+    // `nestedStructFieldPointerVariables`/etc., all cleaned by
+    // `dropStructCell`), nothing here ever cleaned them -- a fresh binding
+    // of the same `VarDeclaration` (a loop body re-executing the same
+    // `DeclarationExp`) left an EARLIER pointer's id still mapped to
+    // `variable`, so dereferencing it after the fresh binding resolved into
+    // THIS binding's freshly-promoted cell instead of correctly declining to
+    // the earlier binding's own frozen snapshot. No separate memo to clear
+    // here (unlike `fieldAddressAllocations`/`nestedFieldAddressAllocations`
+    // above): this shape's receiver is never a plain `VarExp`, so
+    // `fieldSnapshotAllocationId` always takes its fresh-id fallback for it
+    // and there is nothing memoized per-variable to invalidate. Collects
+    // matching ids before removing rather than mutating the maps while
+    // iterating them, mirroring `dropStructCell`'s own discipline.
     private void dropArrayCell(VarDeclaration variable) {
         arrayCells.remove(variable);
 
         if (auto id = variable in arrayAllocations) {
             arrayAllocationVariables.remove(*id);
             arrayAllocations.remove(variable);
+        }
+
+        size_t[] staleNestedFieldIds;
+        foreach (id, pointedVariable; arrayNestedStructFieldPointerVariables)
+            if (pointedVariable is variable)
+                staleNestedFieldIds ~= id;
+
+        foreach (id; staleNestedFieldIds) {
+            arrayNestedStructFieldPointerVariables.remove(id);
+            arrayNestedStructFieldPointerElementIndices.remove(id);
+            arrayNestedStructFieldPointerOuterFieldIndices.remove(id);
+            arrayNestedStructFieldPointerInnerFieldIndices.remove(id);
         }
     }
 

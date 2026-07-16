@@ -4041,6 +4041,65 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
+// Review finding 4 (SHOULD-FIX, 2026-07-16): `dropArrayCell` cleaned only
+// `arrayCells` plus the `arrayAllocations`/`arrayAllocationVariables` memo --
+// it never invalidated the `arrayNestedStructFieldPointer*` reverse-lookup
+// maps the fixture above populates, unlike every OTHER pointer family
+// (`dropStructCell`/`dropClassCell` both clean their own reverse lookups on a
+// fresh binding). A `foreach` body re-executes the same `DeclarationExp` for
+// `a` every iteration; the first iteration's `&a[0].inner.x` pointer's id
+// stayed mapped, via the uncleaned maps, to the SAME `VarDeclaration`, so
+// dereferencing it after the second iteration's fresh binding resolved into
+// THAT binding's freshly-promoted cell instead of correctly declining to the
+// first iteration's own frozen snapshot. Before any production change,
+// Interpreter returned 99 (the second iteration's value) instead of 5 (the
+// first iteration's value, read through the pointer saved back then).
+// SystemLinker is the oracle; other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("pointer.loopRedeclaredArrayNestedStructFieldPointerKeepsPreRebindValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            struct S {
+                Inner inner;
+            }
+
+            int five() {
+                return 5;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            int f() {
+                int result;
+                int* saved;
+                foreach (iter; 0 .. 2) {
+                    S[] a = [S(Inner(iter == 0 ? five() : ninetyNine()))];
+                    if (iter == 0) {
+                        saved = &a[0].inner.x;
+                    } else {
+                        int* q = &a[0].inner.x;
+                        result = *saved;
+                    }
+                }
+                return result;
+            }
+
+            unittest {
+                assert(f() == 5);
+            }
+        });
+    }
+}
+
 // value.md item 7's struct-static-array-field follow-up (the smaller of the
 // two deferred candidates named in the array-of-struct progress note):
 // `&s.arr[i]` where `arr` is a static-array field of a plain struct local.
