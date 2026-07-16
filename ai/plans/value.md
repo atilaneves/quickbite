@@ -7871,6 +7871,110 @@ non-all-zero field default) takes a different dmd-synthesized shape
 (`ConstructExp`/a real call) entirely untried by this narrow fix, which
 only recognises the `BlitExp`-with-`IntegerExp` zero-memset shape.
 
+Progress 2026-07-16 (plain-local static-array pointer: a direct element
+write after `&a[i]` was taken is now visible through the earlier pointer):
+probed a fresh menu of distinct native-storage behaviours against the
+`Interpreter`/`SystemLinker` oracle pair: a struct passed BY VALUE with a
+callee write through `&param.field`, a `ref`-returning function used as an
+assignment target, a non-zero default struct field initializer's cell
+coherence, `a.length` growth not aliasing an earlier pointer, `a.ptr`
+arithmetic writes visible through indexing, a union nested inside a
+struct, pointer subtraction between two array-element pointers, recursive-
+frame cell distinctness for an address-taken local, class-reference
+reassignment leaving an earlier field pointer on the old object, and
+in-place slice assignment (`a[] = b[];`) visible through an earlier
+pointer for both dynamic and static array locals. Most already matched.
+Three genuine divergences turned up (RED on `Interpreter`, green on
+`SystemLinker`): recursive-frame cell distinctness (a single global
+`scalarCells`/`VarDeclaration`-keyed cell shared across recursive
+activations, not scoped per call frame -- a structural, non-surgical gap
+in how every cell map in this file is keyed, out of scope for a single
+fix); class-reference reassignment (an earlier `&c.field` pointer sees the
+NEW object's field after `c = new C();` rebinds `c`, not the old object's
+-- also a deeper identity-vs-variable-slot gap, not picked); and a plain
+LOCAL static array's element pointer not observing a later direct write
+(`int[3] a; a[0] = x; int* p = &a[0]; a[0] = y; assert(*p == y);` --
+`*p` stayed `x`). The static-array-pointer divergence was the only one
+with a small, well-understood, genuinely surgical root cause, so it was
+picked (first surfaced via an `a[] = b[];` static-array-local slice-assign
+probe, then narrowed to this simpler direct-write shape as the minimal
+reproduction and the natural static-array sibling of the already-passing
+dynamic-array fixture `pointer.
+arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer`).
+
+Root cause: `promoteArrayCell` (the eager `arrayCells` promotion
+`arrayPointer` calls when `&a[i]` is taken) guards on
+`isDynamicArrayType(variable.type)`, so a plain LOCAL static array never
+gets an `arrayCells` entry -- none of `runPointerExpression`'s `*CellValue`
+checks (all keyed off promoted cells) can ever fire for it. Its pointer
+value is still array-allocation-backed, though: `arrayPointer`/
+`symbolOffsetLocalValue` both mint one via the existing `allocationId`
+mechanism (the same one dynamic arrays use), and `arrayPointerVariable`
+already resolves such a pointer back to its owning variable -- that
+resolve-and-re-read exists and is already used by `readPointerElement` for
+`p[i]` indexing through this same pointer kind, and by
+`writeThroughArrayPointer` for a write through the pointer. But
+`runPointerExpression`'s OWN dereference fallback, reached once every
+`*CellValue` check declines, returned the raw `value.pointerTarget` --
+the boxed element snapshot frozen at address-of time -- without ever
+consulting `arrayPointerVariable`, so a later direct write to `a` (landing
+in `locals[variable]`, the only place a static array's writes ever go)
+was invisible through `*p`.
+
+Fixture `pointer.
+staticArrayLocalElementWrittenDirectlyIsVisibleThroughEarlierPointer.
+{Ctfe,Interpreter,SystemLinker,LLVMJit}` in
+`tests/ut/backends/runner/ct/expressions.d`, immediately after `pointer.
+arrayElementWrittenDirectlyIsVisibleThroughEarlierPointer` (the dynamic-
+array sibling): `int[3] a; a[0] = one(); int* p = &a[0]; a[0] =
+ninetyNine(); assert(*p == 99);`. RED confirmed on `Interpreter` before
+any production change: `1 != 99`, a wrong value, not an exception. Green
+on `Ctfe`, `SystemLinker`, and `LLVMJit` throughout (all three probed and
+confirmed passing before the fixture was written, unlike several prior
+slices' unconfirmed-elsewhere fixtures).
+
+Fix, in `impl.d`'s `runPointerExpression` only: the final dereference
+fallback (reached when the pointer is not a native pointer, not a local
+pointer, and none of the `*CellValue` checks fired) now calls the EXISTING
+`readPointerElement(pointer.e1.type, value, 0)` instead of returning
+`value.pointerTarget` directly. `readPointerElement` already re-reads
+`arrayPointerVariable(pointer)` + `locals` fresh when the pointer resolves
+to an array-allocation variable (fixing exactly this gap), and falls back
+to `pointer.pointerIndex(0)` otherwise -- which is `pointerTarget`'s own
+definition verbatim, so every other pointer kind (a `&s.field` struct-
+field snapshot, a nested-field snapshot, etc.) behaves identically to
+before. No new map, no new cell kind; reuses `readPointerElement` and
+`arrayPointerVariable` verbatim, both pre-existing.
+
+No `interpreter.md` §9.10 shim retired -- unrelated to this dereference-
+fallback fix.
+
+Focused suites all green (run together): ct.expressions, ct.structs,
+ct.arrays, ct.exceptions, ct.control_flow, interpreter, bin.repl,
+evaluator.eval -- 2215 run, 0 failed, 5/5 failing as expected (the same
+pre-existing failures, unchanged count; ct.expressions grew by this
+slice's own 4 new backend instances). The full `bin/ut --random` was left
+to the orchestrator per the usual long-suite handoff.
+
+Remaining follow-up: (1) recursive-frame cell distinctness (found in this
+same probe) is a real divergence but needs every cell map in this file
+re-keyed per activation frame instead of per `VarDeclaration`, a
+structural change out of a single surgical fix's scope; (2) class-
+reference reassignment not decoupling an earlier field pointer from the
+old object (found in the same probe) is a real divergence too, needing an
+object-identity-scoped cell rather than a variable-slot-scoped one, also
+out of scope here; (3) the analogous in-place slice-assignment shape
+(`a[] = b[];`) for a plain LOCAL static array was the probe that first
+surfaced this bug and is very likely fixed by the same dereference-
+fallback change (it shares the identical `runPointerExpression` read path)
+but was not re-added as its own fixture, to keep this slice's fixture
+count to the minimum needed to red/green the fix; (4) a struct- or
+class-static-array-FIELD's plain local pointer (as opposed to the field's
+already-cell-backed direct-write siblings) was not re-probed against this
+same fallback path, since those shapes already have their own promoted
+`structCells`/`classCells` entries and take an earlier `*CellValue` branch,
+never reaching the fallback this fix changed.
+
 ## Out of scope
 
 `quickbite.executor.Value` (the legacy executor type) is unaffected, as

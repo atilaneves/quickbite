@@ -3825,7 +3825,24 @@ private struct Walker {
             if (classArrayFieldPointerCellValue(value, cellValue))
                 return cellValue;
 
-            return value.pointerTarget;
+            // A plain LOCAL static array (`int[3] a;`) never gets an
+            // `arrayCells` entry -- `promoteArrayCell` guards on
+            // `isDynamicArrayType` -- so none of the cell checks above ever
+            // fire for `&a[i]`. Its pointer is still array-allocation-backed
+            // (`arrayPointer`/`symbolOffsetLocalValue` both mint one via
+            // `allocationId`), so a direct index write to `a` after the
+            // pointer was taken lands in `locals[variable]`, not in any
+            // cell -- exactly the case `readPointerElement` (the same
+            // fresh-`locals` re-read already used for `p[i]` indexing
+            // through this same pointer kind) already handles. Reusing it
+            // here instead of the raw `value.pointerTarget` snapshot fixes
+            // that one gap; for every pointer kind `arrayPointerVariable`
+            // doesn't recognise (e.g. a `&s.field` snapshot pointer),
+            // `readPointerElement` itself falls back to `pointer.
+            // pointerIndex(0)`, identical to the old `value.pointerTarget`
+            // (`pointerTarget` is defined as `pointerIndex(0)`), so no other
+            // pointer kind's behaviour changes.
+            return readPointerElement(pointer.e1.type, value, 0);
         }
 
         auto variable = value.localPointerId in localPointers;

@@ -1708,6 +1708,46 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// The static-array-local sibling of the fixture above: `&a[0]` into a
+// plain LOCAL static array (`int[3] a;`, not a struct/class field, and not
+// a dynamic array), then a direct element write. `promoteArrayCell` (the
+// eager `arrayCells` promotion `arrayPointer` calls at address-of time)
+// guards on `isDynamicArrayType`, so a static array local never gets an
+// `arrayCells` entry at all -- unlike the dynamic-array case above, none of
+// `runPointerExpression`'s `*cellValue` checks can ever fire for it. Its
+// pointer is still array-allocation-backed (minted via `allocationId`, the
+// same mechanism the dynamic-array case uses), so `arrayPointerVariable`
+// still resolves it back to `a` -- but the dereference fallback returned
+// the STALE boxed snapshot taken at address-of time instead of re-reading
+// `locals`, so a later direct write was invisible through the earlier
+// pointer. SystemLinker's `p` aliases `a`'s real storage, so the direct
+// write is visible through `*p`. Other backends omitted per the
+// omit-don't-pin convention (unconfirmed there).
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.staticArrayLocalElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[3] a;
+                a[0] = one();
+                int* p = &a[0];
+                a[0] = ninetyNine();
+                assert(*p == 99);
+            }
+        });
+    }
+}
+
 // value.md item 7's write-side counterpart of the fixture above: a write
 // THROUGH one pointer into a dynamic array element must be visible through a
 // SECOND, independently-taken pointer into the same element. SystemLinker's
@@ -4589,4 +4629,3 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
         });
     }
 }
-
