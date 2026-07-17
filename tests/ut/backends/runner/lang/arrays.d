@@ -115,6 +115,37 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Rebinding a cast-view variable gives that binding a new allocation identity;
+// a later cast of the rebound variable must not redirect surviving aliases of
+// the old allocation to the new storage.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.reboundSameWidthScalarCastDoesNotRedirectOldAliases." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 9;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first];
+                ubyte[] b = cast(ubyte[]) a;
+                ubyte[] c = b;
+                b = [cast(ubyte) 3];
+                byte[] d = cast(byte[]) b;
+                mutate(c);
+
+                assert(a[0] == 9);
+                assert(b[0] == 3);
+                assert(c[0] == 9);
+                assert(d[0] == 3);
+            }
+        });
+    }
+}
+
 // Passing an unbound same-width scalar array cast directly as a slice
 // argument preserves the source storage alias.
 static foreach (backend; Matrix!()) {

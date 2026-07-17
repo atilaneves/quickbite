@@ -300,11 +300,13 @@ a checked fact; do not relearn them.
   allocation identity, then derives a bounds-validated subview from the
   value's own allocation offset and length before reinterpreting its element
   type. It does not recover from the RHS syntax or a reverse lookup of the
-  source variable. Rebinding the source invalidates that variable's maps but
-  cannot invalidate an earlier derived binding's carrier. Carriers fork and
-  merge with call frames so identity, interior offsets, and zero-length views
-  survive function boundaries. An unbound direct-cast expression still needs
-  its syntax-specific source recovery until every cast result carries
+  source variable. Rebinding any derived view drops that variable's alias id
+  before a later cast can reuse it, but retains the id-keyed carrier for other
+  live values. Rebinding the source similarly invalidates that variable's maps
+  but cannot invalidate an earlier derived binding's carrier. Carriers fork
+  and merge with call frames so identity, interior offsets, and zero-length
+  views survive function boundaries. An unbound direct-cast expression still
+  needs its syntax-specific source recovery until every cast result carries
   identity.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked

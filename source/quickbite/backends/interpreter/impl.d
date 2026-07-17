@@ -3634,6 +3634,7 @@ private struct Walker {
     // iterating them, mirroring `dropStructCell`'s own discipline.
     private void dropArrayCell(VarDeclaration variable) {
         arrayCells.remove(variable);
+        arrayAllocationAliases.remove(variable);
 
         if (auto id = variable in arrayAllocations) {
             arrayAllocationVariables.remove(*id);
