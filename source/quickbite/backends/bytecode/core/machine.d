@@ -281,7 +281,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case subSlice1, subSlice2, subSlice4, subSlice8:
+            case subSlice1, subSlice2, subSlice4, subSlice8, subSlice16:
                 const subElementSize = subSliceElementSize(instruction.op);
                 const lo = scalarValue!size_t(stack, base + instruction.c);
                 const hi = scalarValue!size_t(
@@ -854,6 +854,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = andBits;
+                ++ip;
+                break;
+
+            case bitAndInt8:
+                const ubyte[long.sizeof] andBits8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) &
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = andBits8;
                 ++ip;
                 break;
 
@@ -2217,6 +2227,8 @@ private uint subSliceElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
+    if (op == Op.subSlice16)
+        return 16;
     if (op == Op.subSlice8)
         return 8;
     if (op == Op.subSlice4)
@@ -2336,7 +2348,13 @@ private extern(C) bool gc_expandArrayUsed(
 // Append the element at `elementOffset` to the slice descriptor at
 // `descriptorOffset`. Use druntime's appendable-block bookkeeping first so a
 // prior `reserve` can grow the slice in place; otherwise allocate and copy.
-// Returns the resulting block so the caller can root it in `heap`.
+// `appendablePointers` is keyed by the backing block's base address (from
+// `GC.query`, which resolves an interior pointer to its block), not the
+// descriptor's own pointer, so a later append through an interior slice (e.g.
+// `arr[2 .. $]`) recognises the same block a prior append already proved
+// appendable and grows in place too; `gc_expandArrayUsed` itself (real
+// druntime bookkeeping) still refuses if the slice is not at the block's used
+// boundary. Returns the resulting block so the caller can root it in `heap`.
 private ubyte[] appendElement(
     ref ubyte[] stack,
     in size_t descriptorOffset,
@@ -2352,7 +2370,8 @@ private ubyte[] appendElement(
     const oldBytes = length * elementSize;
     const newBytes = (length + 1) * elementSize;
     const blockInfo = GC.query(cast(void*) pointer);
-    const canGrowInPlace = containsPointer(appendablePointers, pointer) ||
+    const blockBase = cast(size_t) blockInfo.base;
+    const canGrowInPlace = containsPointer(appendablePointers, blockBase) ||
         (!heapContainsPointer(heap, pointer) &&
             (blockInfo.attr & GC.BlkAttr.APPENDABLE) != 0);
 
@@ -2360,8 +2379,8 @@ private ubyte[] appendElement(
         canGrowInPlace &&
         gc_expandArrayUsed(
             (cast(void*) pointer)[0 .. oldBytes], newBytes, false)) {
-        if (!containsPointer(appendablePointers, pointer))
-            appendablePointers ~= pointer;
+        if (!containsPointer(appendablePointers, blockBase))
+            appendablePointers ~= blockBase;
         auto block = (cast(ubyte*) pointer)[0 .. newBytes];
         block[oldBytes .. newBytes] =
             stack[elementOffset .. elementOffset + elementSize];
@@ -3090,6 +3109,22 @@ private final class BytecodeNativeMarshaller:
     }
 
     public void readResult(Type type, in ubyte[] buffer) {
+        import dmd.astenums: TY;
+
+        // The FFI slice layout (`ffiSliceType`, ffi/core.d) is
+        // {length, pointer}; the VM's own slice descriptor
+        // (`writeSliceDescriptor`, machine.d) is {pointer, length}. Swap the
+        // two words instead of a straight copy, matching `fillArgument`'s
+        // reverse swap for a `void[]`-typed argument.
+        if (type.toBasetype.ty == TY.Tarray) {
+            _stack[_destination .. _destination + size_t.sizeof] =
+                buffer[size_t.sizeof .. 2 * size_t.sizeof];
+            _stack[
+                _destination + size_t.sizeof .. _destination + 2 * size_t.sizeof
+            ] = buffer[0 .. size_t.sizeof];
+            return;
+        }
+
         // `buffer` is padded to at least ffi_arg width (8 bytes); copy exactly
         // the return type's native size (4 for `int`, 8 for `long`), not a
         // fixed 4.
@@ -3101,7 +3136,14 @@ private final class BytecodeNativeMarshaller:
     // @trusted: for direct handoff, libffi writes no more than the result slot
     // can hold. Narrow results use the core's padded buffer and copy-out path.
     public void* resultAddress(Type type) @trusted {
+        import dmd.astenums: TY;
         import quickbite.ffi.libffi: ffi_arg;
+
+        // A slice return needs the field-order swap in `readResult`, so it
+        // always goes through the buffer path, never the direct zero-copy
+        // handoff.
+        if (type.toBasetype.ty == TY.Tarray)
+            return null;
 
         if (nativeResultSize(type) < ffi_arg.sizeof)
             return null;
@@ -3128,6 +3170,8 @@ private final class BytecodeNativeMarshaller:
                 return double.sizeof;
             case Tpointer:
                 return (void*).sizeof;
+            case Tarray:
+                return 2 * size_t.sizeof;
             default:
                 throw new Exception("Unsupported native result type.");
         }
