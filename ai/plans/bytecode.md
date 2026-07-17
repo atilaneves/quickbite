@@ -69,6 +69,16 @@ This is the load-bearing decision; everything else follows from it.
   stepping and slicing still use DMD's size of the immediate pointed-at type
   (`int[]*` advances by a slice descriptor and `S*` by `S.sizeof`). Never infer
   byte stride from the scalar opcode type.
+- Known native-layout violation to fix: the VM's slice descriptor
+  (`writeSliceDescriptor`) is `{ptr, length}`, but compiled D lays a slice out
+  as `{length, ptr}` (length at offset 0). The FFI bridge already matches real
+  D and word-swaps at the boundary (`readResult`/`fillArgument`). Flip the VM
+  descriptor to native order and delete both swaps; until then, any pointer to
+  a descriptor crossing the bridge unswapped (`int[]*`, a struct with a slice
+  field passed by reference) reads ptr-as-length on the native side. The flip
+  touches every descriptor read/write site (`subSlice*`, `indexLoad*`, bounds
+  checks; the compact string descriptor should flip for consistency) and needs
+  a bridge round-trip test of a struct containing a slice field.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
@@ -306,6 +316,27 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `bin/ut --random` runs must be green and stable. An order-dependent crash or
   hang is a blocker to reproduce with the reported seed and fix; it is not
   acceptable handoff noise.
+- `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is the one
+  remaining red enabled row (`std.conv.text` rendering a `ubyte[]` into an
+  exception message through `std.array.Appender`). It needs, in dependency
+  order: (1) the native bridge accepting a `TY.Tclass`-typed defaulted `null`
+  argument, not only `TY.Tpointer` (every `core.memory.GC.*` leaf defaults a
+  trailing `TypeInfo ti = null`); (2) struct-by-value native returns (e.g.
+  `GC.qalloc`'s `BlkInfo`), the same aggregate-return capability `div`/`ldiv`
+  below already needs; (3) the nested-function `this`-receiver capture
+  described under Closures; (4) `DivAssignExp` (`x /= y`), which has no
+  compiler support at all today (only add/sub/mul/shr/shl/or compound-assign
+  are wired); (5) 4-byte unsigned (`uint`) addition, unsupported because the
+  narrow-int addition fallback hardcodes a signed-`int` result instead of
+  using the expression's own scalar type the way its `or`/`and`/`xor`
+  siblings already do; and (6) inlining a void IIFE whose body is a single
+  expression statement (Phobos's common `(() @trusted { ... })()` escape
+  idiom), the same way a single-`return` IIFE already inlines, so a local it
+  reads does not need a full closure environment. Items (4)-(6) surfaced
+  only once (1)-(3) let compilation reach far enough; a further, still-
+  unisolated crash (an out-of-bounds `copySlice` while `Appender.put`
+  assigns into a grown buffer) appears after fixing (4)-(6), so at least one
+  more gap remains beyond this list.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
@@ -316,20 +347,18 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace.Bytecode`:
-   interior-slice `.ptr`, used-capacity tracking, and in-place append.
-2. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
+1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
    `std.conv.text` dependency path over an exception message character array.
-3. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
+2. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
    lazy evaluation over a mutating struct-typed caller local.
-4. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
+3. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
-5. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
+4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-6. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: imported
+5. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: imported
    Phobos module initialization and the host entropy path.
-7. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.
@@ -340,12 +369,6 @@ An unsupported implementation is not, by itself, a permanent divergence from
 the compiled-D oracle. In particular, the existing `div`/`ldiv` struct-return
 characterization remains future native-bridge work even though it is not an
 `unconfirmed` row.
-
-Before declaring the baseline stable, reproduce and eliminate the known
-order-dependent failure in
-`repl.backend.displaysStaticStringArrayResults.Bytecode`: an
-`ArraySliceError` at `bytecode/core/machine.d:437` may be followed by exit code
-139. Focused success does not discharge this blocker; repeated random runs do.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
@@ -359,8 +382,9 @@ row reaches them:
   view-preservation, and closure combination.
 - Struct aliases and whole-local assignment do not yet cover all heap fields,
   pointer receivers, captured structs, postblits, and `opAssign` semantics.
-- Static arrays of dynamic arrays can copy slice descriptors, but nested
-  mutation and general stale-cell reconciliation remain incomplete.
+- Static arrays of dynamic arrays copy each element's full 16-byte slice
+  descriptor; nested mutation and general stale-cell reconciliation remain
+  incomplete.
 
 ### TDD and handoff discipline
 
@@ -527,6 +551,27 @@ lifetime as the dependency bytecode cache.
   already determined `needsClosure()` and `closureVars`.
 - Native callbacks that receive delegates use the inbound trampoline described
   under Native bridge.
+- A nested function that reads its enclosing struct method's `this` (a
+  capturing lambda literal, e.g. `() => this.field`, or a plain nested named
+  function, e.g. `auto helper() { return this.field; }`) needs a hidden
+  `this` receiver, not a captured-locals environment: DMD gives both shapes
+  an identical `vthis` context pointer (`FuncDeclaration.isNested`, set for
+  any non-`static` function whose `toParent2` is a function, regardless of
+  whether it is a `FuncLiteralDeclaration`), and `ThisExp` resolution inside
+  either one resolves to the nearest enclosing method's own `vthis`
+  (`hasThis(sc)` walking up through nested scopes). The compiler's existing
+  literal-only recognition of this case generalizes by dropping the
+  `isFuncLiteralDeclaration` restriction; a direct unqualified call to such a
+  named nested function additionally needs a call-site receiver branch,
+  since the callee there is a plain `VarExp` naming the function rather than
+  the `DotVarExp`/`FuncExp` shapes already handled. This is a `this`-receiver
+  question, not the captured-locals-environment work above, and does not by
+  itself require a closure environment. A lambda that captures a plain
+  enclosing *local* (not `this`) remains unmodelled and does need the
+  captured-locals environment described above; an immediately-invoked void
+  lambda whose body is a single expression statement can avoid needing that
+  environment by inlining the statement into the caller the same way a
+  single-`return`-expression IIFE already inlines.
 
 The compiled-D exposing behaviour is:
 
@@ -556,3 +601,19 @@ behaviour.
   requires multiple simultaneous threads. Host runtime calls and single-thread
   concurrency state already reached by existing rows are not covered by that
   deferral.
+- String/array-slice truthiness (`if (s)`, `!s`, `s ? a : b`, `s && t`, plain
+  `assert(s)`) is D's `ptr !is null`, but the compact 8-byte {data offset,
+  length} slice descriptor a string local or field carries cannot distinguish
+  null from data-at-offset-zero. `compileBoolCondition` refuses any
+  string-typed condition by its AST type before compiling it, rather than
+  trust every operand producer to have set `Operand.isString`: a `string[N]`
+  element read yields a 16-byte chunk at the same stride an ordinary `T[][N]`
+  element uses, but it is not a genuine native {ptr, length} slice descriptor
+  there — it is still the compact 8-byte {data offset, length} descriptor
+  followed by 8 zero-padding bytes, so it cannot carry that flag without
+  corrupting other consumers (`.length`, `==`) that branch on it to mean the
+  compact layout. Implementing real truthiness
+  needs a faithful string-null model (a descriptor or convention that can
+  represent "no data" distinctly from "data at offset 0") applied consistently
+  across the compiler, and would need to account for both descriptor layouts
+  in play, not a local fix in one place.

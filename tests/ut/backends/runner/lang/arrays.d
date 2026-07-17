@@ -1769,13 +1769,11 @@ static foreach (backend; Matrix!(
 // loops the full backing-block length, so it overruns and throws for any
 // interior pointer (a representation gap in the shim). Ctfe omitted:
 // `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at all.
-// Bytecode omitted: same `.ptr`-of-array gap as above.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "gc_getArrayUsed has no D source, so Ctfe cannot intercept it at all"),
     Omit!(Interpreter, Because.unconfirmed,
         "gc_getArrayUsed overruns for interior pointers; representation debt, retires with value.md's native-layout track"),
-    Omit!(Bytecode, Because.unconfirmed, "same `.ptr`-of-array gap as above"),
 )) {
     @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~
         backend.stringof)
@@ -2060,5 +2058,176 @@ static foreach (backend; Matrix!(
         }).shouldThrowWithMessage(
             "slice [0 .. 5] extends past source array of length 2",
         );
+    }
+}
+
+
+/++
+    Truthiness of dynamic arrays and slices.
++/
+// A dynamic array's truthiness follows `ptr !is null`, read at the pointer's
+// full width -- not a low-byte read of the length word, which happened to
+// read a 256-length array's zero low byte as false.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.truthinessIsPointerNotNullAtFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                size_t len = cast(size_t) seed(256);
+                int[] a = new int[len];
+                assert(a ? true : false);
+
+                int[] n;
+                assert(!(n ? true : false));
+            }
+        });
+    }
+}
+
+// A non-null zero-length slice (its pointer is set but length is 0) is still
+// truthy: truthiness follows the pointer, not the length.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "observed via bin/qb: `assert(s ? true : false)` for a non-null " ~
+        "zero-length slice evaluates false on Interpreter; SystemLinker " ~
+        "evaluates true"),
+)) {
+    @("dynamicArray.nonNullZeroLengthSliceIsTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                size_t len = cast(size_t) seed(256);
+                int[] a = new int[len];
+                size_t start = cast(size_t) seed(2);
+                auto s = a[start .. start];
+
+                assert(s ? true : false);
+            }
+        });
+    }
+}
+
+
+/++
+    Static arrays of strings and of dynamic arrays.
++/
+static foreach (backend; Matrix!()) {
+    @("staticArray.foreachOverStringElementsReadsElementContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                string[2] a = ["x", "yz"];
+                int total;
+
+                foreach (s; a) total += cast(int) s.length;
+
+                assert(total == 3);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.foreachOverWholeSliceOfStringArrayReadsElementContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                string[2] a = ["x", "yz"];
+                string[] s = a[];
+                int total;
+
+                foreach (e; s) total += cast(int) e.length;
+
+                assert(s.length == 2);
+                assert(total == 3);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.foreachOverArrayOfArraysReadsRowLengths." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(1);
+                int[][2] a = [[first, first + 1], [first + 2]];
+                int n;
+
+                foreach (row; a) n += cast(int) row.length;
+
+                assert(n == 3);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.partialSliceOfArrayOfArraysReadsElementContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(1);
+                int[][3] b = [
+                    [first],
+                    [first + 1, first + 2],
+                    [first + 3, first + 4, first + 5],
+                ];
+
+                auto s = b[1 .. 3];
+
+                assert(s[0][1] == first + 2);
+                assert(s[1][2] == first + 5);
+            }
+        });
+    }
+}
+
+
+/++
+    `cast(void*)` of a string reads its raw byte storage through `.ptr`,
+    same as a dynamic array.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringPointerReadsUtf8SecondByte." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string text() {
+                return "aβ";
+            }
+
+            unittest {
+                string s = text();
+
+                assert(s.ptr[1] == 0xCE);
+            }
+        });
     }
 }

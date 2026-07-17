@@ -347,3 +347,47 @@
   Likewise `core.internal.atomic.atomicStore`/`atomicFetchSub` have D source
   that just forwards to a sibling primitive (`atomicExchange`/
   `atomicFetchAdd`) which contains the actual asm.
+
+- In the bytecode core, don't assume a runtime crash traces back to whatever
+  compiler change most recently altered control flow near the crashing test;
+  verify the mechanism by instrumenting the actual compiled instructions and
+  runtime values, not by reasoning from the diff alone. A crash that only
+  started reproducing after a fix that made compilation *proceed further*
+  (rather than abort early with a diagnostic) can be a pre-existing,
+  unrelated bug the earlier abort was accidentally masking. Concretely:
+  `structBaseOffsetOrMaterialise`'s `CallExp` branch used
+  `compileCall(call).offset` as a struct constructor call's (`S(args)`)
+  result location; DMD types that `CallExp` as the constructed struct even
+  though `__ctor` is declared `void`, so `compileCall`'s destination for it
+  is the shared void-call dummy slot, not the constructed value, which
+  actually lives at the call's own receiver offset (`methodReceiverOffset`).
+  This crashed any struct with an explicit constructor returned by value
+  (e.g. `std.array.appender`'s `return Appender!A(null);`), unrelated to
+  virtual dispatch or vtables despite the crash first appearing right after
+  a vtable-registration fix.
+
+- For a suspected bytecode-core VM bug, bisect with `bin/qb`'s non-interactive
+  REPL (`./bin/qb -b bytecode -c '<expr>'`, or pipe statements with a trailing
+  `;` then a bare final expression into `./bin/qb -b <backend>`; an IIFE like
+  `./bin/qb -b bytecode -c '(){ ulong v = 256; return (v && true) ? 1 : 0;
+  }()'` lets `-c` take statements too; compare against `./bin/qb -b
+  system-linker` as the oracle) instead of decoding a crash's compiled
+  instructions by hand through gdb: it isolates the exact failing construct
+  in seconds where manual `Instruction` field/`Op`-ordinal decoding from a
+  core dump takes many single-stepped `print` calls.
+
+- Don't act on a claimed bug mechanism inherited from a prior agent's report
+  without re-verifying it against the oracle first; a plausible-sounding
+  attribution to a nearby function can be wrong even when the symptom is
+  real, and acting on it sends the fix into the wrong code. Concretely,
+  `ulong v = 256; if (!v)` misbehaving was mis-attributed to
+  `compileBoolCondition`/`Op.notBool`/`Op.jumpIfFalse`/`Op.jumpIfTrue`
+  reading only the condition's low byte; the actual defect (fixed in
+  `b0cddcfa`) was that DMD's `LogicalExp` semantic folds `x && true`/`x ||
+  false`/`true && x` into `CastExp(bool, x)`, and
+  `compileCastExpression`'s bool-target branch in
+  `source/quickbite/backends/bytecode/core/compiler.d` only special-cased
+  pointer sources — every other source fell through to the generic
+  `size(target) <= size(source.type)` path, copying just the target's
+  1-byte width via `Op.copy` instead of computing `operand != 0` at the
+  operand's own full width.
