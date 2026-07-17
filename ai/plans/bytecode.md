@@ -69,6 +69,16 @@ This is the load-bearing decision; everything else follows from it.
   stepping and slicing still use DMD's size of the immediate pointed-at type
   (`int[]*` advances by a slice descriptor and `S*` by `S.sizeof`). Never infer
   byte stride from the scalar opcode type.
+- Known native-layout violation to fix: the VM's slice descriptor
+  (`writeSliceDescriptor`) is `{ptr, length}`, but compiled D lays a slice out
+  as `{length, ptr}` (length at offset 0). The FFI bridge already matches real
+  D and word-swaps at the boundary (`readResult`/`fillArgument`). Flip the VM
+  descriptor to native order and delete both swaps; until then, any pointer to
+  a descriptor crossing the bridge unswapped (`int[]*`, a struct with a slice
+  field passed by reference) reads ptr-as-length on the native side. The flip
+  touches every descriptor read/write site (`subSlice*`, `indexLoad*`, bounds
+  checks; the compact string descriptor should flip for consistency) and needs
+  a bridge round-trip test of a struct containing a slice field.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
