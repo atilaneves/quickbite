@@ -480,10 +480,13 @@ private struct Walker {
     private size_t[VarDeclaration] arrayAllocations;
     private size_t[VarDeclaration] arrayAllocationAliases;
     private VarDeclaration[size_t] arrayAllocationVariables;
-    // Storage carried by an evaluated array allocation identity, independent
-    // of whichever source variable first minted that identity. A source slot
-    // may be rebound (correctly invalidating its forward/reverse maps) while a
-    // derived slice or cast view carrying the old id remains live.
+    // Allocation-base storage carried by an evaluated array allocation
+    // identity, independent of whichever source variable first minted that
+    // identity. Every Value offset for an id is relative to this one base;
+    // never replace it with an interior, view-relative cell from another
+    // frame. A source slot may be rebound (correctly invalidating its
+    // forward/reverse maps) while a derived slice or cast view carrying the
+    // old id remains live.
     private NativeArray[size_t] arrayAllocationCarriers;
     private bool[VarDeclaration] arrayPointerWritebacks;
     // Per-(receiver variable, field index) memo for `&s.field` allocation
@@ -2674,6 +2677,21 @@ private struct Walker {
             return;
 
         arrayCells[variable] = cell.slice(alias_.lower, alias_.lower + length);
+
+        // `recordSliceAlias` has flattened nested slices to their ultimate
+        // source and an absolute offset from that source. Give every such
+        // view the root's allocation identity and keep that id's carrier at
+        // the root cell: a callee may see only this interior cell, but its
+        // Value offset must remain meaningful when the carrier merges back
+        // into a frame that sees the whole allocation. This also preserves a
+        // one-past-the-end coordinate for zero-length slices.
+        const rootId = alias_.source in arrayAllocationAliases;
+        const id = rootId is null
+            ? allocationId(alias_.source)
+            : *rootId;
+        if (id !in arrayAllocationCarriers)
+            arrayAllocationCarriers[id] = *cell;
+        arrayAllocationAliases[variable] = id;
     }
 
     // Eagerly gives an address-taken struct local a `NativeStruct` cell the
@@ -9266,6 +9284,41 @@ private struct Walker {
             : Value.arraySliceValue(elements, elements, 0, allocationId);
     }
 
+    private Value arrayValueFromCarrier(
+        ref NativeArray view,
+        ref NativeArray carrier,
+        in size_t allocationId,
+        in size_t allocationOffset,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        if (
+            allocationOffset > carrier.length ||
+            view.length > carrier.length - allocationOffset
+        )
+            throw new Exception("Array carrier view exceeds its allocation.");
+
+        Value[] elements;
+        elements.length = view.length;
+        foreach (index; 0 .. view.length)
+            elements[index] = readScalar(view.elementType, view.element(index));
+
+        Value[] allocation;
+        allocation.length = carrier.length;
+        foreach (index; 0 .. carrier.length)
+            allocation[index] = readScalar(
+                carrier.elementType,
+                carrier.element(index),
+            );
+
+        return Value.arraySliceValue(
+            elements,
+            allocation,
+            allocationOffset,
+            allocationId,
+        );
+    }
+
     private Value runAssocArraySlotAssignExpression(
         imported!"dmd.expression".Expression pointer,
         imported!"dmd.expression".Expression rhs,
@@ -9829,6 +9882,7 @@ private struct Walker {
         imported!"dmd.expression".CastExp cast_,
         out Value result,
     ) {
+        import std.conv: text;
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
@@ -9849,6 +9903,34 @@ private struct Walker {
             return false;
 
         const source = runExpression(cast_.e1);
+        if (source.arrayAllocationId != 0) {
+            const id = source.arrayAllocationId;
+            if (auto sourceCarrier = id in arrayAllocationCarriers) {
+                const offset = source.arrayAllocationOffset;
+                if (
+                    offset > sourceCarrier.length ||
+                    source.length > sourceCarrier.length - offset
+                )
+                    throw new Exception(
+                        "Existing array cast view exceeds its allocation carrier.",
+                    );
+
+                auto targetCarrier =
+                    sourceCarrier.reinterpretElements(targetType);
+                auto targetView = targetCarrier.slice(
+                    offset,
+                    offset + source.length,
+                );
+                result = arrayValueFromCarrier(
+                    targetView,
+                    targetCarrier,
+                    id,
+                    offset,
+                );
+                return true;
+            }
+        }
+
         if (auto sourceVar = cast_.e1.isVarExp)
             if (auto sourceVariable = sourceVar.var.isVarDeclaration) {
                 promoteArrayCell(sourceVariable);
@@ -9858,10 +9940,37 @@ private struct Walker {
                     const id = sourceVariable in arrayAllocationAliases;
                     const allocation =
                         id is null ? allocationId(sourceVariable) : *id;
-                    arrayAllocationCarriers[allocation] = targetView;
-                    result = arrayValueFromCell(
+                    if (allocation !in arrayAllocationCarriers)
+                        arrayAllocationCarriers[allocation] = targetView;
+                    auto carrier = allocation in arrayAllocationCarriers;
+                    auto targetCarrier =
+                        carrier.reinterpretElements(targetType);
+                    const offset = source.arrayAllocationOffset;
+                    if (
+                        offset > targetCarrier.length ||
+                        source.length > targetCarrier.length - offset
+                    )
+                        throw new Exception(
+                            text(
+                                "New array cast view [",
+                                offset,
+                                " .. ",
+                                offset + source.length,
+                                ") exceeds allocation carrier length ",
+                                targetCarrier.length,
+                                ".",
+                            ),
+                        );
+
+                    targetView = targetCarrier.slice(
+                        offset,
+                        offset + source.length,
+                    );
+                    result = arrayValueFromCarrier(
                         targetView,
+                        targetCarrier,
                         allocation,
+                        offset,
                     );
                     return true;
                 }

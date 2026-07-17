@@ -297,8 +297,11 @@ a checked fact; do not relearn them.
   binding, whether introduced by a declaration or a later assignment, reads
   and writes those shared bytes through its own element type. Binding from an
   evaluated value recovers storage from a carrier keyed by the value's own
-  allocation identity, then derives a bounds-validated subview from the
-  value's own allocation offset and length before reinterpreting its element
+  allocation identity. One identity always names the allocation's root cell,
+  never a frame-relative interior view; every slice offset, including a
+  nested or zero-length slice's one-past-the-end offset, is absolute in that
+  root coordinate. Binding derives a bounds-validated subview from that
+  absolute offset and the value's length before reinterpreting its element
   type. It does not recover from the RHS syntax or a reverse lookup of the
   source variable. Rebinding any derived view drops that variable's alias id
   before a later cast can reuse it, but retains the id-keyed carrier for other

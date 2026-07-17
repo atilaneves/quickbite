@@ -22,6 +22,34 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// An array allocation identity uses one allocation-base coordinate across
+// frames: a returned cast of an interior parameter must retain that interior
+// offset rather than being rebound to the caller's whole allocation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.returnedCastOfInteriorParameterPreservesOffset." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte[] view(byte[] values) {
+                return cast(ubyte[]) values;
+            }
+
+            unittest {
+                byte runtime = 1;
+                byte[] a = [runtime, cast(byte) 2];
+                ubyte[] whole = cast(ubyte[]) a;
+                byte[] s = a[1 .. 2];
+                ubyte[] b = view(s);
+                b[0] = 9;
+
+                assert(a[0] == 1);
+                assert(a[1] == 9);
+            }
+        });
+    }
+}
+
 // Reinterpreting a signed-byte slice as `ubyte[]` exposes its stored bits,
 // rather than converting each signed value.
 static foreach (backend; Matrix!()) {
