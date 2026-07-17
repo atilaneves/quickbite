@@ -6576,7 +6576,47 @@ private struct Walker {
                     ? argumentExpressions[index]
                     : null,
             );
+            bindArrayParameterCell(parameter, arguments[index]);
         }
+    }
+
+    // A dynamic-array expression result can carry the allocation identity of
+    // authoritative array storage even when its syntax is not a plain
+    // variable (for example, a same-width scalar cast). Recover that storage
+    // for the parameter's own typed view instead of binding only the boxed
+    // element snapshot.
+    private void bindArrayParameterCell(
+        VarDeclaration parameter,
+        in Value argument,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        if (!argument.isArray || argument.arrayAllocationId == 0)
+            return;
+
+        auto sourceVariable = argument.arrayAllocationId in arrayAllocationVariables;
+        if (sourceVariable is null)
+            return;
+
+        auto sourceCell = *sourceVariable in arrayCells;
+        if (sourceCell is null)
+            return;
+
+        auto targetType = parameter.type.toBasetype;
+        if (!isDynamicArrayType(targetType))
+            return;
+
+        targetType = targetType.nextOf.toBasetype;
+        if (
+            !isNativeScalarType(sourceCell.elementType) ||
+            !isNativeScalarType(targetType) ||
+            typeByteSize(sourceCell.elementType) != typeByteSize(targetType)
+        )
+            return;
+
+        arrayCells[parameter] = sourceCell.reinterpretElements(targetType);
     }
 
     // A `lazy` parameter is a delegate over the *caller's live frame*, not a
@@ -6680,7 +6720,11 @@ private struct Walker {
             ? null
             : argumentExpression.isSliceExp;
         if (slice is null || !argument.isArray) {
-            recordForwardedArrayAllocationAlias(parameter, argumentExpression);
+            recordForwardedArrayAllocationAlias(
+                parameter,
+                argument,
+                argumentExpression,
+            );
             sliceAliases.remove(parameter);
             return;
         }
@@ -6724,13 +6768,17 @@ private struct Walker {
 
     private void recordForwardedArrayAllocationAlias(
         VarDeclaration parameter,
+        in Value argument,
         imported!"dmd.expression".Expression argumentExpression,
     ) {
         auto var = argumentExpression is null
             ? null
             : argumentExpression.isVarExp;
         if (var is null) {
-            arrayAllocationAliases.remove(parameter);
+            if (argument.isArray && argument.arrayAllocationId != 0)
+                arrayAllocationAliases[parameter] = argument.arrayAllocationId;
+            else
+                arrayAllocationAliases.remove(parameter);
             return;
         }
 
@@ -9137,7 +9185,10 @@ private struct Walker {
     // this cell shape when every element is `native_scalar.
     // isNativeScalarType` -- so this builds a fresh element array outright
     // rather than taking a base `Value` to overlay onto.
-    private Value arrayValueFromCell(ref NativeArray cell) {
+    private Value arrayValueFromCell(
+        ref NativeArray cell,
+        in size_t allocationId = 0,
+    ) {
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
         Value[] elements;
@@ -9145,7 +9196,9 @@ private struct Walker {
         foreach (index; 0 .. cell.length)
             elements[index] = readScalar(cell.elementType, cell.element(index));
 
-        return Value.arrayValue(elements);
+        return allocationId == 0
+            ? Value.arrayValue(elements)
+            : Value.arraySliceValue(elements, elements, 0, allocationId);
     }
 
     private Value runAssocArraySlotAssignExpression(
@@ -9737,7 +9790,11 @@ private struct Walker {
                 if (auto sourceCell = sourceVariable in arrayCells) {
                     auto targetView =
                         sourceCell.reinterpretElements(targetType);
-                    result = arrayValueFromCell(targetView);
+                    const id = sourceVariable in arrayAllocationAliases;
+                    result = arrayValueFromCell(
+                        targetView,
+                        id is null ? allocationId(sourceVariable) : *id,
+                    );
                     return true;
                 }
             }

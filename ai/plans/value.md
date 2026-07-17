@@ -295,7 +295,10 @@ a checked fact; do not relearn them.
 - A same-width native-scalar dynamic-array cast is another typed view over
   the source array's existing block, never an element-converted copy. Each
   binding, whether introduced by a declaration or a later assignment, reads
-  and writes those shared bytes through its own element type.
+  and writes those shared bytes through its own element type. An unbound cast
+  rvalue carries that storage identity in the interpreter's runtime carrier,
+  so binding it to a slice parameter recovers the same typed block rather
+  than a boxed element copy.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked
   multiplication — which is what makes subsequent `index * stride`
@@ -726,8 +729,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      flattening for pointer arithmetic (`&m[i][j]` currently scales by
      the immediate element type's size, not the innermost scalar's);
      same-width native-scalar dynamic-array casts share backing storage and
-     interpret its bytes through each binding's element type, but unequal-
-     width casts still need byte-stream length and element regrouping;
+     interpret its bytes through bindings and direct slice arguments using
+     each view's element type, but unequal-width casts still need byte-stream
+     length and element regrouping;
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and

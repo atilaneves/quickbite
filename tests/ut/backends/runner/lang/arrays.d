@@ -89,6 +89,29 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Passing an unbound same-width scalar array cast directly as a slice
+// argument preserves the source storage alias.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastArgumentPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 2;
+            }
+
+            unittest {
+                byte runtime = 1;
+                byte[] values = [runtime];
+                mutate(cast(ubyte[]) values);
+
+                assert(values[0] == 2);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
