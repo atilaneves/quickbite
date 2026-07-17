@@ -280,6 +280,21 @@ public struct NativeArray {
             _block.subRange(begin * _stride, count * _stride), _elementType, count);
     }
 
+    // Reinterprets this array's elements through another same-width D scalar
+    // type without copying the block. Dynamic-array casts preserve the source
+    // storage; only the element type used to decode each stride changes.
+    public NativeArray reinterpretElements(Type elementType) @safe {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        if (typeByteSize(elementType) != _stride)
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "reinterpretElements: element widths differ",
+            );
+
+        return NativeArray.adopt(_block, elementType, _length);
+    }
+
     // Views element `index` -- an array whose `elementType` is a struct --
     // as its own `NativeStruct`, sharing this array's own block rather than
     // copying it: an element of an array is not an independent allocation,

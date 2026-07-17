@@ -292,6 +292,9 @@ a checked fact; do not relearn them.
 - A written slice header is a snapshot of `{length, ptr}`; it goes stale
   when the array reallocates, exactly as a compiled-D slice does. Keeping
   a header in sync is the call site's problem.
+- A same-width native-scalar dynamic-array cast is another typed view over
+  the source array's existing block, never an element-converted copy. Each
+  binding reads and writes those shared bytes through its own element type.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked
   multiplication — which is what makes subsequent `index * stride`
@@ -721,9 +724,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      field-cell primitive); nested static arrays need scalar-leaf
      flattening for pointer arithmetic (`&m[i][j]` currently scales by
      the immediate element type's size, not the innermost scalar's);
-     dynamic-array casts reinterpret same-width native-scalar elements
-     through ABI bytes, but unequal-width casts still need byte-stream
-     length and element regrouping;
+     same-width native-scalar dynamic-array casts share backing storage and
+     interpret its bytes through each binding's element type, but unequal-
+     width casts still need byte-stream length and element regrouping;
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and

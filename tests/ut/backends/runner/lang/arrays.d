@@ -49,6 +49,25 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A same-width scalar array cast is a view over the source storage, so a
+// write through the cast result is visible through the source slice.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte[] signed = [1];
+                ubyte[] raw = cast(ubyte[]) signed;
+                raw[0] = 2;
+
+                assert(signed[0] == 2);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)

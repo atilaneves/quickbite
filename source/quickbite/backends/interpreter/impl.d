@@ -9712,7 +9712,7 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, readScalar, writeScalar;
+            isNativeScalarType, writeScalar;
         import quickbite.frontend.dmd.types: isDynamicArrayType;
 
         auto sourceType = cast_.e1.type.toBasetype;
@@ -9730,16 +9730,26 @@ private struct Walker {
             return false;
 
         const source = runExpression(cast_.e1);
-        auto bytes = NativeBlock.allocate(
-            typeByteSize(sourceType),
-            NativeBlock.Scan.no,
-        );
-        Value[] elements;
-        foreach (index; 0 .. source.length) {
-            writeScalar(sourceType, bytes.bytes, source[index]);
-            elements ~= readScalar(targetType, bytes.bytes);
-        }
-        result = Value.arrayValue(elements);
+        if (auto sourceVar = cast_.e1.isVarExp)
+            if (auto sourceVariable = sourceVar.var.isVarDeclaration) {
+                promoteArrayCell(sourceVariable);
+                if (auto sourceCell = sourceVariable in arrayCells) {
+                    auto targetView =
+                        sourceCell.reinterpretElements(targetType);
+                    result = arrayValueFromCell(targetView);
+                    return true;
+                }
+            }
+
+        // An unbound array rvalue still needs a boxed expression result. Use
+        // one native source block for the reinterpretation; a local binding
+        // takes the shared-cell path above and never reaches this fallback.
+        auto sourceCell = NativeArray.allocate(sourceType, source.length);
+        foreach (index; 0 .. source.length)
+            writeScalar(sourceType, sourceCell.element(index), source[index]);
+
+        auto targetView = sourceCell.reinterpretElements(targetType);
+        result = arrayValueFromCell(targetView);
         return true;
     }
 
@@ -11364,6 +11374,7 @@ private struct Walker {
                 : runExpression(initializer),
         );
         locals[variable] = value;
+        promoteScalarArrayCastCell(variable, initializer);
         registerClassAliasIfPlainVar(variable, initializer);
         recordGCArrayUsedAlias(variable, initializer);
         uninitializedLocals.remove(variable);
@@ -11379,6 +11390,52 @@ private struct Walker {
         recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    // A same-width scalar dynamic-array cast changes only the element type
+    // used to interpret the bytes. Give the destination and source locals
+    // differently typed views over one NativeArray block so writes through
+    // either binding remain visible through the other.
+    private void promoteScalarArrayCastCell(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        auto cast_ = initializer.isCastExp;
+        if (cast_ is null)
+            return;
+
+        auto sourceExpression = cast_.e1;
+        auto sourceVar = sourceExpression.isVarExp;
+        auto source = sourceVar is null
+            ? null
+            : sourceVar.var.isVarDeclaration;
+        if (source is null)
+            return;
+
+        auto sourceType = sourceExpression.type.toBasetype;
+        auto targetType = variable.type.toBasetype;
+        if (!isDynamicArrayType(sourceType) || !isDynamicArrayType(targetType))
+            return;
+
+        sourceType = sourceType.nextOf.toBasetype;
+        targetType = targetType.nextOf.toBasetype;
+        if (
+            !isNativeScalarType(sourceType) ||
+            !isNativeScalarType(targetType) ||
+            typeByteSize(sourceType) != typeByteSize(targetType)
+        )
+            return;
+
+        promoteArrayCell(source);
+        auto sourceCell = source in arrayCells;
+        if (sourceCell is null)
+            return;
+
+        arrayCells[variable] = sourceCell.reinterpretElements(targetType);
     }
 
     private void recordGCArrayUsedAlias(
