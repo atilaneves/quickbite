@@ -2111,6 +2111,11 @@ private struct Compiler {
             if (auto field = tryStructField(dot)) {
                 import dmd.astenums: TY;
 
+                // A string field's inline slot holds the same compact 8-byte
+                // {data offset, length} descriptor a string local holds (see
+                // the `_stringLocals` read above), not a plain scalar.
+                if (isStringType(field.type))
+                    return Operand(field.offset, ScalarType.void_, true);
                 if (field.type.toBasetype.ty == TY.Tarray &&
                     !isStringType(field.type))
                     return Operand(field.offset, ScalarType.void_);
@@ -3685,6 +3690,23 @@ private struct Compiler {
                 continue;
             }
 
+            // A string field's inline slot holds the compact 8-byte {data
+            // offset, length} descriptor a string local holds, not a plain
+            // scalar; the generic branch below copies `size(scalarType(...))`
+            // bytes, which is 0 for a string (`scalarType` maps it to
+            // `void_`) and would leave the field's bytes at whatever the
+            // block's initial zeroing left them.
+            if (isStringType(fieldType)) {
+                const value = compileExpression(element);
+                _code ~= Instruction(
+                    Op.copy,
+                    fieldOffset,
+                    value.offset,
+                    cast(ushort) stringSliceSize,
+                );
+                continue;
+            }
+
             if (fieldType.toBasetype.ty == TY.Taarray) {
                 compileAssocArrayInto(fieldOffset, element);
                 continue;
@@ -4239,6 +4261,11 @@ private struct Compiler {
     // `p.field`: read a scalar field through the struct pointer at `ptr +
     // field.offset` into a fresh slot.
     private Operand loadStructPointerField(StructPointerField field) {
+        if (isStringType(field.type))
+            throw new Exception(
+                "Unsupported string heap-struct field in bytecode core",
+            );
+
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
         const fieldPointer = structFieldAddress(field);
@@ -6472,6 +6499,17 @@ private struct Compiler {
     // length — feeds `compileTruthValue`'s pointer branch. Every other
     // operand goes through `compileTruthValue` directly.
     private Operand compileBoolCondition(Expression expression) {
+        // Check the AST's own static type rather than trust every possible
+        // operand producer to have set `Operand.isString`: a `string[N]`
+        // element read (`a[0]`) yields a real 16-byte {ptr, length} slice
+        // descriptor, not the compact 8-byte one `Operand.isString` denotes
+        // elsewhere, so it cannot carry that flag without corrupting other
+        // consumers (`.length`, `==`) that branch on it. The static type is
+        // reachable here regardless of which producer compiled the operand,
+        // so it catches every string-typed shape uniformly.
+        if (isStringType(expression.type))
+            throw new Exception("Unsupported string truthiness in bytecode core");
+
         if (isDynamicArrayArgument(expression)) {
             const descriptor = dynamicArrayDescriptor(expression);
             return compileTruthValue(

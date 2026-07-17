@@ -593,9 +593,15 @@ behaviour.
   deferral.
 - String/array-slice truthiness (`if (s)`, `!s`, `s ? a : b`, `s && t`, plain
   `assert(s)`) is D's `ptr !is null`, but the compact 8-byte {data offset,
-  length} slice descriptor `compileTruthValue` receives cannot distinguish
-  null from data-at-offset-zero. `compileTruthValue` refuses a string operand
-  rather than mis-fire on the descriptor bits. Implementing real truthiness
+  length} slice descriptor a string local or field carries cannot distinguish
+  null from data-at-offset-zero. `compileBoolCondition` refuses any
+  string-typed condition by its AST type before compiling it, rather than
+  trust every operand producer to have set `Operand.isString`: a `string[N]`
+  element read yields a real 16-byte {ptr, length} slice descriptor (the same
+  layout an ordinary `T[][N]` element uses), not the compact 8-byte one, so it
+  cannot carry that flag without corrupting other consumers (`.length`, `==`)
+  that branch on it to mean the compact layout. Implementing real truthiness
   needs a faithful string-null model (a descriptor or convention that can
   represent "no data" distinctly from "data at offset 0") applied consistently
-  across the compiler, not a local fix in `compileTruthValue`.
+  across the compiler, and would need to account for both descriptor layouts
+  in play, not a local fix in one place.
