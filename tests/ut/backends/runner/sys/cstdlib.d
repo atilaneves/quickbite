@@ -452,13 +452,11 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Compiled code calls the real malloc and the fixture passes; the diagnostic
-// above is interpretation-only. LLVMJit is promoted alongside SystemLinker
-// (its single behaviour oracle) on this surviving rt/ block: a real runtime
-// libc malloc call through the in-process JIT.
+// Compiled code and the interpreter call the real malloc; the diagnostic above
+// is CTFE-only. LLVMJit and Interpreter are promoted alongside SystemLinker
+// (their single behaviour oracle) on this surviving runtime block.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "compiled code calls the real malloc; the CTFE diagnostic is interpretation-only (see malloc.noSource pin above)"),
-    Omit!(Interpreter, Because.unconfirmed),
 )) {
     @("malloc." ~ backend.stringof)
     @Tags(backend.stringof)

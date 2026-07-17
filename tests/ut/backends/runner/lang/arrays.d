@@ -22,12 +22,37 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// An array allocation identity uses one allocation-base coordinate across
+// frames: a returned cast of an interior parameter must retain that interior
+// offset rather than being rebound to the caller's whole allocation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.returnedCastOfInteriorParameterPreservesOffset." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte[] view(byte[] values) {
+                return cast(ubyte[]) values;
+            }
+
+            unittest {
+                byte runtime = 1;
+                byte[] a = [runtime, cast(byte) 2];
+                ubyte[] whole = cast(ubyte[]) a;
+                byte[] s = a[1 .. 2];
+                ubyte[] b = view(s);
+                b[0] = 9;
+
+                assert(a[0] == 1);
+                assert(a[1] == 9);
+            }
+        });
+    }
+}
+
 // Reinterpreting a signed-byte slice as `ubyte[]` exposes its stored bits,
 // rather than converting each signed value.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "native-layout/value-representation frontier (ai/plans/value.md); no raw byte view of array storage"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.castSignedBytesToUbytesPreservesRawBits." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -47,6 +72,216 @@ static foreach (backend; Matrix!(
                 assert(raw[2] == cast(ubyte) 254);
                 assert(raw[3] == cast(ubyte) 5);
                 assert(raw[4] == cast(ubyte) 252);
+            }
+        });
+    }
+}
+
+// A same-width scalar array cast is a view over the source storage, so a
+// write through the cast result is visible through the source slice.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte[] signed = [1];
+                ubyte[] raw = cast(ubyte[]) signed;
+                raw[0] = 2;
+
+                assert(signed[0] == 2);
+            }
+        });
+    }
+}
+
+// Assignment of a same-width scalar array cast preserves the same storage
+// aliasing as declaration initialization.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.assignedSameWidthScalarCastPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte runtime = 1;
+                byte[] a = [runtime];
+                ubyte[] b;
+                b = cast(ubyte[]) a;
+                b[0] = 2;
+
+                assert(a[0] == 2);
+            }
+        });
+    }
+}
+
+// Rebinding the source of a same-width scalar-array view must not detach the
+// still-live view from the storage it captured before that rebind.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastSurvivesSourceRebind." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 2;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first];
+                ubyte[] b = cast(ubyte[]) a;
+                a = [cast(byte) 3];
+                mutate(b);
+
+                assert(b[0] == 2);
+                assert(a[0] == 3);
+            }
+        });
+    }
+}
+
+// Rebinding a cast-view variable gives that binding a new allocation identity;
+// a later cast of the rebound variable must not redirect surviving aliases of
+// the old allocation to the new storage.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.reboundSameWidthScalarCastDoesNotRedirectOldAliases." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 9;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first];
+                ubyte[] b = cast(ubyte[]) a;
+                ubyte[] c = b;
+                b = [cast(ubyte) 3];
+                byte[] d = cast(byte[]) b;
+                mutate(c);
+
+                assert(a[0] == 9);
+                assert(b[0] == 3);
+                assert(c[0] == 9);
+                assert(d[0] == 3);
+            }
+        });
+    }
+}
+
+// Passing an unbound same-width scalar array cast directly as a slice
+// argument preserves the source storage alias.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastArgumentPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 2;
+            }
+
+            unittest {
+                byte runtime = 1;
+                byte[] values = [runtime];
+                mutate(cast(ubyte[]) values);
+
+                assert(values[0] == 2);
+            }
+        });
+    }
+}
+
+// Passing an interior slice of a same-width scalar-array view preserves that
+// slice's offset and length instead of rebinding the callee to the whole
+// source allocation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.interiorSameWidthScalarCastSliceArgumentPreservesBounds." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 9;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first, cast(byte) 2];
+                ubyte[] b = cast(ubyte[]) a;
+                ubyte[] c = b[1 .. 2];
+                mutate(c);
+
+                assert(a[0] == 1);
+                assert(a[1] == 9);
+            }
+        });
+    }
+}
+
+// Returning an unbound same-width scalar array cast preserves the source
+// storage alias after the callee frame has gone away.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable module variable"),
+    Omit!(Bytecode, Because.refusal,
+        "module-level dynamic-array assignment is unsupported"),
+)) {
+    @("dynamicArray.sameWidthScalarCastReturnPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte[] a;
+
+            ubyte[] view() {
+                return cast(ubyte[]) a;
+            }
+
+            unittest {
+                byte runtime = 1;
+                a = [runtime];
+                ubyte[] b = view();
+                b[0] = 2;
+
+                assert(a[0] == 2);
+            }
+        });
+    }
+}
+
+// Assigning a returned same-width scalar-array view preserves its source
+// storage alias just as declaration initialization does.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable module variable"),
+    Omit!(Bytecode, Because.refusal,
+        "module-level dynamic-array assignment is unsupported"),
+)) {
+    @("dynamicArray.assignedReturnedSameWidthScalarCastPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte[] a;
+
+            ubyte[] view() {
+                return cast(ubyte[]) a;
+            }
+
+            unittest {
+                byte runtime = 1;
+                a = [runtime];
+                ubyte[] b;
+                b = view();
+                b[0] = 2;
+
+                assert(a[0] == 2);
             }
         });
     }
@@ -779,9 +1014,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.lengthAssignmentDefaultInitializesStructElements." ~
         backend.stringof)
     @Tags(backend.stringof)

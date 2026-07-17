@@ -3,7 +3,11 @@ module quickbite.backends;
 
 // awkward to use imported!"" when deriving
 import quickbite.backends.runner: Runner;
-import quickbite.backends.evaluator: Evaluator, ReplSession, replayReplSession;
+import quickbite.backends.evaluator:
+    Evaluator,
+    EvalResult,
+    ReplSession,
+    replayReplSession;
 
 
 private:
@@ -38,17 +42,22 @@ public abstract class TreeNodeBackend: Backend {
         return cases;
     }
 
-    // The Evaluator-to-Runner bridge: every tree backend turns a single
-    // unit-test declaration into a TestResult by evaluating it and wrapping
-    // the EvalResult. Overridable, but identical for all current backends.
+    // Turn one backend execution result into the runner's public result.
     protected TestResult runUnitTest(UnitTestDeclaration unitTest) {
-        const result = eval(unitTest);
+        const result = executeUnitTest(unitTest);
         return TestResult(
             !result.failed,
             symbolName(unitTest),
             locChars(unitTest.loc),
             result.diagnostic,
         );
+    }
+
+    // Backends may bypass expression-display evaluation for unittests. The
+    // default preserves the interim bridge until each backend supplies a
+    // direct execution path.
+    protected EvalResult executeUnitTest(UnitTestDeclaration unitTest) {
+        return eval(unitTest);
     }
 }
 

@@ -423,10 +423,6 @@ private bool ordinaryStructNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
     if (structType is null || structType.sym.isInstantiated !is null)
         return false;
 
-    foreach (field; structType.sym.fields)
-        if (field !is null && field.isThisDeclaration !is null)
-            return false;
-
     return true;
 }
 

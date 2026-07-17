@@ -6,9 +6,13 @@ private:
 
 public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
+    import quickbite.backends.evaluator:
+        Evaluator,
+        EvalResult,
+        ReplSession,
+        displayString;
     import quickbite.lang: Value;
-    import dmd.func: FuncDeclaration;
+    import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
 
@@ -40,6 +44,53 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             // happened to reject.
             return EvalResult(EvalResult.Diagnostic(exception.msg));
         }
+    }
+
+    protected override EvalResult executeUnitTest(
+        UnitTestDeclaration unitTest,
+    ) {
+        try {
+            Walker walker;
+            scope(exit) walker.closeDurableInboundSession;
+            walker.inUnitTest = true;
+            walker.runStatement(unitTest.fbody);
+            return EvalResult("");
+        } catch (Exception exception) {
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        }
+    }
+
+    public override ReplSession createReplSession() {
+        return new InterpreterReplSession(this);
+    }
+
+    private EvalResult evalFormattedDisplay(FuncDeclaration function_) {
+        try {
+            Walker walker;
+            scope(exit) walker.closeDurableInboundSession;
+            walker.runStatement(function_.fbody);
+            return EvalResult(walker.result.asCharArrayString);
+        } catch (Exception exception) {
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        }
+    }
+}
+
+private class InterpreterReplSession:
+    imported!"quickbite.backends.evaluator".ReplSession {
+    private Interpreter _interpreter;
+
+    public this(Interpreter interpreter) {
+        _interpreter = interpreter;
+    }
+
+    public override imported!"quickbite.backends.evaluator".EvalResult submit(
+        imported!"quickbite.frontend.repl".ReplCell cell,
+    ) {
+        if (cell.evalCell.displayIsFormatted)
+            return _interpreter.evalFormattedDisplay(cell.evalCell.function_);
+
+        return _interpreter.eval(cell.evalCell);
     }
 }
 
@@ -429,6 +480,14 @@ private struct Walker {
     private size_t[VarDeclaration] arrayAllocations;
     private size_t[VarDeclaration] arrayAllocationAliases;
     private VarDeclaration[size_t] arrayAllocationVariables;
+    // Allocation-base storage carried by an evaluated array allocation
+    // identity, independent of whichever source variable first minted that
+    // identity. Every Value offset for an id is relative to this one base;
+    // never replace it with an interior, view-relative cell from another
+    // frame. A source slot may be rebound (correctly invalidating its
+    // forward/reverse maps) while a derived slice or cast view carrying the
+    // old id remains live.
+    private NativeArray[size_t] arrayAllocationCarriers;
     private bool[VarDeclaration] arrayPointerWritebacks;
     // Per-(receiver variable, field index) memo for `&s.field` allocation
     // ids (Rung 7): repeated address-of evaluations of the same field must
@@ -2239,6 +2298,7 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.arrayAllocationCarriers = arrayAllocationCarriers.dup;
         child.structFieldPointerVariables = structFieldPointerVariables.dup;
         child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
         child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
@@ -2479,21 +2539,27 @@ private struct Walker {
     // accessor. A union element, a static-array element whose OWN element
     // type is not `native_scalar.isNativeScalarType` (out of this narrow
     // slice's scope -- no deeper-nesting rabbit hole), any other non-scalar
-    // element type (class, nested dynamic array, slice), or a dataseg
-    // variable is left untouched and keeps using the existing
-    // boxed/aliasing paths.
+    // element type (class, nested dynamic array, slice) is left untouched and
+    // keeps using the existing boxed/aliasing paths. Dataseg arrays may be
+    // promoted after their lazily materialized value has entered `locals`:
+    // unlike a cell seeded before that point, this preserves the initializer
+    // while allowing a typed view returned from a callee to keep sharing the
+    // module variable's storage.
     private void promoteArrayCell(VarDeclaration variable) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
         import quickbite.frontend.dmd.types: isDynamicArrayType;
 
-        if (variable.isDataseg)
-            return;
-
         if (variable in arrayCells)
             return;
 
         if (!isDynamicArrayType(variable.type))
+            return;
+
+        // Dataseg storage has no trustworthy default-value seed: until its
+        // current value has been materialized in `locals`, its initializer or
+        // extern data symbol remains authoritative.
+        if (variable.isDataseg && variable !in locals)
             return;
 
         auto elementType = variable.type.toBasetype.nextOf.toBasetype;
@@ -2568,8 +2634,9 @@ private struct Walker {
     //
     // `promoteArrayCell(alias_.source)` mirrors the address-of-time
     // promotion `arrayPointer` already does for `&a[i]`: eager, idempotent,
-    // and gated by the same guards (non-dataseg, dynamic array, native-
-    // scalar element). Once the source has a cell, `NativeArray.slice`
+    // and gated by the same dynamic-array and representable-element guards.
+    // A dataseg source is eligible once its current value is materialized in
+    // `locals`. Once the source has a cell, `NativeArray.slice`
     // gives a real, bidirectionally-aliasing sub-range view over it -- not
     // a copy -- for `variable`'s own entry, using `alias_.lower` and the
     // slice's own already-computed length (`locals[variable]`, the boxed
@@ -2579,9 +2646,9 @@ private struct Walker {
     // A no-op, leaving `variable` on the existing boxed/aliasing paths, for:
     // a struct-field-rooted slice (`alias_.hasFieldIndex`, e.g. `val.field[]`
     // -- not a plain local, out of this narrow first slice's scope); and any
-    // source whose element type isn't `native_scalar.isNativeScalarType` or
-    // that is `isDataseg`, both of which make `promoteArrayCell` itself a
-    // no-op, leaving no cell here to share.
+    // source that `promoteArrayCell` cannot represent (including a union,
+    // deeper nested static array, or other unsupported element shape), which
+    // leaves no cell here to share.
     private void promoteSliceArrayCell(VarDeclaration variable) {
         // `variable`'s declaration statement re-executes on every fresh
         // binding (a loop-reused slice temp taken over a differently-sized
@@ -2617,6 +2684,21 @@ private struct Walker {
             return;
 
         arrayCells[variable] = cell.slice(alias_.lower, alias_.lower + length);
+
+        // `recordSliceAlias` has flattened nested slices to their ultimate
+        // source and an absolute offset from that source. Give every such
+        // view the root's allocation identity and keep that id's carrier at
+        // the root cell: a callee may see only this interior cell, but its
+        // Value offset must remain meaningful when the carrier merges back
+        // into a frame that sees the whole allocation. This also preserves a
+        // one-past-the-end coordinate for zero-length slices.
+        const rootId = alias_.source in arrayAllocationAliases;
+        const id = rootId is null
+            ? allocationId(alias_.source)
+            : *rootId;
+        if (id !in arrayAllocationCarriers)
+            arrayAllocationCarriers[id] = *cell;
+        arrayAllocationAliases[variable] = id;
     }
 
     // Eagerly gives an address-taken struct local a `NativeStruct` cell the
@@ -3577,6 +3659,7 @@ private struct Walker {
     // iterating them, mirroring `dropStructCell`'s own discipline.
     private void dropArrayCell(VarDeclaration variable) {
         arrayCells.remove(variable);
+        arrayAllocationAliases.remove(variable);
 
         if (auto id = variable in arrayAllocations) {
             arrayAllocationVariables.remove(*id);
@@ -3594,6 +3677,24 @@ private struct Walker {
             arrayNestedStructFieldPointerOuterFieldIndices.remove(id);
             arrayNestedStructFieldPointerInnerFieldIndices.remove(id);
         }
+    }
+
+    // Drops the cell families that every fresh local or parameter binding
+    // invalidates. Class cells are deliberately excluded: declarations drop
+    // them separately, while parameter binding retains its existing class
+    // alias state.
+    private void dropNonClassCells(VarDeclaration variable) {
+        scalarCells.remove(variable);
+        dropArrayCell(variable);
+        dropStructCell(variable);
+    }
+
+    // A declaration introduces fresh storage for every cell family. Keep this
+    // separate from `dropNonClassCells`: parameter binding deliberately
+    // preserves class cells because they carry the caller's object alias.
+    private void dropDeclarationCells(VarDeclaration variable) {
+        dropNonClassCells(variable);
+        dropClassCell(variable);
     }
 
     // Reads `variable`'s current value: a promoted `scalarCells` entry (the
@@ -5473,25 +5574,7 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        arrayAllocationAliases = child.arrayAllocationAliases;
-        mergeArrayAllocationMaps(child);
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
-        arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeStructFieldPointerVariableMaps(child);
-        structFieldPointerWritebacks = child.structFieldPointerWritebacks;
-        mergeStructArrayFieldPointerVariableMaps(child);
-        structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
-        mergeNestedStructFieldPointerVariableMaps(child);
-        nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
-        mergeClassFieldPointerVariableMaps(child);
-        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
-        mergeNestedClassStructFieldPointerVariableMaps(child);
-        nestedClassStructFieldPointerWritebacks =
-            child.nestedClassStructFieldPointerWritebacks;
-        mergeClassArrayFieldPointerVariableMaps(child);
-        classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
+        mergePointerCellState(child);
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -5524,25 +5607,7 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        arrayAllocationAliases = child.arrayAllocationAliases;
-        mergeArrayAllocationMaps(child);
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
-        arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeStructFieldPointerVariableMaps(child);
-        structFieldPointerWritebacks = child.structFieldPointerWritebacks;
-        mergeStructArrayFieldPointerVariableMaps(child);
-        structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
-        mergeNestedStructFieldPointerVariableMaps(child);
-        nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
-        mergeClassFieldPointerVariableMaps(child);
-        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
-        mergeNestedClassStructFieldPointerVariableMaps(child);
-        nestedClassStructFieldPointerWritebacks =
-            child.nestedClassStructFieldPointerWritebacks;
-        mergeClassArrayFieldPointerVariableMaps(child);
-        classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
+        mergePointerCellState(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
@@ -5557,6 +5622,71 @@ private struct Walker {
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
+    }
+
+    // Merges the allocation and field-pointer maps whose entries describe
+    // native cells reachable across a call boundary. Free-function and member
+    // returns share this dispatcher so a new map cannot be propagated through
+    // only one call shape.
+    private void mergePointerCellState(ref Walker child) {
+        arrayAllocationAliases = child.arrayAllocationAliases;
+        mergeArrayAllocationMaps(child);
+        mergeArrayAllocationCarriers(child);
+        mergeReturnedArrayCell(child);
+        mergeFieldAddressAllocations(child);
+        mergeNestedFieldAddressAllocations(child);
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+        arrayPointerWritebacks = child.arrayPointerWritebacks;
+        mergeFieldPointerState(child);
+    }
+
+    // A returned array carrier may be the first value that makes a source
+    // array's native storage observable in this frame. Adopt exactly that
+    // escaping cell after its allocation-id maps have merged. Do not copy the
+    // child's whole `arrayCells` table: it also contains callee-local bindings
+    // whose `VarDeclaration` keys can be reused by another activation. An
+    // existing cell in this frame always wins for the same reason as the
+    // forward allocation-id merge above.
+    private void mergeReturnedArrayCell(ref Walker child) {
+        if (!child.result.isArray || child.result.arrayAllocationId == 0)
+            return;
+
+        const id = child.result.arrayAllocationId;
+        auto sourceVariable = id in child.arrayAllocationVariables;
+        if (sourceVariable is null)
+            return;
+
+        auto mergedVariable = id in arrayAllocationVariables;
+        if (mergedVariable is null || *mergedVariable !is *sourceVariable)
+            return;
+
+        if ((*sourceVariable in arrayCells) !is null)
+            return;
+
+        auto cell = *sourceVariable in child.arrayCells;
+        if (cell !is null)
+            arrayCells[*sourceVariable] = *cell;
+    }
+
+    // Merges every field-pointer reverse lookup and adopts its corresponding
+    // cross-frame writeback set. This is the return-side counterpart of
+    // `forkPerFrameCellsInto`: call-return paths dispatch the complete family
+    // here so adding or removing a field shape cannot silently update only
+    // one kind of call.
+    private void mergeFieldPointerState(ref Walker child) {
+        mergeStructFieldPointerVariableMaps(child);
+        structFieldPointerWritebacks = child.structFieldPointerWritebacks;
+        mergeStructArrayFieldPointerVariableMaps(child);
+        structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
+        mergeNestedStructFieldPointerVariableMaps(child);
+        nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
+        mergeClassFieldPointerVariableMaps(child);
+        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
+        mergeNestedClassStructFieldPointerVariableMaps(child);
+        nestedClassStructFieldPointerWritebacks =
+            child.nestedClassStructFieldPointerWritebacks;
+        mergeClassArrayFieldPointerVariableMaps(child);
+        classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
     }
 
     private void mergeNativeThrowableRoots(ref Walker child) {
@@ -5606,6 +5736,16 @@ private struct Walker {
         foreach (variable, id; child.arrayAllocations)
             if (variable !in arrayAllocations)
                 arrayAllocations[variable] = id;
+    }
+
+    // Allocation ids are minted from the shared monotonically increasing
+    // counter, so a carrier for an id always names the same storage in every
+    // frame. Merge non-destructively: a callee's fresh-binding cleanup must
+    // not erase a carrier still reachable by a value in its caller.
+    private void mergeArrayAllocationCarriers(ref Walker child) {
+        foreach (id, carrier; child.arrayAllocationCarriers)
+            if (id !in arrayAllocationCarriers)
+                arrayAllocationCarriers[id] = carrier;
     }
 
     // Struct sibling of the merge above -- `structFieldPointerVariables`/
@@ -6379,11 +6519,7 @@ private struct Walker {
         child.runStatement(function_.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
         allocationCount = child.allocationCount;
-        arrayAllocationAliases = child.arrayAllocationAliases;
-        mergeArrayAllocationMaps(child);
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+        mergePointerCellState(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
     }
@@ -6487,9 +6623,7 @@ private struct Walker {
             // the same way a fresh `DeclarationExp` does -- recursion reuses
             // the same
             // `VarDeclaration` for a parameter at every call depth.
-            scalarCells.remove(parameter);
-            dropArrayCell(parameter);
-            dropStructCell(parameter);
+            dropNonClassCells(parameter);
             locals[parameter] = arguments[index];
 
             // `runRefArgumentExpression` seeds a `ref` argument still bound to
@@ -6514,7 +6648,64 @@ private struct Walker {
                     ? argumentExpressions[index]
                     : null,
             );
+            bindArrayValueCell(parameter, arguments[index]);
         }
+    }
+
+    // A dynamic-array expression result can carry the allocation identity of
+    // authoritative array storage even when its syntax is not a plain
+    // variable (for example, a same-width scalar cast). Recover that storage
+    // for a binding's own typed view instead of retaining only the boxed
+    // element snapshot.
+    private void bindArrayValueCell(
+        VarDeclaration variable,
+        in Value value,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        if (!value.isArray || value.arrayAllocationId == 0)
+            return;
+
+        const id = value.arrayAllocationId;
+        auto sourceCell = id in arrayAllocationCarriers;
+        if (sourceCell is null) {
+            auto sourceVariable = id in arrayAllocationVariables;
+            if (sourceVariable is null)
+                return;
+
+            sourceCell = *sourceVariable in arrayCells;
+            if (sourceCell is null)
+                return;
+
+            arrayAllocationCarriers[id] = *sourceCell;
+            sourceCell = id in arrayAllocationCarriers;
+        }
+
+        auto targetType = variable.type.toBasetype;
+        if (!isDynamicArrayType(targetType))
+            return;
+
+        targetType = targetType.nextOf.toBasetype;
+        if (
+            !isNativeScalarType(sourceCell.elementType) ||
+            !isNativeScalarType(targetType) ||
+            typeByteSize(sourceCell.elementType) != typeByteSize(targetType)
+        )
+            return;
+
+        const offset = value.arrayAllocationOffset;
+        if (
+            offset > sourceCell.length ||
+            value.length > sourceCell.length - offset
+        )
+            return;
+
+        arrayCells[variable] = sourceCell
+            .slice(offset, offset + value.length)
+            .reinterpretElements(targetType);
+        arrayAllocationAliases[variable] = id;
     }
 
     // A `lazy` parameter is a delegate over the *caller's live frame*, not a
@@ -6536,9 +6727,7 @@ private struct Walker {
         // parameter is still a new
         // stack slot for its own `VarDeclaration`, so drop any inherited/
         // stale cell.
-        scalarCells.remove(parameter);
-        dropArrayCell(parameter);
-        dropStructCell(parameter);
+        dropNonClassCells(parameter);
         locals[parameter] = Value.undisplayable;
 
         if (auto variable = lazyExpressionVariable(argumentExpression)) {
@@ -6620,7 +6809,11 @@ private struct Walker {
             ? null
             : argumentExpression.isSliceExp;
         if (slice is null || !argument.isArray) {
-            recordForwardedArrayAllocationAlias(parameter, argumentExpression);
+            recordForwardedArrayAllocationAlias(
+                parameter,
+                argument,
+                argumentExpression,
+            );
             sliceAliases.remove(parameter);
             return;
         }
@@ -6664,13 +6857,17 @@ private struct Walker {
 
     private void recordForwardedArrayAllocationAlias(
         VarDeclaration parameter,
+        in Value argument,
         imported!"dmd.expression".Expression argumentExpression,
     ) {
         auto var = argumentExpression is null
             ? null
             : argumentExpression.isVarExp;
         if (var is null) {
-            arrayAllocationAliases.remove(parameter);
+            if (argument.isArray && argument.arrayAllocationId != 0)
+                arrayAllocationAliases[parameter] = argument.arrayAllocationId;
+            else
+                arrayAllocationAliases.remove(parameter);
             return;
         }
 
@@ -7552,13 +7749,15 @@ private struct Walker {
         const value = runExpression(assign.e2);
         writeLocation(assign.e1, value);
 
-        // `c2 = c;` (plain-variable rebind, as opposed to `c2.x = v`'s
-        // field write below): register the class-reference alias here too,
-        // the assignment-operator sibling of `runDeclarationExpression`'s
-        // own `registerClassAliasIfPlainVar` call.
+        // Plain-variable assignments are bindings just like declaration
+        // initializers: propagate storage-backed views and reference aliases
+        // after `writeLocation` has dropped the target's previous binding.
         if (auto var = assign.e1.isVarExp)
-            if (auto variable = var.var.isVarDeclaration)
+            if (auto variable = var.var.isVarDeclaration) {
+                bindArrayValueCell(variable, value);
+                bindScalarArrayCastView(variable, assign.e2);
                 registerClassAliasIfPlainVar(variable, assign.e2);
+            }
 
         return value;
     }
@@ -7997,9 +8196,16 @@ private struct Walker {
         foreach (index; 0 .. newLength)
             elements ~= index < oldLength
                 ? current[index]
-                : defaultValue(arrayElementType(target.e1.type));
+                : runDefaultValue(arrayElementType(target.e1.type));
 
         writeLocation(target.e1, Value.arrayValue(elements));
+    }
+
+    private Value runDefaultValue(imported!"dmd.mtype".Type type) {
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInitLiteral;
+
+        return runExpression(type.defaultInitLiteral(Loc.initial));
     }
 
     private Value storageValue(
@@ -9069,7 +9275,10 @@ private struct Walker {
     // this cell shape when every element is `native_scalar.
     // isNativeScalarType` -- so this builds a fresh element array outright
     // rather than taking a base `Value` to overlay onto.
-    private Value arrayValueFromCell(ref NativeArray cell) {
+    private Value arrayValueFromCell(
+        ref NativeArray cell,
+        in size_t allocationId = 0,
+    ) {
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
         Value[] elements;
@@ -9077,7 +9286,44 @@ private struct Walker {
         foreach (index; 0 .. cell.length)
             elements[index] = readScalar(cell.elementType, cell.element(index));
 
-        return Value.arrayValue(elements);
+        return allocationId == 0
+            ? Value.arrayValue(elements)
+            : Value.arraySliceValue(elements, elements, 0, allocationId);
+    }
+
+    private Value arrayValueFromCarrier(
+        ref NativeArray view,
+        ref NativeArray carrier,
+        in size_t allocationId,
+        in size_t allocationOffset,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: readScalar;
+
+        if (
+            allocationOffset > carrier.length ||
+            view.length > carrier.length - allocationOffset
+        )
+            throw new Exception("Array carrier view exceeds its allocation.");
+
+        Value[] elements;
+        elements.length = view.length;
+        foreach (index; 0 .. view.length)
+            elements[index] = readScalar(view.elementType, view.element(index));
+
+        Value[] allocation;
+        allocation.length = carrier.length;
+        foreach (index; 0 .. carrier.length)
+            allocation[index] = readScalar(
+                carrier.elementType,
+                carrier.element(index),
+            );
+
+        return Value.arraySliceValue(
+            elements,
+            allocation,
+            allocationOffset,
+            allocationId,
+        );
     }
 
     private Value runAssocArraySlotAssignExpression(
@@ -9439,7 +9685,7 @@ private struct Walker {
         foreach (index; 0 .. newLength)
             elements ~= index < current.length
                 ? (*current)[index]
-                : defaultValue(arrayElementType(variable.type));
+                : runDefaultValue(arrayElementType(variable.type));
 
         // Go through `writeLocation`, not a direct `locals[variable] = ...`:
         // dmd's postfix `.length++`/`.length--` lowering binds a synthetic
@@ -9613,8 +9859,12 @@ private struct Walker {
                 return value;
         }
 
-        if (isTransparentArrayCastTarget(type))
+        if (isTransparentArrayCastTarget(type)) {
+            Value reinterpreted;
+            if (reinterpretScalarArrayCast(cast_, reinterpreted))
+                return reinterpreted;
             return runExpression(cast_.e1);
+        }
 
         if (type.ty == TY.Tbool)
             return boolCastValue(cast_);
@@ -9633,6 +9883,116 @@ private struct Walker {
             }
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
+    }
+
+    private bool reinterpretScalarArrayCast(
+        imported!"dmd.expression".CastExp cast_,
+        out Value result,
+    ) {
+        import std.conv: text;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, writeScalar;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        auto sourceType = cast_.e1.type.toBasetype;
+        auto targetType = cast_.to.toBasetype;
+        if (!isDynamicArrayType(sourceType) || !isDynamicArrayType(targetType))
+            return false;
+
+        sourceType = sourceType.nextOf.toBasetype;
+        targetType = targetType.nextOf.toBasetype;
+        if (
+            !isNativeScalarType(sourceType) ||
+            !isNativeScalarType(targetType) ||
+            typeByteSize(sourceType) != typeByteSize(targetType)
+        )
+            return false;
+
+        const source = runExpression(cast_.e1);
+        if (source.arrayAllocationId != 0) {
+            const id = source.arrayAllocationId;
+            if (auto sourceCarrier = id in arrayAllocationCarriers) {
+                const offset = source.arrayAllocationOffset;
+                if (
+                    offset > sourceCarrier.length ||
+                    source.length > sourceCarrier.length - offset
+                )
+                    throw new Exception(
+                        "Existing array cast view exceeds its allocation carrier.",
+                    );
+
+                auto targetCarrier =
+                    sourceCarrier.reinterpretElements(targetType);
+                auto targetView = targetCarrier.slice(
+                    offset,
+                    offset + source.length,
+                );
+                result = arrayValueFromCarrier(
+                    targetView,
+                    targetCarrier,
+                    id,
+                    offset,
+                );
+                return true;
+            }
+        }
+
+        if (auto sourceVar = cast_.e1.isVarExp)
+            if (auto sourceVariable = sourceVar.var.isVarDeclaration) {
+                promoteArrayCell(sourceVariable);
+                if (auto sourceCell = sourceVariable in arrayCells) {
+                    auto targetView =
+                        sourceCell.reinterpretElements(targetType);
+                    const id = sourceVariable in arrayAllocationAliases;
+                    const allocation =
+                        id is null ? allocationId(sourceVariable) : *id;
+                    if (allocation !in arrayAllocationCarriers)
+                        arrayAllocationCarriers[allocation] = targetView;
+                    auto carrier = allocation in arrayAllocationCarriers;
+                    auto targetCarrier =
+                        carrier.reinterpretElements(targetType);
+                    const offset = source.arrayAllocationOffset;
+                    if (
+                        offset > targetCarrier.length ||
+                        source.length > targetCarrier.length - offset
+                    )
+                        throw new Exception(
+                            text(
+                                "New array cast view [",
+                                offset,
+                                " .. ",
+                                offset + source.length,
+                                ") exceeds allocation carrier length ",
+                                targetCarrier.length,
+                                ".",
+                            ),
+                        );
+
+                    targetView = targetCarrier.slice(
+                        offset,
+                        offset + source.length,
+                    );
+                    result = arrayValueFromCarrier(
+                        targetView,
+                        targetCarrier,
+                        allocation,
+                        offset,
+                    );
+                    return true;
+                }
+            }
+
+        // An unbound array rvalue still needs a boxed expression result. Use
+        // one native source block for the reinterpretation; a local binding
+        // takes the shared-cell path above and never reaches this fallback.
+        auto sourceCell = NativeArray.allocate(sourceType, source.length);
+        foreach (index; 0 .. source.length)
+            writeScalar(sourceType, sourceCell.element(index), source[index]);
+
+        auto targetView = sourceCell.reinterpretElements(targetType);
+        result = arrayValueFromCell(targetView);
+        return true;
     }
 
     private Value boolCastValue(imported!"dmd.expression".CastExp cast_) {
@@ -10758,17 +11118,12 @@ private struct Walker {
             child.result = Value(false);
             child.thisValue = structVal;
             child.hasThis = true;
-            child.fieldAddressAllocations = fieldAddressAllocations.dup;
-            child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
-            child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
-            child.allocationCount = allocationCount;
+            forkPerFrameCellsInto(child);
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
             allocationCount = child.allocationCount;
-            mergeFieldAddressAllocations(child);
-            mergeNestedFieldAddressAllocations(child);
-            fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+            mergePointerCellState(child);
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             import quickbite.backends.interpreter.layout: structFields;
@@ -10886,9 +11241,7 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         allocationCount = child.allocationCount;
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+        mergePointerCellState(child);
         return child.thisValue;
     }
 
@@ -11127,10 +11480,7 @@ private struct Walker {
         // recursion at all -- including a nested `foreach`'s per-iteration
         // slice temporary, whose source array is promoted eagerly by
         // `promoteSliceArrayCell` with no address-of needed at all.
-        scalarCells.remove(variable);
-        dropArrayCell(variable);
-        dropStructCell(variable);
-        dropClassCell(variable);
+        dropDeclarationCells(variable);
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {
             uninitializedLocals[variable] = true;
@@ -11266,8 +11616,10 @@ private struct Walker {
                 : runExpression(initializer),
         );
         locals[variable] = value;
+        bindScalarArrayCastView(variable, initializer);
         registerClassAliasIfPlainVar(variable, initializer);
         recordGCArrayUsedAlias(variable, initializer);
+        bindArrayValueCell(variable, value);
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)
             recordArrayElementAlias(variable, indexInitializer, arrayElementAliasIndex);
@@ -11281,6 +11633,52 @@ private struct Walker {
         recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    // A same-width scalar dynamic-array cast changes only the element type
+    // used to interpret the bytes. Give the destination and source locals
+    // differently typed views over one NativeArray block so writes through
+    // either binding remain visible through the other.
+    private void bindScalarArrayCastView(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        auto cast_ = initializer.isCastExp;
+        if (cast_ is null)
+            return;
+
+        auto sourceExpression = cast_.e1;
+        auto sourceVar = sourceExpression.isVarExp;
+        auto source = sourceVar is null
+            ? null
+            : sourceVar.var.isVarDeclaration;
+        if (source is null)
+            return;
+
+        auto sourceType = sourceExpression.type.toBasetype;
+        auto targetType = variable.type.toBasetype;
+        if (!isDynamicArrayType(sourceType) || !isDynamicArrayType(targetType))
+            return;
+
+        sourceType = sourceType.nextOf.toBasetype;
+        targetType = targetType.nextOf.toBasetype;
+        if (
+            !isNativeScalarType(sourceType) ||
+            !isNativeScalarType(targetType) ||
+            typeByteSize(sourceType) != typeByteSize(targetType)
+        )
+            return;
+
+        promoteArrayCell(source);
+        auto sourceCell = source in arrayCells;
+        if (sourceCell is null)
+            return;
+
+        arrayCells[variable] = sourceCell.reinterpretElements(targetType);
     }
 
     private void recordGCArrayUsedAlias(

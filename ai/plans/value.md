@@ -10,6 +10,12 @@ stand:
   `:t` cells are frontend-answered. The prelude formatter's rendering
   surface is complete; expression-cell wiring is partial and the interim
   `displayString`/`Value.toString` scaffolding still exists (item 1).
+  Formatter-wrapped CTFE and interpreter sessions consume the guest-produced
+  string directly; nested-context structs are formatter-wrapped and render
+  only their declared fields. Only their unformatted evaluator paths retain
+  the scaffolding.
+  CTFE and interpreter unittests execute directly without rendering; IR and
+  Bytecode still use the interim evaluation bridge (item 2).
 - The interpreter's native-layout container layer is complete:
   `NativeBlock`/`NativeArray`/`NativeStruct` under
   `source/quickbite/backends/interpreter/`, with a symmetric composition
@@ -279,12 +285,32 @@ a checked fact; do not relearn them.
 - `setLength`'s grow path zeroes every newly exposed byte
   unconditionally, including bytes re-exposed by shrink-then-grow.
   Compiled D gates its memset on `__traits(isZeroInit, T)` and emplaces
-  `T.init` otherwise (`char` 0xFF, `float` NaN); matching that for
-  non-zero-init element types is the wiring call site's fidelity
-  obligation, not the container's.
+  `T.init` otherwise (`char` 0xFF, `float` NaN); the walker's boxed array
+  growth evaluates DMD's `defaultInitLiteral` for every new element.
+  Native-container call sites must preserve that distinction rather than
+  treating `NativeArray.setLength`'s zeroing as guest initialization.
 - A written slice header is a snapshot of `{length, ptr}`; it goes stale
   when the array reallocates, exactly as a compiled-D slice does. Keeping
   a header in sync is the call site's problem.
+- A same-width native-scalar dynamic-array cast is another typed view over
+  the source array's existing block, never an element-converted copy. Each
+  binding, whether introduced by a declaration or a later assignment, reads
+  and writes those shared bytes through its own element type. Binding from an
+  evaluated value recovers storage from a carrier keyed by the value's own
+  allocation identity. One identity always names the allocation's root cell,
+  never a frame-relative interior view; every slice offset, including a
+  nested or zero-length slice's one-past-the-end offset, is absolute in that
+  root coordinate. Binding derives a bounds-validated subview from that
+  absolute offset and the value's length before reinterpreting its element
+  type. It does not recover from the RHS syntax or a reverse lookup of the
+  source variable. Rebinding any derived view drops that variable's alias id
+  before a later cast can reuse it, but retains the id-keyed carrier for other
+  live values. Rebinding the source similarly invalidates that variable's maps
+  but cannot invalidate an earlier derived binding's carrier. Carriers fork
+  and merge with call frames so identity, interior offsets, and zero-length
+  views survive function boundaries. An unbound direct-cast expression still
+  needs its syntax-specific source recovery until every cast result carries
+  identity.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked
   multiplication — which is what makes subsequent `index * stride`
@@ -297,6 +323,10 @@ a checked fact; do not relearn them.
 
 ### Cell coherence (guest-visible native cells)
 
+- Cell and boxed-local state belongs to one execution, not to the reusable
+  `Interpreter` adapter. Running a module parsed before an earlier module's
+  execution must start from fresh value state; frontend AST age is not a
+  reason to retain or replay a prior walker's cells.
 - Every cell family must honour three obligations — dup on frame fork,
   merge on return, drop on rebind — and a missed one is invisible until
   it corrupts. (See item 7's consolidation debt before adding a family.)
@@ -321,10 +351,13 @@ a checked fact; do not relearn them.
   derived-typed `this` reads out of bounds (a real bug under virtual
   dispatch). Skip `this`-aliasing on any static-class mismatch; the
   override body falls back to its boxed receiver.
-- Only true stack locals get cells. Dataseg variables (`__gshared`,
-  `static`, module-level) never do: a cell seeded from the default value
-  would shadow their lazily materialized initializer and the extern
-  data-symbol read/write paths.
+- Scalar, struct, and class cells belong only to true stack locals. A
+  dynamic-array dataseg variable may gain a cell only after its lazily
+  materialized current value is present in `locals`; seeding it from a
+  default value would shadow its initializer and the extern data-symbol
+  read/write paths. Promotion requested before materialization is a no-op.
+  Slice-local promotion may initiate promotion after materialization;
+  unsupported element shapes still remain on boxed aliasing paths.
 - Fresh bindings (a declaration re-executed by a loop, recursion reusing
   the same AST `VarDeclaration`, parameter binding) must drop both the
   cell AND the pointer-id memo, so the next address-of mints a fresh id.
@@ -340,7 +373,10 @@ a checked fact; do not relearn them.
   entry whose variable this frame binds to a DIFFERENT id (same
   `VarDeclaration`, different binding). A plain-union reverse merge is
   safe only while ids are never memoized for that shape — re-check that
-  premise whenever a memo is added.
+  premise whenever a memo is added. When an array carrier escapes, merge
+  exactly the newly promoted source cell named by that carrier after its id
+  maps; never copy the child's whole cell table or overwrite this frame's
+  existing cell for a reused `VarDeclaration`.
 - Parameter writeback: only a genuine function parameter
   (`STC.parameter`) reconciles a cell across a return; a plain local that
   merely shares its AST node across recursion depths must not. This is a
@@ -421,10 +457,12 @@ Conventions, in order:
    as the scalar case. No element-type metadata is needed on any value
    carrier.
 5. Structs and enums round-trip via their rendered names (`Point(1, 2)`,
-   `E.a`). Enum members render qualified (`E.b`) — a bare member name is
-   not round-trippable D. Multi-entry AA rendering order is unpinned (D
-   AA iteration order is unspecified; round-trip validity does not depend
-   on it), as are non-member enum values (`cast(E)5`).
+   `E.a`). Struct rendering walks declared fields only; compiler-synthesized
+   context storage is never part of the display. Enum members render qualified
+   (`E.b`) — a bare member name is not round-trippable D. Multi-entry AA
+   rendering order is unpinned (D AA iteration order is unspecified;
+   round-trip validity does not depend on it), as are non-member enum values
+   (`cast(E)5`).
 6. Width round-trips for strings via the literal suffix (`"x"w`, `"x"d`);
    for characters it does not (all widths render `'a'`, disambiguated by
    `typeof`). Type qualifiers (`const`/`immutable`) and mutability are
@@ -496,22 +534,23 @@ are done; what is still pending, in order:
    the round-trip spec, and the `text(value)` catch-all covers only the
    rule-7 no-contract values. Expression cells are synthesized as
    `__quickbiteFormat(expr)` for a broad set of return types when the
-   backend opts in (`Ctfe`, `Interpreter`), but some displays (range and
-   template structs, nested-context structs) still run through the
-   interim `displayString`/`Value.toString` scaffolding. Keep expanding
-   the gate per backend (decision 4) until the display spec is no longer
-   enforced by the path scheduled for deletion. Items 2 and 3 are blocked
-   until this wiring lands. The interpreter's `std.conv.text` hook is
-   temporary formatter scaffolding, not a general Phobos builtin: remove
-   it once the formatter no longer needs that escape hatch.
+   backend opts in (`Ctfe`, `Interpreter`). The remaining gate exclusions are
+   range and template structs, which still run through the interim
+   `displayString`/`Value.toString` scaffolding. Keep expanding the gate per
+   backend (decision 4) until every REPL expression is
+   formatter-wrapped and the unformatted evaluator paths can be deleted.
+   Items 2 and 3 are blocked until this wiring lands. The interpreter's
+   `std.conv.text` hook is temporary formatter scaffolding, not a general
+   Phobos builtin: remove it once the formatter no longer needs that escape
+   hatch.
 
-2. Separate unittest execution from REPL evaluation (decision 12), then
-   delete the private reify -> `Value` -> `toString` scaffolding per
-   backend (decision 4) as each gains the formatter. `runTests` must
-   receive success/diagnostic directly; only a REPL expression cell
-   executes the prelude formatter and consumes its returned string. Do
-   not retain `Value` or render a dummy `void` result just to reuse the
-   `Evaluator.eval(FuncDeclaration)` path.
+2. Complete the unittest/expression split for IR and Bytecode (decision 12).
+   CTFE and Interpreter already execute unittest bodies directly and return
+   only success/diagnostic. Then delete the private reify -> `Value` ->
+   `toString` scaffolding per backend (decision 4) as each gains the
+   formatter. Only a REPL expression cell executes the prelude formatter and
+   consumes its returned string. Do not retain `Value` or render a dummy
+   `void` result just to reuse the evaluator path.
 
 3. Remove the *shared* `quickbite.lang.Value` (decision 7): once no
    backend depends on it as a cross-backend type, relocate the tree-
@@ -598,16 +637,15 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      (root variable, field PATH) — `a[i].inner.x` described as a path
      rather than a bespoke map per shape — so promote/read/write/merge/
      writeback/drop each exist once.
-   - Per-frame cell state is now forked in one place
-     (`Walker.forkPerFrameCellsInto`); that is the model for the rest.
-     Merge and drop should likewise become single dispatch points instead
-     of per-family calls hand-wired at every site.
-   - `runNewStructPointerExpression`'s fork site still duplicates a
-     narrow three-field subset with no recorded rationale; confirm it is
-     deliberate or fold it into the common path.
-   - `runNewClassExpression`'s child neither dupes nor merges the
-     array/struct pointer maps at all — a pre-existing asymmetry to
-     resolve when the fork/merge points are unified.
+   - Per-frame cell state is forked in one place
+     (`Walker.forkPerFrameCellsInto`), and field-pointer registry families
+     merge through one return-side dispatch point
+     (`Walker.mergeFieldPointerState`). Fresh-binding drops shared by locals
+     and parameters dispatch through `Walker.dropNonClassCells`; declarations
+     dispatch all families through `Walker.dropDeclarationCells`, preserving
+     class cells only for parameter aliasing. Allocation and field-pointer
+     cell state shared by free, member, destructor, struct-constructor, and
+     class-constructor calls merges through `Walker.mergePointerCellState`.
 
    **Design sketch** (the frame for all of this work). A *native block*
    is a stable byte range laid out with DMD's own offsets, stride, and
@@ -708,6 +746,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      field-cell primitive); nested static arrays need scalar-leaf
      flattening for pointer arithmetic (`&m[i][j]` currently scales by
      the immediate element type's size, not the innermost scalar's);
+     same-width native-scalar dynamic-array casts share backing storage and
+     interpret its bytes through bindings, direct slice arguments, and
+     function returns using each view's element type, but unequal-width casts
+     still need byte-stream length and element regrouping;
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and
@@ -716,19 +758,19 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      default-init siblings).
    - Native-pointer arithmetic: the design sketch's "pointers become real
      addresses into that storage" is unmet for pointers that already are
-     native. Offsetting a native pointer by an integer is refused
-     outright, so interpreted code that walks a raw native buffer (an
-     FFI-returned pointer, `GC.malloc`/`pureMalloc` storage) cannot index
-     it; only the interpreter's own boxed pointer variant supports
-     arithmetic. This blocks retiring the `gc_*` array-capacity hooks:
+     native. Direct indexing of FFI-returned storage is supported, including
+     `malloc` storage; forming a new pointer by offsetting a native pointer by
+     an integer is refused outright. Interpreted code therefore cannot walk a
+     raw native buffer by incrementing its pointer; only the interpreter's own
+     boxed pointer variant supports that arithmetic. This blocks retiring the
+     `gc_*` array-capacity hooks:
      their `void[]`-returning shape reaches real druntime code that does
      native-pointer arithmetic, so the hooks cannot become ordinary
      body-less FFI leaves until this is modelled.
    - Open questions from the design sketch: lifetime contracts for blocks
      borrowed from arbitrary C owners; what a guest pointer into a grown
      array should observe, and whether that deserves a diagnostic rather
-     than compiled D's silent staleness; and non-zero-init element
-     fidelity on growth (see Contracts, `setLength`).
+     than compiled D's silent staleness.
    - Latency is measured only once the correctness gates are green and a
      real suite actually reaches native storage; the benchmark suite
      never crossed the old marshaller seam. Until then, native layout is
