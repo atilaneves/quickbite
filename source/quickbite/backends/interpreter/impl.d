@@ -2530,16 +2530,16 @@ private struct Walker {
     // accessor. A union element, a static-array element whose OWN element
     // type is not `native_scalar.isNativeScalarType` (out of this narrow
     // slice's scope -- no deeper-nesting rabbit hole), any other non-scalar
-    // element type (class, nested dynamic array, slice), or a dataseg
-    // variable is left untouched and keeps using the existing
-    // boxed/aliasing paths.
+    // element type (class, nested dynamic array, slice) is left untouched and
+    // keeps using the existing boxed/aliasing paths. Dataseg arrays may be
+    // promoted after their lazily materialized value has entered `locals`:
+    // unlike a cell seeded before that point, this preserves the initializer
+    // while allowing a typed view returned from a callee to keep sharing the
+    // module variable's storage.
     private void promoteArrayCell(VarDeclaration variable) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
         import quickbite.frontend.dmd.types: isDynamicArrayType;
-
-        if (variable.isDataseg)
-            return;
 
         if (variable in arrayCells)
             return;
@@ -5599,11 +5599,40 @@ private struct Walker {
     private void mergePointerCellState(ref Walker child) {
         arrayAllocationAliases = child.arrayAllocationAliases;
         mergeArrayAllocationMaps(child);
+        mergeReturnedArrayCell(child);
         mergeFieldAddressAllocations(child);
         mergeNestedFieldAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
         mergeFieldPointerState(child);
+    }
+
+    // A returned array carrier may be the first value that makes a source
+    // array's native storage observable in this frame. Adopt exactly that
+    // escaping cell after its allocation-id maps have merged. Do not copy the
+    // child's whole `arrayCells` table: it also contains callee-local bindings
+    // whose `VarDeclaration` keys can be reused by another activation. An
+    // existing cell in this frame always wins for the same reason as the
+    // forward allocation-id merge above.
+    private void mergeReturnedArrayCell(ref Walker child) {
+        if (!child.result.isArray || child.result.arrayAllocationId == 0)
+            return;
+
+        const id = child.result.arrayAllocationId;
+        auto sourceVariable = id in child.arrayAllocationVariables;
+        if (sourceVariable is null)
+            return;
+
+        auto mergedVariable = id in arrayAllocationVariables;
+        if (mergedVariable is null || *mergedVariable !is *sourceVariable)
+            return;
+
+        if ((*sourceVariable in arrayCells) !is null)
+            return;
+
+        auto cell = *sourceVariable in child.arrayCells;
+        if (cell !is null)
+            arrayCells[*sourceVariable] = *cell;
     }
 
     // Merges every field-pointer reverse lookup and adopts its corresponding
@@ -6576,27 +6605,27 @@ private struct Walker {
                     ? argumentExpressions[index]
                     : null,
             );
-            bindArrayParameterCell(parameter, arguments[index]);
+            bindArrayValueCell(parameter, arguments[index]);
         }
     }
 
     // A dynamic-array expression result can carry the allocation identity of
     // authoritative array storage even when its syntax is not a plain
     // variable (for example, a same-width scalar cast). Recover that storage
-    // for the parameter's own typed view instead of binding only the boxed
+    // for a binding's own typed view instead of retaining only the boxed
     // element snapshot.
-    private void bindArrayParameterCell(
-        VarDeclaration parameter,
-        in Value argument,
+    private void bindArrayValueCell(
+        VarDeclaration variable,
+        in Value value,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.frontend.dmd.types: isDynamicArrayType;
 
-        if (!argument.isArray || argument.arrayAllocationId == 0)
+        if (!value.isArray || value.arrayAllocationId == 0)
             return;
 
-        auto sourceVariable = argument.arrayAllocationId in arrayAllocationVariables;
+        auto sourceVariable = value.arrayAllocationId in arrayAllocationVariables;
         if (sourceVariable is null)
             return;
 
@@ -6604,7 +6633,7 @@ private struct Walker {
         if (sourceCell is null)
             return;
 
-        auto targetType = parameter.type.toBasetype;
+        auto targetType = variable.type.toBasetype;
         if (!isDynamicArrayType(targetType))
             return;
 
@@ -6616,7 +6645,8 @@ private struct Walker {
         )
             return;
 
-        arrayCells[parameter] = sourceCell.reinterpretElements(targetType);
+        arrayCells[variable] = sourceCell.reinterpretElements(targetType);
+        arrayAllocationAliases[variable] = value.arrayAllocationId;
     }
 
     // A `lazy` parameter is a delegate over the *caller's live frame*, not a
@@ -11435,6 +11465,7 @@ private struct Walker {
         bindScalarArrayCastView(variable, initializer);
         registerClassAliasIfPlainVar(variable, initializer);
         recordGCArrayUsedAlias(variable, initializer);
+        bindArrayValueCell(variable, value);
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)
             recordArrayElementAlias(variable, indexInitializer, arrayElementAliasIndex);

@@ -297,8 +297,8 @@ a checked fact; do not relearn them.
   binding, whether introduced by a declaration or a later assignment, reads
   and writes those shared bytes through its own element type. An unbound cast
   rvalue carries that storage identity in the interpreter's runtime carrier,
-  so binding it to a slice parameter recovers the same typed block rather
-  than a boxed element copy.
+  so binding it to a local or parameter, including after a function return,
+  recovers the same typed block rather than a boxed element copy.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked
   multiplication — which is what makes subsequent `index * stride`
@@ -339,10 +339,11 @@ a checked fact; do not relearn them.
   derived-typed `this` reads out of bounds (a real bug under virtual
   dispatch). Skip `this`-aliasing on any static-class mismatch; the
   override body falls back to its boxed receiver.
-- Only true stack locals get cells. Dataseg variables (`__gshared`,
-  `static`, module-level) never do: a cell seeded from the default value
-  would shadow their lazily materialized initializer and the extern
-  data-symbol read/write paths.
+- Scalar, struct, and class cells belong only to true stack locals. A
+  dynamic-array dataseg variable may gain a cell only after its lazily
+  materialized current value is present in `locals`; seeding it from a
+  default value would shadow its initializer and the extern data-symbol
+  read/write paths.
 - Fresh bindings (a declaration re-executed by a loop, recursion reusing
   the same AST `VarDeclaration`, parameter binding) must drop both the
   cell AND the pointer-id memo, so the next address-of mints a fresh id.
@@ -358,7 +359,10 @@ a checked fact; do not relearn them.
   entry whose variable this frame binds to a DIFFERENT id (same
   `VarDeclaration`, different binding). A plain-union reverse merge is
   safe only while ids are never memoized for that shape — re-check that
-  premise whenever a memo is added.
+  premise whenever a memo is added. When an array carrier escapes, merge
+  exactly the newly promoted source cell named by that carrier after its id
+  maps; never copy the child's whole cell table or overwrite this frame's
+  existing cell for a reused `VarDeclaration`.
 - Parameter writeback: only a genuine function parameter
   (`STC.parameter`) reconciles a cell across a return; a plain local that
   merely shares its AST node across recursion depths must not. This is a
@@ -729,9 +733,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      flattening for pointer arithmetic (`&m[i][j]` currently scales by
      the immediate element type's size, not the innermost scalar's);
      same-width native-scalar dynamic-array casts share backing storage and
-     interpret its bytes through bindings and direct slice arguments using
-     each view's element type, but unequal-width casts still need byte-stream
-     length and element regrouping;
+     interpret its bytes through bindings, direct slice arguments, and
+     function returns using each view's element type, but unequal-width casts
+     still need byte-stream length and element regrouping;
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and

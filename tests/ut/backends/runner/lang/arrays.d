@@ -112,6 +112,37 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Returning an unbound same-width scalar array cast preserves the source
+// storage alias after the callee frame has gone away.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable module variable"),
+    Omit!(Bytecode, Because.refusal,
+        "module-level dynamic-array assignment is unsupported"),
+)) {
+    @("dynamicArray.sameWidthScalarCastReturnPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte[] a;
+
+            ubyte[] view() {
+                return cast(ubyte[]) a;
+            }
+
+            unittest {
+                byte runtime = 1;
+                a = [runtime];
+                ubyte[] b = view();
+                b[0] = 2;
+
+                assert(a[0] == 2);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
