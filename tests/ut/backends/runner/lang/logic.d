@@ -568,3 +568,118 @@ static foreach (backend; Matrix!(Plus!(IR))) {
         });
     }
 }
+
+// `x && true` is folded by DMD into `cast(bool) x`; a low byte of zero on a
+// non-zero integer must still be true. Covers every integral width, both
+// operand positions, and the still-false zero case.
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalAndIntLowByteZeroTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int v = 256;
+                assert(v && true);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalAndIntLowByteZeroTruthyLeftOperand." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int v = 256;
+                assert(true && v);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalAndUintLowByteZeroTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                uint v = 256;
+                assert(v && true);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalAndShortLowByteZeroTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                short v = 256;
+                assert(v && true);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalAndUlongLowByteZeroTruthyLargeValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ulong v = 65536;
+                assert(v && true);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalOrIntLowByteZeroTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int v = 256;
+                assert(v || false);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalAndUlongZeroStillFalse." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ulong z = 0;
+                assert(!(z && true));
+            }
+        });
+    }
+}
+
+// A truthy low-byte-zero left operand must still short-circuit `||`: if
+// truthiness were misread as false, this would call failIfCalled and hit
+// its assert(0).
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalOrIntLowByteZeroTruthyShortCircuit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                int v = 256;
+                assert(v || failIfCalled);
+            }
+        });
+    }
+}
