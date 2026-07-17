@@ -138,6 +138,33 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Passing an interior slice of a same-width scalar-array view preserves that
+// slice's offset and length instead of rebinding the callee to the whole
+// source allocation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.interiorSameWidthScalarCastSliceArgumentPreservesBounds." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 9;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first, cast(byte) 2];
+                ubyte[] b = cast(ubyte[]) a;
+                ubyte[] c = b[1 .. 2];
+                mutate(c);
+
+                assert(a[0] == 1);
+                assert(a[1] == 9);
+            }
+        });
+    }
+}
+
 // Returning an unbound same-width scalar array cast preserves the source
 // storage alias after the callee frame has gone away.
 static foreach (backend; Matrix!(

@@ -6669,7 +6669,16 @@ private struct Walker {
         )
             return;
 
-        arrayCells[variable] = sourceCell.reinterpretElements(targetType);
+        const offset = value.arrayAllocationOffset;
+        if (
+            offset > sourceCell.length ||
+            value.length > sourceCell.length - offset
+        )
+            return;
+
+        arrayCells[variable] = sourceCell
+            .slice(offset, offset + value.length)
+            .reinterpretElements(targetType);
         arrayAllocationAliases[variable] = id;
     }
 

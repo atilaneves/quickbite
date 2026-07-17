@@ -297,12 +297,15 @@ a checked fact; do not relearn them.
   binding, whether introduced by a declaration or a later assignment, reads
   and writes those shared bytes through its own element type. Binding from an
   evaluated value recovers storage from a carrier keyed by the value's own
-  allocation identity, not from the RHS syntax or a reverse lookup of the
+  allocation identity, then derives a bounds-validated subview from the
+  value's own allocation offset and length before reinterpreting its element
+  type. It does not recover from the RHS syntax or a reverse lookup of the
   source variable. Rebinding the source invalidates that variable's maps but
   cannot invalidate an earlier derived binding's carrier. Carriers fork and
-  merge with call frames so identity survives function boundaries. An unbound
-  direct-cast expression still needs its syntax-specific source recovery until
-  every cast result carries identity.
+  merge with call frames so identity, interior offsets, and zero-length views
+  survive function boundaries. An unbound direct-cast expression still needs
+  its syntax-specific source recovery until every cast result carries
+  identity.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked
   multiplication — which is what makes subsequent `index * stride`
