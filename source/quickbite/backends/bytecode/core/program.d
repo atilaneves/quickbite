@@ -247,6 +247,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     subSlice2,
     subSlice4,
     subSlice8,
+    subSlice16,
     // Copy elements from the source slice descriptor at frame offset b into the
     // destination slice descriptor at frame offset a, write-through to the
     // destination's backing memory. The two lengths must match; overlapping

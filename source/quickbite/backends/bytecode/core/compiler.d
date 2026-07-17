@@ -12437,6 +12437,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op subSliceOp(
         case 2: return Op.subSlice2;
         case 4: return Op.subSlice4;
         case 8: return Op.subSlice8;
+        case 16: return Op.subSlice16;
         default: assert(0, "Unsupported sub-slice element size.");
     }
 }

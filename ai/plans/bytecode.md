@@ -597,10 +597,12 @@ behaviour.
   null from data-at-offset-zero. `compileBoolCondition` refuses any
   string-typed condition by its AST type before compiling it, rather than
   trust every operand producer to have set `Operand.isString`: a `string[N]`
-  element read yields a real 16-byte {ptr, length} slice descriptor (the same
-  layout an ordinary `T[][N]` element uses), not the compact 8-byte one, so it
-  cannot carry that flag without corrupting other consumers (`.length`, `==`)
-  that branch on it to mean the compact layout. Implementing real truthiness
+  element read yields a 16-byte chunk at the same stride an ordinary `T[][N]`
+  element uses, but it is not a genuine native {ptr, length} slice descriptor
+  there — it is still the compact 8-byte {data offset, length} descriptor
+  followed by 8 zero-padding bytes, so it cannot carry that flag without
+  corrupting other consumers (`.length`, `==`) that branch on it to mean the
+  compact layout. Implementing real truthiness
   needs a faithful string-null model (a descriptor or convention that can
   represent "no data" distinctly from "data at offset 0") applied consistently
   across the compiler, and would need to account for both descriptor layouts

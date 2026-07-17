@@ -281,7 +281,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case subSlice1, subSlice2, subSlice4, subSlice8:
+            case subSlice1, subSlice2, subSlice4, subSlice8, subSlice16:
                 const subElementSize = subSliceElementSize(instruction.op);
                 const lo = scalarValue!size_t(stack, base + instruction.c);
                 const hi = scalarValue!size_t(
@@ -2227,6 +2227,8 @@ private uint subSliceElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
+    if (op == Op.subSlice16)
+        return 16;
     if (op == Op.subSlice8)
         return 8;
     if (op == Op.subSlice4)
