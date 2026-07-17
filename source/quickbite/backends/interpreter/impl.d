@@ -7612,13 +7612,14 @@ private struct Walker {
         const value = runExpression(assign.e2);
         writeLocation(assign.e1, value);
 
-        // `c2 = c;` (plain-variable rebind, as opposed to `c2.x = v`'s
-        // field write below): register the class-reference alias here too,
-        // the assignment-operator sibling of `runDeclarationExpression`'s
-        // own `registerClassAliasIfPlainVar` call.
+        // Plain-variable assignments are bindings just like declaration
+        // initializers: propagate storage-backed views and reference aliases
+        // after `writeLocation` has dropped the target's previous binding.
         if (auto var = assign.e1.isVarExp)
-            if (auto variable = var.var.isVarDeclaration)
+            if (auto variable = var.var.isVarDeclaration) {
+                bindScalarArrayCastView(variable, assign.e2);
                 registerClassAliasIfPlainVar(variable, assign.e2);
+            }
 
         return value;
     }
@@ -11374,7 +11375,7 @@ private struct Walker {
                 : runExpression(initializer),
         );
         locals[variable] = value;
-        promoteScalarArrayCastCell(variable, initializer);
+        bindScalarArrayCastView(variable, initializer);
         registerClassAliasIfPlainVar(variable, initializer);
         recordGCArrayUsedAlias(variable, initializer);
         uninitializedLocals.remove(variable);
@@ -11396,7 +11397,7 @@ private struct Walker {
     // used to interpret the bytes. Give the destination and source locals
     // differently typed views over one NativeArray block so writes through
     // either binding remain visible through the other.
-    private void promoteScalarArrayCastCell(
+    private void bindScalarArrayCastView(
         VarDeclaration variable,
         imported!"dmd.expression".Expression initializer,
     ) {

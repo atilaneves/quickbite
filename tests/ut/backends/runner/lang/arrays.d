@@ -68,6 +68,27 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Assignment of a same-width scalar array cast preserves the same storage
+// aliasing as declaration initialization.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.assignedSameWidthScalarCastPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte runtime = 1;
+                byte[] a = [runtime];
+                ubyte[] b;
+                b = cast(ubyte[]) a;
+                b[0] = 2;
+
+                assert(a[0] == 2);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)

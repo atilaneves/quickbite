@@ -294,7 +294,8 @@ a checked fact; do not relearn them.
   a header in sync is the call site's problem.
 - A same-width native-scalar dynamic-array cast is another typed view over
   the source array's existing block, never an element-converted copy. Each
-  binding reads and writes those shared bytes through its own element type.
+  binding, whether introduced by a declaration or a later assignment, reads
+  and writes those shared bytes through its own element type.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked
   multiplication — which is what makes subsequent `index * stride`
