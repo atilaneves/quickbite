@@ -2556,6 +2556,12 @@ private struct Walker {
         if (!isDynamicArrayType(variable.type))
             return;
 
+        // Dataseg storage has no trustworthy default-value seed: until its
+        // current value has been materialized in `locals`, its initializer or
+        // extern data symbol remains authoritative.
+        if (variable.isDataseg && variable !in locals)
+            return;
+
         auto elementType = variable.type.toBasetype.nextOf.toBasetype;
 
         auto current = defaultValue(variable);
