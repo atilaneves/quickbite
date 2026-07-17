@@ -151,6 +151,12 @@ private struct Compiler {
     private ushort _pendingFinallyExceptionClassIndex = noExceptionClass;
     private ushort _activeDollarLength = ushort.max;
     private size_t[ulong] _constantIndices;
+    // Cache for `zeroRealConstantIndex`: every call site wants the same
+    // all-zero-bytes `real` pool entry, so remember the first one's index
+    // instead of appending a fresh duplicate per call site. `_hasZero...`
+    // distinguishes "not yet computed" from a legitimate index 0.
+    private bool _hasZeroRealConstantIndex;
+    private ushort _zeroRealConstantIndex;
     private ModuleScalarVariable[VarDeclaration] _moduleScalarVariables;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
@@ -5516,8 +5522,14 @@ private struct Compiler {
         // via `compileStringPointer`; `isDynamicArrayArgument` already
         // excludes strings, so either order is correct, but checking the
         // narrower string case first matches this file's convention.
+        // `compileStringPointer` only ever stores UTF-8 bytes
+        // (`compileStringLiteral`), so it is restricted to `char`-element
+        // strings; `wstring`/`dstring` fall through to the generic pointer
+        // handling below, which refuses (their `Tarray` source isn't a raw
+        // pointer and `isDynamicArrayArgument` excludes strings), rather than
+        // silently reinterpreting UTF-8 bytes as UTF-16/32 code units.
         if (isPointerType(cast_.to)) {
-            if (isStringType(cast_.e1.type))
+            if (isCharStringType(cast_.e1.type))
                 return compileStringPointer(cast_);
 
             if (isDynamicArrayArgument(cast_.e1))
@@ -8346,9 +8358,15 @@ private struct Compiler {
         // non-scalar element (struct, e.g. `S[2] arr; arr[1] = S(3, 4);`) has
         // no opcode scalar type at all (`element.type` is `void_`), so its
         // width must come from DMD's own `Type.size()` for the value actually
-        // being written, never guessed from the (absent) scalar type.
+        // being written, never guessed from the (absent) scalar type. A
+        // string element is `void_` too but holds the compact 8-byte
+        // {data offset, length} descriptor, not `Type.size()`'s full
+        // dynamic-array-slice size, so it must use `stringSliceSize`
+        // (`Type.size()` here would over-read 8 bytes past the descriptor).
         const elementSize = element.type == ScalarType.void_
-            ? cast(uint) staticArraySize(rhs.type)
+            ? (value.isString
+                ? stringSliceSize
+                : cast(uint) staticArraySize(rhs.type))
             : size(element.type);
         _code ~= Instruction(
             Op.copy,
@@ -10789,6 +10807,15 @@ private struct Compiler {
         if (assert_.msg !is null)
             return false;
 
+        // `compileBoolCondition`'s fall-through returns a string operand's
+        // compact 8-byte {data offset, length} descriptor unchanged (there is
+        // no "string truthiness" lowering), which would make `jumpIfTrue`
+        // read one byte of the offset instead of a real condition. Refuse
+        // rather than mis-fire; a faithful string-null model is out of scope
+        // here.
+        if (isStringType(assert_.e1.type))
+            return false;
+
         const condition = compileBoolCondition(assert_.e1);
         const skipJump = emitJumpIfTrue(condition);
         _code ~= Instruction(_inUnittestEntry ? Op.haltUnittest : Op.halt);
@@ -11540,12 +11567,17 @@ private struct Compiler {
     // all-zero byte pattern is `0.0L` for extended precision too (sign,
     // exponent, and mantissa all zero).
     private ushort zeroRealConstantIndex() @safe {
+        if (_hasZeroRealConstantIndex)
+            return _zeroRealConstantIndex;
+
         const index = _program.realConstants.length;
         if (index > ushort.max)
             throw new Exception("Too many real constants in bytecode core");
 
         _program.realConstants ~= (ubyte[real.sizeof]).init;
-        return cast(ushort) index;
+        _zeroRealConstantIndex = cast(ushort) index;
+        _hasZeroRealConstantIndex = true;
+        return _zeroRealConstantIndex;
     }
 
     private ParameterLayout parameterLayout(FuncDeclaration function_) {
@@ -13001,6 +13033,20 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
         default:
             return false;
     }
+}
+
+// A `string` specifically (immutable `char`-element array), excluding
+// `wstring`/`dstring`. `compileStringLiteral` stores all string data as UTF-8
+// bytes regardless of element type, so code that reinterprets those bytes
+// through a pointer (`compileStringPointer`) is only correct for `char`
+// elements.
+private bool isCharStringType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (!isStringType(type))
+        return false;
+
+    return type.toBasetype.nextOf.toBasetype.ty == TY.Tchar;
 }
 
 // A non-string dynamic-array `T[]` call argument, passed by value as a 16-byte
