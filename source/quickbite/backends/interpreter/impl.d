@@ -7695,6 +7695,7 @@ private struct Walker {
         // after `writeLocation` has dropped the target's previous binding.
         if (auto var = assign.e1.isVarExp)
             if (auto variable = var.var.isVarDeclaration) {
+                bindArrayValueCell(variable, value);
                 bindScalarArrayCastView(variable, assign.e2);
                 registerClassAliasIfPlainVar(variable, assign.e2);
             }

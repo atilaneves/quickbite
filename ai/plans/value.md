@@ -295,10 +295,11 @@ a checked fact; do not relearn them.
 - A same-width native-scalar dynamic-array cast is another typed view over
   the source array's existing block, never an element-converted copy. Each
   binding, whether introduced by a declaration or a later assignment, reads
-  and writes those shared bytes through its own element type. An unbound cast
-  rvalue carries that storage identity in the interpreter's runtime carrier,
-  so binding it to a local or parameter, including after a function return,
-  recovers the same typed block rather than a boxed element copy.
+  and writes those shared bytes through its own element type. Binding from an
+  evaluated value recovers storage from the runtime carrier, not from the RHS
+  syntax; this preserves the identity through function returns and other
+  expression boundaries. An unbound direct-cast expression still needs its
+  syntax-specific source recovery until every cast result carries identity.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked
   multiplication — which is what makes subsequent `index * stride`
