@@ -591,3 +591,11 @@ behaviour.
   requires multiple simultaneous threads. Host runtime calls and single-thread
   concurrency state already reached by existing rows are not covered by that
   deferral.
+- String/array-slice truthiness (`if (s)`, `!s`, `s ? a : b`, `s && t`, plain
+  `assert(s)`) is D's `ptr !is null`, but the compact 8-byte {data offset,
+  length} slice descriptor `compileTruthValue` receives cannot distinguish
+  null from data-at-offset-zero. `compileTruthValue` refuses a string operand
+  rather than mis-fire on the descriptor bits. Implementing real truthiness
+  needs a faithful string-null model (a descriptor or convention that can
+  represent "no data" distinctly from "data at offset 0") applied consistently
+  across the compiler, not a local fix in `compileTruthValue`.

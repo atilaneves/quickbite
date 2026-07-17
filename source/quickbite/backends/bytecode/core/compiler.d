@@ -6489,11 +6489,19 @@ private struct Compiler {
     // operand is already canonical. A floating operand goes through
     // `compileFloatingTruthValue` (`operand != 0.0`); it cannot share this
     // path because its zero constant and comparison opcode are type-specific.
+    // A string operand's `offset` holds a compact 8-byte {data offset,
+    // length} descriptor, not a value to compare: refuse rather than let it
+    // fall through to the generic branch below, which would hand that
+    // descriptor to a comparison opcode that reads only its low byte. D's
+    // actual rule (`ptr !is null`) needs a faithful string-null model this
+    // descriptor cannot provide, so real string truthiness is out of scope.
     private Operand compileTruthValue(Operand operand) {
         if (operand.type == ScalarType.bool_)
             return operand;
         if (isFloating(operand.type))
             return compileFloatingTruthValue(operand);
+        if (operand.isString)
+            throw new Exception("Unsupported string truthiness in bytecode core");
         if (!operand.isPointer && !isCompoundIntegerScalar(operand.type))
             return operand;
 
