@@ -2628,8 +2628,9 @@ private struct Walker {
     //
     // `promoteArrayCell(alias_.source)` mirrors the address-of-time
     // promotion `arrayPointer` already does for `&a[i]`: eager, idempotent,
-    // and gated by the same guards (non-dataseg, dynamic array, native-
-    // scalar element). Once the source has a cell, `NativeArray.slice`
+    // and gated by the same dynamic-array and representable-element guards.
+    // A dataseg source is eligible once its current value is materialized in
+    // `locals`. Once the source has a cell, `NativeArray.slice`
     // gives a real, bidirectionally-aliasing sub-range view over it -- not
     // a copy -- for `variable`'s own entry, using `alias_.lower` and the
     // slice's own already-computed length (`locals[variable]`, the boxed
@@ -2639,9 +2640,9 @@ private struct Walker {
     // A no-op, leaving `variable` on the existing boxed/aliasing paths, for:
     // a struct-field-rooted slice (`alias_.hasFieldIndex`, e.g. `val.field[]`
     // -- not a plain local, out of this narrow first slice's scope); and any
-    // source whose element type isn't `native_scalar.isNativeScalarType` or
-    // that is `isDataseg`, both of which make `promoteArrayCell` itself a
-    // no-op, leaving no cell here to share.
+    // source that `promoteArrayCell` cannot represent (including a union,
+    // deeper nested static array, or other unsupported element shape), which
+    // leaves no cell here to share.
     private void promoteSliceArrayCell(VarDeclaration variable) {
         // `variable`'s declaration statement re-executes on every fresh
         // binding (a loop-reused slice temp taken over a differently-sized

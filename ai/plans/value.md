@@ -355,7 +355,8 @@ a checked fact; do not relearn them.
   dynamic-array dataseg variable may gain a cell only after its lazily
   materialized current value is present in `locals`; seeding it from a
   default value would shadow its initializer and the extern data-symbol
-  read/write paths.
+  read/write paths. Slice-local promotion may initiate that dataseg array
+  promotion; unsupported element shapes still remain on boxed aliasing paths.
 - Fresh bindings (a declaration re-executed by a loop, recursion reusing
   the same AST `VarDeclaration`, parameter binding) must drop both the
   cell AND the pointer-id memo, so the next address-of mints a fresh id.
