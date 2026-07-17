@@ -5510,8 +5510,16 @@ private struct Compiler {
 
         // `cast(T*)arr` / `arr.ptr`: yield the dynamic-array descriptor's
         // pointer word. `cast(U*)p` repaints an existing pointer value with the
-        // target element type without changing the raw address.
+        // target element type without changing the raw address. A string's
+        // basetype is also `Tarray`, but it stores the compact {data offset,
+        // length} descriptor, not a native pointer, so it is checked first
+        // via `compileStringPointer`; `isDynamicArrayArgument` already
+        // excludes strings, so either order is correct, but checking the
+        // narrower string case first matches this file's convention.
         if (isPointerType(cast_.to)) {
+            if (isStringType(cast_.e1.type))
+                return compileStringPointer(cast_);
+
             if (isDynamicArrayArgument(cast_.e1))
                 return compileArrayPointer(cast_);
 
@@ -5678,6 +5686,18 @@ private struct Compiler {
         return pointerToElement(
             descriptor.offset, descriptor.elementType, compileSizeConstant(0),
         );
+    }
+
+    // `cast(T*)s` / `s.ptr` for a string `s`: a string local holds the
+    // compact 8-byte {data offset, length} descriptor, not a native pointer,
+    // so `Op.stringSliceToArray` expands it into a fresh 16-byte {ptr,
+    // length} slice descriptor (the same expansion `compileSliceInto` uses
+    // for `s[lo .. hi]`) before reading its pointer word.
+    private Operand compileStringPointer(CastExp cast_) {
+        const string_ = compileExpression(cast_.e1);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(Op.stringSliceToArray, offset, string_.offset);
+        return pointerToElement(offset, ScalarType.char_, compileSizeConstant(0));
     }
 
     // `&arr[i]`: the address of element `i`, i.e. `descriptor.ptr + i * size`,
@@ -10708,6 +10728,9 @@ private struct Compiler {
         if (compileLiteralFalseAssert(assert_))
             return;
 
+        if (compilePlainAssert(assert_))
+            return;
+
         if (compileLoweredComparisonAssert(assert_))
             return;
 
@@ -10747,6 +10770,29 @@ private struct Compiler {
             return false;
 
         _code ~= Instruction(_inUnittestEntry ? Op.haltUnittest : Op.halt);
+        return true;
+    }
+
+    // A plain `assert(cond)` with no message left over after the literal and
+    // `checkaction=context` branches above: `compileLoweredComparisonAssert`
+    // and `compileVerbatimStringAssert` only fire for the specific comparison,
+    // negation, and logical shapes that DMD's context lowering rewrites into a
+    // message; every other runtime condition (or a `checkaction=context`-less
+    // parse) keeps `assert_.msg is null`. Compiled code aborts on failure with
+    // the same plain `_d_assert` "Assertion failure" message as `assert(0)`
+    // and no contextual operands, so the VM only needs the condition's truth
+    // value: evaluate it through the same normalisation `&&`/`||`/`?:` use
+    // (`compileBoolCondition`, which also converts dynamic-array-slice and
+    // pointer operands to their `is null` truthiness) and halt only when
+    // it's false.
+    private bool compilePlainAssert(AssertExp assert_) {
+        if (assert_.msg !is null)
+            return false;
+
+        const condition = compileBoolCondition(assert_.e1);
+        const skipJump = emitJumpIfTrue(condition);
+        _code ~= Instruction(_inUnittestEntry ? Op.haltUnittest : Op.halt);
+        patchJump(skipJump);
         return true;
     }
 
