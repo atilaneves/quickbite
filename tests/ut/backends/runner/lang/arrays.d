@@ -89,6 +89,32 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Rebinding the source of a same-width scalar-array view must not detach the
+// still-live view from the storage it captured before that rebind.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastSurvivesSourceRebind." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 2;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first];
+                ubyte[] b = cast(ubyte[]) a;
+                a = [cast(byte) 3];
+                mutate(b);
+
+                assert(b[0] == 2);
+                assert(a[0] == 3);
+            }
+        });
+    }
+}
+
 // Passing an unbound same-width scalar array cast directly as a slice
 // argument preserves the source storage alias.
 static foreach (backend; Matrix!()) {

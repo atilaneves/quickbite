@@ -480,6 +480,11 @@ private struct Walker {
     private size_t[VarDeclaration] arrayAllocations;
     private size_t[VarDeclaration] arrayAllocationAliases;
     private VarDeclaration[size_t] arrayAllocationVariables;
+    // Storage carried by an evaluated array allocation identity, independent
+    // of whichever source variable first minted that identity. A source slot
+    // may be rebound (correctly invalidating its forward/reverse maps) while a
+    // derived slice or cast view carrying the old id remains live.
+    private NativeArray[size_t] arrayAllocationCarriers;
     private bool[VarDeclaration] arrayPointerWritebacks;
     // Per-(receiver variable, field index) memo for `&s.field` allocation
     // ids (Rung 7): repeated address-of evaluations of the same field must
@@ -2290,6 +2295,7 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.arrayAllocationCarriers = arrayAllocationCarriers.dup;
         child.structFieldPointerVariables = structFieldPointerVariables.dup;
         child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
         child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
@@ -5599,6 +5605,7 @@ private struct Walker {
     private void mergePointerCellState(ref Walker child) {
         arrayAllocationAliases = child.arrayAllocationAliases;
         mergeArrayAllocationMaps(child);
+        mergeArrayAllocationCarriers(child);
         mergeReturnedArrayCell(child);
         mergeFieldAddressAllocations(child);
         mergeNestedFieldAddressAllocations(child);
@@ -5703,6 +5710,16 @@ private struct Walker {
         foreach (variable, id; child.arrayAllocations)
             if (variable !in arrayAllocations)
                 arrayAllocations[variable] = id;
+    }
+
+    // Allocation ids are minted from the shared monotonically increasing
+    // counter, so a carrier for an id always names the same storage in every
+    // frame. Merge non-destructively: a callee's fresh-binding cleanup must
+    // not erase a carrier still reachable by a value in its caller.
+    private void mergeArrayAllocationCarriers(ref Walker child) {
+        foreach (id, carrier; child.arrayAllocationCarriers)
+            if (id !in arrayAllocationCarriers)
+                arrayAllocationCarriers[id] = carrier;
     }
 
     // Struct sibling of the merge above -- `structFieldPointerVariables`/
@@ -6625,13 +6642,20 @@ private struct Walker {
         if (!value.isArray || value.arrayAllocationId == 0)
             return;
 
-        auto sourceVariable = value.arrayAllocationId in arrayAllocationVariables;
-        if (sourceVariable is null)
-            return;
+        const id = value.arrayAllocationId;
+        auto sourceCell = id in arrayAllocationCarriers;
+        if (sourceCell is null) {
+            auto sourceVariable = id in arrayAllocationVariables;
+            if (sourceVariable is null)
+                return;
 
-        auto sourceCell = *sourceVariable in arrayCells;
-        if (sourceCell is null)
-            return;
+            sourceCell = *sourceVariable in arrayCells;
+            if (sourceCell is null)
+                return;
+
+            arrayAllocationCarriers[id] = *sourceCell;
+            sourceCell = id in arrayAllocationCarriers;
+        }
 
         auto targetType = variable.type.toBasetype;
         if (!isDynamicArrayType(targetType))
@@ -6646,7 +6670,7 @@ private struct Walker {
             return;
 
         arrayCells[variable] = sourceCell.reinterpretElements(targetType);
-        arrayAllocationAliases[variable] = value.arrayAllocationId;
+        arrayAllocationAliases[variable] = id;
     }
 
     // A `lazy` parameter is a delegate over the *caller's live frame*, not a
@@ -9822,9 +9846,12 @@ private struct Walker {
                     auto targetView =
                         sourceCell.reinterpretElements(targetType);
                     const id = sourceVariable in arrayAllocationAliases;
+                    const allocation =
+                        id is null ? allocationId(sourceVariable) : *id;
+                    arrayAllocationCarriers[allocation] = targetView;
                     result = arrayValueFromCell(
                         targetView,
-                        id is null ? allocationId(sourceVariable) : *id,
+                        allocation,
                     );
                     return true;
                 }

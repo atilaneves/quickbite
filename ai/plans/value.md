@@ -296,10 +296,13 @@ a checked fact; do not relearn them.
   the source array's existing block, never an element-converted copy. Each
   binding, whether introduced by a declaration or a later assignment, reads
   and writes those shared bytes through its own element type. Binding from an
-  evaluated value recovers storage from the runtime carrier, not from the RHS
-  syntax; this preserves the identity through function returns and other
-  expression boundaries. An unbound direct-cast expression still needs its
-  syntax-specific source recovery until every cast result carries identity.
+  evaluated value recovers storage from a carrier keyed by the value's own
+  allocation identity, not from the RHS syntax or a reverse lookup of the
+  source variable. Rebinding the source invalidates that variable's maps but
+  cannot invalidate an earlier derived binding's carrier. Carriers fork and
+  merge with call frames so identity survives function boundaries. An unbound
+  direct-cast expression still needs its syntax-specific source recovery until
+  every cast result carries identity.
 - Index bounds checks run before any offset arithmetic, and every
   construction path routes `length * stride` through checked
   multiplication — which is what makes subsequent `index * stride`
