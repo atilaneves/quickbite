@@ -2497,6 +2497,28 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A plain ref static-array local denotes the source's storage, including its
+// address. SystemLinker is the oracle for the shared address identity.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "DMD CTFE refuses to compare static-array local addresses"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref static-array-local address identity"),
+)) {
+    @("pointer.staticArrayRefLocalPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[2] source = [42, 99];
+                ref int[2] alias_ = source;
+                int[2]* pointer = &source;
+                assert(&alias_ == pointer);
+            }
+        });
+    }
+}
+
 // A plain ref class local denotes the source reference variable's storage,
 // including its address. SystemLinker is the oracle for the shared address
 // identity.

@@ -33,7 +33,8 @@ stand:
   locals with source/alias address identity and assignment through the alias;
   direct scalar struct fields passed by `ref`, including repeated-argument
   address identity; plain `ref` struct locals, including whole-value reads
-  through the alias and source/alias address identity;
+  through the alias and source/alias address identity; and plain `ref` static
+  array locals with source/alias address identity;
   and union member overlap, including default-init reinterpretation.
 - Invalidation is detach-on-rebind: a rebind drops the variable's cell and
   pointer-id memo; only a same-storage mutation refreshes that binding in
@@ -412,6 +413,9 @@ a checked fact; do not relearn them.
   storage; for classes, assignment through the alias rebinds the source
   reference. A plain `ref` struct local also shares its source's cell, so a
   whole read through either declaration observes the same authoritative bytes.
+  A plain `ref` static-array local shares the source local's pointer identity;
+  taking the address of the whole array stays distinct from taking an element's
+  address.
 
 ### Unions
 

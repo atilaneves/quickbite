@@ -2447,6 +2447,13 @@ private struct Walker {
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
         if (isStaticArrayType(variable.type)) {
+            // `&array` points at the static-array local itself, unlike
+            // `&array[index]`, which points into its elements. Keep the
+            // former on the local-pointer identity path so a plain `ref`
+            // static-array local can reuse that exact storage identity.
+            if (isStaticArrayType(symbol.type.toBasetype.nextOf))
+                return localPointerValue(variable);
+
             // Taking the address of a still-void static array materialises
             // its storage (as aggregate reads do) so writes through the
             // pointer have somewhere to land.
@@ -11524,7 +11531,8 @@ private struct Walker {
                 }
                 if (
                     baseType.isTypeStruct !is null ||
-                    baseType.isTypeClass !is null
+                    baseType.isTypeClass !is null ||
+                    baseType.isTypeSArray !is null
                 )
                     localPointerIds[variable] =
                         localPointerValue(source).localPointerId;
