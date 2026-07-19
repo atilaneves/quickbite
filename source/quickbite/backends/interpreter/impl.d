@@ -5592,26 +5592,7 @@ private struct Walker {
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
-        allocationCount = child.allocationCount;
-        arrayAllocationAliases = child.arrayAllocationAliases;
-        mergeArrayAllocationMaps(child);
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
-        arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeStructFieldPointerVariableMaps(child);
-        structFieldPointerWritebacks = child.structFieldPointerWritebacks;
-        mergeStructArrayFieldPointerVariableMaps(child);
-        structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
-        mergeNestedStructFieldPointerVariableMaps(child);
-        nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
-        mergeClassFieldPointerVariableMaps(child);
-        classFieldPointerWritebacks = child.classFieldPointerWritebacks;
-        mergeNestedClassStructFieldPointerVariableMaps(child);
-        nestedClassStructFieldPointerWritebacks =
-            child.nestedClassStructFieldPointerWritebacks;
-        mergeClassArrayFieldPointerVariableMaps(child);
-        classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
+        mergePerFrameCellsFrom(child);
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -5642,6 +5623,28 @@ private struct Walker {
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
+        mergePerFrameCellsFrom(child);
+        writeBackGlobals(child);
+        writeBackLocalPointerTargets(child);
+        writeBackArrayPointerTargets(child);
+        writeBackStructFieldPointerTargets(child);
+        writeBackStructArrayFieldPointerTargets(child);
+        writeBackNestedStructFieldPointerTargets(child);
+        writeBackClassFieldPointerTargets(child);
+        writeBackNestedClassStructFieldPointerTargets(child);
+        writeBackClassArrayFieldPointerTargets(child);
+        writeBackRefArguments(function_, argumentExpressions, child, arguments);
+        writeBackThisStructArrayFieldAliases(child);
+        child.returned = false;
+        writeBackThis(receiverExpression, child.thisValue);
+    }
+
+    private void mergeNativeThrowableRoots(ref Walker child) {
+        foreach (pointer, throwable; child.nativeThrowableRoots)
+            nativeThrowableRoots[pointer] = throwable;
+    }
+
+    private void mergePerFrameCellsFrom(ref Walker child) {
         allocationCount = child.allocationCount;
         arrayAllocationAliases = child.arrayAllocationAliases;
         mergeArrayAllocationMaps(child);
@@ -5662,24 +5665,6 @@ private struct Walker {
             child.nestedClassStructFieldPointerWritebacks;
         mergeClassArrayFieldPointerVariableMaps(child);
         classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
-        writeBackGlobals(child);
-        writeBackLocalPointerTargets(child);
-        writeBackArrayPointerTargets(child);
-        writeBackStructFieldPointerTargets(child);
-        writeBackStructArrayFieldPointerTargets(child);
-        writeBackNestedStructFieldPointerTargets(child);
-        writeBackClassFieldPointerTargets(child);
-        writeBackNestedClassStructFieldPointerTargets(child);
-        writeBackClassArrayFieldPointerTargets(child);
-        writeBackRefArguments(function_, argumentExpressions, child, arguments);
-        writeBackThisStructArrayFieldAliases(child);
-        child.returned = false;
-        writeBackThis(receiverExpression, child.thisValue);
-    }
-
-    private void mergeNativeThrowableRoots(ref Walker child) {
-        foreach (pointer, throwable; child.nativeThrowableRoots)
-            nativeThrowableRoots[pointer] = throwable;
     }
 
     // Non-destructive merge for `arrayAllocations`/`arrayAllocationVariables`
@@ -10938,10 +10923,7 @@ private struct Walker {
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
-            allocationCount = child.allocationCount;
-            mergeFieldAddressAllocations(child);
-            mergeNestedFieldAddressAllocations(child);
-            fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+            mergePerFrameCellsFrom(child);
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             import quickbite.backends.interpreter.layout: structFields;
@@ -11058,10 +11040,7 @@ private struct Walker {
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
-        allocationCount = child.allocationCount;
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+        mergePerFrameCellsFrom(child);
         return child.thisValue;
     }
 

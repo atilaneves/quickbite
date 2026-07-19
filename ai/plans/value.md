@@ -645,9 +645,6 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      (`Walker.forkPerFrameCellsInto`); that is the model for the rest.
      Merge and drop should likewise become single dispatch points instead
      of per-family calls hand-wired at every site.
-   - `runNewClassExpression`'s child neither dupes nor merges the
-     array/struct pointer maps at all — a pre-existing asymmetry to
-     resolve when the fork/merge points are unified.
 
    **Design sketch** (the frame for all of this work). A *native block*
    is a stable byte range laid out with DMD's own offsets, stride, and
