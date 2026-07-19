@@ -3814,27 +3814,28 @@ private struct Compiler {
         if (auto aggregate = function_.isThis())
             return aggregate.isStructDeclaration;
 
-        // A nested `delegate` lambda that captures the enclosing method's `this`
-        // (`() => this.field`) receives that `this` as its context. DMD models
-        // the context as `vthis` (`__capture`, typed `void*`) and resolves the
-        // captured field's `ThisExp.var` to the enclosing method's own `vthis`.
-        // Give the lambda a hidden `this` block of the enclosing struct so the
-        // ordinary receiver ABI carries the context and `this.field` resolves
-        // against it.
+        // A nested function that reads the enclosing method's `this` -- a
+        // capturing lambda (`() => this.field`) or a plain nested named
+        // function (`int helper() { return this.field; }`) -- receives that
+        // `this` as its context. DMD models the context as `vthis` (typed
+        // `void*`) and resolves the captured field's `ThisExp.var` to the
+        // enclosing method's own `vthis`. Give the nested function a hidden
+        // `this` block of the enclosing struct so the ordinary receiver ABI
+        // carries the context and `this.field` resolves against it.
         return capturedThisStructDeclaration(function_);
     }
 
-    // The enclosing struct whose `this` a capturing delegate lambda reads, or
-    // null if `function_` is not such a lambda. The lambda is nested in a struct
-    // method and holds a context (`vthis`); the struct is the method's receiver
-    // aggregate. Capturing an enclosing *local* (rather than `this`) is not yet
-    // modelled -- such a lambda's `this.field` would still route here, but only
-    // `this`-capturing lambdas are exercised; a local-capturing one would read
-    // the wrong slot, which the leading-edge closures work must address.
+    // The enclosing struct whose `this` a nested function reads, or null if
+    // `function_` is not such a function. The function is nested in a struct
+    // method and holds a context (`vthis`); the struct is the method's
+    // receiver aggregate. Capturing an enclosing *local* (rather than `this`)
+    // is not yet modelled -- such a function's `this.field` would still route
+    // here, but only `this`-capturing nested functions are exercised; a
+    // local-capturing one would read the wrong slot, which the leading-edge
+    // closures work must address.
     private imported!"dmd.dstruct".StructDeclaration
     capturedThisStructDeclaration(FuncDeclaration function_) {
-        auto literal = function_.isFuncLiteralDeclaration;
-        if (literal is null || function_.vthis is null)
+        if (function_.vthis is null)
             return null;
 
         auto enclosing = enclosingMethodOf(function_);
@@ -3904,6 +3905,14 @@ private struct Compiler {
         // FuncExp), and its hidden `this` block is the enclosing method's own
         // `this` receiver, already present in this frame.
         if (call.e1.isFuncExp !is null && _hasThis)
+            return _thisLocal.offset;
+
+        // A direct unqualified call to a nested named function that reads the
+        // enclosing method's `this` (`helper()`, where `int helper() { return
+        // this.field; }`): the callee is a plain VarExp naming the function,
+        // and its hidden `this` block is the enclosing method's own `this`
+        // receiver, already present in this frame.
+        if (call.e1.isVarExp !is null && _hasThis)
             return _thisLocal.offset;
 
         throw new Exception(text(

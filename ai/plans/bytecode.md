@@ -327,27 +327,31 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   libffi the destination frame slot directly as the struct's own resultAddress
   rather than the narrow-scalar padded-buffer path), so `GC.qalloc`'s
   `BlkInfo` return compiles and `GC.extend`/`GC.qalloc` no longer block the
-  row. The row is now blocked on the nested-function `this`-receiver capture
-  described under Closures: `std.array.Appender.reserve`'s block-extend path
-  reads `this` from a plain nested named function (not a lambda literal), and
-  `capturedThisStructDeclaration` only recognises `isFuncLiteralDeclaration`,
-  so the nested function gets no hidden `this` receiver at all and any
-  `this`/`this.field` inside it throws "Unsupported expression in bytecode
-  core: this" (reproduces standalone as `struct S { int field; int method() {
-  int helper() { return this.field; } return helper(); } } S s; s.method`).
-  Once that lands, the row may next reach: `DivAssignExp` (`x /= y`), which
-  has no compiler support at all today (only add/sub/mul/shr/shl/or
-  compound-assign are wired); 4-byte unsigned (`uint`) addition, unsupported
-  because the narrow-int addition fallback hardcodes a signed-`int` result
-  instead of using the expression's own scalar type the way its `or`/`and`/
-  `xor` siblings already do; and inlining a void IIFE whose body is a single
-  expression statement (Phobos's common `(() @trusted { ... })()` escape
-  idiom), the same way a single-`return` IIFE already inlines. Those were
-  observed downstream in a prior pass and are unconfirmed until the nested
-  `this`-receiver capture lands; a further, still-unisolated crash (an
-  out-of-bounds `copySlice` while `Appender.put` assigns into a grown buffer)
-  appeared after fixing them then, so at least one more gap remains beyond
-  this list.
+  row. The nested-function `this`-receiver capture described under Closures
+  landed (`capturedThisStructDeclaration` now recognises any nested function
+  with a `vthis`, not only `FuncLiteralDeclaration`, and
+  `methodReceiverOffset` has a receiver branch for a direct unqualified call
+  whose callee is a plain `VarExp` naming such a function), so
+  `std.array.Appender.reserve`'s block-extend path (a plain nested named
+  function reading `this`) no longer throws "Unsupported expression in
+  bytecode core: this". The row is now blocked on `DivAssignExp` (`x /= y`),
+  which has no compiler support at all today (only add/sub/mul/shr/shl/or
+  compound-assign are wired, and unlike those, div/mod need a signed-vs-
+  unsigned opcode choice per DMD's `divInt8`/`divUnsignedInt8`/
+  `modUnsignedInt8` split rather than one opcode pair reused across both
+  signedness cases); reproduces standalone as the row's own `text(...,
+  needed, ...)` digit-formatting path, surfacing as "Unsupported expression
+  in bytecode core: value /= 10LU". Once that lands the row may next reach:
+  4-byte unsigned (`uint`) addition, unsupported because the narrow-int
+  addition fallback hardcodes a signed-`int` result instead of using the
+  expression's own scalar type the way its `or`/`and`/`xor` siblings already
+  do; and inlining a void IIFE whose body is a single expression statement
+  (Phobos's common `(() @trusted { ... })()` escape idiom), the same way a
+  single-`return` IIFE already inlines. Those were observed downstream in a
+  prior pass and are unconfirmed until `DivAssignExp` lands; a further,
+  still-unisolated crash (an out-of-bounds `copySlice` while `Appender.put`
+  assigns into a grown buffer) appeared after fixing them then, so at least
+  one more gap remains beyond this list.
 - Landing struct-by-value native returns exposed a latent cache bug in the
   shared FFI layer (`ffi/core.d`'s `callViaLibffi`): on a `cachedNativeCif`
   hit, the return buffer's size was read from the current call's freshly
@@ -580,12 +584,12 @@ lifetime as the dependency bytecode cache.
   any non-`static` function whose `toParent2` is a function, regardless of
   whether it is a `FuncLiteralDeclaration`), and `ThisExp` resolution inside
   either one resolves to the nearest enclosing method's own `vthis`
-  (`hasThis(sc)` walking up through nested scopes). The compiler's existing
-  literal-only recognition of this case generalizes by dropping the
-  `isFuncLiteralDeclaration` restriction; a direct unqualified call to such a
-  named nested function additionally needs a call-site receiver branch,
-  since the callee there is a plain `VarExp` naming the function rather than
-  the `DotVarExp`/`FuncExp` shapes already handled. This is a `this`-receiver
+  (`hasThis(sc)` walking up through nested scopes). The compiler recognises
+  this case (`capturedThisStructDeclaration`) for both shapes, keyed only on
+  `vthis` plus the enclosing parent being a struct method; a direct
+  unqualified call to such a named nested function gets a call-site receiver
+  branch in `methodReceiverOffset` for the plain `VarExp` callee shape,
+  alongside the `DotVarExp`/`FuncExp` shapes. This is a `this`-receiver
   question, not the captured-locals-environment work above, and does not by
   itself require a closure environment. A lambda that captures a plain
   enclosing *local* (not `this`) remains unmodelled and does need the
