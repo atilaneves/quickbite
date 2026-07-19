@@ -717,8 +717,8 @@ behaviour.
 - A `string` sub-slice (`b = a[lo .. hi]`) now stays in the compact {data
   offset, length} representation via `Op.stringSubSlice`
   (`compileCompactStringSliceInto`) when both the slice and its source are
-  string-typed, so `.ptr`/`.length`/indexing on `b` resolve into the real
-  program-data segment instead of the sub-slice's real-pointer 16-byte
+  `char`-string-typed, so `.ptr`/`.length`/indexing on `b` resolve into the
+  real program-data segment instead of the sub-slice's real-pointer 16-byte
   descriptor (built for a genuine dynamic-array destination) getting
   truncated to its first 8 bytes and reinterpreted as a bogus compact
   descriptor. `compileAssignExpression`'s plain-`VarExp` lvalue path now
@@ -732,4 +732,11 @@ behaviour.
   heap/pointer address has no program-data-relative origin to stay compact
   around — fixing that needs the same heap-backed dual representation
   `.idup`/`.dup` string initializers already use (`_dynamicArrayLocals`), not
-  the same-typed compact arithmetic added here.
+  the same-typed compact arithmetic added here. The compact path and its
+  `compileSliceInto` fallback both gate on `char` specifically
+  (`isCharStringType`): the bounds are code-unit offsets, but program data is
+  always stored as UTF-8 bytes (`stringChars`), so a `wstring`/`dstring`
+  sub-slice would silently misread byte offsets as code-unit offsets; such a
+  slice throws the ordinary "unsupported dynamic array access" diagnostic
+  instead. Real `wstring`/`dstring` sub-slice support remains a documented
+  deferral.

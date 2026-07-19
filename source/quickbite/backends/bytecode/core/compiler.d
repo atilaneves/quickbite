@@ -2092,8 +2092,12 @@ private struct Compiler {
             // sliced from a pointer (`p[0 .. 3]`) has no compact source to
             // stay relative to, so it still falls through to the general
             // path below (a pre-existing, separately tracked divergence, not
-            // introduced here).
-            if (isStringType(slice.type) && isStringType(slice.e1.type)) {
+            // introduced here). The compact bounds are code-unit offsets over
+            // program data that is always stored as UTF-8 bytes
+            // (`stringChars`), so this is only correct for a `char` element;
+            // a `wstring`/`dstring` sub-slice falls through to the general
+            // path instead of computing silently-wrong offsets.
+            if (isCharStringType(slice.type) && isCharStringType(slice.e1.type)) {
                 const offset = allocateBytes(stringSliceSize, 4);
                 compileCompactStringSliceInto(offset, slice);
                 return Operand(offset, ScalarType.void_, true);
@@ -5444,7 +5448,13 @@ private struct Compiler {
         }
 
         DynamicArrayLocal descriptor;
-        if (isStringType(slice.e1.type)) {
+        // `Op.stringSliceToArray` reinterprets the source's compact
+        // {dataOffset, length} bytes as a `char`-element real descriptor
+        // (`stringChars` always stores UTF-8 bytes), which is only correct
+        // for a `char` string; a `wstring`/`dstring` source falls through to
+        // `dynamicArrayDescriptor`, which throws its own clean diagnostic
+        // rather than silently misreading code-unit offsets as byte offsets.
+        if (isCharStringType(slice.e1.type)) {
             const string_ = compileExpression(slice.e1);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             _code ~= Instruction(
