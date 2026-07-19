@@ -418,3 +418,88 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+static foreach (backend; Matrix!()) {
+    @("mixedSignednessIntCompoundDivisionIsUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int dividend() {
+                return -8;
+            }
+
+            uint divisor() {
+                return 3u;
+            }
+
+            unittest {
+                int a = dividend;
+                uint b = divisor;
+
+                // `/=` divides at the usual-arithmetic-conversion type of
+                // the two operands, not the lvalue's own signed type: since
+                // `b` is unsigned, the division is unsigned even though `a`
+                // is declared `int`.
+                a /= b;
+                assert(a == 1_431_655_762);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("mixedSignednessIntCompoundModuloIsUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int dividend() {
+                return -8;
+            }
+
+            uint divisor() {
+                return 3u;
+            }
+
+            unittest {
+                int a = dividend;
+                uint b = divisor;
+
+                // `%=` takes the remainder at the usual-arithmetic-
+                // conversion type of the two operands, not the lvalue's own
+                // signed type: since `b` is unsigned, the remainder is
+                // unsigned even though `a` is declared `int`.
+                a %= b;
+                assert(a == 2);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("mixedSignednessNarrowCompoundDivisionIsUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            short dividend() {
+                return -8;
+            }
+
+            uint divisor() {
+                return 3u;
+            }
+
+            unittest {
+                short a = dividend;
+                uint b = divisor;
+
+                // A narrow signed lvalue integer-promotes to `int` before
+                // the usual arithmetic conversion runs; the unsigned `b`
+                // still wins that conversion, so the division is unsigned
+                // and the truncated-back-to-`short` result reflects that,
+                // not a signed division of `a`'s own bit pattern.
+                a /= b;
+                assert(a == 21_842);
+            }
+        });
+    }
+}

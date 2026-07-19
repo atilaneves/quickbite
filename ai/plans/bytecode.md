@@ -335,11 +335,13 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `std.array.Appender.reserve`'s block-extend path (a plain nested named
   function reading `this`) no longer throws "Unsupported expression in
   bytecode core: this". `DivAssignExp`/`ModAssignExp` (`x /= y`, `x %= y`)
-  are now wired (`compileDivOrModCompoundAssign`), picking the lvalue's own
-  signed-vs-unsigned opcode the way `compileDivideExpression`/
-  `compileModuloExpression` already do for the binary form (`divUnsignedInt8`/
-  `modUnsignedInt8` for `ulong`, `divInt8`/`modInt8` for `long`,
-  `divUnsignedInt4`/`modUnsignedInt4` for `uint`, `divInt4`/`modInt4`
+  are now wired (`compileDivOrModCompoundAssign`), picking the
+  signed-vs-unsigned opcode from the operation's own type — DMD's usual-
+  arithmetic-conversion result, read off `assign.e1.type` where DMD wraps the
+  lvalue in a conversion cast, not the lvalue's own declared type, since a
+  signed lvalue combined with an unsigned operand divides/mods as unsigned
+  (`divUnsignedInt8`/`modUnsignedInt8` for `ulong`, `divInt8`/`modInt8` for
+  `long`, `divUnsignedInt4`/`modUnsignedInt4` for `uint`, `divInt4`/`modInt4`
   otherwise).
   4-byte unsigned (`uint`) addition is also fixed: the narrow-int addition
   fallback now routes through `compileInt4BinaryResult` with the expression's

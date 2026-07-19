@@ -6600,10 +6600,17 @@ private struct Compiler {
     // `x /= y` and `x %= y` on an integer local. Unlike add/sub/mul/shift/or's
     // compound-assign, which reuse one op4/op8 pair regardless of signedness
     // because two's-complement addition and multiplication don't care about
-    // sign, division and modulo need the lvalue's own signedness to pick the
-    // opcode: a 4- or 8-byte unsigned lvalue uses the dedicated unsigned
-    // opcodes, matching the choice `compileDivideExpression`/
-    // `compileModuloExpression` make for the binary form.
+    // sign, division and modulo need the operation's own signedness to pick
+    // the opcode, matching the choice `compileDivideExpression`/
+    // `compileModuloExpression` make for the binary form. That signedness is
+    // not always the lvalue's: DMD performs the division at the usual-
+    // arithmetic-conversion type of the two operands and only converts back
+    // to the lvalue's type on store, so e.g. `int x; uint u; x /= u;` divides
+    // as unsigned even though `x` is signed. DMD exposes that operation type
+    // by wrapping `e1` in a `CastExp` to it whenever it differs from the
+    // lvalue's declared type (`compoundAssignLocalDeclaration` unwraps that
+    // same cast to find the lvalue); reading `assign.e1.type` therefore gives
+    // the operation type directly.
     private Operand compileDivOrModCompoundAssign(
         BinExp assign,
         in bool isModulo,
@@ -6635,11 +6642,12 @@ private struct Compiler {
                 expressionChars(assign),
             ));
 
-        const operationType = isEightByteInteger(lvalueType)
-            ? lvalueType
-            : (lvalueType == ScalarType.uint_
-                ? ScalarType.uint_
-                : ScalarType.int_);
+        const operationType = scalarType(assign.e1.type);
+        if (!isIntegerScalar(operationType))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
 
         Op op;
         if (operationType == ScalarType.ulong_)
