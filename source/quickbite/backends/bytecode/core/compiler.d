@@ -2077,6 +2077,8 @@ private struct Compiler {
                 return *element;
             if (auto element = tryStringIndex(index))
                 return *element;
+            if (auto element = tryStaticArrayRuntimeIndex(index))
+                return *element;
             return compileStaticArrayIndex(index);
         }
 
@@ -5938,6 +5940,29 @@ private struct Compiler {
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameAddress, basePointer, baseOffset);
 
+        const basePointerOperand = Operand(
+            basePointer, ScalarType.ulong_, false, true, ScalarType.void_,
+        );
+        return advanceStaticArrayPointer(
+            basePointerOperand, indexExpression, elementType,
+        );
+    }
+
+    // Advance a static-array base pointer by `indexExpression * elementType`'s
+    // size, the shared scaling both `staticArrayElementPointer` (a
+    // compile-time-constant frame base) and `tryStaticArrayRuntimeAddress` (a
+    // runtime-computed base, for a nested static-array index chain) build on.
+    // The result's `pointerElement` is `void_` for a sub-array or struct
+    // element (an intermediate view with no scalar load/store opcode of its
+    // own), matching `storeThroughPointer`'s existing convention of deriving
+    // such an element's width from DMD's `Type.size()` instead.
+    private Operand advanceStaticArrayPointer(
+        in Operand basePointer,
+        Expression indexExpression,
+        Type elementType,
+    ) {
+        import dmd.astenums: TY;
+
         const indexSlot = compileExpression(indexExpression);
         const scaled =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -5946,11 +5971,126 @@ private struct Compiler {
         _code ~= Instruction(Op.mulInt8, scaled, indexSlot.offset, stride);
 
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.addInt8, pointer, basePointer, scaled);
+        _code ~= Instruction(Op.addInt8, pointer, basePointer.offset, scaled);
 
-        return Operand(
-            pointer, ScalarType.ulong_, false, true, scalarType(elementType),
-        );
+        const ty = elementType.toBasetype.ty;
+        const pointerElement = ty == TY.Tsarray ||
+            ty == TY.Tstruct ||
+            ty == TY.Tarray
+                ? ScalarType.void_
+                : scalarType(elementType);
+        return Operand(pointer, ScalarType.ulong_, false, true, pointerElement);
+    }
+
+    // The runtime address of a static-array location: a static-array local's
+    // frame slot, a static-array struct field's inline offset, or
+    // (recursively) a further index into either. Mirrors
+    // `staticArrayBaseOffset`'s walk but computes the address with actual
+    // pointer arithmetic instead of folding into a single compile-time
+    // offset, so a non-constant index anywhere in the chain (`m[i][j]`) is
+    // supported. Null if `expression` does not denote a static-array
+    // location at all.
+    private Operand* tryStaticArrayRuntimeAddress(Expression expression) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto offset = declaration in _staticArrayLocals)
+                    return frameAddressOperand(*offset);
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                return frameAddressOperand(field.offset);
+
+        if (auto index = expression.isIndexExp) {
+            auto base = tryStaticArrayRuntimeAddress(index.e1);
+            if (base is null)
+                return null;
+
+            auto result = new Operand;
+            *result = advanceStaticArrayPointer(*base, index.e2, index.type);
+            return result;
+        }
+
+        return null;
+    }
+
+    // The runtime address of a static-array local's (or field's) own frame
+    // slot, as a pointer operand with no scalar element type of its own yet
+    // (the caller advances it by an index, or reads/writes the whole block).
+    private Operand* frameAddressOperand(in ushort offset) {
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameAddress, pointer, offset);
+        auto result = new Operand;
+        *result =
+            Operand(pointer, ScalarType.ulong_, false, true, ScalarType.void_);
+        return result;
+    }
+
+    // True if any index in a static-array `IndexExp` chain (`m[i]`,
+    // `m[i][j]`) is not a compile-time constant, in which case the element's
+    // address must be computed at runtime (`tryStaticArrayRuntimeAddress`)
+    // rather than folded into a fixed frame offset
+    // (`locateStaticArrayElement`/`staticArrayBaseOffset`).
+    private bool staticArrayChainNeedsRuntimeAddress(IndexExp index) {
+        if (index.e2.isIntegerExp is null)
+            return true;
+
+        if (auto inner = index.e1.isIndexExp)
+            return staticArrayChainNeedsRuntimeAddress(inner);
+
+        return false;
+    }
+
+    // `m[i][j]` (or deeper) read where at least one index in the chain is a
+    // runtime value: resolve the full chain to a runtime address and load
+    // the scalar leaf through it. A fully constant chain is left to
+    // `compileStaticArrayIndex`'s cheaper compile-time offset path, and a
+    // chain whose result is itself a sub-array/struct view (not yet fully
+    // indexed) is left unhandled here. Null if `index` is not a static-array
+    // access at all.
+    private Operand* tryStaticArrayRuntimeIndex(IndexExp index) {
+        import dmd.astenums: TY;
+
+        if (!indexesStaticArray(index.e1))
+            return null;
+
+        if (!staticArrayChainNeedsRuntimeAddress(index))
+            return null;
+
+        const ty = index.type.toBasetype.ty;
+        if (ty == TY.Tsarray || ty == TY.Tstruct || ty == TY.Tarray)
+            return null;
+
+        auto pointer = tryStaticArrayRuntimeAddress(index);
+        if (pointer is null)
+            return null;
+
+        auto result = new Operand;
+        *result = loadThroughPointer(*pointer, compileSizeConstant(0));
+        return result;
+    }
+
+    // `m[i][j] = rhs` (or deeper) where at least one index in the chain is a
+    // runtime value: resolve the leaf address at runtime and write through
+    // it, the runtime-address counterpart to `tryStaticArrayElement`'s
+    // compile-time-offset path. Null if `index` is not a static-array
+    // element access, or the chain is fully constant (handled above).
+    private Operand* tryStaticArrayRuntimeElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        if (!indexesStaticArray(index.e1))
+            return null;
+
+        if (!staticArrayChainNeedsRuntimeAddress(index))
+            return null;
+
+        auto pointer = tryStaticArrayRuntimeAddress(index);
+        if (pointer is null)
+            return null;
+
+        auto result = new Operand;
+        *result = storeThroughPointer(*pointer, compileSizeConstant(0), rhs);
+        return result;
     }
 
     // `&local` / `&base.field`: the native address of a scalar local's frame
@@ -7393,6 +7533,14 @@ private struct Compiler {
             if (auto store = tryDynamicArrayElementAssign(index, assign.e2))
                 return *store;
 
+        // `m[i][j] = rhs` for a nested static-array element where a runtime
+        // index appears anywhere in the chain: write through the
+        // runtime-computed element address.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store =
+                    tryStaticArrayRuntimeElementAssign(index, assign.e2))
+                return *store;
+
         // `matrix[] = [...]` broadcasts a one-dimensional row literal to each
         // row of a multidimensional static array in place.
         if (auto slice = assign.e1.isSliceExp)
@@ -8631,7 +8779,10 @@ private struct Compiler {
     }
 
     // Locate a static-array element, or null if `index` is not an access into
-    // a known static-array local (so other index forms fall through).
+    // a known static-array local (so other index forms fall through), or a
+    // nested index in the chain (`m[i][2]`'s `i`) is a runtime value that
+    // `locateStaticArrayElement` cannot fold into a compile-time offset
+    // (`tryStaticArrayRuntimeElementAssign` handles that case instead).
     private StaticArrayElement* tryStaticArrayElement(
         IndexExp index,
     ) {
@@ -8639,6 +8790,9 @@ private struct Compiler {
             return null;
 
         if (!indexesStaticArray(index.e1))
+            return null;
+
+        if (staticArrayChainNeedsRuntimeAddress(index))
             return null;
 
         auto result = new StaticArrayElement;

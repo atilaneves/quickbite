@@ -1135,6 +1135,51 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("staticArray.nestedElementReadWithRuntimeIndicesReadsRealArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                matrix[0][0] = seed(7);
+                matrix[1][2] = seed(9);
+                int i = seed(1);
+                int j = seed(2);
+
+                assert(matrix[i][j] == 9);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.nestedElementWriteWithRuntimeIndexUpdatesRealArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(1);
+                matrix[i][2] = seed(42);
+
+                assert(matrix[1][2] == 42);
+                assert(matrix[0][0] == 0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("dynamicArray.arrayOperationAddsRuntimeElements." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
