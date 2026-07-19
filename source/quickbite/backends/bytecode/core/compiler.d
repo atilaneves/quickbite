@@ -6348,6 +6348,8 @@ private struct Compiler {
             return emitBinary(
                 Op.divUnsignedInt8, lhs, rhs, ScalarType.ulong_,
             );
+        if (lhs.type == ScalarType.long_ && rhs.type == ScalarType.long_)
+            return emitBinary(Op.divInt8, lhs, rhs, ScalarType.long_);
         if (lhs.type == ScalarType.uint_ && rhs.type == ScalarType.uint_)
             return emitBinary(
                 Op.divUnsignedInt4, lhs, rhs, ScalarType.uint_,
@@ -6370,6 +6372,8 @@ private struct Compiler {
             return emitBinary(
                 Op.modUnsignedInt8, lhs, rhs, ScalarType.ulong_,
             );
+        if (lhs.type == ScalarType.long_ && rhs.type == ScalarType.long_)
+            return emitBinary(Op.modInt8, lhs, rhs, ScalarType.long_);
         if (lhs.type == ScalarType.uint_ && rhs.type == ScalarType.uint_)
             return emitBinary(
                 Op.modUnsignedInt4, lhs, rhs, ScalarType.uint_,
@@ -6391,9 +6395,7 @@ private struct Compiler {
     // sign, division and modulo need the lvalue's own signedness to pick the
     // opcode: a 4- or 8-byte unsigned lvalue uses the dedicated unsigned
     // opcodes, matching the choice `compileDivideExpression`/
-    // `compileModuloExpression` make for the binary form. There is no signed
-    // 8-byte modulo opcode, so that combination is reported as unsupported
-    // rather than emitting a 4-byte modulo instruction into an 8-byte slot.
+    // `compileModuloExpression` make for the binary form.
     private Operand compileDivOrModCompoundAssign(
         BinExp assign,
         in bool isModulo,
@@ -6434,14 +6436,9 @@ private struct Compiler {
         Op op;
         if (operationType == ScalarType.ulong_)
             op = isModulo ? Op.modUnsignedInt8 : Op.divUnsignedInt8;
-        else if (operationType == ScalarType.long_) {
-            if (isModulo)
-                throw new Exception(text(
-                    unsupportedMessage,
-                    expressionChars(assign),
-                ));
-            op = Op.divInt8;
-        } else if (operationType == ScalarType.uint_)
+        else if (operationType == ScalarType.long_)
+            op = isModulo ? Op.modInt8 : Op.divInt8;
+        else if (operationType == ScalarType.uint_)
             op = isModulo ? Op.modUnsignedInt4 : Op.divUnsignedInt4;
         else
             op = isModulo ? Op.modInt4 : Op.divInt4;

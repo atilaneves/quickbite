@@ -746,6 +746,17 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case modInt8:
+                const ubyte[long.sizeof] remainder8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) %
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[
+                    base + instruction.a .. base + instruction.a + long.sizeof
+                ] = remainder8;
+                ++ip;
+                break;
+
             case subInt4:
                 const ubyte[int.sizeof] difference = scalarBytes(
                     scalarValue!int(stack, base + instruction.b) -

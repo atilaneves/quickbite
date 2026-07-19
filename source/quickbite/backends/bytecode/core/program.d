@@ -404,6 +404,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     divInt8, // a: destination frame offset, b: lhs, c: rhs (signed 8-byte div)
     divUnsignedInt8, // a: destination, b: lhs, c: rhs (unsigned 8-byte div)
     modUnsignedInt8, // a: destination, b: lhs, c: rhs (unsigned 8-byte mod)
+    modInt8, // a: destination, b: lhs, c: rhs (signed 8-byte mod)
     subInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt8, // a: destination frame offset, b: lhs, c: rhs

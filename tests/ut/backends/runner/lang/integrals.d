@@ -340,3 +340,81 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+static foreach (backend; Matrix!()) {
+    @("signedLongDivisionTruncatesTowardZero." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long dividend() {
+                return -1_000_000_000_000L;
+            }
+
+            long divisor() {
+                return 7L;
+            }
+
+            unittest {
+                long a = dividend;
+                long b = divisor;
+
+                // Signed division truncates toward zero, not toward
+                // negative infinity, regardless of which operand is
+                // negative.
+                assert(a / b == -142_857_142_857L);
+                assert((-a) / b == 142_857_142_857L);
+                assert(a / (-b) == 142_857_142_857L);
+                assert((-a) / (-b) == -142_857_142_857L);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("signedLongModuloFollowsDividendSign." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long dividend() {
+                return -1_000_000_000_000L;
+            }
+
+            long divisor() {
+                return 7L;
+            }
+
+            unittest {
+                long a = dividend;
+                long b = divisor;
+
+                // The remainder's sign follows the dividend, not the
+                // divisor.
+                assert(a % b == -1L);
+                assert((-a) % b == 1L);
+                assert(a % (-b) == -1L);
+                assert((-a) % (-b) == 1L);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("signedLongCompoundModuloFollowsDividendSign." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long dividend() {
+                return -1_000_000_000_000L;
+            }
+
+            unittest {
+                long a = dividend;
+
+                // `%=` on a signed 8-byte lvalue keeps the dividend's own
+                // sign in the remainder.
+                a %= 7L;
+                assert(a == -1L);
+            }
+        });
+    }
+}

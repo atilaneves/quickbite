@@ -338,9 +338,9 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   are now wired (`compileDivOrModCompoundAssign`), picking the lvalue's own
   signed-vs-unsigned opcode the way `compileDivideExpression`/
   `compileModuloExpression` already do for the binary form (`divUnsignedInt8`/
-  `modUnsignedInt8` for `ulong`, `divInt8` for `long`, `divUnsignedInt4`/
-  `modUnsignedInt4` for `uint`, `divInt4`/`modInt4` otherwise; signed 8-byte
-  modulo has no opcode and is reported unsupported).
+  `modUnsignedInt8` for `ulong`, `divInt8`/`modInt8` for `long`,
+  `divUnsignedInt4`/`modUnsignedInt4` for `uint`, `divInt4`/`modInt4`
+  otherwise).
   4-byte unsigned (`uint`) addition is also fixed: the narrow-int addition
   fallback now routes through `compileInt4BinaryResult` with the expression's
   own scalar type instead of hardcoding a signed `int` result, matching its
