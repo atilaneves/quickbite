@@ -1428,10 +1428,8 @@ static foreach (backend; Matrix!()) {
 
 // The owed §9.10 fixture: a class reference passed by value to a function
 // that mutates a field must leave the mutation visible to the caller, since
-// a class is a reference type. Shim-backed by `writeBackByValueClassArguments`
-// (§9.10 deletion inventory) — this fixture pins the observable behaviour,
-// not the shim's mechanism, and must stay green once the native-layout
-// object model replaces it.
+// a class is a reference type. The callee and caller reach the same
+// authoritative object cell; no by-value parameter writeback is involved.
 static foreach (backend; Matrix!()) {
     @("classReferencePassedByValueMutatesObject." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1449,6 +1447,36 @@ static foreach (backend; Matrix!()) {
                 auto box = new Box;
 
                 fill(box);
+
+                assert(box.value == 42);
+            }
+        });
+    }
+}
+
+// The §9.10 shim-deletion ratchet: a class parameter shares the referenced
+// object's identity with its argument, but the parameter variable itself is
+// passed by value. Rebinding that variable must therefore leave the caller's
+// variable pointing at the original object. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("classReferencePassedByValueDoesNotRebindCaller." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Box {
+                int value;
+            }
+
+            void replace(Box box) {
+                box = new Box;
+                box.value = 99;
+            }
+
+            unittest {
+                auto box = new Box;
+                box.value = 42;
+
+                replace(box);
 
                 assert(box.value == 42);
             }

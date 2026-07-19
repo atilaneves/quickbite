@@ -33,8 +33,8 @@ stand:
   (`locals[VarDeclaration]` remains `Value`-keyed; cells exist only for
   the shapes above), whole-value reads of aliased arrays and structs,
   dynamic-array- and class-typed fields, nesting deeper than one level,
-  `ref`-parameter address identity, and every `interpreter.md` §9.10
-  shim.
+  `ref`-parameter address identity, and the remaining `interpreter.md`
+  §9.10 shims.
 
 ## Audit findings (June 2026)
 
@@ -654,8 +654,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      metadata on the handle. It is never inferred by diffing a pre-call
      boxed aggregate against a post-call one. Class-reference identity is
      not by-value writeback: one object body is shared by every reference
-     to it, which is why `writeBackByValueClassArguments` cannot be
-     retired by the array or struct phases.
+     to it. By-value class parameters share the caller's class cell when
+     their argument is a plain variable; rebinding the parameter remains
+     local to the callee and must never write a replacement reference
+     back to the caller.
    - **Migration order.** Arrays first: the smallest surface that
      exercises stable element addresses, slices into locals, capacity
      hooks, `memcpy`, and array-pointer FFI without needing object
@@ -674,8 +676,8 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      destination address, and retires `reinterpretLocalPointerLoad`, by
      making `*cast(T*) &local` a load of the same bytes at a different
      static type rather than a name match. Class-object storage retires
-     `writeBackByValueClassArguments`. Each deletion lands with its §9.10
-     ratchet fixtures green through the real path.
+     the need for class-argument writeback. Each deletion lands with its
+     §9.10 ratchet fixtures green through the real path.
 
    **Current frontier** — what remains, given the Status section's
    covered shapes:
@@ -684,7 +686,11 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      `Value`-keyed. Cells exist only for the aliased/address-taken shapes
      in Status; the end state is native storage as the authority, with
      the boxed mirror gone rather than synchronized.
-   - Shim retirement: no §9.10 shim is retired yet.
+   - Shim retirement: class-reference argument identity is represented by
+     shared class cells, with no `writeBackByValueClassArguments` diffing
+     shim. The `gc_*` capacity hooks, `lastGCArrayUsedAllocation`,
+     `runMemcpyCall`, `runEmplaceRefCall`/`isEmplaceRef`, and the remaining
+     `reinterpretLocalPointerLoad` cases still need retirement.
      `reinterpretLocalPointerLoad` is narrowed — same-width and narrowing
      scalar reinterprets go through real bytes; aggregate, pointer,
      `real`, and widening reinterprets still take the boxed/refused
@@ -692,8 +698,7 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      loudly rather than silently miswriting. Whole class-value reads now
      re-derive every supported field from the cell in one pass, so
      passing onward, printing, and equality no longer see a stale boxed
-     snapshot. The next class-phase step is a §9.10 ratchet fixture and
-     deletion of `writeBackByValueClassArguments`.
+     snapshot.
    - Structural gaps needing a design, not surgery: per-activation cell
      keying (all cell maps key on `VarDeclaration`, so recursive
      activations of the same function share one cell — a real

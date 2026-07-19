@@ -2289,15 +2289,9 @@ static foreach (backend; Matrix!(
 // parameters must leave both parameters observing the SAME object, since a
 // class argument is reference-passed -- exactly as if both parameters were
 // `C c2 = c;` aliases of one another, except the aliasing happens at the
-// call boundary (parameter binding) rather than a declaration. The existing
-// `writeBackByValueClassArguments` shim only writes the mutated
-// value back into the ONE argument expression location it was invoked with
-// (`locals[b]`'s own caller-side location) after the call returns -- it has
-// no mechanism linking the SEPARATE `VarDeclaration`s `a` and `b` DURING the
-// call, so a read of `a.x` immediately after `b.x = 99` inside the callee's
-// own frame still sees the stale, independently-boxed copy bound for `a`.
-// Only Interpreter and SystemLinker (the oracle) are pinned here per the
-// omit-don't-pin convention.
+// call boundary (parameter binding) rather than a declaration. Both
+// parameters must share the caller's authoritative class cell during the
+// call; post-call value diffing cannot establish that identity.
 static foreach (backend; Matrix!()) {
     @("class.sameObjectPassedAsTwoParametersSharesIdentity." ~ backend.stringof)
     @Tags(backend.stringof)

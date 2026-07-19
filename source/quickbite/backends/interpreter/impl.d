@@ -2906,8 +2906,8 @@ private struct Walker {
     // argument (e.g. `mutate(makeC())`), or a receiver whose
     // `promoteClassCell` is itself a no-op (dataseg source, or a boxed value
     // that is not a class object, e.g. still `null`) -- every one of those
-    // leaves the parameter using the existing boxed
-    // `writeBackByValueClassArguments` shim unchanged.
+    // leaves the parameter using its ordinary boxed value; no caller
+    // writeback is correct for a by-value parameter.
     private void registerClassArgumentAliases(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
@@ -5517,7 +5517,6 @@ private struct Walker {
         writeBackNestedClassStructFieldPointerTargets(child);
         writeBackClassArrayFieldPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child, arguments);
-        writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
     }
 
@@ -5567,7 +5566,6 @@ private struct Walker {
         writeBackNestedClassStructFieldPointerTargets(child);
         writeBackClassArrayFieldPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child, arguments);
-        writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
@@ -6790,49 +6788,6 @@ private struct Walker {
             return left.asReal is right.asReal;
 
         return left == right;
-    }
-
-    private void writeBackByValueClassArguments(
-        imported!"dmd.func".FuncDeclaration function_,
-        imported!"dmd.expression".Expression[] argumentExpressions,
-        ref Walker child,
-    ) {
-        import dmd.astenums: TY;
-
-        if (function_.parameters is null)
-            return;
-
-        foreach (index, parameter; *function_.parameters) {
-            if (parameter.isReference)
-                continue;
-
-            if (
-                parameter.type is null ||
-                parameter.type.toBasetype.ty != TY.Tclass
-            )
-                continue;
-
-            if (index >= argumentExpressions.length)
-                continue;
-
-            auto argument = argumentExpressions[index];
-            if (argument is null || !isWritableLocation(argument))
-                continue;
-
-            auto finalParam = parameter in child.locals;
-            if (finalParam is null || !finalParam.isClassObject)
-                continue;
-
-            const original = runExpression(argument);
-            if (!original.isClassObject)
-                continue;
-
-            if (finalParam.classTypeName != original.classTypeName)
-                continue;
-
-            if (*finalParam != original)
-                writeLocation(argument, *finalParam);
-        }
     }
 
     // D slices passed inside a by-value struct share their backing array with
