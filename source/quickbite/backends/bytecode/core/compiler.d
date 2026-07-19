@@ -7376,6 +7376,21 @@ private struct Compiler {
                 return compileCapturedAssign(declaration, *captured, assign);
         if (declaration !is null)
             if (auto destination = declaration in _structLocals) {
+                // DMD's zero-init blit marker (an `IntegerExp(0)` retyped to
+                // the struct type, e.g. an `out` parameter's synthesized
+                // entry zero-init) is not a struct value to read through
+                // `structBaseOffsetOrMaterialise` -- it means "zero this
+                // block", the same meaning `compileStructDeclaration` already
+                // gives it for a fresh local's own initializer.
+                if (auto integer = assign.e2.isIntegerExp)
+                    if (integer.toInteger == 0) {
+                        zeroFrameBlock(
+                            destination.offset,
+                            cast(uint) staticArraySize(declaration.type),
+                        );
+                        return Operand(destination.offset, ScalarType.void_);
+                    }
+
                 bool resolved;
                 const source = structBaseOffsetOrMaterialise(
                     assign.e2,
