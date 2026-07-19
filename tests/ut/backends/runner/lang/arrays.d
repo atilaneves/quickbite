@@ -1059,6 +1059,57 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("staticArray.elementWriteWithRuntimeIndexUpdatesRealArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int index = seed(2);
+                values[index] = 42;
+
+                assert(values[2] == 42);
+                assert(values[0] == 0);
+                assert(values[1] == 0);
+                assert(values[3] == 0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.multipleElementWritesWithRuntimeIndicesAllPersist." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int first = seed(1);
+                int second = seed(3);
+
+                values[first] = 10;
+                values[second] = 20;
+
+                assert(values[0] == 0);
+                assert(values[1] == 10);
+                assert(values[2] == 0);
+                assert(values[3] == 20);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("staticArray.multidimensionalSliceBlockAssignRepeatsRow." ~
         backend.stringof)
     @Tags(backend.stringof)

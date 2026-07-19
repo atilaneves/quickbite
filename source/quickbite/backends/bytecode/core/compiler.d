@@ -8337,6 +8337,22 @@ private struct Compiler {
         if (descriptor is null)
             return null;
 
+        // A static array indexed by a runtime (non-constant) index resolves
+        // here as a descriptor materialised into a throwaway heap copy
+        // (`compileStaticArrayAsDynamicInto`); writing through that copy would
+        // never reach the real static-array storage. Write through a pointer
+        // into the static array's own inline frame offset instead, the same
+        // element address `tryPointerToElement` computes for `&arr[i]`.
+        if (descriptor.isStaticArrayView) {
+            const pointer = staticArrayElementPointer(
+                descriptor.staticArrayOffset, index.e2, index.type,
+            );
+            auto viewResult = new Operand;
+            *viewResult =
+                storeThroughPointer(pointer, compileSizeConstant(0), rhs);
+            return viewResult;
+        }
+
         const value = compileExpression(rhs);
         const savedDollarLength = _activeDollarLength;
         _activeDollarLength = sliceLengthSlot(*descriptor);
