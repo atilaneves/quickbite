@@ -1730,18 +1730,12 @@ static foreach (backend; Matrix!()) {
 }
 
 // Owed §9.10 gap fixture (ai/plans/interpreter.md): the oracle's real
-// `reserve` contract, not the gc_reserveArrayCapacity shim's echoed return
-// value. Interpreter omitted: the shim fabricates a capacity number without
-// growing the value model's backing allocation, so `arr.ptr` before and
-// after filling to the reserved capacity compares unequal (representation
-// debt, retires with value.md's native-layout track). Ctfe omitted:
+// `reserve` contract. Ctfe omitted:
 // pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE
 // refuses at compile time.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "gc_reserveArrayCapacity shim doesn't grow the backing allocation; representation debt, retires with value.md's native-layout track"),
 )) {
     @("dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate." ~
         backend.stringof)
@@ -1764,17 +1758,16 @@ static foreach (backend; Matrix!(
 }
 
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
-// that does not start at its backing block's base). Interpreter omitted:
-// `gc_getArrayUsed` rebuilds its walk from the incoming pointer's offset but
-// loops the full backing-block length, so it overruns and throws for any
-// interior pointer (a representation gap in the shim). Ctfe omitted:
+// that does not start at its backing block's base). Interpreter omitted: its
+// ordinary druntime path reaches an unsupported aggregate read after the GC
+// helpers return. Ctfe omitted:
 // `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at all.
 // Bytecode omitted: same `.ptr`-of-array gap as above.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "gc_getArrayUsed has no D source, so Ctfe cannot intercept it at all"),
     Omit!(Interpreter, Because.unconfirmed,
-        "gc_getArrayUsed overruns for interior pointers; representation debt, retires with value.md's native-layout track"),
+        "ordinary druntime path reaches an unsupported aggregate read after the GC helpers return"),
     Omit!(Bytecode, Because.unconfirmed, "same `.ptr`-of-array gap as above"),
 )) {
     @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~

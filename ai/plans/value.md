@@ -707,8 +707,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      `reinterpretLocalPointerLoad` shim. Pointer, `real`, widening, and
      other aggregate reinterprets remain unsupported; a non-fitting write
      through a promoted cell fails loudly rather than silently miswriting.
-     The `gc_*` capacity hooks and `lastGCArrayUsedAllocation` still need
-     retirement. Whole class-value reads now re-derive every supported
+     The `gc_*` capacity hooks and `lastGCArrayUsedAllocation` are retired:
+     native array pointers cross ordinary body-less FFI as their real address,
+     and native slice returns retain that address for subsequent FFI calls.
+     Whole class-value reads now re-derive every supported
      field from the cell in one pass, so passing onward, printing, and
      equality no longer see a stale boxed snapshot.
    - Structural gaps needing a design, not surgery: per-activation cell
@@ -735,13 +737,15 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      the union residuals in Contracts (aggregate members beyond plain
      structs, promotion for unions with non-scalar members, aggregate
      default-init siblings).
-   - Native-pointer arithmetic: integer offsetting and pointer difference now
-     walk raw native buffers (including `GC.malloc` storage), satisfying the
-     arithmetic used by the real druntime capacity bodies. Next retire the
-     `gc_*` array-capacity hooks and `lastGCArrayUsedAllocation` through
-     ordinary body-less FFI. Ordering and mixed native/boxed-pointer
-     operations remain modelled only for the boxed carrier, but are not known
-     prerequisites for that slice.
+   - Native-pointer arithmetic: integer offsetting and pointer difference walk
+     raw native buffers (including `GC.malloc` storage). Array pointers into a
+     promoted cell cross ordinary body-less FFI as native addresses; a native
+     slice returned from FFI retains its address when passed onward, so the
+     druntime capacity helpers operate on the authoritative GC allocation.
+     `assumeSafeAppend` on an interior slice still reaches an unsupported
+     aggregate read after those helpers return. Ordering and mixed
+     native/boxed-pointer operations remain modelled only for the boxed
+     carrier.
    - Open questions from the design sketch: lifetime contracts for blocks
      borrowed from arbitrary C owners; what a guest pointer into a grown
      array should observe, and whether that deserves a diagnostic rather

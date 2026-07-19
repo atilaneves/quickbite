@@ -455,7 +455,6 @@ private struct Walker {
     private size_t[size_t][size_t][VarDeclaration] nestedFieldAddressAllocations;
     private bool[size_t] fieldSnapshotAllocationIds;
     private size_t allocationCount;
-    private size_t lastGCArrayUsedAllocation;
     private Value result;
     private bool runningCalledFunction;
     private bool inUnitTest;
@@ -4154,10 +4153,18 @@ private struct Walker {
         // two otherwise-identical structs falsely disagrees whenever one
         // side's enum field took a different path to the same value. Other
         // `is` comparisons (pointers, class references, floats) keep their
-        // existing raw-value identity semantics.
-        const same = left.isStruct && right.isStruct
-            ? equalValues(left, right)
-            : left == right;
+        // existing raw-value identity semantics. Array-pointer snapshots can
+        // contain different element copies while still naming the same
+        // allocation and offset; those two fields are their identity.
+        const same = left.isPointer && right.isPointer &&
+                !left.isLocalPointer && !right.isLocalPointer &&
+                !left.isNativePointer && !right.isNativePointer &&
+                left.pointerAllocation != 0 && right.pointerAllocation != 0
+            ? left.pointerAllocation == right.pointerAllocation &&
+                left.pointerElementOffset == right.pointerElementOffset
+            : left.isStruct && right.isStruct
+                ? equalValues(left, right)
+                : left == right;
         if (identity.op == EXP.notIdentity)
             return Value(!same);
 
@@ -4217,20 +4224,6 @@ private struct Walker {
 
             enforceInterceptionPolicy(call.f, "isDruntimeArrayOpAddAssign");
             return runArrayOpAddAssignCall(call);
-        }
-
-        if (call.f !is null) {
-            import quickbite.backends.interpreter.builtins:
-                GCArrayHook, tryGCArrayHook;
-
-            GCArrayHook gcArrayHook;
-            if (tryGCArrayHook(call.f, gcArrayHook)) {
-                import quickbite.backends.interpreter.interception_guard:
-                    enforceInterceptionPolicy;
-
-                enforceInterceptionPolicy(call.f, "tryGCArrayHook");
-                return runGCArrayHookCall(call, gcArrayHook);
-            }
         }
 
         if (call.f !is null) {
@@ -4477,7 +4470,10 @@ private struct Walker {
                         !call.f.needThis &&
                         tryCallNative(
                             call.f,
-                            nativeCellPointerArguments(arguments),
+                            nativeCellPointerArguments(
+                                arguments,
+                                nativeArgumentTypes(argumentExpressions),
+                            ),
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
                             nativeOutParameterInputValues(argumentExpressions),
@@ -4578,9 +4574,27 @@ private struct Walker {
     // A local pointer whose target has native authoritative storage can cross
     // the FFI seam as that storage's real address. Other local-pointer shapes
     // remain boxed and retain the existing unsupported diagnostic.
-    private Value[] nativeCellPointerArguments(in Value[] arguments) {
+    private Value[] nativeCellPointerArguments(
+        in Value[] arguments,
+        imported!"dmd.mtype".Type[] argumentTypes,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
         auto result = arguments.dup; // Replaces eligible pointer values below.
-        foreach (ref argument; result) {
+        foreach (index, ref argument; result) {
+            if (argument.isPointer && !argument.isNativePointer) {
+                if (auto variable = arrayPointerVariable(argument)) {
+                    if (auto cell = *variable in arrayCells) {
+                        const offset = cast(size_t) argument.pointerElementOffset *
+                            typeByteSize(argumentTypes[index].nextOf);
+                        argument = Value.nativePointerValue(
+                            cell.block.address + offset,
+                        );
+                        continue;
+                    }
+                }
+            }
+
             if (!argument.isLocalPointer)
                 continue;
 
@@ -4614,49 +4628,6 @@ private struct Walker {
             return Value.void_;
 
         return runExpression(argument);
-    }
-
-    private Value runGCArrayHookCall(
-        imported!"dmd.expression".CallExp call,
-        in imported!"quickbite.backends.interpreter.builtins".GCArrayHook hook,
-    ) {
-        import quickbite.backends.interpreter.builtins: GCArrayHook;
-
-        if (call.arguments is null)
-            throw new Exception("Unsupported eval call.");
-
-        with (GCArrayHook) final switch (hook) {
-            case getUsed:
-                requireArgumentCount(call, 2);
-                return gcArrayUsed(runExpression((*call.arguments)[0]));
-
-            case reserveCapacity:
-                requireArgumentCount(call, 3);
-                const slice = runExpression((*call.arguments)[0]);
-                const request =
-                    cast(size_t) runExpression((*call.arguments)[1]).asLong;
-                runExpression((*call.arguments)[2]);
-                return Value(request == 0 ? slice.length : request);
-
-            case shrinkUsed:
-                requireArgumentCount(call, 3);
-                runExpression((*call.arguments)[0]);
-                runExpression((*call.arguments)[1]);
-                runExpression((*call.arguments)[2]);
-                return Value(true);
-        }
-    }
-
-    private Value gcArrayUsed(in Value pointer) {
-        lastGCArrayUsedAllocation = 0;
-        if (pointer == Value.null_ || pointer.isNativePointer)
-            return Value.null_;
-
-        if (!pointer.isPointer)
-            throw new Exception("Expected pointer.");
-
-        lastGCArrayUsedAllocation = pointer.pointerAllocation;
-        return Value.arrayValue(pointerArrayElements(pointer));
     }
 
     private Value[] pointerArrayElements(in Value pointer) {
@@ -9396,6 +9367,17 @@ private struct Walker {
             throw new Exception("Unsupported interpreter array append target.");
 
         const value = runExpression(assign.e2);
+        if (auto cell = variable in arrayCells) {
+            const newLength = cell.length + 1;
+            cell.reserve(newLength);
+            cell.setLength(newLength);
+            writeArrayCellElement(*cell, newLength - 1, value);
+            locals[variable] = arrayValueFromCell(*cell);
+            uninitializedLocals.remove(variable);
+            sliceAliases.remove(variable);
+            return locals[variable];
+        }
+
         locals[variable] = current.withAppendedArrayElement(value);
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
@@ -11158,7 +11140,6 @@ private struct Walker {
         );
         locals[variable] = value;
         registerClassAliasIfPlainVar(variable, initializer);
-        recordGCArrayUsedAlias(variable, initializer);
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)
             recordArrayElementAlias(variable, indexInitializer, arrayElementAliasIndex);
@@ -11172,42 +11153,6 @@ private struct Walker {
         recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
-    }
-
-    private void recordGCArrayUsedAlias(
-        VarDeclaration variable,
-        imported!"dmd.expression".Expression initializer,
-    ) {
-        import quickbite.backends.interpreter.builtins:
-            GCArrayHook, tryGCArrayHook;
-
-        auto call = gcArrayUsedCall(initializer);
-        if (call is null || call.f is null) {
-            arrayAllocationAliases.remove(variable);
-            return;
-        }
-
-        GCArrayHook hook;
-        if (!tryGCArrayHook(call.f, hook) || hook != GCArrayHook.getUsed) {
-            arrayAllocationAliases.remove(variable);
-            return;
-        }
-
-        if (lastGCArrayUsedAllocation == 0) {
-            arrayAllocationAliases.remove(variable);
-            return;
-        }
-
-        arrayAllocationAliases[variable] = lastGCArrayUsedAllocation;
-    }
-
-    private imported!"dmd.expression".CallExp gcArrayUsedCall(
-        imported!"dmd.expression".Expression initializer,
-    ) {
-        if (auto cast_ = initializer.isCastExp)
-            return gcArrayUsedCall(cast_.e1);
-
-        return initializer.isCallExp;
     }
 
     private Value defaultLocalValue(VarDeclaration variable) {

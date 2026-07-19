@@ -104,6 +104,13 @@ public struct Value {
         ));
     }
 
+    public static Value nativeArrayValue(
+        in Value[] elements,
+        const(void)* address,
+    ) @safe pure {
+        return Value(Array(elements, ArrayDisplay.normal, address));
+    }
+
     public static Value stringValue(in char[] elements) @safe pure {
         Value[] values;
         foreach (element; elements)
@@ -1303,6 +1310,18 @@ public struct Value {
         );
     }
 
+    public const(void)* arrayNativeAddress() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.nativeAddress,
+            (_) {
+                throw new Exception("Expected array.");
+                return null;
+            },
+        );
+    }
+
     public Value structFieldAt(in size_t index) const @safe pure {
         import std.sumtype: match;
 
@@ -1892,6 +1911,7 @@ private struct Array {
     public size_t allocationOffset;
     public size_t allocationId;
     public ArrayDisplay display;
+    public const(void)* nativeAddress;
 
     public this(
         in Value[] elements,
@@ -1902,6 +1922,16 @@ private struct Array {
         this.allocationOffset = 0;
         this.allocationId = 0;
         this.display = display;
+        this.nativeAddress = null;
+    }
+
+    public this(
+        in Value[] elements,
+        in ArrayDisplay display,
+        const(void)* nativeAddress,
+    ) @safe pure {
+        this(elements, display);
+        this.nativeAddress = nativeAddress;
     }
 
     public this(
