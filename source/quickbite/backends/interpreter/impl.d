@@ -2387,6 +2387,16 @@ private struct Walker {
         // owns the shared bytes.
         promoteArrayCell(source);
 
+        if (auto cell = source in arrayCells) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            const elementOffset = arrayPointerOffset(*current, offset);
+            return Value.nativePointerValue(
+                cell.block.address + elementOffset *
+                    typeByteSize(array.type.toBasetype.nextOf),
+            );
+        }
+
         const id = variable in arrayAllocationAliases;
         return Value.arrayPointerValue(
             arrayPointerElements(*current),
@@ -2518,9 +2528,6 @@ private struct Walker {
         if (variable.isDataseg)
             return;
 
-        if (variable in arrayCells)
-            return;
-
         if (!isDynamicArrayType(variable.type))
             return;
 
@@ -2533,7 +2540,25 @@ private struct Walker {
         if (!current.isArray)
             return;
 
+        if (auto existing = variable in arrayCells) {
+            if (
+                current.arrayNativeAddress is null ||
+                existing.block.address is current.arrayNativeAddress
+            )
+                return;
+            dropArrayCell(variable);
+        }
+
         if (isNativeScalarType(elementType)) {
+            if (current.arrayNativeAddress !is null) {
+                arrayCells[variable] = NativeArray.borrow(
+                    elementType,
+                    cast(void*) current.arrayNativeAddress,
+                    current.length,
+                );
+                return;
+            }
+
             auto cell = NativeArray.allocate(elementType, current.length);
             foreach (index; 0 .. current.length)
                 writeScalar(elementType, cell.element(index), current[index]);
@@ -3636,6 +3661,9 @@ private struct Walker {
 
         if (auto cell = variable in scalarCells)
             return readScalar(variable.type, cell.bytes);
+
+        if (auto cell = variable in arrayCells)
+            return arrayValueFromCell(*cell);
 
         if (auto current = variable in locals)
             return *current;
@@ -6641,6 +6669,16 @@ private struct Walker {
                     continue;
                 }
 
+                if (value.isArray && value.arrayNativeAddress !is null)
+                    if (auto var = argument.isVarExp)
+                        if (auto variable = var.var.isVarDeclaration) {
+                            dropArrayCell(variable);
+                            locals[variable] = *value;
+                            uninitializedLocals.remove(variable);
+                            promoteArrayCell(variable);
+                            continue;
+                        }
+
                 // A `ref` argument spelled `*pointer` (core.atomic's shared
                 // overloads forward `*cast(T*)&val`): write back through the
                 // pointer's target.
@@ -7558,6 +7596,19 @@ private struct Walker {
                 return;
             }
 
+            // A dynamic-array header can be reinterpreted as a two-field
+            // struct through a pointer.  DMD's own __ArrayCast does this to
+            // change the header length while retaining the data pointer.
+            // The expression carrier remains an array because those are the
+            // bytes' actual guest meaning; update its descriptor rather than
+            // requiring a recursively-boxed struct snapshot.
+            if (receiver.isArray && declarationName(dot.var) == "length") {
+                writeLocation(dot.e1, receiver.withArrayLength(
+                    cast(size_t) value.asLong,
+                ));
+                return;
+            }
+
             const fieldIndex = structFieldIndex(dot);
             auto unionType = receiverStructType(dot.e1);
             const updated = unionType !is null && unionType.sym.isUnionDeclaration !is null
@@ -7638,6 +7689,10 @@ private struct Walker {
                     throw new Exception("Unsupported interpreter assignment target.");
                 }
 
+                if (value.isArray) {
+                    dropArrayCell(*variable);
+                    arrayRebinds[*variable] = true;
+                }
                 locals[*variable] = value;
                 uninitializedLocals.remove(*variable);
                 return;
@@ -8939,7 +8994,7 @@ private struct Walker {
         foreach (index; 0 .. cell.length)
             elements[index] = readScalar(cell.elementType, cell.element(index));
 
-        return Value.arrayValue(elements);
+        return Value.nativeArrayValue(elements, cell.block.address);
     }
 
     private Value runAssocArraySlotAssignExpression(
@@ -9367,10 +9422,14 @@ private struct Walker {
             throw new Exception("Unsupported interpreter array append target.");
 
         const value = runExpression(assign.e2);
+        if (current.arrayNativeAddress !is null)
+            promoteArrayCell(variable);
         if (auto cell = variable in arrayCells) {
             const newLength = cell.length + 1;
-            cell.reserve(newLength);
-            cell.setLength(newLength);
+            if (!cell.tryExpandUsedTo(newLength)) {
+                cell.reserve(newLength);
+                cell.setLength(newLength);
+            }
             writeArrayCellElement(*cell, newLength - 1, value);
             locals[variable] = arrayValueFromCell(*cell);
             uninitializedLocals.remove(variable);
@@ -9484,6 +9543,23 @@ private struct Walker {
             Value value;
             if (tryIdentifierClassCastValue(cast_, value))
                 return value;
+        }
+
+        if (
+            type.ty == TY.Tarray &&
+            type.nextOf.toBasetype.ty == TY.Tvoid
+        ) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            const value = runExpression(cast_.e1);
+            if (value.isArray && value.arrayNativeAddress !is null)
+                return Value.nativeArrayValueWithLength(
+                    value.length * typeByteSize(
+                        cast_.e1.type.toBasetype.nextOf,
+                    ),
+                    value.arrayNativeAddress,
+                );
+            return value;
         }
 
         if (isTransparentArrayCastTarget(type))
@@ -9771,6 +9847,8 @@ private struct Walker {
             // Slicing native memory (`ptr[0 .. n]` over a C allocation, as
             // std.file.read does): reify the elements into an array Value.
             if (source.isNativePointer) {
+                import quickbite.backends.interpreter.layout: typeByteSize;
+
                 Value[] elements;
                 foreach (index; lower .. upper)
                     elements ~= loadNativePointerElement(
@@ -9778,7 +9856,11 @@ private struct Walker {
                         source,
                         index,
                     );
-                return Value.arrayValue(elements);
+                return Value.nativeArrayValue(
+                    elements,
+                    cast(const(ubyte)*) source.asNativePointer + lower *
+                        typeByteSize(slice.e1.type.toBasetype.nextOf),
+                );
             }
 
             if (source.isLocalPointer)
@@ -9794,7 +9876,41 @@ private struct Walker {
         if (source.isArray && (lower > upper || upper > source.length))
             throwRangeError("Range violation");
 
-        return source.arraySlice(lower, upper);
+        auto nativeAddress = source.arrayNativeAddress;
+        if (nativeAddress is null)
+            if (auto var = slice.e1.isVarExp)
+                if (auto variable = var.var.isVarDeclaration) {
+                    auto sourceVariable = variable;
+                    size_t sourceLower;
+                    if (auto alias_ = variable in sliceAliases) {
+                        sourceVariable = alias_.source;
+                        sourceLower = alias_.lower;
+                    }
+                    if (auto cell = sourceVariable in arrayCells)
+                        nativeAddress = cast(const(ubyte)*) cell.block.address +
+                            sourceLower * cell.stride;
+                }
+        if (nativeAddress !is null) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            nativeAddress = cast(const(ubyte)*) nativeAddress + lower *
+                typeByteSize(slice.e1.type.toBasetype.nextOf);
+        }
+
+        import dmd.astenums: TY;
+        if (
+            nativeAddress !is null &&
+            slice.type.toBasetype.nextOf.toBasetype.ty == TY.Tvoid
+        ) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            return Value.nativeArrayValueWithLength(
+                (upper - lower) *
+                    typeByteSize(slice.e1.type.toBasetype.nextOf),
+                nativeAddress,
+            );
+        }
+        return source.arraySlice(lower, upper, nativeAddress);
     }
 
     private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {

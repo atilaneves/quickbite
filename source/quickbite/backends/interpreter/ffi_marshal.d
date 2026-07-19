@@ -925,7 +925,12 @@ private ubyte[] marshalSliceArgument(
         return null;
     }
 
+    import dmd.astenums: TY;
+    import dmd.mtype: Type;
+
     auto elementType = type.nextOf.toBasetype;
+    if (elementType.ty == TY.Tvoid)
+        elementType = Type.tuns8;
     auto na = NativeArray.allocate(elementType, value.length);
     const(char)*[] keepAlive;
     foreach (index; 0 .. value.length) {
@@ -1081,7 +1086,8 @@ private bool canMarshalToNative(imported!"dmd.mtype".Type type) {
     import dmd.mtype: TypeStruct;
 
     switch (type.ty) with (TY) {
-        case Tbool, Tchar, Twchar, Tdchar,
+        case Tvoid,
+             Tbool, Tchar, Twchar, Tdchar,
              Tint8, Tuns8, Tint16, Tuns16,
              Tint32, Tuns32, Tint64, Tuns64,
              Tfloat32, Tfloat64, Tfloat80,
@@ -1192,8 +1198,21 @@ private imported!"quickbite.lang".Value unmarshalSlice(
 
     const length = *cast(const size_t*) buffer.ptr;
     const data = *cast(const void**) (buffer.ptr + size_t.sizeof);
-    if (length == 0)
+    if (length == 0) {
+        if (data !is null) {
+            auto elementType = type.nextOf.toBasetype;
+            switch (elementType.ty) with (TY) {
+                case Tchar:
+                case Twchar:
+                case Tdchar:
+                    break;
+
+                default:
+                    return Value.nativeArrayValueWithLength(0, data);
+            }
+        }
         return emptySliceValue(type);
+    }
     if (data is null)
         throw new Exception("Native slice return has null data.");
 

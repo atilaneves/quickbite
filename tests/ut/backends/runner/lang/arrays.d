@@ -1759,15 +1759,15 @@ static foreach (backend; Matrix!(
 
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
 // that does not start at its backing block's base). Interpreter omitted: its
-// ordinary druntime path reaches an unsupported aggregate read after the GC
-// helpers return. Ctfe omitted:
+// reserve descriptor loses the zero-length allocation's capacity before the
+// interior slice reaches `gc_expandArrayUsed`. Ctfe omitted:
 // `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at all.
 // Bytecode omitted: same `.ptr`-of-array gap as above.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "gc_getArrayUsed has no D source, so Ctfe cannot intercept it at all"),
     Omit!(Interpreter, Because.unconfirmed,
-        "ordinary druntime path reaches an unsupported aggregate read after the GC helpers return"),
+        "reserve capacity is not retained when the zero-length slice descriptor is rebound"),
     Omit!(Bytecode, Because.unconfirmed, "same `.ptr`-of-array gap as above"),
 )) {
     @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~

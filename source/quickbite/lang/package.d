@@ -111,6 +111,15 @@ public struct Value {
         return Value(Array(elements, ArrayDisplay.normal, address));
     }
 
+    public static Value nativeArrayValueWithLength(
+        in size_t length,
+        const(void)* address,
+    ) @safe pure {
+        Value[] elements;
+        elements.length = length;
+        return nativeArrayValue(elements, address);
+    }
+
     public static Value stringValue(in char[] elements) @safe pure {
         Value[] values;
         foreach (element; elements)
@@ -1255,7 +1264,30 @@ public struct Value {
         );
     }
 
-    public Value arraySlice(in size_t lower, in size_t upper) const @safe pure {
+    public Value withArrayLength(in size_t length) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => Value(Array(
+                array.elements[0 .. length],
+                array.display,
+                array.allocation,
+                array.allocationOffset,
+                array.allocationId,
+                array.nativeAddress,
+            )),
+            (_) {
+                throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value arraySlice(
+        in size_t lower,
+        in size_t upper,
+        const(void)* nativeAddress = null,
+    ) const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -1265,6 +1297,7 @@ public struct Value {
                 array.allocation,
                 array.allocationOffset + lower,
                 array.allocationId,
+                nativeAddress,
             )),
             (_) {
                 throw new Exception("Expected array.");
@@ -1940,12 +1973,14 @@ private struct Array {
         in Value[] allocation,
         in size_t allocationOffset = 0,
         in size_t allocationId = 0,
+        const(void)* nativeAddress = null,
     ) @safe pure {
         this.elements = elements.dup;
         this.allocation = allocation.dup;
         this.allocationOffset = allocationOffset;
         this.allocationId = allocationId;
         this.display = display;
+        this.nativeAddress = nativeAddress;
     }
 
     public bool opEquals(in Array other) const @safe pure {

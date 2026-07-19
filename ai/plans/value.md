@@ -31,10 +31,10 @@ stand:
   place.
 - Still boxed: a local's authoritative storage itself
   (`locals[VarDeclaration]` remains `Value`-keyed; cells exist only for
-  the shapes above), whole-value reads of aliased arrays and structs,
-  dynamic-array- and class-typed fields, nesting deeper than one level,
-  `ref`-parameter address identity, and the remaining `interpreter.md`
-  §9.10 shims.
+  the shapes above), whole-value reads of aliased structs and arrays outside
+  the promoted scalar-element dynamic-array shape, dynamic-array- and
+  class-typed fields, nesting deeper than one level, `ref`-parameter address
+  identity, and the remaining `interpreter.md` §9.10 shims.
 
 ## Audit findings (June 2026)
 
@@ -278,12 +278,17 @@ a checked fact; do not relearn them.
   unscanned destination: a null block address (a zero-length array) and
   a genuinely non-GC source address.
 - `reserve`/`setLength` refuse every growth of a `borrowed` handle
-  (shrink stays legal and storage-free). A handle has no "am I the
-  current tail owner" bookkeeping (druntime's in-place expansion gates on
-  exactly that), so it can never soundly decide which of several live
-  views over one block may grow in place. Growth-and-rebind belongs to
-  the call site, as does `~=`: allocate a fresh owned array for the
-  result and rebind the guest variable, exactly as compiled D.
+  (shrink stays legal and storage-free). A handle has no "am I the current
+  tail owner" bookkeeping, so it cannot soundly decide which of several live
+  views over one block may grow. One narrower operation exists: when
+  druntime's real `gc_expandArrayUsed` accepts that exact view, the runtime
+  has proved it is the current tail owner and the borrowed view may widen
+  without reallocating. Failure leaves the view unchanged; ordinary growth
+  still allocates an owned array and rebinds at the call site.
+- Reconstructing a promoted scalar-element array cell as a whole value keeps
+  the cell's native address. Pointer casts, slices, and `void[]` reinterprets
+  preserve that address and express length in the destination element type;
+  dropping either fact recreates a boxed snapshot before the FFI seam.
 - `setLength`'s grow path zeroes every newly exposed byte
   unconditionally, including bytes re-exposed by shrink-then-grow.
   Compiled D gates its memset on `__traits(isZeroInit, T)` and emplaces
@@ -739,12 +744,11 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      default-init siblings).
    - Native-pointer arithmetic: integer offsetting and pointer difference walk
      raw native buffers (including `GC.malloc` storage). Array pointers into a
-     promoted cell cross ordinary body-less FFI as native addresses; a native
-     slice returned from FFI retains its address when passed onward, so the
-     druntime capacity helpers operate on the authoritative GC allocation.
-     `assumeSafeAppend` on an interior slice still reaches an unsupported
-     aggregate read after those helpers return. Ordering and mixed
-     native/boxed-pointer operations remain modelled only for the boxed
+     promoted cell cross ordinary body-less FFI as native addresses; native
+     slice reads, casts, and slices retain that address. Interior-slice
+     `assumeSafeAppend` still loses the capacity of the zero-length descriptor
+     returned by `reserve` while rebinding it into the caller. Ordering and
+     mixed native/boxed-pointer operations remain modelled only for the boxed
      carrier.
    - Open questions from the design sketch: lifetime contracts for blocks
      borrowed from arbitrary C owners; what a guest pointer into a grown
