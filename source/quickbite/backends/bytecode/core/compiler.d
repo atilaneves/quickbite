@@ -1959,6 +1959,20 @@ private struct Compiler {
                 "Unsupported compound assignment in bytecode core: ",
             );
 
+        if (auto divideAssign = expression.isDivAssignExp)
+            return compileDivOrModCompoundAssign(
+                divideAssign,
+                false,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
+        if (auto moduloAssign = expression.isModAssignExp)
+            return compileDivOrModCompoundAssign(
+                moduloAssign,
+                true,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
         // `arr.length = n` (and other lowered assignments) arrive as a
         // LoweredAssignExp, whose op is not `EXP.assign`, so isAssignExp misses
         // it; it is still an AssignExp with the original lvalue in e1.
@@ -6125,12 +6139,12 @@ private struct Compiler {
             scalarType(add.type) == lhs.type)
             return emitBinary(Op.addInt8, lhs, rhs, lhs.type);
 
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             add,
             lhs,
             rhs,
             Op.addInt4,
-            ScalarType.int_,
+            scalarType(add.type),
             "Unsupported addition in bytecode core: ",
         );
     }
@@ -6311,6 +6325,83 @@ private struct Compiler {
             ScalarType.int_,
             "Unsupported modulo in bytecode core: ",
         );
+    }
+
+    // `x /= y` and `x %= y` on an integer local. Unlike add/sub/mul/shift/or's
+    // compound-assign, which reuse one op4/op8 pair regardless of signedness
+    // because two's-complement addition and multiplication don't care about
+    // sign, division and modulo need the lvalue's own signedness to pick the
+    // opcode: an 8-byte unsigned lvalue uses the dedicated unsigned opcodes,
+    // matching the choice `compileDivideExpression`/`compileModuloExpression`
+    // make for the binary form. There is no signed 8-byte modulo opcode, so
+    // that combination is reported as unsupported rather than emitting a
+    // 4-byte modulo instruction into an 8-byte slot.
+    private Operand compileDivOrModCompoundAssign(
+        BinExp assign,
+        in bool isModulo,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
+        auto declaration = compoundAssignLocalDeclaration(assign.e1);
+        auto slot = compoundAssignLocalSlot(declaration);
+        if (slot is null)
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        const lvalueType = scalarType(declaration.type);
+        const rhs = compileExpression(assign.e2);
+        if (!isCompoundIntegerScalar(lvalueType) ||
+            !isCompoundIntegerScalar(rhs.type))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        if (isEightByteInteger(lvalueType) != isEightByteInteger(rhs.type) ||
+            (isEightByteInteger(lvalueType) && rhs.type != lvalueType))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        const operationType = isEightByteInteger(lvalueType)
+            ? lvalueType
+            : ScalarType.int_;
+
+        Op op;
+        if (operationType == ScalarType.ulong_)
+            op = isModulo ? Op.modUnsignedInt8 : Op.divUnsignedInt8;
+        else if (operationType == ScalarType.long_) {
+            if (isModulo)
+                throw new Exception(text(
+                    unsupportedMessage,
+                    expressionChars(assign),
+                ));
+            op = Op.divInt8;
+        } else
+            op = isModulo ? Op.modInt4 : Op.divInt4;
+
+        const lhs = integerOperationOperand(
+            Operand(*slot, lvalueType),
+            operationType,
+        );
+        const rhsValue = integerOperationOperand(rhs, operationType);
+        const destination = size(lvalueType) == size(operationType)
+            ? *slot
+            : allocate(operationType);
+        _code ~= Instruction(op, destination, lhs.offset, rhsValue.offset);
+        if (destination != *slot)
+            _code ~= Instruction(
+                Op.copy,
+                *slot,
+                destination,
+                cast(ushort) size(lvalueType),
+            );
+
+        return Operand(*slot, lvalueType);
     }
 
     private Operand compileShiftExpression(

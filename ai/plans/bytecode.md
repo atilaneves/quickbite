@@ -334,24 +334,38 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   whose callee is a plain `VarExp` naming such a function), so
   `std.array.Appender.reserve`'s block-extend path (a plain nested named
   function reading `this`) no longer throws "Unsupported expression in
-  bytecode core: this". The row is now blocked on `DivAssignExp` (`x /= y`),
-  which has no compiler support at all today (only add/sub/mul/shr/shl/or
-  compound-assign are wired, and unlike those, div/mod need a signed-vs-
-  unsigned opcode choice per DMD's `divInt8`/`divUnsignedInt8`/
-  `modUnsignedInt8` split rather than one opcode pair reused across both
-  signedness cases); reproduces standalone as the row's own `text(...,
-  needed, ...)` digit-formatting path, surfacing as "Unsupported expression
-  in bytecode core: value /= 10LU". Once that lands the row may next reach:
-  4-byte unsigned (`uint`) addition, unsupported because the narrow-int
-  addition fallback hardcodes a signed-`int` result instead of using the
-  expression's own scalar type the way its `or`/`and`/`xor` siblings already
-  do; and inlining a void IIFE whose body is a single expression statement
-  (Phobos's common `(() @trusted { ... })()` escape idiom), the same way a
-  single-`return` IIFE already inlines. Those were observed downstream in a
-  prior pass and are unconfirmed until `DivAssignExp` lands; a further,
-  still-unisolated crash (an out-of-bounds `copySlice` while `Appender.put`
-  assigns into a grown buffer) appeared after fixing them then, so at least
-  one more gap remains beyond this list.
+  bytecode core: this". `DivAssignExp`/`ModAssignExp` (`x /= y`, `x %= y`)
+  are now wired (`compileDivOrModCompoundAssign`), picking the lvalue's own
+  signed-vs-unsigned opcode the way `compileDivideExpression`/
+  `compileModuloExpression` already do for the binary form (`divUnsignedInt8`/
+  `modUnsignedInt8` for `ulong`, `divInt8` for `long`, `divInt4`/`modInt4`
+  otherwise; signed 8-byte modulo has no opcode and is reported unsupported).
+  4-byte unsigned (`uint`) addition is also fixed: the narrow-int addition
+  fallback now routes through `compileInt4BinaryResult` with the expression's
+  own scalar type instead of hardcoding a signed `int` result, matching its
+  `or`/`and`/`xor` siblings. The row is now blocked on inlining a void IIFE
+  whose body is a single expression statement (Phobos's common
+  `(() @trusted { ... })()` escape idiom, e.g. `std.array.Appender`'s
+  `() @trusted { memcpy(bi.base, ...); }()` growth-copy in `ensureAddable`),
+  the same way a single-`return` IIFE already inlines; reproduces standalone
+  as `std.conv.text` with two or more arguments of any type (minimal:
+  `text("a", someUlongLocal)`), surfacing as "Unsupported variable in
+  bytecode core: bi". A spike of that inlining (mirroring
+  `immediateLambdaReturn`/`singleReturnExpression` for a bare
+  `ExpStatement` instead of a `ReturnStatement`) does make that diagnostic
+  disappear, but it uncovers the next gap immediately rather than fixing the
+  row: an out-of-bounds `copySlice` (`backends/bytecode/core/machine.d:2542`)
+  segfaults the whole process while `Appender.put` assigns into the buffer
+  `ensureAddable` just grew, reachable with the same `text("a", ulongLocal)`
+  repro. Landing the void-IIFE inlining alone is not safe to commit on its
+  own: it turns this row's failure from a caught exception (tolerated as
+  "failing as expected") into a process-terminating `SIGSEGV`, which would
+  crash any `bin/ut --random` run that reaches this row. The two fixes need
+  to land together — void-IIFE inlining plus whatever in the dynamic-array
+  slice-descriptor path produces the bad pointer/length `copySlice` reads
+  (candidate suspect: `_data.arr = (cast(Unqual!T*) bi.base)[0 .. len]`,
+  a pointer-cast-to-slice expression assigned into a dynamic-array struct
+  field, immediately before the crashing `put`).
 - Landing struct-by-value native returns exposed a latent cache bug in the
   shared FFI layer (`ffi/core.d`'s `callViaLibffi`): on a `cachedNativeCif`
   hit, the return buffer's size was read from the current call's freshly
