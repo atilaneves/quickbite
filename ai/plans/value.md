@@ -24,14 +24,14 @@ stand:
   including slice and `foreach (ref ...)` aliasing; struct fields
   (scalar, scalar-element static-array, one-level-nested struct); class
   fields of the same shapes plus class reference identity through
-  same-frame, argument, and `this` aliasing; and union member overlap,
-  including default-init reinterpretation.
+  same-frame, argument, and `this` aliasing and whole-value class reads;
+  and union member overlap, including default-init reinterpretation.
 - Invalidation is drop-on-rebind: a rebind drops the cell and its
   pointer-id memo; only a same-storage mutation refreshes a cell in
   place.
 - Still boxed: a local's authoritative storage itself
   (`locals[VarDeclaration]` remains `Value`-keyed; cells exist only for
-  the shapes above), whole-value reads of aliased variables,
+  the shapes above), whole-value reads of aliased arrays and structs,
   dynamic-array- and class-typed fields, nesting deeper than one level,
   `ref`-parameter address identity, and every `interpreter.md` §9.10
   shim.
@@ -304,6 +304,10 @@ a checked fact; do not relearn them.
   every write path that reaches storage only through an alias table
   (slice alias, array-element alias, struct-field alias, `this` alias)
   must independently refresh the ultimate target variable's cell.
+- A whole class-variable read reconstructs every cell-supported field
+  from the class cell before the value is returned, passed onward,
+  compared, or rendered. Direct field reads alone are insufficient: a
+  returned boxed snapshot can escape the variable and lose its cell.
 - Rebind vs mutation: a cross-frame writeback refreshes a cell's bytes in
   place only for a same-storage mutation and must DROP the cell on a
   rebind. An in-place refresh after a rebind writes the new binding's
@@ -348,12 +352,12 @@ a checked fact; do not relearn them.
   actually-different same-length array through the same formal parameter
   would still wrongly reconcile — closing it needs storage-identity
   tracking through parameter binding.
-- Known, deliberate boundary: a WHOLE-value read of an aliased variable
-  stays boxed-stale after a write reaches the same storage through a
-  DIFFERENT alias's cell; index reads through any alias, and reads
-  through the variable whose own write triggered the refresh, are
-  cell-fresh. Closing it means re-deriving every aliased mirror on every
-  write — unbounded; deferred knowingly.
+- Known, deliberate boundary: a whole-value read of an aliased array or
+  struct stays boxed-stale after a write reaches the same storage through
+  a different alias's cell; index/field reads through any alias, and
+  whole class-variable reads, are cell-fresh. Closing the array/struct
+  gap means reading those whole values from their cells too, not
+  re-deriving every aliased mirror on every write.
 
 ### Unions
 
@@ -685,11 +689,11 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      scalar reinterprets go through real bytes; aggregate, pointer,
      `real`, and widening reinterprets still take the boxed/refused
      passthrough, and a non-fitting write through a promoted cell fails
-     loudly rather than silently miswriting. Retiring
-     `writeBackByValueClassArguments` needs whole-value cell reads
-     (re-deriving an entire object from its cell in one pass, so
-     whole-boxed-value uses — passing onward, printing, equality — stop
-     depending on the diffing shim): that is the next class-phase step.
+     loudly rather than silently miswriting. Whole class-value reads now
+     re-derive every supported field from the cell in one pass, so
+     passing onward, printing, and equality no longer see a stale boxed
+     snapshot. The next class-phase step is a §9.10 ratchet fixture and
+     deletion of `writeBackByValueClassArguments`.
    - Structural gaps needing a design, not surgery: per-activation cell
      keying (all cell maps key on `VarDeclaration`, so recursive
      activations of the same function share one cell — a real

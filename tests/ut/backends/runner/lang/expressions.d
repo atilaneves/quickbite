@@ -2320,6 +2320,45 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class cell promoted by taking a field's address is authoritative for the
+// whole object, not only for later field reads. Passing the class value onward
+// must therefore reconstruct the argument from the cell after a pointer write,
+// rather than copy the stale boxed mirror into the callee.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class field"),
+)) {
+    @("class.wholeValueArgumentReadsAuthoritativeCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            void put(int* pointer, int value) {
+                *pointer = value;
+            }
+
+            int observe(C value) {
+                return value.x;
+            }
+
+            C forward(C value) {
+                return value;
+            }
+
+            unittest {
+                C c = new C();
+                C alias_ = c;
+                int* pointer = &c.x;
+                put(pointer, 99);
+                assert(observe(forward(alias_)) == 99);
+            }
+        });
+    }
+}
+
 // `this`-reached class aliasing: a METHOD mutating `this.x` must be visible to
 // another caller-side alias of the SAME object through the shared class
 // cell, exactly like the `combine(a, b)` cross-frame aliasing case above,

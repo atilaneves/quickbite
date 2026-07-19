@@ -1672,6 +1672,20 @@ private struct Walker {
                 return readScalar(variable.type, cell.bytes);
             }
 
+            // A class cell is likewise authoritative for a whole-value read,
+            // not only for field access and pointer writeback. Reconstructing
+            // here ensures return values and onward arguments cannot carry a
+            // stale boxed snapshot after an aliased field mutation.
+            if (auto cell = variable in classCells) {
+                auto current = variable in locals;
+                auto classType = variable.type.toBasetype.isTypeClass;
+                if (
+                    current !is null && current.isClassObject &&
+                    classType !is null && classType.sym !is null
+                )
+                    return classValueFromCell(*current, *cell, classType.sym);
+            }
+
             if (auto current = variable in locals)
                 return *current;
 
