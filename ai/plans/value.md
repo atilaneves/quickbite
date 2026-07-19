@@ -688,17 +688,17 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      the boxed mirror gone rather than synchronized.
    - Shim retirement: class-reference argument identity is represented by
      shared class cells, with no `writeBackByValueClassArguments` diffing
-     shim. The `gc_*` capacity hooks, `lastGCArrayUsedAllocation`,
-     `runMemcpyCall`, `runEmplaceRefCall`/`isEmplaceRef`, and the remaining
-     `reinterpretLocalPointerLoad` cases still need retirement.
-     `reinterpretLocalPointerLoad` is narrowed — same-width and narrowing
-     scalar reinterprets go through real bytes; aggregate, pointer,
-     `real`, and widening reinterprets still take the boxed/refused
-     passthrough, and a non-fitting write through a promoted cell fails
-     loudly rather than silently miswriting. Whole class-value reads now
-     re-derive every supported field from the cell in one pass, so
-     passing onward, printing, and equality no longer see a stale boxed
-     snapshot.
+     shim. Address-taken scalar cells are dereferenced directly at the
+     pointee's static type, including same-width and narrowing native
+     scalars and fitting plain structs, with no
+     `reinterpretLocalPointerLoad` shim. Pointer, `real`, widening, and
+     other aggregate reinterprets remain unsupported; a non-fitting write
+     through a promoted cell fails loudly rather than silently miswriting.
+     The `gc_*` capacity hooks, `lastGCArrayUsedAllocation`,
+     `runMemcpyCall`, and `runEmplaceRefCall`/`isEmplaceRef` still need
+     retirement. Whole class-value reads now re-derive every supported
+     field from the cell in one pass, so passing onward, printing, and
+     equality no longer see a stale boxed snapshot.
    - Structural gaps needing a design, not surgery: per-activation cell
      keying (all cell maps key on `VarDeclaration`, so recursive
      activations of the same function share one cell — a real

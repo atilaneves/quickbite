@@ -1361,6 +1361,35 @@ static foreach (backend; Matrix!(
 // Bytecode and IR ("Unsupported (IR) expression `& d`") do not support
 // taking the address of a local.
 
+// A same-sized struct pointer cast over an address-taken scalar reads the
+// scalar's native bytes as the struct's field. SystemLinker is the oracle;
+// Ctfe and LLVMJit are omitted because address-of-local reinterpretation is
+// unsupported/unconfirmed there.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("pointer.scalarBitsThroughStructPointerAreRawBits." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            unittest {
+                int value = fortyTwo;
+                S* pointer = cast(S*) &value;
+                assert(pointer.value == 42);
+            }
+        });
+    }
+}
+
 // Reinterpret-WRITE (not read) through a same-size pointer cast: writing raw
 // bits into a `float` local via a `uint*` must be visible to a subsequent
 // direct read of the local. SystemLinker is the oracle; LLVMJit and Ctfe are
@@ -1623,7 +1652,7 @@ static foreach (backend; Matrix!(
 // required the pointee to be exactly the cell's own width, throwing for a
 // narrower native-scalar pointee (a `ubyte*` reinterpret of a `uint`)
 // instead of writing into the low bytes the way the read side
-// (`reinterpretLocalPointerLoad`) already narrows by slicing.
+// already narrows by slicing.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),

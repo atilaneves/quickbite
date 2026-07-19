@@ -4004,59 +4004,31 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter pointer target.");
 
-        // Byte-level authority: once `&variable` has
-        // promoted a cell, its bytes -- not the boxed `locals` mirror below
-        // -- are the true value, shared by reference across every walker
-        // that dup'd `scalarCells`. A deref-read that instead consulted the
-        // mirror could observe a stale value once cross-frame writeback for
-        // celled locals stopped copying the mirror back (see
-        // `writeBackLocalPointerTargets`). `readCelledLocal` is exactly the
-        // cell-then-mirror-then-default priority this needs.
-        return reinterpretLocalPointerLoad(
-            readCelledLocal(*variable),
-            (*variable).type,
-            pointer.e1.type,
-        );
-    }
+        if (auto cell = *variable in scalarCells) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType, readScalar;
+            import quickbite.backends.interpreter.native_struct: NativeStruct;
+            import quickbite.frontend.dmd.values: defaultValue;
 
-    // `*cast(T*) &local`: a load of the same bytes at a different static
-    // type, not a hardcoded name/type-pair match. Only taken when both
-    // `source` and `target` are
-    // `native_scalar.isNativeScalarType` AND `target` is no wider than
-    // `source`: reading a wider target than the source local owns would
-    // read bytes the local never had, which stays on the passthrough path
-    // below untouched (a pre-existing gap, not this call site's to fix).
-    // For every other pair -- an aggregate, a pointer, `real`, or a
-    // widening read -- this returns `value` unchanged exactly as before.
-    private Value reinterpretLocalPointerLoad(
-        in Value value,
-        imported!"dmd.mtype".Type sourceType,
-        imported!"dmd.mtype".Type pointerType,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, readScalar, writeScalar;
+            auto target = pointer.e1.type.toBasetype.nextOf.toBasetype;
+            const targetSize = typeByteSize(target);
+            if (targetSize <= cell.bytes.length) {
+                if (isNativeScalarType(target))
+                    return readScalar(target, cell.bytes[0 .. targetSize]);
 
-        auto source = sourceType is null ? null : sourceType.toBasetype;
-        auto pointer = pointerType is null ? null : pointerType.toBasetype;
-        auto target = pointer is null || pointer.nextOf is null
-            ? null
-            : pointer.nextOf.toBasetype;
-        if (source is null || target is null)
-            return value;
+                if (auto structType = target.isTypeStruct)
+                    if (structType.sym.isUnionDeclaration is null) {
+                        auto view = NativeStruct.adopt(
+                            cell.subRange(0, targetSize),
+                            structType,
+                        );
+                        return structValueFromCell(defaultValue(target), view);
+                    }
+            }
+        }
 
-        if (!isNativeScalarType(source) || !isNativeScalarType(target))
-            return value;
-
-        const sourceSize = typeByteSize(source);
-        const targetSize = typeByteSize(target);
-        if (targetSize > sourceSize)
-            return value;
-
-        auto block = NativeBlock.allocate(sourceSize, NativeBlock.Scan.no);
-        writeScalar(source, block.bytes, value);
-        return readScalar(target, block.bytes[0 .. targetSize]);
+        return readCelledLocal(*variable);
     }
 
     private Value staticArrayPointerView(
@@ -7711,8 +7683,8 @@ private struct Walker {
                 // native-scalar pointee (e.g. a `ubyte*` reinterpret of a
                 // `uint`) writes only into the cell's low
                 // `typeByteSize(pointeeType)` bytes -- mirroring
-                // `reinterpretLocalPointerLoad`'s read-side narrowing by
-                // slicing -- instead of `writeScalar` throwing on a
+                // the read side's narrowing by slicing -- instead of
+                // `writeScalar` throwing on a
                 // length mismatch. A non-native-scalar pointee (or a wider
                 // one, a pre-existing gap not this call site's to fix)
                 // falls through to the boxed write below instead of
