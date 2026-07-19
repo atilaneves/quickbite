@@ -316,6 +316,10 @@ private struct Walker {
     // `classFieldPointerWritebacks` below for the write-through side.
     private VarDeclaration[size_t] classFieldPointerVariables;
     private size_t[size_t] classFieldPointerFieldIndices;
+    // A class-field pointer remains attached to the object after the variable
+    // used to reach it is rebound. Retain that object's cell by allocation id
+    // instead of resolving storage through the current variable binding.
+    private NativeBlock[size_t] classFieldPointerCells;
 
     // Set by `writeThroughClassFieldPointer` for the receiver variable it
     // wrote into, the class sibling of `structFieldPointerWritebacks`: a
@@ -2243,6 +2247,7 @@ private struct Walker {
         child.classCells = classCells.dup;
         child.classFieldPointerVariables = classFieldPointerVariables.dup;
         child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classFieldPointerCells = classFieldPointerCells.dup;
         child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nestedClassStructFieldPointerVariables =
             nestedClassStructFieldPointerVariables.dup;
@@ -3175,6 +3180,7 @@ private struct Walker {
 
         classFieldPointerVariables[id] = variable;
         classFieldPointerFieldIndices[id] = classFieldIndex(dot);
+        classFieldPointerCells[id] = classCells[variable];
     }
 
     // Class-receiver sibling of `promoteNestedStructFieldCell` (aggregate
@@ -3568,6 +3574,7 @@ private struct Walker {
         foreach (id; staleFieldIds) {
             classFieldPointerVariables.remove(id);
             classFieldPointerFieldIndices.remove(id);
+            classFieldPointerCells.remove(id);
         }
 
         size_t[] staleNestedFieldIds;
@@ -3591,6 +3598,16 @@ private struct Walker {
             classArrayFieldPointerFieldIndices.remove(id);
         }
 
+        fieldAddressAllocations.remove(variable);
+        nestedFieldAddressAllocations.remove(variable);
+    }
+
+    // A reference rebind detaches the variable from its former object but
+    // does not invalidate pointers already taken into that object. Forget the
+    // variable-keyed address memo so a later address-of gets a fresh id;
+    // allocation-id-keyed pointer cells continue owning the old storage.
+    private void detachClassCell(VarDeclaration variable) {
+        classCells.remove(variable);
         fieldAddressAllocations.remove(variable);
         nestedFieldAddressAllocations.remove(variable);
     }
@@ -3852,7 +3869,7 @@ private struct Walker {
             if (classFieldRefresh && value.isClassObject) {
                 writeClassCellScalarFields(*cell, variable.type.toBasetype.isTypeClass.sym, value);
             } else {
-                dropClassCell(variable);
+                detachClassCell(variable);
                 classRebinds[variable] = true;
             }
         } else if (!classFieldRefresh && variable.type.toBasetype.isTypeClass !is null) {
@@ -5645,6 +5662,8 @@ private struct Walker {
             classFieldPointerVariables[id] = variable;
             if (fieldIndex !is null)
                 classFieldPointerFieldIndices[id] = *fieldIndex;
+            if (auto cell = id in child.classFieldPointerCells)
+                classFieldPointerCells[id] = *cell;
         }
     }
 
@@ -8246,7 +8265,7 @@ private struct Walker {
         if (variable is null)
             return false;
 
-        auto cell = *variable in classCells;
+        auto cell = pointer.pointerAllocation in classFieldPointerCells;
         if (cell is null)
             return false;
 
@@ -8255,8 +8274,6 @@ private struct Walker {
             return false;
 
         auto current = *variable in locals;
-        if (current !is null && !current.isClassObject)
-            return false;
 
         import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
         import quickbite.backends.interpreter.native_scalar: writeScalar;
@@ -8268,7 +8285,9 @@ private struct Walker {
         writeScalar(field.type, cell.bytes[offset .. offset + size], value);
 
         if (current !is null)
-            locals[*variable] = current.withClassField(*fieldIndex, value);
+            if (auto currentCell = *variable in classCells)
+                if (currentCell.bytes.ptr is cell.bytes.ptr)
+                    locals[*variable] = current.withClassField(*fieldIndex, value);
         classFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
         return true;
@@ -10276,7 +10295,7 @@ private struct Walker {
         if (variable is null)
             return false;
 
-        auto cell = *variable in classCells;
+        auto cell = pointer.pointerAllocation in classFieldPointerCells;
         if (cell is null)
             return false;
 

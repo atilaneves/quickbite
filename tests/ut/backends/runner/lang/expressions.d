@@ -2454,6 +2454,52 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A pointer into a class object follows the object, not the variable slot used
+// to reach it. Rebinding that variable must therefore leave the pointer
+// attached to the old object while subsequent field access follows the new
+// reference.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class field"),
+)) {
+    @("class.fieldPointerSurvivesReferenceRebind." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+
+                this(int value) {
+                    x = value;
+                }
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C oldObject = new C(one());
+                C newObject = new C(two());
+                C current = oldObject;
+                int* pointer = &current.x;
+                current = newObject;
+                *pointer = ninetyNine();
+                assert(oldObject.x == ninetyNine());
+                assert(current.x == two());
+            }
+        });
+    }
+}
+
 // `writeLocation`'s `DotVarExp` class arm re-derived the receiver via
 // `runExpression(dot.e1)`, which for a class local is the STALE boxed
 // `locals[variable]` mirror -- the plain `VarExp` read path has no

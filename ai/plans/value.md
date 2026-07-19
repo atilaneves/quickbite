@@ -24,11 +24,13 @@ stand:
   including slice and `foreach (ref ...)` aliasing; struct fields
   (scalar, scalar-element static-array, one-level-nested struct); class
   fields of the same shapes plus class reference identity through
-  same-frame, argument, and `this` aliasing and whole-value class reads;
+  same-frame, argument, and `this` aliasing, whole-value class reads, and
+  scalar-field pointers that survive a reference rebind;
   and union member overlap, including default-init reinterpretation.
-- Invalidation is drop-on-rebind: a rebind drops the cell and its
-  pointer-id memo; only a same-storage mutation refreshes a cell in
-  place.
+- Invalidation is detach-on-rebind: a rebind drops the variable's cell and
+  pointer-id memo; only a same-storage mutation refreshes that binding in
+  place. A scalar class-field pointer separately retains the old object cell
+  under its own allocation id.
 - Still boxed: a local's authoritative storage itself
   (`locals[VarDeclaration]` remains `Value`-keyed; cells exist only for
   the shapes above), whole-value reads of aliased structs and arrays outside
@@ -338,6 +340,11 @@ a checked fact; do not relearn them.
   derived-typed `this` reads out of bounds (a real bug under virtual
   dispatch). Skip `this`-aliasing on any static-class mismatch; the
   override body falls back to its boxed receiver.
+- A scalar class-field pointer retains the promoted object cell under its
+  allocation id. Rebinding the variable used to obtain the pointer detaches
+  that variable from the cell but does not invalidate the pointer; only a
+  fresh binding may discard the allocation-id entry. The variable remains
+  reverse-lookup metadata, not the pointer's storage authority.
 - Only true stack locals get cells. Dataseg variables (`__gshared`,
   `static`, module-level) never do: a cell seeded from the default value
   would shadow their lazily materialized initializer and the extern
@@ -721,9 +728,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    - Structural gaps needing a design, not surgery: per-activation cell
      keying (all cell maps key on `VarDeclaration`, so recursive
      activations of the same function share one cell — a real
-     divergence); object-identity-scoped class cells (rebinding a class
-     reference leaves an earlier field pointer following the variable
-     slot, not the old object); and `ref` struct/class parameters, which
+     divergence); object-identity-scoped class cells beyond scalar-field
+     pointers (nested-struct and static-array field pointers still follow
+     the variable slot after a reference rebind); and `ref` struct/class
+     parameters, which
      are modeled as a boxed copy plus end-of-call writeback rather than
      live shared storage, so address identity across a `ref` boundary
      diverges from the oracle.
