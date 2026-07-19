@@ -212,6 +212,16 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // b into a native dynamic-array descriptor {data.ptr + dataOffset, length}
     // at frame offset a. The backing data remains the immutable program segment.
     stringSliceToArray,
+    // Form a sub-slice of a compact string descriptor without ever expanding it
+    // to a native pointer: a: destination compact descriptor offset, b: source
+    // compact descriptor offset, c: offset of an adjacent {lo, hi} pair of
+    // size_t bounds. The new descriptor is {srcDataOffset + lo, hi - lo}, both
+    // still uint offsets into the program data segment. Bounds checked against
+    // the source length. Keeps a `string` sub-slice in the compact
+    // representation every other compact-string consumer (`.ptr`, `.length`,
+    // indexing) expects; `stringSliceToArray` above only ever expands a
+    // *read*, never a value stored back into another compact `string` slot.
+    stringSubSlice,
     // Read the length word of the slice descriptor at frame offset b into the
     // size_t slot at frame offset a.
     sliceLength,

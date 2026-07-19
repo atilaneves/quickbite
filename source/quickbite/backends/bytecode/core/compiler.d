@@ -2081,6 +2081,21 @@ private struct Compiler {
         }
 
         if (auto slice = expression.isSliceExp) {
+            // A string sliced from a string source stays in the compact
+            // {dataOffset, length} representation every other compact-string
+            // consumer (`.ptr`, `.length`, indexing, a `string` local's plain
+            // `Op.copy` initializer) expects; `compileSliceInto` below always
+            // builds a real-pointer 16-byte descriptor, which is only correct
+            // when the destination is a genuine dynamic array. A string
+            // sliced from a pointer (`p[0 .. 3]`) has no compact source to
+            // stay relative to, so it still falls through to the general
+            // path below (a pre-existing, separately tracked divergence, not
+            // introduced here).
+            if (isStringType(slice.type) && isStringType(slice.e1.type)) {
+                const offset = allocateBytes(stringSliceSize, 4);
+                compileCompactStringSliceInto(offset, slice);
+                return Operand(offset, ScalarType.void_, true);
+            }
             const elementType = dynamicArrayElementType(slice.type);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileSliceInto(offset, elementType, slice);
@@ -5462,6 +5477,59 @@ private struct Compiler {
             descriptor.offset,
             bounds,
         );
+    }
+
+    // Emit a compact string sub-slice descriptor into frame offset
+    // `destination` from a `SliceExp` over a string source, sharing that
+    // source's compact {dataOffset, length} space via `Op.stringSubSlice`
+    // rather than expanding through a native pointer. Lower and upper bounds
+    // (default `0` and `source.length` for the whole-slice form `s[]`) are
+    // materialised into an adjacent `{lo, hi}` size_t pair the same way
+    // `compileSliceInto` does.
+    private void compileCompactStringSliceInto(
+        in ushort destination,
+        SliceExp slice,
+    ) {
+        const string_ = compileExpression(slice.e1);
+
+        const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = compactStringLengthSlot(string_.offset);
+        const lo = slice.lwr is null
+            ? compileSizeConstant(0)
+            : compileExpression(slice.lwr).offset;
+        _code ~= Instruction(
+            Op.copy, bounds, lo, cast(ushort) size_t.sizeof,
+        );
+
+        const hi = slice.upr is null || isDollarExpression(slice.upr)
+            ? _activeDollarLength
+            : compileExpression(slice.upr).offset;
+        _activeDollarLength = savedDollarLength;
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (bounds + size_t.sizeof),
+            hi,
+            cast(ushort) size_t.sizeof,
+        );
+
+        _code ~= Instruction(
+            Op.stringSubSlice, destination, string_.offset, bounds,
+        );
+    }
+
+    // Read a compact string descriptor's uint length field at
+    // `compactOffset + uint.sizeof` and zero-extend it into a fresh size_t
+    // slot, for the implicit upper bound of a whole-slice `s[]` or a `$`
+    // inside a compact-string sub-slice's bounds.
+    private ushort compactStringLengthSlot(in ushort compactOffset) {
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(
+            Op.zeroExtend4to8,
+            offset,
+            cast(ushort) (compactOffset + uint.sizeof),
+        );
+        return offset;
     }
 
     // `p[lo .. hi]` over a pointer: write a slice descriptor

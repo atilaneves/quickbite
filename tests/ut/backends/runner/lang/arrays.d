@@ -2541,3 +2541,31 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+/++
+    `.ptr` of a `string` sub-slice (`a[lo .. hi]`) reads the sliced region, not
+    a wild address: the sub-slice descriptor must resolve to a real pointer
+    into the original string's backing data, offset by `lo`.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringSubSlicePointerReadsSlicedByte." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string a = "abcdef";
+                string b = a[seed(1) .. seed(3)];
+                immutable(char)* p = b.ptr;
+
+                assert(b.length == 2);
+                assert(p[0] == 'b');
+                assert(b[0] == 'b');
+            }
+        });
+    }
+}

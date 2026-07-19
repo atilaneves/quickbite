@@ -237,6 +237,27 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case stringSubSlice:
+                const sourceDataOffset = scalarValue!uint(
+                    stack, base + instruction.b,
+                );
+                const sourceLength = scalarValue!uint(
+                    stack, base + instruction.b + uint.sizeof,
+                );
+                const lo = scalarValue!size_t(stack, base + instruction.c);
+                const hi = scalarValue!size_t(
+                    stack, base + instruction.c + size_t.sizeof,
+                );
+                validateCompactSubSlice(sourceLength, lo, hi);
+                writeCompactStringDescriptor(
+                    stack,
+                    base + instruction.a,
+                    cast(uint) (sourceDataOffset + lo),
+                    cast(uint) (hi - lo),
+                );
+                ++ip;
+                break;
+
             case sliceLength:
                 stack[
                     base + instruction.a .. base + instruction.a + size_t.sizeof
@@ -2238,6 +2259,20 @@ private void writeSliceDescriptorPointer(
         nativeToLittleEndian(length);
 }
 
+// Write a compact string descriptor {dataOffset, length} (each a uint) at
+// `offset`. Never touches a native pointer, so a sub-slice-of-a-sub-slice
+// chain stays entirely in program-data-relative offsets.
+private void writeCompactStringDescriptor(
+    ref ubyte[] stack,
+    in size_t offset,
+    in uint dataOffset,
+    in uint length,
+) @safe {
+    stack[offset .. offset + uint.sizeof] = scalarBytes(dataOffset);
+    stack[offset + uint.sizeof .. offset + 2 * uint.sizeof] =
+        scalarBytes(length);
+}
+
 private uint elementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
@@ -2291,6 +2326,22 @@ private void validateSubSlice(
         stack,
         sourceOffset + size_t.sizeof,
     );
+    if (hi > length)
+        throw new Exception(text(
+            "slice [", lo, " .. ", hi,
+            "] extends past source array of length ", length,
+        ));
+}
+
+// Same bounds check as `validateSubSlice`, but against a compact string
+// descriptor's uint length rather than a full descriptor's size_t length.
+private void validateCompactSubSlice(
+    in uint length,
+    in size_t lo,
+    in size_t hi,
+) @safe {
+    import std.conv: text;
+
     if (hi > length)
         throw new Exception(text(
             "slice [", lo, " .. ", hi,

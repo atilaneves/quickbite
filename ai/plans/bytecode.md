@@ -706,3 +706,22 @@ behaviour.
   represent "no data" distinctly from "data at offset 0") applied consistently
   across the compiler, and would need to account for both descriptor layouts
   in play, not a local fix in one place.
+- A `string` sub-slice (`b = a[lo .. hi]`) now stays in the compact {data
+  offset, length} representation via `Op.stringSubSlice`
+  (`compileCompactStringSliceInto`) when both the slice and its source are
+  string-typed, so `.ptr`/`.length`/indexing on `b` resolve into the real
+  program-data segment instead of the sub-slice's real-pointer 16-byte
+  descriptor (built for a genuine dynamic-array destination) getting
+  truncated to its first 8 bytes and reinterpreted as a bogus compact
+  descriptor. Two related gaps surfaced while isolating this and remain open:
+  (1) `compileAssignExpression`'s plain-`VarExp` lvalue path sizes its
+  `Op.copy` from `scalarType(declaration.type)`, which is `void_`/size 0 for
+  any string, so `b = <string expr>;` against an *already-declared* string
+  local silently copies zero bytes regardless of the right-hand side (only
+  `string b = <expr>;` at declaration time goes through the fixed path); (2)
+  `string s = p[lo .. hi];` from a pointer source (not another string) still
+  produces a wild dataOffset, because a real heap/pointer address has no
+  program-data-relative origin to stay compact around — fixing that needs the
+  same heap-backed dual representation `.idup`/`.dup` string initializers
+  already use (`_dynamicArrayLocals`), not the same-typed compact arithmetic
+  added here.
