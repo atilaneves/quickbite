@@ -2454,6 +2454,11 @@ private struct Walker {
             if (auto current = variable in locals) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
 
+                promoteArrayCell(variable);
+                if (auto cell = variable in arrayCells)
+                    return Value.nativePointerValue(cell.block.address)
+                        .pointerOffsetBy(cast(long) symbol.offset);
+
                 auto elementType = variable.type.toBasetype.nextOf.toBasetype;
                 const elementSize = typeByteSize(elementType);
                 const elementOffset = elementSize == 0
@@ -2539,7 +2544,7 @@ private struct Walker {
         scalarCells[variable] = cell;
     }
 
-    // Eagerly gives an address-taken dynamic-array local a `NativeArray`
+    // Eagerly gives an address-taken array local a `NativeArray`
     // cell the first time `&a[i]` is taken (`arrayCells`'s own promotion,
     // mirroring `promoteScalarCell` above), seeded from the array's current boxed
     // elements. A dynamic array whose element type is `native_scalar.
@@ -2547,7 +2552,7 @@ private struct Walker {
     // element type is a (non-union) struct gets a cell too, seeded field by
     // field through `NativeArray.structElement`/`writeStructCellScalarFields`
     // -- the array-of-struct counterpart of `promoteStructCell` above,
-    // reusing the same composition accessor. A dynamic array whose element
+    // reusing the same composition accessor. An array whose element
     // type is itself a scalar-element static array (`int[3][] a`) gets a
     // cell too, seeded element by element through `NativeArray.arrayElement`/
     // `writeStaticArrayCellScalarElements` -- the array-of-array counterpart
@@ -2561,15 +2566,18 @@ private struct Walker {
     private void promoteArrayCell(VarDeclaration variable) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
-        import quickbite.frontend.dmd.types: isDynamicArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         if (variable.isDataseg)
             return;
 
-        if (!isDynamicArrayType(variable.type))
-            return;
-
         auto elementType = variable.type.toBasetype.nextOf.toBasetype;
+        if (!isDynamicArrayType(variable.type) && !(
+            isStaticArrayType(variable.type) &&
+            isStaticArrayType(elementType)
+        ))
+            return;
 
         auto current = defaultValue(variable);
         if (auto existing = variable in locals)
@@ -9293,6 +9301,8 @@ private struct Walker {
             outerIndex,
             (*current)[outerIndex].withArrayElement(innerIndex, value),
         );
+        const updatedOuter = locals[variable][outerIndex];
+        writeThroughArrayCell(variable, outerIndex, updatedOuter);
         uninitializedLocals.remove(variable);
         return value;
     }

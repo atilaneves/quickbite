@@ -23,7 +23,8 @@ stand:
   (scalar, struct, and scalar-element static-array element types),
   including whole-value reads for all three promoted element shapes, slice,
   `foreach (ref ...)` aliasing, and scalar-leaf addresses within static-array
-  elements; struct fields
+  elements; scalar-leaf addresses within plain nested static-array locals;
+  struct fields
   (scalar, scalar-element static-array, one-level-nested struct); class
   fields of the same shapes plus class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
@@ -264,6 +265,10 @@ a checked fact; do not relearn them.
   the outer index uses the immediate aggregate element's stride, then the
   scalar-leaf index uses the leaf type's stride. Do not flatten both indices
   against the leaf size.
+- A constant-index address into a static-array local may arrive as a DMD
+  `SymOffExp`; once that local has a native cell, its DMD-provided byte offset
+  applies directly to the cell address rather than being re-derived as an
+  element index.
 - Subtracting two native pointers computes their byte-address difference;
   DMD's surrounding element-size division converts that to D's element
   distance. The boxed carrier instead stores element offsets and must scale
@@ -759,9 +764,7 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      drive the (root variable, field PATH) mechanism, not a new family.
    - Widening not yet done: dynamic-array- and class-typed fields have no
      cell support on either the read or write side (needs a slice-valued
-     field-cell primitive); plain nested-static-array locals remain on the
-     boxed pointer path rather than native cells (scalar-leaf addressing into
-     promoted dynamic arrays of static arrays is native);
+     field-cell primitive);
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and

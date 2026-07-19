@@ -4538,6 +4538,39 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A plain nested static-array local uses one authoritative native cell once a
+// scalar leaf's address is taken. SystemLinker's pointer aliases that leaf,
+// so a later direct write to it must be visible through the earlier pointer.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE rejects the nested static-array element pointer cast"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking a nested static-array element address"),
+)) {
+    @("pointer.nestedStaticArrayLocalDirectWriteIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[2][2] values;
+                values[1][0] = one;
+                int* pointer = &values[1][0];
+                values[1][0] = ninetyNine;
+                assert(*pointer == 99);
+            }
+        });
+    }
+}
+
 // Array-element/nested-field composition follow-up:
 // composing the two slices above -- a nested struct field OF an
 // array-of-struct element, `&a[i].inner.x`. `addressOfExpression`'s
