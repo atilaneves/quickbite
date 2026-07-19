@@ -31,7 +31,8 @@ stand:
   scalar-field pointers that survive a reference rebind, including direct
   scalar-field `ref` locals with the same address identity;
   direct scalar struct fields passed by `ref`, including repeated-argument
-  address identity;
+  address identity; plain `ref` struct locals, including whole-value reads
+  through the alias;
   and union member overlap, including default-init reinterpretation.
 - Invalidation is detach-on-rebind: a rebind drops the variable's cell and
   pointer-id memo; only a same-storage mutation refreshes that binding in
@@ -402,13 +403,11 @@ a checked fact; do not relearn them.
   actually-different same-length array through the same formal parameter
   would still wrongly reconcile — closing it needs storage-identity
   tracking through parameter binding.
-- Known, deliberate boundary: a whole-value read of an aliased struct stays
-  boxed-stale after a write reaches the same storage through a different
-  alias's cell; field reads through any alias are cell-fresh. Whole reads of
-  every promoted dynamic-array shape and classes reconstruct their supported
-  elements or fields from the cell. Closing the remaining struct gap means
-  reading the whole value from its cell too, not re-deriving every aliased
-  mirror on every write.
+- Whole reads of every promoted dynamic-array shape, structs, and classes
+  reconstruct their supported elements or fields from the cell. A plain
+  `ref` struct local shares its source's cell, so a whole read through either
+  declaration observes the same authoritative bytes without reconciling
+  boxed mirrors on every write.
 
 ### Unions
 

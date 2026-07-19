@@ -11484,6 +11484,20 @@ private struct Walker {
         );
         locals[variable] = value;
         registerClassAliasIfPlainVar(variable, initializer);
+        // A plain `ref S alias_ = source` denotes `source`'s storage, so share
+        // the existing struct-cell mechanism rather than retain a boxed
+        // snapshot under the alias declaration's distinct AST node.
+        if (isRefVariable(variable) && variable.type.toBasetype.isTypeStruct !is null) {
+            auto sourceVar = initializer.isVarExp;
+            auto source = sourceVar is null
+                ? null
+                : sourceVar.var.isVarDeclaration;
+            if (source !is null) {
+                promoteStructCell(source);
+                if (auto cell = source in structCells)
+                    structCells[variable] = *cell;
+            }
+        }
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)
             recordArrayElementAlias(variable, indexInitializer, arrayElementAliasIndex);

@@ -2439,6 +2439,40 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A struct cell promoted through one alias is authoritative for the whole
+// value reached through another alias. SystemLinker therefore observes a
+// pointer write when the aliased struct is passed onward as a value.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a struct field"),
+)) {
+    @("struct.wholeValueAliasReadsAuthoritativeCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            void put(int* pointer, int value) {
+                *pointer = value;
+            }
+
+            int observe(S value) {
+                return value.x;
+            }
+
+            unittest {
+                S value = S(42);
+                ref S alias_ = value;
+                int* pointer = &value.x;
+                put(pointer, 99);
+                assert(observe(alias_) == 99);
+            }
+        });
+    }
+}
+
 // `this`-reached class aliasing: a METHOD mutating `this.x` must be visible to
 // another caller-side alias of the SAME object through the shared class
 // cell, exactly like the `combine(a, b)` cross-frame aliasing case above,
