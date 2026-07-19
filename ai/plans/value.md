@@ -32,7 +32,7 @@ stand:
   scalar-field `ref` locals with the same address identity;
   direct scalar struct fields passed by `ref`, including repeated-argument
   address identity; plain `ref` struct locals, including whole-value reads
-  through the alias;
+  through the alias and source/alias address identity;
   and union member overlap, including default-init reinterpretation.
 - Invalidation is detach-on-rebind: a rebind drops the variable's cell and
   pointer-id memo; only a same-storage mutation refreshes that binding in
@@ -405,9 +405,9 @@ a checked fact; do not relearn them.
   tracking through parameter binding.
 - Whole reads of every promoted dynamic-array shape, structs, and classes
   reconstruct their supported elements or fields from the cell. A plain
-  `ref` struct local shares its source's cell, so a whole read through either
-  declaration observes the same authoritative bytes without reconciling
-  boxed mirrors on every write.
+  `ref` struct local shares its source's cell and local-pointer id, so a whole
+  read through either declaration observes the same authoritative bytes and
+  taking either declaration's address identifies the same storage.
 
 ### Unions
 

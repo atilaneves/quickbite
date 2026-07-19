@@ -2473,6 +2473,30 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A plain ref struct local denotes the source's storage, including its
+// address. SystemLinker is the oracle for the shared address identity.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref struct-local address identity"),
+)) {
+    @("pointer.structRefLocalPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            unittest {
+                S source = S(42);
+                ref S alias_ = source;
+                S* pointer = &source;
+                assert(&alias_ == pointer);
+            }
+        });
+    }
+}
+
 // `this`-reached class aliasing: a METHOD mutating `this.x` must be visible to
 // another caller-side alias of the SAME object through the shared class
 // cell, exactly like the `combine(a, b)` cross-frame aliasing case above,
