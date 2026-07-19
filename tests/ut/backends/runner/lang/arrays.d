@@ -1179,6 +1179,234 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A runtime index past a static array's compile-time-known dimension is
+// bounds checked exactly like a dynamic array's runtime index: compiled
+// code raises druntime's `ArrayIndexError` text. `Ctfe`'s own bounds check
+// uses the divergent backtick-range wording pinned below.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("staticArray.elementWriteWithRuntimeIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int index = seed(7);
+                values[index] = 42;
+            }
+        }).shouldThrowWithMessage(
+            "index [7] is out of bounds for array of length 4",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.elementWriteWithRuntimeIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int index = seed(7);
+                values[index] = 42;
+            }
+        }).shouldThrowWithMessage("array index 7 is out of bounds `[0..4]`");
+    }
+}
+
+// A runtime outer index past a nested static array's dimension is bounds
+// checked the same way, whether the chain is being read or written.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+)) {
+    @("staticArray.nestedElementReadWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(5);
+                int j = seed(1);
+
+                assert(matrix[i][j] == 0);
+            }
+        }).shouldThrowWithMessage(
+            "index [5] is out of bounds for array of length 2",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("staticArray.nestedElementReadWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(5);
+                int j = seed(1);
+
+                assert(matrix[i][j] == 0);
+            }
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..2]`");
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("staticArray.nestedElementWriteWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(5);
+                matrix[i][2] = seed(1);
+            }
+        }).shouldThrowWithMessage(
+            "index [5] is out of bounds for array of length 2",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.nestedElementWriteWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(5);
+                matrix[i][2] = seed(1);
+            }
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..2]`");
+    }
+}
+
+// A runtime inner index past a nested static array's dimension is bounds
+// checked too, independently of the (in-range) outer index.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+)) {
+    @("staticArray.nestedElementReadWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(0);
+                int j = seed(9);
+
+                assert(matrix[i][j] == 0);
+            }
+        }).shouldThrowWithMessage(
+            "index [9] is out of bounds for array of length 3",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("staticArray.nestedElementReadWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(0);
+                int j = seed(9);
+
+                assert(matrix[i][j] == 0);
+            }
+        }).shouldThrowWithMessage("array index 9 is out of bounds `[0..3]`");
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("staticArray.nestedElementWriteWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(0);
+                int j = seed(9);
+                matrix[i][j] = seed(1);
+            }
+        }).shouldThrowWithMessage(
+            "index [9] is out of bounds for array of length 3",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.nestedElementWriteWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(0);
+                int j = seed(9);
+                matrix[i][j] = seed(1);
+            }
+        }).shouldThrowWithMessage("array index 9 is out of bounds `[0..3]`");
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.arrayOperationAddsRuntimeElements." ~ backend.stringof)
     @Tags(backend.stringof)

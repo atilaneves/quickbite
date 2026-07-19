@@ -302,6 +302,14 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case checkStaticArrayIndex:
+                enforceIndexInBounds(
+                    scalarValue!size_t(stack, base + instruction.a),
+                    scalarValue!size_t(stack, base + instruction.b),
+                );
+                ++ip;
+                break;
+
             case subSlice1, subSlice2, subSlice4, subSlice8, subSlice16:
                 const subElementSize = subSliceElementSize(instruction.op);
                 const lo = scalarValue!size_t(stack, base + instruction.c);
@@ -2680,6 +2688,20 @@ private void applyArrayAddAssign4(
         destination[index] = left[index] + right[index];
 }
 
+// Throw druntime's array-bounds message if `index` is not less than
+// `length`. The single check `elementAddress` (slice-descriptor indexing)
+// and `Op.checkStaticArrayIndex` (static-array indexing) both call, so every
+// bounds failure raises byte-for-byte the same diagnostic.
+private void enforceIndexInBounds(in size_t index, in size_t length) @safe pure {
+    import std.conv: text;
+
+    if (index >= length)
+        throw new Exception(text(
+            "index [", index, "] is out of bounds for array of length ",
+            length,
+        ));
+}
+
 // The native address of element `index` within the slice descriptor at
 // `descriptorOffset`, bounds checked against the descriptor's length word.
 private ubyte* elementAddress(
@@ -2688,14 +2710,8 @@ private ubyte* elementAddress(
     in size_t index,
     in uint elementSize,
 ) @trusted {
-    import std.conv: text;
-
     const length = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
-    if (index >= length)
-        throw new Exception(text(
-            "index [", index, "] is out of bounds for array of length ",
-            length,
-        ));
+    enforceIndexInBounds(index, length);
 
     const pointer = scalarValue!size_t(stack, descriptorOffset);
     return cast(ubyte*) (pointer + index * elementSize);

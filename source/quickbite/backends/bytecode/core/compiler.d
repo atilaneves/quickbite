@@ -5904,6 +5904,7 @@ private struct Compiler {
             auto result = new Operand;
             *result = staticArrayElementPointer(
                 staticArrayBaseOffset(index.e1), index.e2, index.type,
+                compileSizeConstant(staticArrayLength(index.e1.type)),
             );
             return result;
         }
@@ -5916,6 +5917,7 @@ private struct Compiler {
             auto result = new Operand;
             *result = staticArrayElementPointer(
                 descriptor.staticArrayOffset, index.e2, index.type,
+                sliceLengthSlot(*descriptor),
             );
             return result;
         }
@@ -5935,6 +5937,7 @@ private struct Compiler {
         in ushort baseOffset,
         Expression indexExpression,
         Type elementType,
+        in ushort lengthSlot,
     ) {
         const basePointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -5944,7 +5947,7 @@ private struct Compiler {
             basePointer, ScalarType.ulong_, false, true, ScalarType.void_,
         );
         return advanceStaticArrayPointer(
-            basePointerOperand, indexExpression, elementType,
+            basePointerOperand, indexExpression, elementType, lengthSlot,
         );
     }
 
@@ -5955,15 +5958,29 @@ private struct Compiler {
     // The result's `pointerElement` is `void_` for a sub-array or struct
     // element (an intermediate view with no scalar load/store opcode of its
     // own), matching `storeThroughPointer`'s existing convention of deriving
-    // such an element's width from DMD's `Type.size()` instead.
+    // such an element's width from DMD's `Type.size()` instead. `lengthSlot`
+    // is a frame offset holding the size_t dimension of the static array
+    // `indexExpression` indexes into: a fresh compile-time constant when the
+    // base is the static array's own inline storage, or an already-
+    // materialised slice descriptor's length word when the base is a
+    // dynamic-array-typed alias of it (e.g. a `foreach` loop's hidden slice
+    // temporary over a `ref` static-array parameter, whose own type is the
+    // slice type, not the static array's). Either way a runtime index past
+    // it is bounds checked like compiled D rather than left as unchecked
+    // pointer arithmetic.
     private Operand advanceStaticArrayPointer(
         in Operand basePointer,
         Expression indexExpression,
         Type elementType,
+        in ushort lengthSlot,
     ) {
         import dmd.astenums: TY;
 
         const indexSlot = compileExpression(indexExpression);
+        _code ~= Instruction(
+            Op.checkStaticArrayIndex, indexSlot.offset, lengthSlot,
+        );
+
         const scaled =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         const stride =
@@ -6006,7 +6023,10 @@ private struct Compiler {
                 return null;
 
             auto result = new Operand;
-            *result = advanceStaticArrayPointer(*base, index.e2, index.type);
+            *result = advanceStaticArrayPointer(
+                *base, index.e2, index.type,
+                compileSizeConstant(staticArrayLength(index.e1.type)),
+            );
             return result;
         }
 
@@ -8663,6 +8683,7 @@ private struct Compiler {
         if (descriptor.isStaticArrayView) {
             const pointer = staticArrayElementPointer(
                 descriptor.staticArrayOffset, index.e2, index.type,
+                sliceLengthSlot(*descriptor),
             );
             auto viewResult = new Operand;
             *viewResult =

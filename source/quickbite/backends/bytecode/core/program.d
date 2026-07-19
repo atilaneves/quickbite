@@ -248,6 +248,17 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // checked against the outer length. Backs storing an inner array into an
     // array-of-arrays element.
     indexStore16,
+    // Check that the size_t index at frame offset a is less than the size_t
+    // length at frame offset b, raising `indexLoad`/`indexStore`'s exact
+    // "index [n] is out of bounds for array of length N" diagnostic
+    // otherwise. A static-array element's address is a plain pointer
+    // (`frameAddress` plus a scaled index), which unlike a slice descriptor
+    // carries no length word to check against; this opcode supplies the
+    // missing check ahead of that arithmetic, at each level of a
+    // (possibly nested) static-array index chain, so a runtime static-array
+    // index is bounds checked like compiled D rather than left as unchecked
+    // pointer arithmetic like `pointerLoad`/`pointerStore`.
+    checkStaticArrayIndex,
     // Form a sub-slice descriptor sharing the source's backing memory:
     // a: destination descriptor offset, b: source descriptor offset, c: offset
     // of an adjacent {lo, hi} pair of size_t bounds. The new descriptor is
