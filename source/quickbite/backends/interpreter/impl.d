@@ -2995,11 +2995,11 @@ private struct Walker {
         }
     }
 
-    // A ref struct parameter denotes the caller's storage. Point the
-    // parameter at the caller's existing NativeStruct cell so repeated
-    // arguments (`f(value, value)`) share one authority instead of competing
-    // through independent boxed snapshots.
-    private void registerRefStructArgumentAliases(
+    // A ref aggregate parameter denotes the caller's storage. Point the
+    // parameter at the caller's existing aggregate cell and local-pointer id
+    // so repeated arguments (`f(value, value)`) share one authority and one
+    // address instead of competing through independent boxed snapshots.
+    private void registerRefAggregateArgumentAliases(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
@@ -3008,11 +3008,20 @@ private struct Walker {
             return;
 
         foreach (index, parameter; *function_.parameters) {
-            if (!parameter.isReference ||
-                parameter.type.toBasetype.isTypeStruct is null)
+            if (!parameter.isReference)
                 continue;
 
-            child.structCells.remove(parameter);
+            const baseType = parameter.type.toBasetype;
+            const isStruct = baseType.isTypeStruct !is null;
+            const isClass = baseType.isTypeClass !is null;
+            if (!isStruct && !isClass)
+                continue;
+
+            if (isStruct)
+                child.structCells.remove(parameter);
+            else
+                child.classCells.remove(parameter);
+
             if (index >= argumentExpressions.length)
                 continue;
 
@@ -3022,14 +3031,20 @@ private struct Walker {
             if (source is null)
                 continue;
 
-            promoteStructCell(source);
-            if (auto cell = source in structCells) {
-                child.structCells[parameter] = *cell;
-                const pointerId = localPointerValue(source).localPointerId;
-                child.localPointerIds[parameter] = pointerId;
-                child.localPointers[pointerId] = parameter;
-                child.nextLocalPointerId = nextLocalPointerId;
+            if (isStruct) {
+                promoteStructCell(source);
+                if (auto cell = source in structCells)
+                    child.structCells[parameter] = *cell;
+            } else {
+                promoteClassCell(source);
+                if (auto cell = source in classCells)
+                    child.classCells[parameter] = *cell;
             }
+
+            const pointerId = localPointerValue(source).localPointerId;
+            child.localPointerIds[parameter] = pointerId;
+            child.localPointers[pointerId] = parameter;
+            child.nextLocalPointerId = nextLocalPointerId;
         }
     }
 
@@ -5360,7 +5375,7 @@ private struct Walker {
         seedPointerTargetLocals(child);
         registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
-        registerRefStructArgumentAliases(function_, argumentExpressions, child);
+        registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
 
         try {
             child.runStatement(function_.fbody);
@@ -5425,7 +5440,7 @@ private struct Walker {
         registerClassArgumentAliases(function_, argumentExpressions, child);
         registerClassThisAlias(function_, receiverExpression, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
-        registerRefStructArgumentAliases(function_, argumentExpressions, child);
+        registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
 
         try {
             child.runStatement(function_.fbody);

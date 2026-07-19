@@ -36,8 +36,8 @@ stand:
   the shapes above), whole-value reads of aliased structs and arrays outside
   the promoted scalar-element dynamic-array shape, dynamic-array- and
   class-typed fields, nesting deeper than one level, `ref`-parameter address
-  identity outside repeated plain-variable struct arguments, and the remaining
-  `interpreter.md` §9.10 shims.
+  identity outside repeated plain-variable aggregate arguments, and the
+  remaining `interpreter.md` §9.10 shims.
 
 ## Audit findings (June 2026)
 
@@ -320,11 +320,12 @@ a checked fact; do not relearn them.
   every write path that reaches storage only through an alias table
   (slice alias, array-element alias, struct-field alias, `this` alias)
   must independently refresh the ultimate target variable's cell.
-- Plain-variable `ref` struct arguments share the caller's `NativeStruct`
-  cell. Repeating one lvalue in a call must point every parameter at the same
-  cell and reuse the caller's memoized local-pointer id, and whole parameter
+- Plain-variable `ref` aggregate arguments share the caller's native cell.
+  Repeating one lvalue in a call must point every parameter at the same cell
+  and reuse the caller's memoized local-pointer id, and whole struct parameter
   reads must reconstruct from the cell before a field write; otherwise later
-  parameter snapshots clobber earlier mutations or their addresses diverge.
+  parameter snapshots clobber earlier mutations or aggregate parameter
+  addresses diverge.
 - A whole class-variable read reconstructs every cell-supported field
   from the class cell before the value is returned, passed onward,
   compared, or rendered. Direct field reads alone are insufficient: a
@@ -737,10 +738,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      divergence); object-identity-scoped class cells beyond scalar-field
      pointers (nested-struct and static-array field pointers still follow
      the variable slot after a reference rebind); and `ref`-parameter address
-     identity outside repeated plain-variable `ref` struct arguments, which
-     share mutation authority and direct parameter addresses. Class parameters
-     and non-plain-variable struct arguments remain boxed copies plus
-     end-of-call writeback.
+     identity outside repeated plain-variable `ref` aggregate arguments, which
+     share mutation authority and direct parameter addresses. Non-plain-
+     variable aggregate arguments remain boxed copies plus end-of-call
+     writeback.
    - Field-path generalization: nesting deeper than one level has no
      support anywhere (promotion, write-through, or pointer-identity
      memoization). Per the consolidation debt above, the next shape must

@@ -2343,6 +2343,33 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Two ref class parameters bound from the same plain variable denote the same
+// reference slot, so taking either parameter's address must produce equal
+// pointers.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated ref class-argument address identity"),
+)) {
+    @("class.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            void verify(ref C first, ref C second) {
+                assert(&first == &second);
+            }
+
+            unittest {
+                C value = new C();
+                verify(value, value);
+            }
+        });
+    }
+}
+
 // A class cell promoted by taking a field's address is authoritative for the
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,
