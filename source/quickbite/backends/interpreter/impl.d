@@ -2510,12 +2510,12 @@ private struct Walker {
         return Value.localPointerValue(id);
     }
 
-    // A plain aggregate `ref` local reuses its source's local-pointer id.
+    // A plain aggregate `ref` binding reuses its source's local-pointer id.
     // Resolve that existing identity back to the declaration which owns the
-    // storage so reads and assignments through the ref local do not acquire
-    // an independent boxed slot.
+    // storage so reads and assignments through the ref local or parameter do
+    // not acquire an independent boxed slot.
     private VarDeclaration refLocalStorageVariable(VarDeclaration variable) {
-        if (!isRefVariable(variable) || isParameterVariable(variable))
+        if (!isRefVariable(variable))
             return variable;
 
         auto id = variable in localPointerIds;
@@ -3077,12 +3077,13 @@ private struct Walker {
             const baseType = parameter.type.toBasetype;
             const isStruct = baseType.isTypeStruct !is null;
             const isClass = baseType.isTypeClass !is null;
-            if (!isStruct && !isClass)
+            const isStaticArray = baseType.isTypeSArray !is null;
+            if (!isStruct && !isClass && !isStaticArray)
                 continue;
 
             if (isStruct)
                 child.structCells.remove(parameter);
-            else
+            else if (isClass)
                 child.classCells.remove(parameter);
 
             if (index >= argumentExpressions.length)
@@ -3098,7 +3099,7 @@ private struct Walker {
                 promoteStructCell(source);
                 if (auto cell = source in structCells)
                     child.structCells[parameter] = *cell;
-            } else {
+            } else if (isClass) {
                 promoteClassCell(source);
                 if (auto cell = source in classCells)
                     child.classCells[parameter] = *cell;

@@ -338,12 +338,13 @@ a checked fact; do not relearn them.
   every write path that reaches storage only through an alias table
   (slice alias, array-element alias, struct-field alias, `this` alias)
   must independently refresh the ultimate target variable's cell.
-- Plain-variable `ref` aggregate arguments share the caller's native cell.
-  Repeating one lvalue in a call must point every parameter at the same cell
-  and reuse the caller's memoized local-pointer id, and whole struct parameter
-  reads must reconstruct from the cell before a field write; otherwise later
-  parameter snapshots clobber earlier mutations or aggregate parameter
-  addresses diverge.
+- Plain-variable `ref` aggregate arguments reuse the caller's memoized
+  local-pointer id and share its native cell when that shape has one. Repeating
+  one lvalue in a call must resolve every parameter to one storage binding;
+  static arrays use the existing ref-parameter writeback when no cell exists,
+  while whole struct parameter reads reconstruct from the cell before a field
+  write. Otherwise later parameter snapshots clobber earlier mutations or
+  aggregate parameter addresses diverge.
 - A direct scalar struct field passed by `ref` reuses the caller's memoized
   field pointer and aliases each parameter's scalar cell to that field's
   subrange. Repeating the field must therefore preserve both address identity
@@ -761,9 +762,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      divergence); object-identity-scoped class cells beyond scalar-field
      pointers (nested-struct and static-array field pointers still follow
      the variable slot after a reference rebind); and `ref`-parameter address
-     identity outside repeated plain-variable `ref` aggregate arguments and
-     repeated direct scalar struct fields, which share mutation authority and
-     direct parameter addresses. Non-plain-variable aggregate arguments
+     identity outside repeated plain-variable `ref` aggregate arguments
+     (structs, classes, and static arrays) and repeated direct scalar struct
+     fields, which share mutation authority and direct parameter addresses.
+     Non-plain-variable aggregate arguments
      remain boxed copies plus end-of-call writeback.
    - Field-path generalization: nesting deeper than one level has no
      support anywhere (promotion, write-through, or pointer-identity

@@ -2519,6 +2519,33 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Two ref static-array parameters bound from the same plain variable denote
+// one storage location, including shared address and mutation identity.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "DMD CTFE refuses to compare static-array parameter addresses"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated ref static-array-argument identity"),
+)) {
+    @("staticArray.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void verify(ref int[2] first, ref int[2] second) {
+                assert(&first == &second);
+                first = [99, 100];
+                assert(second == [99, 100]);
+            }
+
+            unittest {
+                int[2] value = [42, 43];
+                verify(value, value);
+                assert(value == [99, 100]);
+            }
+        });
+    }
+}
+
 // A plain ref class local denotes the source reference variable's storage,
 // including its address. SystemLinker is the oracle for the shared address
 // identity.
