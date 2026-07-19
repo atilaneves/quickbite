@@ -9076,6 +9076,8 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter assignment target.");
 
+        variable = refLocalStorageVariable(variable);
+
         auto current = variable in locals;
         if (current is null)
             throw new Exception("Unsupported interpreter assignment target.");

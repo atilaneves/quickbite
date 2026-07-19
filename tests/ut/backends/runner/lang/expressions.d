@@ -2519,6 +2519,32 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Element assignment through a ref static-array local writes the source's
+// promoted native storage rather than an independent boxed snapshot.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref static-array-local element aliasing"),
+)) {
+    @("staticArray.refLocalElementWriteMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 42;
+            }
+
+            unittest {
+                int[2] source = [seed, 43];
+                int* pointer = &source[0];
+                ref int[2] alias_ = source;
+                alias_[0] = 99;
+                assert(*pointer == 99);
+                assert(source[0] == 99);
+            }
+        });
+    }
+}
+
 // Two ref static-array parameters bound from the same plain variable denote
 // one storage location, including shared address and mutation identity.
 static foreach (backend; Matrix!(
