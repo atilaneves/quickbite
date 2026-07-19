@@ -338,6 +338,12 @@ a checked fact; do not relearn them.
 - Every cell family must honour three obligations — dup on frame fork,
   merge on return, drop on rebind — and a missed one is invisible until
   it corrupts. (See item 7's consolidation debt before adding a family.)
+- Field-address allocation identity is keyed by an immutable
+  `(root VarDeclaration, DMD field-index path)` value. Struct and class roots
+  occupy the same key space because a declaration's static type fixes how its
+  indices are interpreted. Fork, merge, and rebind invalidation operate on
+  that key as a whole; extending a path must not introduce another allocation
+  memo family.
 - Reads consult the cell first and never the alias tables. Therefore
   every write path that reaches storage only through an alias table
   (slice alias, array-element alias, struct-field alias, `this` alias)
@@ -666,11 +672,13 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    stale nested-field pointer resolved into a later binding), and
    unifying the fork side uncovered three sites that silently duped a
    narrower field set than their siblings.
-   - Do NOT add an eleventh family. The next shape that needs a cell
-     should instead drive the generalization: one mechanism keyed by
-     (root variable, field PATH) — `a[i].inner.x` described as a path
-     rather than a bespoke map per shape — so promote/read/write/merge/
-     writeback/drop each exist once.
+   - Do NOT add an eleventh family. Direct struct/class field allocation
+     identity already uses the common `(root variable, field PATH)` key.
+     Migrate the legacy one-level nested allocation memo and then the reverse
+     lookup/read/write/writeback families onto that key and composed native
+     views. Paths such as `a[i].inner.x` must be data, not bespoke map
+     families, so promote/read/write/merge/writeback/drop each ultimately
+     exist once.
    **Design sketch** (the frame for all of this work). A *native block*
    is a stable byte range laid out with DMD's own offsets, stride, and
    alignment; a *handle* is the interpreter-owned metadata for one block
@@ -778,10 +786,12 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      mutation authority and direct parameter addresses.
      Non-plain-variable aggregate arguments
      remain boxed copies plus end-of-call writeback.
-   - Field-path generalization: nesting deeper than one level has no
-     support anywhere (promotion, write-through, or pointer-identity
-     memoization). Per the consolidation debt above, the next shape must
-     drive the (root variable, field PATH) mechanism, not a new family.
+   - Field-path generalization: the common root-plus-path allocation key is in
+     place for direct struct/class fields, but the legacy one-level nested
+     memo and the shape-specific reverse lookup/read/write/writeback families
+     still need migration. Nesting deeper than one level has no promotion,
+     write-through, or pointer-identity support. Extend the common mechanism,
+     never add another family.
    - Widening not yet done: class-typed fields and dynamic-array fields whose
      element is not a native scalar have no cell support on either the read or
      write side;
