@@ -25,7 +25,8 @@ stand:
   (scalar, scalar-element static-array, one-level-nested struct); class
   fields of the same shapes plus class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
-  scalar-field pointers that survive a reference rebind;
+  scalar-field pointers that survive a reference rebind, including direct
+  scalar-field `ref` locals with the same address identity;
   direct scalar struct fields passed by `ref`, including repeated-argument
   address identity;
   and union member overlap, including default-init reinterpretation.
@@ -333,6 +334,10 @@ a checked fact; do not relearn them.
   field pointer and aliases each parameter's scalar cell to that field's
   subrange. Repeating the field must therefore preserve both address identity
   and mutation authority without a separate field-path cell family.
+- A direct scalar aggregate-field `ref` local uses the same field-alias
+  mechanism for both struct and class receivers. When the field already has
+  a memoized address, taking the local's address reuses it; writes refresh the
+  receiver's existing native cell rather than creating another cell family.
 - A whole class-variable read reconstructs every cell-supported field
   from the class cell before the value is returned, passed onward,
   compared, or rendered. Direct field reads alone are insufficient: a

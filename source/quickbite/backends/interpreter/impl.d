@@ -66,6 +66,7 @@ private struct ArrayElementAlias {
 private struct StructFieldAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t index;
+    public bool isClass;
 }
 
 private class InterpretedException: Exception {
@@ -11570,9 +11571,11 @@ private struct Walker {
             return;
         }
 
+        const isClass = receiverClassType(dot.e1) !is null;
         structFieldAliases[variable] = StructFieldAlias(
             source,
-            structFieldIndex(dot),
+            isClass ? classFieldIndex(dot) : structFieldIndex(dot),
+            isClass,
         );
     }
 
@@ -11585,20 +11588,23 @@ private struct Walker {
             return;
 
         auto source = alias_.source in locals;
-        auto cell = alias_.source in structCells;
-        if (source is null && cell is null)
+        auto structCell = alias_.source in structCells;
+        auto classCell = alias_.source in classCells;
+        if (source is null && structCell is null && classCell is null)
             throw new Exception(
-                "Unsupported interpreter struct field alias target.",
+                "Unsupported interpreter aggregate field alias target.",
             );
 
         if (source !is null)
-            locals[alias_.source] = source.withStructField(alias_.index, value);
-        // A `ref` local bound directly to a
-        // struct field (`ref int r = s.x;`, recorded via
+            locals[alias_.source] = alias_.isClass
+                ? source.withClassField(alias_.index, value)
+                : source.withStructField(alias_.index, value);
+        // A `ref` local bound directly to an
+        // aggregate field (`ref int r = s.x;`, recorded via
         // `recordStructFieldAlias`) must also refresh `alias_.source`'s
-        // promoted `structCells` entry, if one exists (an earlier `&s.x`),
+        // promoted aggregate cell, if one exists (an earlier `&s.x`),
         // or a later read through that pointer
-        // (`pointerTargetValue`/`structFieldPointerCellValue`, authoritative
+        // (`pointerTargetValue` and its field-cell readers, authoritative
         // over the boxed mirror just re-derived above) keeps answering with
         // stale bytes. Mirrors `writeThroughArrayCell`'s treatment of the
         // array sibling. A no-op when no cell was ever promoted for
@@ -11612,13 +11618,32 @@ private struct Walker {
         // reaches `writeScalar` with a type it cannot represent and throws;
         // the boxed mirror write just above already handles a non-scalar
         // field correctly on its own.
-        if (cell !is null) {
+        if (structCell !is null) {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType, writeScalar;
 
-            auto fieldType = cell.fieldDeclaration(alias_.index).type;
+            auto fieldType = structCell.fieldDeclaration(alias_.index).type;
             if (isNativeScalarType(fieldType))
-                writeScalar(fieldType, cell.field(alias_.index), value);
+                writeScalar(fieldType, structCell.field(alias_.index), value);
+        } else if (classCell !is null) {
+            import quickbite.backends.interpreter.layout:
+                classFields, fieldByteOffset, typeByteSize;
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType, writeScalar;
+
+            auto classType = alias_.source.type.toBasetype.isTypeClass;
+            if (classType !is null && classType.sym !is null) {
+                auto field = classFields(classType.sym)[alias_.index];
+                if (isNativeScalarType(field.type)) {
+                    const offset = fieldByteOffset(field);
+                    const size = typeByteSize(field.type);
+                    writeScalar(
+                        field.type,
+                        classCell.bytes[offset .. offset + size],
+                        value,
+                    );
+                }
+            }
         }
         uninitializedLocals.remove(alias_.source);
     }

@@ -3839,6 +3839,37 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A ref local bound to a direct scalar class field denotes the same storage
+// as an earlier pointer to that field. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve class-field ref-local identity"),
+)) {
+    @("pointer.classFieldRefLocalPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                auto c = new C;
+                auto p = &c.value;
+                ref int r = c.value;
+                assert(&r == p);
+                r = ninetyNine();
+                assert(*p == 99);
+                assert(c.value == 99);
+            }
+        });
+    }
+}
+
 // Whole-struct assignment (`s = S(...)`) is a genuine in-place copy into
 // `s`'s existing storage in D -- unlike an array rebind, `s` keeps denoting
 // the SAME storage after the assignment. An earlier `int* p = &s.x` must
