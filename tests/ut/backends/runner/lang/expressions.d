@@ -2545,6 +2545,34 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Whole-value assignment through a ref nested-static-array local mutates the
+// source's promoted native storage rather than rebinding it.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "DMD CTFE refuses the nested static-array element pointer cast"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref static-array-local assignment aliasing"),
+)) {
+    @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int number) {
+                return number;
+            }
+
+            unittest {
+                int[2][2] source = [[value(1), 2], [3, 4]];
+                int* pointer = &source[0][0];
+                ref int[2][2] alias_ = source;
+                alias_ = [[value(99), 100], [101, 102]];
+                assert(*pointer == 99);
+                assert(source == [[99, 100], [101, 102]]);
+            }
+        });
+    }
+}
+
 // Two ref static-array parameters bound from the same plain variable denote
 // one storage location, including shared address and mutation identity.
 static foreach (backend; Matrix!(

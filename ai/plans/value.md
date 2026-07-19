@@ -35,7 +35,8 @@ stand:
   address identity; plain `ref` struct locals, including whole-value reads
   through the alias and source/alias address identity; and plain `ref` static
   array locals with source/alias address identity and element writes through
-  the alias;
+  the alias, plus whole-value assignment through an alias when the source has
+  a promoted nested-array cell;
   and union member overlap, including default-init reinterpretation.
 - Invalidation is detach-on-rebind: a rebind drops the variable's cell and
   pointer-id memo; only a same-storage mutation refreshes that binding in
@@ -418,7 +419,10 @@ a checked fact; do not relearn them.
   A plain `ref` static-array local shares the source local's pointer identity;
   taking the address of the whole array stays distinct from taking an element's
   address, and direct element writes through the alias resolve to the source
-  before refreshing its boxed mirror and any promoted array cell.
+  before refreshing its boxed mirror and any promoted array cell. A static
+  array's whole-value assignment is likewise an in-place storage mutation,
+  never the dynamic-array rebind that drops a cell; it refreshes every element
+  of an existing same-length cell so pointers into that storage stay live.
 
 ### Unions
 

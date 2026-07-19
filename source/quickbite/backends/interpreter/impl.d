@@ -3958,6 +3958,7 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.native_scalar:
             readScalar, writeScalar;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
 
         if (auto cell = variable in scalarCells) {
             writeScalar(variable.type, cell.bytes, value);
@@ -3967,18 +3968,21 @@ private struct Walker {
         }
 
         if (auto cell = variable in arrayCells) {
-            // A same-length value written back from a `ref` array
-            // parameter's callee-side mutation is the in-place case this
-            // branch exists for -- refresh every element's bytes so the
-            // cell agrees with the mirror. Every other write here is a
-            // REBIND (a plain `s = b;`, or a ref-writeback whose length
-            // genuinely changed): the cell can no longer faithfully
-            // represent whatever new storage `variable` now denotes, so
-            // drop it rather than let a stale cell keep answering reads --
-            // the same decline-rather-than-corrupt choice
-            // `promoteSliceArrayCell` already makes for a drifted source
-            // length.
-            if (arrayIsRefWriteback && value.isArray && value.length == cell.length) {
+            // A static-array assignment always mutates its fixed storage;
+            // likewise, a same-length value written back from a `ref`
+            // dynamic-array parameter's callee-side mutation is in-place.
+            // Refresh every element's bytes in either case so the cell agrees
+            // with the mirror. Other dynamic-array writes here are REBINDS
+            // (a plain `s = b;`, or a ref-writeback whose length genuinely
+            // changed): the cell can no longer faithfully represent whatever
+            // new storage `variable` now denotes, so drop it rather than let
+            // a stale cell keep answering reads -- the same
+            // decline-rather-than-corrupt choice `promoteSliceArrayCell`
+            // already makes for a drifted source length.
+            if (
+                (arrayIsRefWriteback || isStaticArrayType(variable.type)) &&
+                value.isArray && value.length == cell.length
+            ) {
                 foreach (index; 0 .. value.length)
                     writeArrayCellElement(*cell, index, value[index]);
             } else {
