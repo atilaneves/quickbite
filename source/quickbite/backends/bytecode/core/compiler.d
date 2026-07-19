@@ -9256,8 +9256,13 @@ private struct Compiler {
                 auto parameterList =
                     function_.type.toBasetype.isTypeFunction.parameterList;
                 auto parameter = parameterList[index];
+                // A defaulted `const TypeInfo ti = null` parameter (the
+                // common shape of every `core.memory.GC.*` leaf) has a class
+                // reference type, which is pointer-sized and crosses the FFI
+                // bridge the same way a raw pointer does.
                 if (parameter is null ||
-                    parameter.type.toBasetype.ty != TY.Tpointer)
+                    (parameter.type.toBasetype.ty != TY.Tpointer &&
+                     parameter.type.toBasetype.ty != TY.Tclass))
                     return null;
                 argumentTypes[index] = parameter.type.toBasetype;
                 _code ~= Instruction(

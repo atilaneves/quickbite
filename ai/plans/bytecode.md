@@ -318,25 +318,38 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   acceptable handoff noise.
 - `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is the one
   remaining red enabled row (`std.conv.text` rendering a `ubyte[]` into an
-  exception message through `std.array.Appender`). It needs, in dependency
-  order: (1) the native bridge accepting a `TY.Tclass`-typed defaulted `null`
-  argument, not only `TY.Tpointer` (every `core.memory.GC.*` leaf defaults a
-  trailing `TypeInfo ti = null`); (2) struct-by-value native returns (e.g.
-  `GC.qalloc`'s `BlkInfo`), the same aggregate-return capability `div`/`ldiv`
-  below already needs; (3) the nested-function `this`-receiver capture
-  described under Closures; (4) `DivAssignExp` (`x /= y`), which has no
-  compiler support at all today (only add/sub/mul/shr/shl/or compound-assign
-  are wired); (5) 4-byte unsigned (`uint`) addition, unsupported because the
-  narrow-int addition fallback hardcodes a signed-`int` result instead of
-  using the expression's own scalar type the way its `or`/`and`/`xor`
-  siblings already do; and (6) inlining a void IIFE whose body is a single
-  expression statement (Phobos's common `(() @trusted { ... })()` escape
-  idiom), the same way a single-`return` IIFE already inlines, so a local it
-  reads does not need a full closure environment. Items (4)-(6) surfaced
-  only once (1)-(3) let compilation reach far enough; a further, still-
-  unisolated crash (an out-of-bounds `copySlice` while `Appender.put`
-  assigns into a grown buffer) appears after fixing (4)-(6), so at least one
-  more gap remains beyond this list.
+  exception message through `std.array.Appender`). The native bridge now
+  accepts a `TY.Tclass`-typed defaulted `null` argument, not only
+  `TY.Tpointer` (every `core.memory.GC.*` leaf defaults a trailing
+  `TypeInfo ti = null`), which gets `GC.extend` compiling. The row is now
+  blocked on struct-by-value native returns: `GC.qalloc` returns `BlkInfo`
+  (`{ void* base; size_t size; uint attr; }`), and `tryCompileNativeCall`'s
+  return-type gate (`backends/bytecode/core/compiler.d`) only allows
+  scalar/void/pointer/array returns, so any `TY.Tstruct`-returning native leaf
+  refuses before argument compilation even runs. Supporting it needs, in
+  dependency order: the return-type gate accepting `TY.Tstruct`;
+  `emitNativeCall` allocating the destination at the struct's own
+  size/alignment instead of a scalar slot, plus a struct-shaped `Operand` for
+  that destination (matching however a non-native struct-by-value call
+  result is already represented, see `structBaseOffsetOrMaterialise`); and
+  `BytecodeNativeMarshaller` (`backends/bytecode/core/machine.d`) filling
+  that destination from libffi's struct-return buffer — the generic FFI
+  layer (`ffi/core.d`) already maps `TY.Tstruct` returns through
+  `ffiTypeFor`/`canRepresentCall` for other call paths, but the bytecode
+  marshaller has no struct-return case today. Once that lands, the row may
+  next reach: the nested-function `this`-receiver capture described under
+  Closures; `DivAssignExp` (`x /= y`), which has no compiler support at all
+  today (only add/sub/mul/shr/shl/or compound-assign are wired); 4-byte
+  unsigned (`uint`) addition, unsupported because the narrow-int addition
+  fallback hardcodes a signed-`int` result instead of using the expression's
+  own scalar type the way its `or`/`and`/`xor` siblings already do; and
+  inlining a void IIFE whose body is a single expression statement (Phobos's
+  common `(() @trusted { ... })()` escape idiom), the same way a
+  single-`return` IIFE already inlines. Those were observed downstream in a
+  prior pass and are unconfirmed until struct-by-value native returns land;
+  a further, still-unisolated crash (an out-of-bounds `copySlice` while
+  `Appender.put` assigns into a grown buffer) appeared after fixing them
+  then, so at least one more gap remains beyond this list.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
