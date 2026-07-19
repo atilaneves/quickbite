@@ -31,7 +31,7 @@ stand:
   scalar-field pointers that survive a reference rebind, including direct
   scalar-field `ref` locals with the same address identity; plain `ref` class
   locals with source/alias address identity and assignment through the alias;
-  direct scalar struct fields passed by `ref`, including repeated-argument
+  direct scalar aggregate fields passed by `ref`, including repeated-argument
   address identity; plain `ref` struct locals, including whole-value reads
   through the alias and source/alias address identity; and plain `ref` static
   array locals with source/alias address identity, element addresses and
@@ -48,7 +48,7 @@ stand:
   the promoted shapes; dynamic-array- and
   class-typed fields, nesting deeper than one level, `ref`-parameter address
   identity outside repeated plain-variable aggregate arguments and repeated
-  direct scalar struct fields, and the remaining `interpreter.md` §9.10
+  direct scalar aggregate fields, and the remaining `interpreter.md` §9.10
   shims.
 
 ## Audit findings (June 2026)
@@ -347,10 +347,10 @@ a checked fact; do not relearn them.
   while whole struct parameter reads reconstruct from the cell before a field
   write. Otherwise later parameter snapshots clobber earlier mutations or
   aggregate parameter addresses diverge.
-- A direct scalar struct field passed by `ref` reuses the caller's memoized
+- A direct scalar aggregate field passed by `ref` reuses the caller's memoized
   field pointer and aliases each parameter's scalar cell to that field's
-  subrange. Repeating the field must therefore preserve both address identity
-  and mutation authority without a separate field-path cell family.
+  subrange. Repeating a struct or class field must therefore preserve address
+  identity and mutation authority without a separate field-path cell family.
 - A direct scalar aggregate-field `ref` local uses the same field-alias
   mechanism for both struct and class receivers. When the field already has
   a memoized address, taking the local's address reuses it; writes refresh the
@@ -770,7 +770,7 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      pointers (nested-struct and static-array field pointers still follow
      the variable slot after a reference rebind); and `ref`-parameter address
      identity outside repeated plain-variable `ref` aggregate arguments
-     (structs, classes, and static arrays) and repeated direct scalar struct
+     (structs, classes, and static arrays) and repeated direct scalar aggregate
      fields, which share mutation authority and direct parameter addresses.
      Non-plain-variable aggregate arguments
      remain boxed copies plus end-of-call writeback.

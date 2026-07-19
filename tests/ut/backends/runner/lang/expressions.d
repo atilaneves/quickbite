@@ -2400,6 +2400,36 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Two ref parameters bound from the same direct class field denote one
+// storage location, just like the corresponding direct struct-field case.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated class-field ref-argument identity"),
+)) {
+    @("classField.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            void verify(ref int first, ref int second) {
+                assert(&first == &second);
+                first = 99;
+                assert(second == 99);
+            }
+
+            unittest {
+                C value = new C();
+                value.value = 42;
+                verify(value.value, value.value);
+                assert(value.value == 99);
+            }
+        });
+    }
+}
+
 // A class cell promoted by taking a field's address is authoritative for the
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,

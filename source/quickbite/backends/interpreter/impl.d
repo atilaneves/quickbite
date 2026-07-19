@@ -3116,18 +3116,19 @@ private struct Walker {
         }
     }
 
-    // A direct scalar struct field passed by ref already has all the storage
-    // machinery needed for a real alias: `promoteStructFieldCell` gives the
-    // caller an authoritative struct cell and memoized field address. Share
-    // that field subrange with the parameter's scalar cell and retain the
-    // existing struct-field alias so direct parameter reads, writes, and
-    // address-taking all denote the caller's one location.
-    private void registerDirectStructFieldRefArgumentAliases(
+    // A direct scalar aggregate field passed by ref already has all the
+    // storage machinery needed for a real alias: field promotion gives the
+    // caller an authoritative aggregate cell and memoized field address.
+    // Share that field subrange with the parameter's scalar cell and retain
+    // the existing aggregate-field alias so direct parameter reads, writes,
+    // and address-taking all denote the caller's one location.
+    private void registerDirectAggregateFieldRefArgumentAliases(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
     ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.layout:
+            classFields, fieldByteOffset, typeByteSize;
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
 
         if (function_.parameters is null)
@@ -3147,6 +3148,30 @@ private struct Walker {
             if (source is null)
                 continue;
 
+            const isClass = source.type.toBasetype.isTypeClass !is null;
+            if (isClass) {
+                auto cell = source in child.classCells;
+                if (cell is null)
+                    continue;
+
+                const fieldIndex = classFieldIndex(dot);
+                // Mutable because layout.fieldByteOffset follows DMD's
+                // mutable VarDeclaration API.
+                auto field = classFields(
+                    source.type.toBasetype.isTypeClass.sym,
+                )[fieldIndex];
+                child.structFieldAliases[parameter] = StructFieldAlias(
+                    source,
+                    fieldIndex,
+                    true,
+                );
+                child.scalarCells[parameter] = cell.subRange(
+                    fieldByteOffset(field),
+                    typeByteSize(parameter.type),
+                );
+                continue;
+            }
+
             auto cell = source in child.structCells;
             if (cell is null)
                 continue;
@@ -3163,7 +3188,7 @@ private struct Walker {
         }
     }
 
-    private void prepareDirectStructFieldRefArgumentAliases(
+    private void prepareDirectAggregateFieldRefArgumentAliases(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
     ) {
@@ -3185,12 +3210,18 @@ private struct Walker {
             auto source = var is null ? null : var.var.isVarDeclaration;
             if (
                 source is null ||
-                source.type.toBasetype.isTypeStruct is null
+                (
+                    source.type.toBasetype.isTypeStruct is null &&
+                    source.type.toBasetype.isTypeClass is null
+                )
             )
                 continue;
 
             const id = fieldSnapshotAllocationId(dot);
-            promoteStructFieldCell(dot, id);
+            if (source.type.toBasetype.isTypeClass !is null)
+                promoteClassFieldCell(dot, id);
+            else
+                promoteStructFieldCell(dot, id);
         }
     }
 
@@ -5515,7 +5546,7 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         in bool captureLocals = false,
     ) {
-        prepareDirectStructFieldRefArgumentAliases(
+        prepareDirectAggregateFieldRefArgumentAliases(
             function_,
             argumentExpressions,
         );
@@ -5532,7 +5563,7 @@ private struct Walker {
         registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
-        registerDirectStructFieldRefArgumentAliases(
+        registerDirectAggregateFieldRefArgumentAliases(
             function_,
             argumentExpressions,
             child,
@@ -5567,7 +5598,7 @@ private struct Walker {
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
     ) {
-        prepareDirectStructFieldRefArgumentAliases(
+        prepareDirectAggregateFieldRefArgumentAliases(
             function_,
             argumentExpressions,
         );
@@ -5607,7 +5638,7 @@ private struct Walker {
         registerClassThisAlias(function_, receiverExpression, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
-        registerDirectStructFieldRefArgumentAliases(
+        registerDirectAggregateFieldRefArgumentAliases(
             function_,
             argumentExpressions,
             child,
