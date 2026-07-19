@@ -9181,15 +9181,21 @@ private struct Walker {
     // Whole-value read-back for a promoted dynamic array. Struct elements
     // overlay their authoritative scalar fields onto the current boxed
     // element so unsupported fields retain their value. Scalars use the
-    // complete cell-only reconstruction above; static-array elements retain
-    // the boxed whole-value behavior until their pointer carrier can survive
-    // reconstruction.
+    // complete cell-only reconstruction above; scalar-element static arrays
+    // use the same complete reconstruction for each inline element.
     private Value arrayValueFromCell(
         in Value current,
         ref NativeArray cell,
     ) {
-        if (cell.elementType.isTypeSArray)
-            return current;
+        if (cell.elementType.isTypeSArray) {
+            Value[] elements;
+            elements.length = cell.length;
+            foreach (index; 0 .. cell.length) {
+                auto elementCell = cell.arrayElement(index);
+                elements[index] = arrayValueFromCell(elementCell);
+            }
+            return Value.nativeArrayValue(elements, cell.block.address);
+        }
 
         if (cell.elementType.isTypeStruct is null)
             return arrayValueFromCell(cell);
