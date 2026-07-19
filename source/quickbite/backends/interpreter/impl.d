@@ -3023,8 +3023,13 @@ private struct Walker {
                 continue;
 
             promoteStructCell(source);
-            if (auto cell = source in structCells)
+            if (auto cell = source in structCells) {
                 child.structCells[parameter] = *cell;
+                const pointerId = localPointerValue(source).localPointerId;
+                child.localPointerIds[parameter] = pointerId;
+                child.localPointers[pointerId] = parameter;
+                child.nextLocalPointerId = nextLocalPointerId;
+            }
         }
     }
 

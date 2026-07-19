@@ -1646,6 +1646,32 @@ static foreach (backend; AliasSeq!(Bytecode, Interpreter, SystemLinker)) {
     }
 }
 
+// Two ref parameters bound from the same plain variable denote one storage
+// location, so taking either parameter's address must produce equal pointers.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated ref-argument address identity"),
+)) {
+    @("struct.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            void verify(ref S first, ref S second) {
+                assert(&first == &second);
+            }
+
+            unittest {
+                S value = S(42);
+                verify(value, value);
+            }
+        });
+    }
+}
+
 // cerealed's decode of an enum-typed struct field (structs.d's `EnumStruct`
 // and `MqttFixedHeader` tests) writes the decoded byte through the field
 // without going through an enum-typed literal `IntegerExp`, so `Walker.
