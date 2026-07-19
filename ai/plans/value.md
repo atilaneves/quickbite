@@ -26,6 +26,8 @@ stand:
   fields of the same shapes plus class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
   scalar-field pointers that survive a reference rebind;
+  direct scalar struct fields passed by `ref`, including repeated-argument
+  address identity;
   and union member overlap, including default-init reinterpretation.
 - Invalidation is detach-on-rebind: a rebind drops the variable's cell and
   pointer-id memo; only a same-storage mutation refreshes that binding in
@@ -36,8 +38,9 @@ stand:
   the shapes above), whole-value reads of aliased structs and arrays outside
   the promoted scalar-element dynamic-array shape, dynamic-array- and
   class-typed fields, nesting deeper than one level, `ref`-parameter address
-  identity outside repeated plain-variable aggregate arguments, and the
-  remaining `interpreter.md` §9.10 shims.
+  identity outside repeated plain-variable aggregate arguments and repeated
+  direct scalar struct fields, and the remaining `interpreter.md` §9.10
+  shims.
 
 ## Audit findings (June 2026)
 
@@ -326,6 +329,10 @@ a checked fact; do not relearn them.
   reads must reconstruct from the cell before a field write; otherwise later
   parameter snapshots clobber earlier mutations or aggregate parameter
   addresses diverge.
+- A direct scalar struct field passed by `ref` reuses the caller's memoized
+  field pointer and aliases each parameter's scalar cell to that field's
+  subrange. Repeating the field must therefore preserve both address identity
+  and mutation authority without a separate field-path cell family.
 - A whole class-variable read reconstructs every cell-supported field
   from the class cell before the value is returned, passed onward,
   compared, or rendered. Direct field reads alone are insufficient: a
@@ -738,10 +745,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      divergence); object-identity-scoped class cells beyond scalar-field
      pointers (nested-struct and static-array field pointers still follow
      the variable slot after a reference rebind); and `ref`-parameter address
-     identity outside repeated plain-variable `ref` aggregate arguments, which
-     share mutation authority and direct parameter addresses. Non-plain-
-     variable aggregate arguments remain boxed copies plus end-of-call
-     writeback.
+     identity outside repeated plain-variable `ref` aggregate arguments and
+     repeated direct scalar struct fields, which share mutation authority and
+     direct parameter addresses. Non-plain-variable aggregate arguments
+     remain boxed copies plus end-of-call writeback.
    - Field-path generalization: nesting deeper than one level has no
      support anywhere (promotion, write-through, or pointer-identity
      memoization). Per the consolidation debt above, the next shape must

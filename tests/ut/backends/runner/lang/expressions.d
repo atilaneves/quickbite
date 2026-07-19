@@ -2370,6 +2370,36 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Two ref parameters bound from the same direct struct field denote one
+// storage location, so taking either parameter's address must produce equal
+// pointers even though the argument is not a plain variable.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated struct-field ref-argument identity"),
+)) {
+    @("structField.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            void verify(ref int first, ref int second) {
+                assert(&first == &second);
+                first = 99;
+                assert(second == 99);
+            }
+
+            unittest {
+                S value = S(42);
+                verify(value.value, value.value);
+                assert(value.value == 99);
+            }
+        });
+    }
+}
+
 // A class cell promoted by taking a field's address is authoritative for the
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,

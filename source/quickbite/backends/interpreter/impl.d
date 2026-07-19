@@ -2457,6 +2457,15 @@ private struct Walker {
     }
 
     private Value localPointerValue(VarDeclaration variable) {
+        if (auto alias_ = variable in structFieldAliases)
+            if (auto forReceiver = alias_.source in fieldAddressAllocations)
+                if (auto id = alias_.index in *forReceiver)
+                    return Value.arrayPointerValue(
+                        [readCelledLocal(variable)],
+                        *id,
+                        0,
+                    );
+
         promoteScalarCell(variable);
 
         if (auto id = variable in localPointerIds)
@@ -3045,6 +3054,84 @@ private struct Walker {
             child.localPointerIds[parameter] = pointerId;
             child.localPointers[pointerId] = parameter;
             child.nextLocalPointerId = nextLocalPointerId;
+        }
+    }
+
+    // A direct scalar struct field passed by ref already has all the storage
+    // machinery needed for a real alias: `promoteStructFieldCell` gives the
+    // caller an authoritative struct cell and memoized field address. Share
+    // that field subrange with the parameter's scalar cell and retain the
+    // existing struct-field alias so direct parameter reads, writes, and
+    // address-taking all denote the caller's one location.
+    private void registerDirectStructFieldRefArgumentAliases(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (!parameter.isReference || !isNativeScalarType(parameter.type))
+                continue;
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            auto dot = argument is null ? null : argument.isDotVarExp;
+            auto var = dot is null ? null : dot.e1.isVarExp;
+            auto source = var is null ? null : var.var.isVarDeclaration;
+            if (source is null)
+                continue;
+
+            auto cell = source in child.structCells;
+            if (cell is null)
+                continue;
+
+            const fieldIndex = structFieldIndex(dot);
+            child.structFieldAliases[parameter] = StructFieldAlias(
+                source,
+                fieldIndex,
+            );
+            child.scalarCells[parameter] = cell.block.subRange(
+                cell.fieldByteOffset(fieldIndex),
+                typeByteSize(parameter.type),
+            );
+        }
+    }
+
+    private void prepareDirectStructFieldRefArgumentAliases(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (!parameter.isReference || !isNativeScalarType(parameter.type))
+                continue;
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            auto dot = argument is null ? null : argument.isDotVarExp;
+            auto var = dot is null ? null : dot.e1.isVarExp;
+            auto source = var is null ? null : var.var.isVarDeclaration;
+            if (
+                source is null ||
+                source.type.toBasetype.isTypeStruct is null
+            )
+                continue;
+
+            const id = fieldSnapshotAllocationId(dot);
+            promoteStructFieldCell(dot, id);
         }
     }
 
@@ -5364,6 +5451,11 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         in bool captureLocals = false,
     ) {
+        prepareDirectStructFieldRefArgumentAliases(
+            function_,
+            argumentExpressions,
+        );
+
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
@@ -5376,6 +5468,11 @@ private struct Walker {
         registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
+        registerDirectStructFieldRefArgumentAliases(
+            function_,
+            argumentExpressions,
+            child,
+        );
 
         try {
             child.runStatement(function_.fbody);
@@ -5406,6 +5503,11 @@ private struct Walker {
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
     ) {
+        prepareDirectStructFieldRefArgumentAliases(
+            function_,
+            argumentExpressions,
+        );
+
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
@@ -5441,6 +5543,11 @@ private struct Walker {
         registerClassThisAlias(function_, receiverExpression, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
+        registerDirectStructFieldRefArgumentAliases(
+            function_,
+            argumentExpressions,
+            child,
+        );
 
         try {
             child.runStatement(function_.fbody);
@@ -11478,12 +11585,14 @@ private struct Walker {
             return;
 
         auto source = alias_.source in locals;
-        if (source is null)
+        auto cell = alias_.source in structCells;
+        if (source is null && cell is null)
             throw new Exception(
                 "Unsupported interpreter struct field alias target.",
             );
 
-        locals[alias_.source] = source.withStructField(alias_.index, value);
+        if (source !is null)
+            locals[alias_.source] = source.withStructField(alias_.index, value);
         // A `ref` local bound directly to a
         // struct field (`ref int r = s.x;`, recorded via
         // `recordStructFieldAlias`) must also refresh `alias_.source`'s
@@ -11503,7 +11612,7 @@ private struct Walker {
         // reaches `writeScalar` with a type it cannot represent and throws;
         // the boxed mirror write just above already handles a non-scalar
         // field correctly on its own.
-        if (auto cell = alias_.source in structCells) {
+        if (cell !is null) {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType, writeScalar;
 
