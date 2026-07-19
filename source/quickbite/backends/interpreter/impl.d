@@ -314,17 +314,11 @@ private struct Walker {
     // only the one-local case `structCells` models for structs.
     private NativeBlock[VarDeclaration] classCells;
 
-    // Reverse lookup from a promoted `&c.field` pointer's allocation id back
-    // to which class variable and field index (declaration order) share the
-    // SAME `classCells` entry's bytes -- the class-field counterpart of
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`.
-    // Cross-frame follow-up (2026-07-15): now duplicated into child-frame
-    // walkers and merged back exactly like `structFieldPointerVariables`/
-    // `FieldIndices` (`mergeClassFieldPointerVariableMaps`), so a `&c.field`
-    // pointer does survive being passed into another function; see
-    // `classFieldPointerWritebacks` below for the write-through side.
-    private VarDeclaration[size_t] classFieldPointerVariables;
-    private size_t[size_t] classFieldPointerFieldIndices;
+    // Common reverse lookup from a field pointer's allocation id to its root
+    // variable and DMD field-index path. Direct scalar class fields are the
+    // first migrated family; the remaining shape-specific maps move here
+    // without changing this representation.
+    private FieldPathKey[size_t] fieldPointerPaths;
     // A class-field pointer remains attached to the object after the variable
     // used to reach it is rebound. Retain that object's cell by allocation id
     // instead of resolving storage through the current variable binding.
@@ -2260,8 +2254,7 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
-        child.classFieldPointerVariables = classFieldPointerVariables.dup;
-        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.fieldPointerPaths = fieldPointerPaths.dup;
         child.classFieldPointerCells = classFieldPointerCells.dup;
         child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nestedClassStructFieldPointerVariables =
@@ -3438,7 +3431,7 @@ private struct Walker {
     // itself is `native_scalar.isNativeScalarType`, gives the receiver a
     // `classCells` entry (`promoteClassCell`, the class sibling of
     // `promoteStructFieldCell`) and records `id` in the reverse lookup
-    // `classFieldPointerVariables`/`classFieldPointerFieldIndices`, so a
+    // common `fieldPointerPaths` reverse lookup, so a
     // later deref-read through this id's pointer
     // (`classFieldPointerCellValue`) can find the same cell and field. A
     // no-op (no cell, no reverse-lookup entry) for a non-`VarExp` receiver
@@ -3465,8 +3458,7 @@ private struct Walker {
         if ((variable in classCells) is null)
             return;
 
-        classFieldPointerVariables[id] = variable;
-        classFieldPointerFieldIndices[id] = classFieldIndex(dot);
+        fieldPointerPaths[id] = directFieldPathKey(variable, classFieldIndex(dot));
         classFieldPointerCells[id] = classCells[variable];
     }
 
@@ -3820,7 +3812,7 @@ private struct Walker {
     }
 
     // Class sibling of `dropStructCell` above: drops `variable`'s `classCells`
-    // entry (if any) together with every `classFieldPointerVariables`/
+    // entry (if any) together with every direct-class `fieldPointerPaths`/
     // `nestedClassStructFieldPointerVariables`/`classArrayFieldPointerVariables`
     // reverse-lookup entry (and their field-index siblings) that pointed at
     // it, for the exact same reason `dropStructCell` exists: leaving a stale
@@ -3848,13 +3840,12 @@ private struct Walker {
         classCells.remove(variable);
 
         size_t[] staleFieldIds;
-        foreach (id, pointedVariable; classFieldPointerVariables)
-            if (pointedVariable is variable)
+        foreach (id, path; fieldPointerPaths)
+            if (path.root is variable)
                 staleFieldIds ~= id;
 
         foreach (id; staleFieldIds) {
-            classFieldPointerVariables.remove(id);
-            classFieldPointerFieldIndices.remove(id);
+            fieldPointerPaths.remove(id);
             classFieldPointerCells.remove(id);
         }
 
@@ -5805,7 +5796,7 @@ private struct Walker {
         structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
         mergeNestedStructFieldPointerVariableMaps(child);
         nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
-        mergeClassFieldPointerVariableMaps(child);
+        mergeFieldPointerPaths(child);
         classFieldPointerWritebacks = child.classFieldPointerWritebacks;
         mergeNestedClassStructFieldPointerVariableMaps(child);
         nestedClassStructFieldPointerWritebacks =
@@ -5942,26 +5933,15 @@ private struct Walker {
         }
     }
 
-    // Class sibling of `mergeStructFieldPointerVariableMaps` above
-    // (cross-frame write-through-pointer follow-up):
-    // `classFieldPointerVariables`/`FieldIndices` merge the identical,
-    // conflict-free way -- a class-field id is memoized through the SAME
-    // field-path map `fieldSnapshotAllocationId`
-    // uses for a struct field (it only dispatches the field-INDEX
-    // computation on receiver kind, not the id memo itself), so the same
-    // forward map is the right conflict check here too.
-    private void mergeClassFieldPointerVariableMaps(ref Walker child) {
-        foreach (id, variable; child.classFieldPointerVariables) {
-            auto fieldIndex = id in child.classFieldPointerFieldIndices;
-            if (fieldIndex !is null)
-                if (auto ownId = directFieldPathKey(variable, *fieldIndex)
-                        in fieldPathAddressAllocations)
-                    if (*ownId != id)
-                        continue;
+    // Common reverse-map merge. The owning frame's forward memo wins when
+    // the same path names a different activation's allocation id.
+    private void mergeFieldPointerPaths(ref Walker child) {
+        foreach (id, path; child.fieldPointerPaths) {
+            if (auto ownId = path in fieldPathAddressAllocations)
+                if (*ownId != id)
+                    continue;
 
-            classFieldPointerVariables[id] = variable;
-            if (fieldIndex !is null)
-                classFieldPointerFieldIndices[id] = *fieldIndex;
+            fieldPointerPaths[id] = path;
             if (auto cell = id in child.classFieldPointerCells)
                 classFieldPointerCells[id] = *cell;
         }
@@ -5997,7 +5977,7 @@ private struct Walker {
         }
     }
 
-    // Array-typed-field sibling of `mergeClassFieldPointerVariableMaps` above
+    // Array-typed-field sibling of `mergeFieldPointerPaths` above
     // (class static-array-field cross-frame follow-up):
     // `classArrayFieldPointerVariables`/
     // `FieldIndices` merge the identical, conflict-free way -- a
@@ -6305,7 +6285,8 @@ private struct Walker {
     // must be refreshed here from the (already-updated) cell once control
     // returns to it.
     private void writeBackClassFieldPointerTargets(ref Walker child) {
-        foreach (_, variable; child.classFieldPointerVariables) {
+        foreach (_, path; child.fieldPointerPaths) {
+            auto variable = path.root;
             if ((variable in child.classFieldPointerWritebacks) is null)
                 continue;
 
@@ -8572,7 +8553,7 @@ private struct Walker {
     // exactly as in `writeThroughStructFieldPointer` -- a CROSS-FRAME write
     // (`variable` is the CALLER's own local, `id` recorded before the call
     // and shared into this callee's frame only via the duped
-    // `classFieldPointerVariables`/`classCells`) finds `variable` in neither
+    // `fieldPointerPaths`/`classCells`) finds `variable` in neither
     // this frame's parameters nor its `locals` at all. The write still lands
     // in the shared cell either way; `classFieldPointerWritebacks` flags
     // `variable` so `writeBackClassFieldPointerTargets` can re-derive the
@@ -8584,35 +8565,37 @@ private struct Walker {
     // class object -- leaving `writeLocation`'s `PtrExp` arm to keep
     // refusing those exactly as before.
     private bool writeThroughClassFieldPointer(in Value pointer, in Value value) {
-        auto variable = pointer.pointerAllocation in classFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 1)
             return false;
+
+        auto variable = path.root;
 
         auto cell = pointer.pointerAllocation in classFieldPointerCells;
         if (cell is null)
             return false;
 
-        auto fieldIndex = pointer.pointerAllocation in classFieldPointerFieldIndices;
-        if (fieldIndex is null)
-            return false;
+        const fieldIndex = path.indices[0];
 
-        auto current = *variable in locals;
+        auto current = variable in locals;
 
         import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        auto classType = (*variable).type.toBasetype.isTypeClass;
-        auto field = classFields(classType.sym)[*fieldIndex];
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType is null)
+            return false;
+        auto field = classFields(classType.sym)[fieldIndex];
         const offset = fieldByteOffset(field);
         const size = typeByteSize(field.type);
         writeScalar(field.type, cell.bytes[offset .. offset + size], value);
 
         if (current !is null)
-            if (auto currentCell = *variable in classCells)
+            if (auto currentCell = variable in classCells)
                 if (currentCell.bytes.ptr is cell.bytes.ptr)
-                    locals[*variable] = current.withClassField(*fieldIndex, value);
-        classFieldPointerWritebacks[*variable] = true;
-        uninitializedLocals.remove(*variable);
+                    locals[variable] = current.withClassField(fieldIndex, value);
+        classFieldPointerWritebacks[variable] = true;
+        uninitializedLocals.remove(variable);
         return true;
     }
 
@@ -10654,23 +10637,25 @@ private struct Walker {
         if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
             return false;
 
-        auto variable = pointer.pointerAllocation in classFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 1)
             return false;
+
+        auto variable = path.root;
 
         auto cell = pointer.pointerAllocation in classFieldPointerCells;
         if (cell is null)
             return false;
 
-        auto fieldIndex = pointer.pointerAllocation in classFieldPointerFieldIndices;
-        if (fieldIndex is null)
-            return false;
+        const fieldIndex = path.indices[0];
 
         import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        auto classType = (*variable).type.toBasetype.isTypeClass;
-        auto field = classFields(classType.sym)[*fieldIndex];
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType is null)
+            return false;
+        auto field = classFields(classType.sym)[fieldIndex];
         const offset = fieldByteOffset(field);
         const size = typeByteSize(field.type);
         value = readScalar(field.type, cell.bytes[offset .. offset + size]);
