@@ -2545,6 +2545,37 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Taking an element address through a ref static-array local reaches the
+// source's storage rather than promoting an independent alias snapshot.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref static-array-local element addresses"),
+)) {
+    @("pointer.staticArrayRefLocalElementUsesSourceStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 42;
+            }
+
+            int index() {
+                return 1;
+            }
+
+            unittest {
+                int[2] source = [seed, 43];
+                ref int[2] alias_ = source;
+                int* first = &alias_[0];
+                int* second = &alias_[index];
+                *first = 99;
+                *second = 100;
+                assert(source == [99, 100]);
+            }
+        });
+    }
+}
+
 // Whole-value assignment through a ref nested-static-array local mutates the
 // source's promoted native storage rather than rebinding it.
 static foreach (backend; Matrix!(

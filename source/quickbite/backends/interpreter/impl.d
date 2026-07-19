@@ -2401,6 +2401,8 @@ private struct Walker {
         if (variable is null)
             throw new Exception(text("Unsupported eval expression: ", op));
 
+        variable = refLocalStorageVariable(variable);
+
         auto current = variable in locals;
         if (current is null)
             throw new Exception(text("Unsupported eval expression: ", op));
@@ -2445,6 +2447,8 @@ private struct Walker {
         VarDeclaration variable,
     ) {
         import quickbite.frontend.dmd.types: isStaticArrayType;
+
+        variable = refLocalStorageVariable(variable);
 
         if (isStaticArrayType(variable.type)) {
             // `&array` points at the static-array local itself, unlike
