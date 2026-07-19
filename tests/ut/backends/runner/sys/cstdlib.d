@@ -420,7 +420,7 @@ static foreach (backend; Matrix!(
 }
 
 
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+static foreach (backend; AliasSeq!(IR)) {
 
     @("div.structReturn." ~ backend.stringof)
     unittest {
@@ -436,7 +436,6 @@ static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "CTFE rejects div: DMD CTFE has no host libc struct-return support"),
-    Omit!(Bytecode, Because.diverges, "see sibling pin above: Bytecode (with IR) also lacks struct-return support for div/ldiv"),
 )) {
 
     @("div.structReturn." ~ backend.stringof)

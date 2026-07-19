@@ -389,17 +389,7 @@ After it is empty, search all backend matrices and characterization pins for
 remaining Bytecode exclusions. Preserve only exclusions that are genuine
 oracle characterizations or architectural non-goals with an explicit reason.
 An unsupported implementation is not, by itself, a permanent divergence from
-the compiled-D oracle. In particular, the existing `div`/`ldiv` struct-return
-characterization (`tests/ut/backends/runner/sys/cstdlib.d`, the hand-rolled
-`AliasSeq!(Bytecode, IR)` block pinning `shouldFailNoSource`) is now stale:
-struct-by-value native returns landed, and `div(int,int)`/`ldiv(long,long)`
-take only plain scalar arguments DMD already compiled, so Bytecode now
-actually computes the right `div_t`/`ldiv_t` instead of refusing with
-no-available-source. That pin needs deleting and Bytecode promoting into the
-general `Matrix!(...)` block right below it (dropping its
-`Omit!(Bytecode, Because.diverges, ...)`), the same test-file change every
-other matrix promotion in this file makes, following the normal test-change
-approval rule.
+the compiled-D oracle.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
