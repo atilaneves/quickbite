@@ -26,7 +26,8 @@ stand:
   elements; scalar-leaf addresses within plain nested static-array locals;
   struct fields
   (scalar, scalar-element static-array, one-level-nested struct); class
-  fields of the same shapes plus class reference identity through
+  fields of the same shapes plus scalar-element dynamic-array fields and
+  class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
   scalar-field pointers that survive a reference rebind, including direct
   scalar-field `ref` locals with the same address identity; plain `ref` class
@@ -46,8 +47,8 @@ stand:
 - Still boxed: a local's authoritative storage itself
   (`locals[VarDeclaration]` remains `Value`-keyed; cells exist only for
   the shapes above), whole-value reads of aliased structs and arrays outside
-  the promoted shapes; dynamic-array- and
-  class-typed fields, nesting deeper than one level, `ref`-parameter address
+  the promoted shapes; class-typed fields, nesting deeper than one level,
+  `ref`-parameter address
   identity outside repeated plain-variable aggregate arguments and direct
   scalar aggregate fields reached repeatedly or through a struct source/ref
   alias pair, and the remaining `interpreter.md` §9.10 shims.
@@ -781,9 +782,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      support anywhere (promotion, write-through, or pointer-identity
      memoization). Per the consolidation debt above, the next shape must
      drive the (root variable, field PATH) mechanism, not a new family.
-   - Widening not yet done: dynamic-array- and class-typed fields have no
-     cell support on either the read or write side (needs a slice-valued
-     field-cell primitive);
+   - Widening not yet done: class-typed fields and dynamic-array fields whose
+     element is not a native scalar have no cell support on either the read or
+     write side;
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and

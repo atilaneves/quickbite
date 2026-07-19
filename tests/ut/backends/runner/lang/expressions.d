@@ -2499,6 +2499,44 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A dynamic-array field is a slice value whose header belongs to the class
+// object while its elements live in separate backing storage. Taking an
+// element address and writing through it must remain visible when the whole
+// field is copied and when the whole object is passed onward.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class array field element"),
+)) {
+    @("class.dynamicArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[] values;
+            }
+
+            void put(int* pointer, int value) {
+                *pointer = value;
+            }
+
+            int observe(C value) {
+                int[] copy = value.values;
+                return copy[0];
+            }
+
+            unittest {
+                C value = new C();
+                value.values = [42, 7];
+                int* pointer = &value.values[0];
+                put(pointer, 99);
+                int[] field = value.values;
+                assert(field[0] == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
 // A struct cell promoted through one alias is authoritative for the whole
 // value reached through another alias. SystemLinker therefore observes a
 // pointer write when the aliased struct is passed onward as a value.

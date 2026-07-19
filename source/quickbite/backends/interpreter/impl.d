@@ -2367,6 +2367,28 @@ private struct Walker {
             }
 
             if (auto dot = array.isDotVarExp) {
+                import quickbite.backends.interpreter.layout: typeByteSize;
+                import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+                if (isDynamicArrayType(dot.type)) {
+                    auto variable = classCellKeyVariable(dot.e1);
+                    if (variable !is null) {
+                        promoteClassCell(variable);
+                        if (auto cell = variable in classCells) {
+                            const fieldIndex = classFieldIndex(dot);
+                            auto fieldCell = classSliceField(
+                                *cell,
+                                variable.type.toBasetype.isTypeClass.sym,
+                                fieldIndex,
+                            );
+                            return Value.nativePointerValue(
+                                fieldCell.block.address + offset *
+                                    typeByteSize(dot.type.toBasetype.nextOf),
+                            );
+                        }
+                    }
+                }
+
                 // For the struct-static-array-field case,
                 // `&s.arr[i]` where `arr` is a static-array field of a plain
                 // struct local. Reusing `fieldSnapshotAllocationId` gives the
@@ -3317,12 +3339,10 @@ private struct Walker {
     // widening, built directly here since a `classCells` entry has no
     // `NativeStruct` wrapper of its own -- see `classCells`'s own field
     // comment), and recurses one level into every (non-union) struct-typed
-    // field. Every other non-scalar field (a dynamic array/slice, another
-    // class reference, or a union at any level) is left untouched, matching
-    // this narrow slice's scope -- only an address-taken scalar field,
-    // scalar-element static-array field, or (one level deep) nested scalar
-    // field is ever read back through a `classCells` entry, so leaving
-    // another field's bytes stale here is harmless.
+    // field, and writes scalar-element dynamic-array headers whose backing
+    // storage is itself a `NativeArray`. Every other non-scalar field
+    // (another class reference, a non-scalar-element dynamic array, or a
+    // union at any level) is left untouched.
     private void writeClassCellScalarFields(
         ref NativeBlock cell,
         imported!"dmd.dclass".ClassDeclaration class_,
@@ -3332,7 +3352,8 @@ private struct Walker {
             classFields, fieldByteOffset, staticArrayLength, typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         foreach (index, field; classFields(class_)) {
             if (isNativeScalarType(field.type)) {
@@ -3357,6 +3378,33 @@ private struct Walker {
                 auto arrayCell = NativeArray.adopt(cell.subRange(offset, size), elementType, length);
                 foreach (elementIndex; 0 .. fieldValue.length)
                     writeScalar(elementType, arrayCell.element(elementIndex), fieldValue[elementIndex]);
+                continue;
+            }
+
+            if (isDynamicArrayType(field.type)) {
+                auto elementType = field.type.toBasetype.nextOf.toBasetype;
+                if (!isNativeScalarType(elementType))
+                    continue;
+
+                const fieldValue = classValue.classFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = fieldValue.arrayNativeAddress is null
+                    ? NativeArray.allocate(elementType, fieldValue.length)
+                    : NativeArray.borrow(
+                        elementType,
+                        cast(void*) fieldValue.arrayNativeAddress,
+                        fieldValue.length,
+                    );
+                if (fieldValue.arrayNativeAddress is null)
+                    foreach (elementIndex; 0 .. fieldValue.length)
+                        writeScalar(
+                            elementType,
+                            arrayCell.element(elementIndex),
+                            fieldValue[elementIndex],
+                        );
+                arrayCell.writeSliceHeader(cell, fieldByteOffset(field));
                 continue;
             }
 
@@ -6396,7 +6444,8 @@ private struct Walker {
     // non-scalar, non-scalar-element-array, non-(non-union)-struct field is
     // left exactly as `current` already had it, matching
     // `writeClassCellScalarFields`'s own bounded reach for this phase's
-    // scope.
+    // scope. Scalar-element dynamic-array fields reconstruct through the
+    // slice header stored in the class cell and the referenced element block.
     private Value classValueFromCell(
         in Value current,
         ref NativeBlock cell,
@@ -6406,7 +6455,8 @@ private struct Walker {
             classFields, fieldByteOffset, staticArrayLength, typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         Value value = current;
         foreach (index, field; classFields(class_)) {
@@ -6440,6 +6490,23 @@ private struct Walker {
                         readScalar(elementType, arrayCell.element(elementIndex)),
                     );
                 value = value.withClassField(index, fieldValue);
+                continue;
+            }
+
+            if (isDynamicArrayType(field.type)) {
+                auto elementType = field.type.toBasetype.nextOf.toBasetype;
+                if (!isNativeScalarType(elementType))
+                    continue;
+
+                const fieldValue = value.classFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = classSliceField(cell, class_, index);
+                value = value.withClassField(
+                    index,
+                    arrayValueFromCell(fieldValue, arrayCell),
+                );
                 continue;
             }
 
@@ -7487,7 +7554,8 @@ private struct Walker {
             classFields, fieldByteOffset, staticArrayLength, typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         auto variable = classCellKeyVariable(receiverExpression);
         if (variable is null)
@@ -7540,6 +7608,20 @@ private struct Walker {
             return true;
         }
 
+        if (isDynamicArrayType(field.type)) {
+            auto elementType = field.type.toBasetype.nextOf.toBasetype;
+            if (!isNativeScalarType(elementType))
+                return false;
+
+            const fieldValue = target.classFieldAt(fieldIndex);
+            if (!fieldValue.isArray)
+                return false;
+
+            auto arrayCell = classSliceField(*cell, classType.sym, fieldIndex);
+            value = arrayValueFromCell(fieldValue, arrayCell);
+            return true;
+        }
+
         // Aggregate composition, struct shape (the symmetric case to the
         // static-array branch above): a (non-union) struct-typed field. Reuses the exact
         // composition primitive `writeClassCellScalarFields`'s own struct
@@ -7564,6 +7646,25 @@ private struct Walker {
         }
 
         return false;
+    }
+
+    private NativeArray classSliceField(
+        ref NativeBlock cell,
+        imported!"dmd.dclass".ClassDeclaration class_,
+        in size_t fieldIndex,
+    ) {
+        import quickbite.backends.interpreter.layout:
+            classFields, fieldByteOffset;
+        import quickbite.backends.interpreter.native_array:
+            readSliceHeaderBytes;
+
+        auto field = classFields(class_)[fieldIndex];
+        auto arrayType = field.type.toBasetype.isTypeDArray;
+        const offset = fieldByteOffset(field);
+        auto header = readSliceHeaderBytes(
+            cell.bytes[offset .. offset + NativeArray.sliceHeaderByteLength],
+        );
+        return NativeArray.borrow(arrayType.next, header.ptr, header.length);
     }
 
     private Value runClassInfoExpression(
