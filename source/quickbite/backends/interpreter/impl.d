@@ -1645,6 +1645,8 @@ private struct Walker {
             if (variable is null)
                 return runSymbolDeclarationVarExpression(var);
 
+            variable = refLocalStorageVariable(variable);
+
             // the magic __ctfe variable is true under AST interpretation,
             // matching dmd's own interpreter; the language requires both
             // __ctfe branches to be observably equivalent
@@ -2501,6 +2503,22 @@ private struct Walker {
         return Value.localPointerValue(id);
     }
 
+    // A plain aggregate `ref` local reuses its source's local-pointer id.
+    // Resolve that existing identity back to the declaration which owns the
+    // storage so reads and assignments through the ref local do not acquire
+    // an independent boxed slot.
+    private VarDeclaration refLocalStorageVariable(VarDeclaration variable) {
+        if (!isRefVariable(variable) || isParameterVariable(variable))
+            return variable;
+
+        auto id = variable in localPointerIds;
+        if (id is null)
+            return variable;
+
+        auto source = *id in localPointers;
+        return source is null ? variable : *source;
+    }
+
     // Eagerly gives an address-taken native-scalar local an authoritative
     // native-byte cell the first time its address is taken, seeded from
     // whatever value the local currently
@@ -2950,6 +2968,8 @@ private struct Walker {
     ) {
         if (target.type.toBasetype.isTypeClass is null)
             return;
+
+        target = refLocalStorageVariable(target);
 
         auto sourceVar = source.isVarExp;
         if (sourceVar is null)
@@ -7705,6 +7725,8 @@ private struct Walker {
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
                 throw new Exception("Unsupported interpreter assignment target.");
+
+            variable = refLocalStorageVariable(variable);
 
             // A native extern __gshared global's memory is the single source of
             // truth (ffi.md §35.2): write through to the resolved symbol and do

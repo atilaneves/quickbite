@@ -30,7 +30,7 @@ stand:
   same-frame, argument, and `this` aliasing, whole-value class reads, and
   scalar-field pointers that survive a reference rebind, including direct
   scalar-field `ref` locals with the same address identity; plain `ref` class
-  locals with source/alias address identity;
+  locals with source/alias address identity and assignment through the alias;
   direct scalar struct fields passed by `ref`, including repeated-argument
   address identity; plain `ref` struct locals, including whole-value reads
   through the alias and source/alias address identity;
@@ -407,9 +407,11 @@ a checked fact; do not relearn them.
 - Whole reads of every promoted dynamic-array shape, structs, and classes
   reconstruct their supported elements or fields from the cell. A plain
   `ref` aggregate local shares its source's local-pointer id, so taking either
-  declaration's address identifies the same storage. A plain `ref` struct
-  local also shares its source's cell, so a whole read through either
-  declaration observes the same authoritative bytes.
+  declaration's address identifies the same storage. Reads and writes through
+  a plain `ref` aggregate local resolve that identity back to the source's
+  storage; for classes, assignment through the alias rebinds the source
+  reference. A plain `ref` struct local also shares its source's cell, so a
+  whole read through either declaration observes the same authoritative bytes.
 
 ### Unions
 

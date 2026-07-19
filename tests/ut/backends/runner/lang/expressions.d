@@ -2523,6 +2523,34 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Assignment through a ref class local rebinds the source reference variable;
+// the alias does not acquire an independent class-reference slot.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref class-local assignment aliasing"),
+)) {
+    @("class.refLocalAssignmentRebindsSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            unittest {
+                C source = new C();
+                source.value = 42;
+                ref C alias_ = source;
+                C replacement = new C();
+                replacement.value = 99;
+                alias_ = replacement;
+                assert(source is replacement);
+                assert(source.value == 99);
+            }
+        });
+    }
+}
+
 // `this`-reached class aliasing: a METHOD mutating `this.x` must be visible to
 // another caller-side alias of the SAME object through the shared class
 // cell, exactly like the `combine(a, b)` cross-frame aliasing case above,
