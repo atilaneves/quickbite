@@ -22,7 +22,8 @@ stand:
   frames — for: address-taken scalar locals; dynamic-array elements
   (scalar, struct, and scalar-element static-array element types),
   including whole-value reads for all three promoted element shapes, slice,
-  and `foreach (ref ...)` aliasing; struct fields
+  `foreach (ref ...)` aliasing, and scalar-leaf addresses within static-array
+  elements; struct fields
   (scalar, scalar-element static-array, one-level-nested struct); class
   fields of the same shapes plus class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
@@ -259,6 +260,10 @@ a checked fact; do not relearn them.
   and applies the byte delta already scaled from the expression's static
   pointer type. Do not route it through the boxed pointer's allocation id or
   element snapshot.
+- Nested indexing into a native array composes offsets one level at a time:
+  the outer index uses the immediate aggregate element's stride, then the
+  scalar-leaf index uses the leaf type's stride. Do not flatten both indices
+  against the leaf size.
 - Subtracting two native pointers computes their byte-address difference;
   DMD's surrounding element-size division converts that to D's element
   distance. The boxed carrier instead stores element offsets and must scale
@@ -754,9 +759,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      drive the (root variable, field PATH) mechanism, not a new family.
    - Widening not yet done: dynamic-array- and class-typed fields have no
      cell support on either the read or write side (needs a slice-valued
-     field-cell primitive); nested static arrays need scalar-leaf
-     flattening for pointer arithmetic (`&m[i][j]` currently scales by
-     the immediate element type's size, not the innermost scalar's);
+     field-cell primitive); plain nested-static-array locals remain on the
+     boxed pointer path rather than native cells (scalar-leaf addressing into
+     promoted dynamic arrays of static arrays is native);
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and

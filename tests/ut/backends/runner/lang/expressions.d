@@ -4510,6 +4510,34 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Nested static-array indexing scales each step by its immediate element
+// type. Taking a scalar leaf's address must therefore retain the outer row
+// stride instead of treating the outer index as a scalar-element offset.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE asserts internally while initializing the nested array"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking a nested static-array element address"),
+)) {
+    @("pointer.nestedStaticArrayElementUsesImmediateStride." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void put(int* pointer, int value) {
+                *pointer = value;
+            }
+
+            unittest {
+                int[2][] values = [[1, 2], [3, 4]];
+                int* pointer = &values[1][0];
+                put(pointer, 99);
+                assert(values[0][1] == 2);
+                assert(values[1][0] == 99);
+            }
+        });
+    }
+}
+
 // Array-element/nested-field composition follow-up:
 // composing the two slices above -- a nested struct field OF an
 // array-of-struct element, `&a[i].inner.x`. `addressOfExpression`'s

@@ -2349,6 +2349,19 @@ private struct Walker {
 
         auto var = array.isVarExp;
         if (var is null) {
+            if (auto index = array.isIndexExp) {
+                import quickbite.backends.interpreter.layout: typeByteSize;
+
+                const outerOffset = runExpression(index.e2).asLong;
+                const pointer = arrayPointer(index.e1, outerOffset, op);
+                if (pointer.isNativePointer)
+                    return pointer.pointerOffsetBy(
+                        offset * cast(long) typeByteSize(
+                            array.type.toBasetype.nextOf,
+                        ),
+                    );
+            }
+
             if (auto dot = array.isDotVarExp) {
                 // For the struct-static-array-field case,
                 // `&s.arr[i]` where `arr` is a static-array field of a plain
