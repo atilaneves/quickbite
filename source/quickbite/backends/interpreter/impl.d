@@ -1689,6 +1689,11 @@ private struct Walker {
                     return classValueFromCell(*current, *cell, classType.sym);
             }
 
+            if (auto cell = variable in structCells)
+                if (auto current = variable in locals)
+                    if (current.isStruct)
+                        return structValueFromCell(*current, *cell);
+
             if (auto current = variable in locals)
                 return *current;
 
@@ -2987,6 +2992,39 @@ private struct Walker {
             promoteClassCell(sourceVariable);
             if (auto cell = sourceVariable in classCells)
                 child.classCells[parameter] = *cell;
+        }
+    }
+
+    // A ref struct parameter denotes the caller's storage. Point the
+    // parameter at the caller's existing NativeStruct cell so repeated
+    // arguments (`f(value, value)`) share one authority instead of competing
+    // through independent boxed snapshots.
+    private void registerRefStructArgumentAliases(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (!parameter.isReference ||
+                parameter.type.toBasetype.isTypeStruct is null)
+                continue;
+
+            child.structCells.remove(parameter);
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            auto var = argument is null ? null : argument.isVarExp;
+            auto source = var is null ? null : var.var.isVarDeclaration;
+            if (source is null)
+                continue;
+
+            promoteStructCell(source);
+            if (auto cell = source in structCells)
+                child.structCells[parameter] = *cell;
         }
     }
 
@@ -5317,6 +5355,7 @@ private struct Walker {
         seedPointerTargetLocals(child);
         registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
+        registerRefStructArgumentAliases(function_, argumentExpressions, child);
 
         try {
             child.runStatement(function_.fbody);
@@ -5381,6 +5420,7 @@ private struct Walker {
         registerClassArgumentAliases(function_, argumentExpressions, child);
         registerClassThisAlias(function_, receiverExpression, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
+        registerRefStructArgumentAliases(function_, argumentExpressions, child);
 
         try {
             child.runStatement(function_.fbody);

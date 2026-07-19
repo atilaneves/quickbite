@@ -36,7 +36,8 @@ stand:
   the shapes above), whole-value reads of aliased structs and arrays outside
   the promoted scalar-element dynamic-array shape, dynamic-array- and
   class-typed fields, nesting deeper than one level, `ref`-parameter address
-  identity, and the remaining `interpreter.md` §9.10 shims.
+  identity (although repeated plain-variable struct arguments now share
+  mutation authority), and the remaining `interpreter.md` §9.10 shims.
 
 ## Audit findings (June 2026)
 
@@ -319,6 +320,10 @@ a checked fact; do not relearn them.
   every write path that reaches storage only through an alias table
   (slice alias, array-element alias, struct-field alias, `this` alias)
   must independently refresh the ultimate target variable's cell.
+- Plain-variable `ref` struct arguments share the caller's `NativeStruct`
+  cell. Repeating one lvalue in a call must point every parameter at the same
+  cell, and whole parameter reads must reconstruct from it before a field
+  write; otherwise later parameter snapshots clobber earlier mutations.
 - A whole class-variable read reconstructs every cell-supported field
   from the class cell before the value is returned, passed onward,
   compared, or rendered. Direct field reads alone are insufficient: a
@@ -730,11 +735,11 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      activations of the same function share one cell — a real
      divergence); object-identity-scoped class cells beyond scalar-field
      pointers (nested-struct and static-array field pointers still follow
-     the variable slot after a reference rebind); and `ref` struct/class
-     parameters, which
-     are modeled as a boxed copy plus end-of-call writeback rather than
-     live shared storage, so address identity across a `ref` boundary
-     diverges from the oracle.
+     the variable slot after a reference rebind); and `ref`-parameter address
+     identity. Repeated plain-variable `ref` struct arguments share mutation
+     authority, but their direct parameter addresses are still local-pointer
+     ids; class parameters and non-plain-variable struct arguments remain
+     boxed copies plus end-of-call writeback.
    - Field-path generalization: nesting deeper than one level has no
      support anywhere (promotion, write-through, or pointer-identity
      memoization). Per the consolidation debt above, the next shape must
