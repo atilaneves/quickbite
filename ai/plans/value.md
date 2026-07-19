@@ -641,11 +641,6 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      (root variable, field PATH) — `a[i].inner.x` described as a path
      rather than a bespoke map per shape — so promote/read/write/merge/
      writeback/drop each exist once.
-   - Per-frame cell state is now forked in one place
-     (`Walker.forkPerFrameCellsInto`); that is the model for the rest.
-     Merge and drop should likewise become single dispatch points instead
-     of per-family calls hand-wired at every site.
-
    **Design sketch** (the frame for all of this work). A *native block*
    is a stable byte range laid out with DMD's own offsets, stride, and
    alignment; a *handle* is the interpreter-owned metadata for one block

@@ -6588,13 +6588,11 @@ private struct Walker {
             }
 
             // A fresh call binds a new stack slot for `parameter`; drop any
-            // inherited/stale `scalarCells`/`arrayCells`/`structCells` entry
-            // the same way a fresh `DeclarationExp` does -- recursion reuses
-            // the same
+            // inherited/stale `scalarCells`/`arrayCells`/`structCells`/
+            // `classCells` entry the same way a fresh `DeclarationExp` does --
+            // recursion reuses the same
             // `VarDeclaration` for a parameter at every call depth.
-            scalarCells.remove(parameter);
-            dropArrayCell(parameter);
-            dropStructCell(parameter);
+            dropPerFrameCells(parameter);
             locals[parameter] = arguments[index];
 
             // `runRefArgumentExpression` seeds a `ref` argument still bound to
@@ -6622,6 +6620,13 @@ private struct Walker {
         }
     }
 
+    private void dropPerFrameCells(VarDeclaration variable) {
+        scalarCells.remove(variable);
+        dropArrayCell(variable);
+        dropStructCell(variable);
+        dropClassCell(variable);
+    }
+
     // A `lazy` parameter is a delegate over the *caller's live frame*, not a
     // value captured at call time. `locals`
     // is a D associative array: a reference to a heap-allocated hash table.
@@ -6641,9 +6646,7 @@ private struct Walker {
         // parameter is still a new
         // stack slot for its own `VarDeclaration`, so drop any inherited/
         // stale cell.
-        scalarCells.remove(parameter);
-        dropArrayCell(parameter);
-        dropStructCell(parameter);
+        dropPerFrameCells(parameter);
         locals[parameter] = Value.undisplayable;
 
         if (auto variable = lazyExpressionVariable(argumentExpression)) {
@@ -11279,10 +11282,7 @@ private struct Walker {
         // recursion at all -- including a nested `foreach`'s per-iteration
         // slice temporary, whose source array is promoted eagerly by
         // `promoteSliceArrayCell` with no address-of needed at all.
-        scalarCells.remove(variable);
-        dropArrayCell(variable);
-        dropStructCell(variable);
-        dropClassCell(variable);
+        dropPerFrameCells(variable);
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {
             uninitializedLocals[variable] = true;
