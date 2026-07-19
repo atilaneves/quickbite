@@ -4446,6 +4446,40 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A promoted array-of-struct cell is authoritative for a whole-array read,
+// not only for an indexed element read. Passing the array onward after a
+// pointer write must therefore reconstruct its struct elements from the cell
+// instead of copying the stale boxed mirror into the callee.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support storing a whole struct through a pointer"),
+)) {
+    @("array.wholeStructArrayArgumentReadsAuthoritativeCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            void put(S* pointer, int value) {
+                *pointer = S(value);
+            }
+
+            int observe(S[] values) {
+                return values[0].x;
+            }
+
+            unittest {
+                S[] values = [S(42)];
+                S* pointer = &values[0];
+                put(pointer, 99);
+                assert(observe(values) == 99);
+            }
+        });
+    }
+}
+
 // Array-element/nested-field composition follow-up:
 // composing the two slices above -- a nested struct field OF an
 // array-of-struct element, `&a[i].inner.x`. `addressOfExpression`'s

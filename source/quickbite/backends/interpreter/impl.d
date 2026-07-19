@@ -1676,6 +1676,11 @@ private struct Walker {
                 return readScalar(variable.type, cell.bytes);
             }
 
+            if (auto cell = variable in arrayCells)
+                if (auto current = variable in locals)
+                    if (current.isArray)
+                        return arrayValueFromCell(*current, *cell);
+
             // A class cell is likewise authoritative for a whole-value read,
             // not only for field access and pointer writeback. Reconstructing
             // here ensures return values and onward arguments cannot carry a
@@ -3826,7 +3831,8 @@ private struct Walker {
             return readScalar(variable.type, cell.bytes);
 
         if (auto cell = variable in arrayCells)
-            return arrayValueFromCell(*cell);
+            if (auto current = variable in locals)
+                return arrayValueFromCell(*current, *cell);
 
         if (auto current = variable in locals)
             return *current;
@@ -9172,6 +9178,36 @@ private struct Walker {
         return Value.nativeArrayValue(elements, cell.block.address);
     }
 
+    // Whole-value read-back for a promoted dynamic array. Struct elements
+    // overlay their authoritative scalar fields onto the current boxed
+    // element so unsupported fields retain their value. Scalars use the
+    // complete cell-only reconstruction above; static-array elements retain
+    // the boxed whole-value behavior until their pointer carrier can survive
+    // reconstruction.
+    private Value arrayValueFromCell(
+        in Value current,
+        ref NativeArray cell,
+    ) {
+        if (cell.elementType.isTypeSArray)
+            return current;
+
+        if (cell.elementType.isTypeStruct is null)
+            return arrayValueFromCell(cell);
+
+        Value[] elements;
+        elements.length = cell.length;
+        foreach (index; 0 .. cell.length) {
+            const element = index < current.length
+                ? current[index]
+                : defaultValue(cell.elementType);
+            // Mutable because structValueFromCell takes the view by ref.
+            auto elementCell = cell.structElement(index);
+            elements[index] = structValueFromCell(element, elementCell);
+        }
+
+        return Value.nativeArrayValue(elements, cell.block.address);
+    }
+
     private Value runAssocArraySlotAssignExpression(
         imported!"dmd.expression".Expression pointer,
         imported!"dmd.expression".Expression rhs,
@@ -9606,7 +9642,7 @@ private struct Walker {
                 cell.setLength(newLength);
             }
             writeArrayCellElement(*cell, newLength - 1, value);
-            locals[variable] = arrayValueFromCell(*cell);
+            locals[variable] = arrayValueFromCell(*current, *cell);
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
             return locals[variable];

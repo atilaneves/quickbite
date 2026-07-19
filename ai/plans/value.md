@@ -21,7 +21,8 @@ stand:
 - Guest-visible native cells are authoritative — read and write, across
   frames — for: address-taken scalar locals; dynamic-array elements
   (scalar, struct, and scalar-element static-array element types),
-  including slice and `foreach (ref ...)` aliasing; struct fields
+  including whole-value reads for scalar and struct elements, slice, and
+  `foreach (ref ...)` aliasing; struct fields
   (scalar, scalar-element static-array, one-level-nested struct); class
   fields of the same shapes plus class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
@@ -36,8 +37,9 @@ stand:
   under its own allocation id.
 - Still boxed: a local's authoritative storage itself
   (`locals[VarDeclaration]` remains `Value`-keyed; cells exist only for
-  the shapes above), whole-value reads of aliased structs and arrays outside
-  the promoted scalar-element dynamic-array shape, dynamic-array- and
+  the shapes above), whole-value reads of aliased structs,
+  scalar-element-static-array dynamic arrays, and arrays outside the promoted
+  shapes; dynamic-array- and
   class-typed fields, nesting deeper than one level, `ref`-parameter address
   identity outside repeated plain-variable aggregate arguments and repeated
   direct scalar struct fields, and the remaining `interpreter.md` §9.10
@@ -391,12 +393,13 @@ a checked fact; do not relearn them.
   actually-different same-length array through the same formal parameter
   would still wrongly reconcile — closing it needs storage-identity
   tracking through parameter binding.
-- Known, deliberate boundary: a whole-value read of an aliased array or
-  struct stays boxed-stale after a write reaches the same storage through
-  a different alias's cell; index/field reads through any alias, and
-  whole class-variable reads, are cell-fresh. Closing the array/struct
-  gap means reading those whole values from their cells too, not
-  re-deriving every aliased mirror on every write.
+- Known, deliberate boundary: a whole-value read of an aliased struct stays
+  boxed-stale after a write reaches the same storage through a different
+  alias's cell; field reads through any alias are cell-fresh. Whole reads of
+  promoted scalar- and struct-element dynamic arrays and classes reconstruct
+  their supported elements or fields from the cell. Closing the remaining
+  struct/static-array gaps means reading the whole value from its cell too,
+  not re-deriving every aliased mirror on every write.
 
 ### Unions
 
@@ -730,6 +733,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      The `gc_*` capacity hooks and `lastGCArrayUsedAllocation` are retired:
      native array pointers cross ordinary body-less FFI as their real address,
      and native slice returns retain that address for subsequent FFI calls.
+     Whole promoted scalar- and struct-element dynamic-array reads re-derive
+     their elements from the cell, so onward arguments no longer receive
+     stale boxed elements after an aliased write.
      Whole class-value reads now re-derive every supported
      field from the cell in one pass, so passing onward, printing, and
      equality no longer see a stale boxed snapshot.
