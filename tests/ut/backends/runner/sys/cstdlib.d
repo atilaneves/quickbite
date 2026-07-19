@@ -212,6 +212,29 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Pointers into one host GC allocation subtract using their native addresses.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host GC allocation"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "body-less GC.malloc is not yet available to the bytecode backend"),
+)) {
+    @("gc.malloc.nativePointerDifference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                import core.memory: GC;
+
+                auto values = cast(int*) GC.malloc(4 * int.sizeof);
+                auto tail = values + 3;
+
+                assert(tail - values == 3);
+                GC.free(values);
+            }
+        });
+    }
+}
+
 
 // Design-driving expected-failure tests for a future host FFI bridge.
 //

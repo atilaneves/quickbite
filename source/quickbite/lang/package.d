@@ -1118,6 +1118,20 @@ public struct Value {
     }
 
     public long pointerOffsetDifference(in Value other) const @safe pure {
+        if (isNativePointer && other.isNativePointer) {
+            import std.sumtype: match;
+
+            return data.match!(
+                (const(NativePointer) left) => other.data.match!(
+                    (const(NativePointer) right) =>
+                        cast(long) cast(size_t) left.pointer -
+                            cast(long) cast(size_t) right.pointer,
+                    (_) => assert(false),
+                ),
+                (_) => assert(false),
+            );
+        }
+
         if (!pointerSameAllocation(other))
             throw new Exception("Expected pointers into the same allocation.");
 

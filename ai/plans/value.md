@@ -251,6 +251,10 @@ a checked fact; do not relearn them.
   and applies the byte delta already scaled from the expression's static
   pointer type. Do not route it through the boxed pointer's allocation id or
   element snapshot.
+- Subtracting two native pointers computes their byte-address difference;
+  DMD's surrounding element-size division converts that to D's element
+  distance. The boxed carrier instead stores element offsets and must scale
+  its difference to bytes before the same division.
 
 ### Containers (`NativeBlock`/`NativeArray`/`NativeStruct`)
 
@@ -731,13 +735,13 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      the union residuals in Contracts (aggregate members beyond plain
      structs, promotion for unions with non-scalar members, aggregate
      default-init siblings).
-   - Native-pointer arithmetic: integer offsetting now walks raw native
-     buffers (including `GC.malloc` storage). Pointer difference, ordering,
-     and mixed native/boxed-pointer operations remain modelled only for the
-     interpreter's boxed pointer variant. These remaining operations block
-     retiring the `gc_*` array-capacity hooks: their `void[]`-returning shape
-     reaches real druntime code that subtracts pointers before the hooks can
-     become ordinary body-less FFI leaves.
+   - Native-pointer arithmetic: integer offsetting and pointer difference now
+     walk raw native buffers (including `GC.malloc` storage), satisfying the
+     arithmetic used by the real druntime capacity bodies. Next retire the
+     `gc_*` array-capacity hooks and `lastGCArrayUsedAllocation` through
+     ordinary body-less FFI. Ordering and mixed native/boxed-pointer
+     operations remain modelled only for the boxed carrier, but are not known
+     prerequisites for that slice.
    - Open questions from the design sketch: lifetime contracts for blocks
      borrowed from arbitrary C owners; what a guest pointer into a grown
      array should observe, and whether that deserves a diagnostic rather

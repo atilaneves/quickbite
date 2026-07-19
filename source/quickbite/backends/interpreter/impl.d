@@ -1869,15 +1869,23 @@ private struct Walker {
         const left = runExpression(add.e1);
         const right = runExpression(add.e2);
 
-        if (left.isPointer)
+        if (left.isPointer) {
+            const offset = left.isNativePointer
+                ? right.asLong
+                : pointerElementOffset(add.type, right.asLong);
             return left.pointerOffsetBy(
-                pointerElementOffset(add.type, right.asLong),
+                offset,
             );
+        }
 
-        if (right.isPointer)
+        if (right.isPointer) {
+            const offset = right.isNativePointer
+                ? left.asLong
+                : pointerElementOffset(add.type, left.asLong);
             return right.pointerOffsetBy(
-                pointerElementOffset(add.type, left.asLong),
+                offset,
             );
+        }
 
         return left + right;
     }
@@ -1888,16 +1896,23 @@ private struct Walker {
 
         // DMD lowers `p - q` to `(p - q) / elementSize`; return the byte
         // difference so the lowered division yields the element difference
-        if (left.isPointer && right.isPointer)
+        if (left.isPointer && right.isPointer) {
+            const scale = left.isNativePointer && right.isNativePointer
+                ? 1
+                : pointerElementSize(sub.e1.type);
             return Value(
-                left.pointerOffsetDifference(right) *
-                pointerElementSize(sub.e1.type),
+                left.pointerOffsetDifference(right) * scale,
             );
+        }
 
-        if (left.isPointer)
+        if (left.isPointer) {
+            const offset = left.isNativePointer
+                ? right.asLong
+                : pointerElementOffset(sub.type, right.asLong);
             return left.pointerOffsetBy(
-                -pointerElementOffset(sub.type, right.asLong),
+                -offset,
             );
+        }
 
         return left - right;
     }
