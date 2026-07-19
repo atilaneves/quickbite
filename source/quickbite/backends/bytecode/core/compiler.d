@@ -2075,6 +2075,8 @@ private struct Compiler {
                 return *element;
             if (auto element = tryDynamicArrayIndex(index))
                 return *element;
+            if (auto element = tryStringIndex(index))
+                return *element;
             return compileStaticArrayIndex(index);
         }
 
@@ -2352,6 +2354,37 @@ private struct Compiler {
             );
 
         return null;
+    }
+
+    // `s[i]` for a `string` (`immutable(char)[]`): the local holds the
+    // compact 8-byte {data offset, length} descriptor, not the full 16-byte
+    // {ptr, length} slice descriptor the indexing machinery reads through, so
+    // expand it with `Op.stringSliceToArray` first (the same expansion
+    // `compileStringPointer` uses for `s.ptr`) and index that. Null if
+    // `index` is not an access into a `string`-typed expression.
+    //
+    // Scoped to `char`-element strings only: every string literal is stored
+    // in the data segment UTF-8-encoded regardless of its declared element
+    // width (`quickbite.frontend.dmd.string_literals.stringChars`), so a
+    // `wstring`/`dstring` descriptor's length and byte layout do not match
+    // its `wchar`/`dchar` element stride; indexing one through this same
+    // expansion would silently read the wrong bytes rather than the
+    // element-width mismatch this falls back to today.
+    private Operand* tryStringIndex(IndexExp index) {
+        import dmd.astenums: TY;
+
+        if (!isStringType(index.e1.type))
+            return null;
+        if (index.e1.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
+            return null;
+
+        const string_ = compileExpression(index.e1);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(Op.stringSliceToArray, offset, string_.offset);
+        return loadDynamicArrayElement(
+            offset, dynamicArrayElementType(index.e1.type), index.e2,
+            index.type,
+        );
     }
 
     // The slice descriptor for an array-valued expression that is not a known

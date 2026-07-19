@@ -2515,3 +2515,29 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+/++
+    `s[i]` for a `string` local reads the code unit directly (without going
+    through `.ptr` first), matching the compiled-D oracle.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringIndexReadsElementAtRuntimeIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string s = "hello";
+                int index = seed(1);
+
+                assert(s[index] == 'e');
+                assert(s[0] == 'h');
+            }
+        });
+    }
+}
