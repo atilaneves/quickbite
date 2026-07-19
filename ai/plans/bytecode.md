@@ -361,11 +361,60 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   own: it turns this row's failure from a caught exception (tolerated as
   "failing as expected") into a process-terminating `SIGSEGV`, which would
   crash any `bin/ut --random` run that reaches this row. The two fixes need
-  to land together — void-IIFE inlining plus whatever in the dynamic-array
-  slice-descriptor path produces the bad pointer/length `copySlice` reads
-  (candidate suspect: `_data.arr = (cast(Unqual!T*) bi.base)[0 .. len]`,
-  a pointer-cast-to-slice expression assigned into a dynamic-array struct
-  field, immediately before the crashing `put`).
+  to land together — void-IIFE inlining plus whatever produces the bad
+  destination length `copySlice` reads.
+
+  Instrumenting the live descriptor bytes (temporarily; not landed) at the
+  crash site rules out the FFI-bridge {ptr, length}/{length, ptr} word-order
+  violation described above as the cause: both the destination and source
+  pointer words `copySlice` reads decode as ordinary, plausible 48-bit
+  user-space heap addresses in their expected position, never as a
+  length-sized quantity landing where a pointer should be or vice versa. The
+  corrupt half is specifically the *length* word, which reads as a small
+  (tens-of-thousands) integer with no plausible relationship to the true
+  element count (2, the digit count of the rendered `ulong`). A minimal
+  hand-rolled reproduction of `Appender`'s own `ensureAddable`/`put` shape
+  (a heap-allocated `Data* _data` struct holding a `size_t capacity` and a
+  `T[] arr` field, grown via `GC.qalloc` and `cast(T*) bi.base)[0 .. len]`,
+  then `bigData[len .. newlen] = items[]`) does *not* reproduce the crash on
+  its own — copySlice's descriptors are correct there. The crash needs the
+  real Phobos call shape, where `ensureAddable`'s growth path and
+  `put(Range)`'s `bigDataFun` (a nested named function, not the IIFE this
+  row's other fix targets, since it takes an argument) both read/write the
+  same conceptual `_data.arr` field across a real nested-function-call
+  boundary.
+
+  Instrumenting every `Op.pointerLoad16`/`Op.pointerStore16` (the load/store
+  that materialises or writes back a struct-pointer field's slice
+  descriptor) and `Op.sliceLength`/`Op.subSlice*` execution by frame offset
+  shows the mechanism: several sibling frame slots that each hold their own
+  materialised copy of `_data.arr`'s descriptor get a fresh
+  `Op.pointerLoad16` immediately before every read and correctly track the
+  field's value as it changes (0, then 1, then 2 elements). Exactly one
+  frame slot — read via `Op.sliceLength`/`Op.subSlice` to compute the
+  destination sub-slice for the second `put`'s element copy — is never
+  refreshed by any `Op.pointerLoad16` across the whole run; it still holds
+  whatever was written there earlier, so by the time the second `put` reads
+  it as a length, the value is stale in a way that has no relation to the
+  live struct field. This means one specific compiled access to `_data.arr`
+  (most likely inside `bigDataFun`, given the recent partial nested-function
+  `this`-capture work this backend already carries — see Closures below) is
+  not re-materialising its slice descriptor from the live heap struct on
+  every dynamic execution the way the other, structurally identical accesses
+  to the same field do.
+
+  This is diagnosed, not fixed: pinning down which compiled instruction
+  produces that one stale slot needs compile-time instrumentation (which AST
+  expression each frame offset in the compiled `ensureAddable`/`put(Range)`
+  bodies corresponds to), not just runtime value dumps, and any fix must not
+  regress the already-landed nested-function receiver work. Whoever picks up
+  this row next should add that compile-time instrumentation around
+  `dynamicArrayDescriptorOrNull`'s struct-pointer-field branch (compiler.d,
+  the "`p.field` through a heap struct pointer" case) for a `bigDataFun`-style
+  nested-function call, confirm whether it reuses a `DynamicArrayLocal`
+  computed before entering the nested call instead of materialising a fresh
+  one inside it, and fix that specific site rather than the general
+  {ptr, length} bridge-swap flip (ruled out above as this crash's cause).
 - Landing struct-by-value native returns exposed a latent cache bug in the
   shared FFI layer (`ffi/core.d`'s `callViaLibffi`): on a `cachedNativeCif`
   hit, the return buffer's size was read from the current call's freshly
