@@ -2569,3 +2569,90 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+/++
+    Plain reassignment of an already-declared `string` local from another
+    `string` local (`b = a;`) must copy the full slice descriptor. A `string`
+    local's slot holds a compact 8-byte {dataOffset, length} descriptor, which
+    the scalar type mapping reports as size 0, so a naive scalar-sized copy
+    would silently write nothing and leave `b` unchanged.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringLocalReassignmentFromVariableCopiesDescriptor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string greeting() {
+                return "hello";
+            }
+
+            unittest {
+                string a = greeting();
+                string b = "x";
+                b = a;
+
+                assert(b.length == 5);
+                assert(b[0] == 'h');
+            }
+        });
+    }
+}
+
+
+/++
+    Plain reassignment of an already-declared `string` local from a string
+    literal (`b = "hello";`) exercises the same reassignment path with a
+    literal right-hand side rather than a variable read.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringLocalReassignmentFromLiteralCopiesDescriptor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string placeholder(string value) {
+                return value;
+            }
+
+            unittest {
+                string b = placeholder("x");
+                b = "hello";
+
+                assert(b.length == 5);
+                assert(b[0] == 'h');
+            }
+        });
+    }
+}
+
+
+/++
+    Plain reassignment of an already-declared `string` local from a sub-slice
+    of another `string` local (`b = a[lo .. hi];`) exercises the same
+    reassignment path with a compact-descriptor sub-slice right-hand side.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringLocalReassignmentFromSubSliceCopiesDescriptor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string source() {
+                return "abcdef";
+            }
+
+            unittest {
+                string a = source();
+                string b = "x";
+                int lo = 1;
+                int hi = 3;
+                b = a[lo .. hi];
+
+                assert(b.length == 2);
+                assert(b[0] == 'b');
+            }
+        });
+    }
+}

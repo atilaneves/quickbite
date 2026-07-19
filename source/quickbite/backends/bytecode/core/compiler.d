@@ -7557,11 +7557,19 @@ private struct Compiler {
                 expressionChars(assign),
             ));
 
+        // A `string` local's slot holds the compact {dataOffset, length}
+        // descriptor, not a scalar; `scalarType` maps it to `void_`/size 0, so
+        // sizing the copy from `type` (as every other local does) would copy
+        // nothing. Copy the descriptor width instead, matching how a `string`
+        // declaration's own initializer copy is sized.
+        const copySize = isStringType(declaration.type)
+            ? stringSliceSize
+            : size(type);
         _code ~= Instruction(
             Op.copy,
             *slot,
             rhs.offset,
-            cast(ushort) size(type),
+            cast(ushort) copySize,
         );
         return Operand(*slot, type);
     }
