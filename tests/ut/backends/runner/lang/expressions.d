@@ -2497,6 +2497,32 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A plain ref class local denotes the source reference variable's storage,
+// including its address. SystemLinker is the oracle for the shared address
+// identity.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref class-local address identity"),
+)) {
+    @("pointer.classRefLocalPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            unittest {
+                C source = new C();
+                source.value = 42;
+                ref C alias_ = source;
+                C* pointer = &source;
+                assert(&alias_ == pointer);
+            }
+        });
+    }
+}
+
 // `this`-reached class aliasing: a METHOD mutating `this.x` must be visible to
 // another caller-side alias of the SAME object through the shared class
 // cell, exactly like the `combine(a, b)` cross-frame aliasing case above,

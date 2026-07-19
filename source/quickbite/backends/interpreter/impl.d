@@ -11484,21 +11484,28 @@ private struct Walker {
         );
         locals[variable] = value;
         registerClassAliasIfPlainVar(variable, initializer);
-        // A plain `ref S alias_ = source` denotes `source`'s storage, so share
-        // the existing struct-cell and local-pointer mechanisms rather than
-        // retain a boxed snapshot and distinct address under the alias
+        // A plain `ref` aggregate local denotes `source`'s storage, so share
+        // the existing aggregate-cell and local-pointer mechanisms rather
+        // than retain a boxed snapshot and distinct address under the alias
         // declaration's AST node.
-        if (isRefVariable(variable) && variable.type.toBasetype.isTypeStruct !is null) {
+        if (isRefVariable(variable)) {
             auto sourceVar = initializer.isVarExp;
             auto source = sourceVar is null
                 ? null
                 : sourceVar.var.isVarDeclaration;
             if (source !is null) {
-                promoteStructCell(source);
-                if (auto cell = source in structCells)
-                    structCells[variable] = *cell;
-                localPointerIds[variable] =
-                    localPointerValue(source).localPointerId;
+                const baseType = variable.type.toBasetype;
+                if (baseType.isTypeStruct !is null) {
+                    promoteStructCell(source);
+                    if (auto cell = source in structCells)
+                        structCells[variable] = *cell;
+                }
+                if (
+                    baseType.isTypeStruct !is null ||
+                    baseType.isTypeClass !is null
+                )
+                    localPointerIds[variable] =
+                        localPointerValue(source).localPointerId;
             }
         }
         uninitializedLocals.remove(variable);
