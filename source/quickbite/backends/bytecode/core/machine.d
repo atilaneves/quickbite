@@ -3037,6 +3037,11 @@ private final class BytecodeNativeMarshaller:
         const ty = type.toBasetype.ty;
         if (ty == TY.Tvoid)
             return direction == NativeMarshaller.Direction.fromNative;
+        // A by-value struct only crosses back out of a native call (the
+        // return value); the compiler emits no struct-by-value argument
+        // shape today.
+        if (ty == TY.Tstruct)
+            return direction == NativeMarshaller.Direction.fromNative;
         return ty == TY.Tbool || ty == TY.Tint32 || ty == TY.Tuns32 ||
             ty == TY.Tint64 || ty == TY.Tuns64 || ty == TY.Tfloat64 ||
             ty == TY.Tpointer || ty == TY.Tclass || ty == TY.Tarray;
@@ -3144,6 +3149,13 @@ private final class BytecodeNativeMarshaller:
         // handoff.
         if (type.toBasetype.ty == TY.Tarray)
             return null;
+
+        // A struct return's destination is already sized and aligned to the
+        // struct's own layout (`emitNativeCall`); libffi copies back exactly
+        // that many bytes for a struct return, unlike a narrow scalar return,
+        // which needs the padded `ffi_arg`-wide buffer below.
+        if (type.toBasetype.ty == TY.Tstruct)
+            return &_stack[_destination];
 
         if (nativeResultSize(type) < ffi_arg.sizeof)
             return null;

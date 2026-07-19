@@ -9197,7 +9197,8 @@ private struct Compiler {
              returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
              returnTy != TY.Tuns64 &&
              returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
-             returnTy != TY.Tpointer && returnTy != TY.Tarray) ||
+             returnTy != TY.Tpointer && returnTy != TY.Tarray &&
+             returnTy != TY.Tstruct) ||
             call.arguments is null || call.arguments.length == 0)
             return null;
 
@@ -9368,12 +9369,22 @@ private struct Compiler {
         // scalar tag; it is a 16-byte {ptr, length} slice descriptor, the same
         // shape every other array-typed frame slot uses.
         const isArrayReturn = returnType.toBasetype.ty == TY.Tarray;
-        const returnScalar = isArrayReturn
+        // A struct return (e.g. `GC.qalloc`'s `BlkInfo`, libc's `div_t`) is an
+        // inline block sized and aligned to the struct's own layout, the same
+        // shape every other struct-by-value result uses
+        // (`structBaseOffsetOrMaterialise`).
+        const isStructReturn = returnType.toBasetype.ty == TY.Tstruct;
+        const returnScalar = isArrayReturn || isStructReturn
             ? ScalarType.void_
             : scalarType(returnType.toBasetype);
-        const destination = isArrayReturn
-            ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
-            : allocate(returnScalar);
+        const destination = isStructReturn
+            ? allocateBytes(
+                cast(uint) staticArraySize(returnType),
+                staticArrayAlign(returnType),
+            )
+            : isArrayReturn
+                ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
+                : allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
         _program.nativeCalls ~=
             NativeCall(function_, argumentTypes, outParameterOffsets.dup);
