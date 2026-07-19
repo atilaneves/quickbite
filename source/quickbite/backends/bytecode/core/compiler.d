@@ -6348,6 +6348,10 @@ private struct Compiler {
             return emitBinary(
                 Op.divUnsignedInt8, lhs, rhs, ScalarType.ulong_,
             );
+        if (lhs.type == ScalarType.uint_ && rhs.type == ScalarType.uint_)
+            return emitBinary(
+                Op.divUnsignedInt4, lhs, rhs, ScalarType.uint_,
+            );
 
         return compileIntBinaryResult(
             divide,
@@ -6366,6 +6370,10 @@ private struct Compiler {
             return emitBinary(
                 Op.modUnsignedInt8, lhs, rhs, ScalarType.ulong_,
             );
+        if (lhs.type == ScalarType.uint_ && rhs.type == ScalarType.uint_)
+            return emitBinary(
+                Op.modUnsignedInt4, lhs, rhs, ScalarType.uint_,
+            );
 
         return compileIntBinaryResult(
             modulo,
@@ -6381,11 +6389,11 @@ private struct Compiler {
     // compound-assign, which reuse one op4/op8 pair regardless of signedness
     // because two's-complement addition and multiplication don't care about
     // sign, division and modulo need the lvalue's own signedness to pick the
-    // opcode: an 8-byte unsigned lvalue uses the dedicated unsigned opcodes,
-    // matching the choice `compileDivideExpression`/`compileModuloExpression`
-    // make for the binary form. There is no signed 8-byte modulo opcode, so
-    // that combination is reported as unsupported rather than emitting a
-    // 4-byte modulo instruction into an 8-byte slot.
+    // opcode: a 4- or 8-byte unsigned lvalue uses the dedicated unsigned
+    // opcodes, matching the choice `compileDivideExpression`/
+    // `compileModuloExpression` make for the binary form. There is no signed
+    // 8-byte modulo opcode, so that combination is reported as unsupported
+    // rather than emitting a 4-byte modulo instruction into an 8-byte slot.
     private Operand compileDivOrModCompoundAssign(
         BinExp assign,
         in bool isModulo,
@@ -6419,7 +6427,9 @@ private struct Compiler {
 
         const operationType = isEightByteInteger(lvalueType)
             ? lvalueType
-            : ScalarType.int_;
+            : (lvalueType == ScalarType.uint_
+                ? ScalarType.uint_
+                : ScalarType.int_);
 
         Op op;
         if (operationType == ScalarType.ulong_)
@@ -6431,7 +6441,9 @@ private struct Compiler {
                     expressionChars(assign),
                 ));
             op = Op.divInt8;
-        } else
+        } else if (operationType == ScalarType.uint_)
+            op = isModulo ? Op.modUnsignedInt4 : Op.divUnsignedInt4;
+        else
             op = isModulo ? Op.modInt4 : Op.divInt4;
 
         const lhs = integerOperationOperand(

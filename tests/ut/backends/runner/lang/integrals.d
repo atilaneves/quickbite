@@ -232,3 +232,111 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         );
     }
 }
+
+static foreach (backend; Matrix!()) {
+    @("unsignedDivisionIsUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint dividend() {
+                return 4_000_000_000u;
+            }
+
+            int divisorAsInt() {
+                return 3;
+            }
+
+            uint divisorAsUint() {
+                return 3u;
+            }
+
+            unittest {
+                uint a = dividend;
+
+                // The int operand converts to uint before dividing, so the
+                // result is unsigned division, not division of a's bit
+                // pattern reinterpreted as a negative int.
+                int b = divisorAsInt;
+                assert(a / b == 1_333_333_333u);
+
+                uint c = divisorAsUint;
+                assert(a / c == 1_333_333_333u);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("unsignedModuloIsUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint dividend() {
+                return 4_000_000_000u;
+            }
+
+            int divisorAsInt() {
+                return 3;
+            }
+
+            uint divisorAsUint() {
+                return 3u;
+            }
+
+            unittest {
+                uint a = dividend;
+
+                // The int operand converts to uint before taking the
+                // remainder, so the result is unsigned modulo, not modulo of
+                // a's bit pattern reinterpreted as a negative int.
+                int b = divisorAsInt;
+                assert(a % b == 1u);
+
+                uint c = divisorAsUint;
+                assert(a % c == 1u);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("unsignedCompoundDivisionIsUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint dividend() {
+                return 4_000_000_000u;
+            }
+
+            unittest {
+                uint a = dividend;
+
+                // `/=` keeps the lvalue's own unsigned type for the
+                // division, not a signed reinterpretation of its bits.
+                a /= 3;
+                assert(a == 1_333_333_333u);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("unsignedCompoundModuloIsUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint dividend() {
+                return 4_000_000_000u;
+            }
+
+            unittest {
+                uint a = dividend;
+
+                // `%=` keeps the lvalue's own unsigned type for the
+                // remainder, not a signed reinterpretation of its bits.
+                a %= 3;
+                assert(a == 1u);
+            }
+        });
+    }
+}

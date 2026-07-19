@@ -796,6 +796,28 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case divUnsignedInt4:
+                const ubyte[uint.sizeof] unsignedQuotient4 = scalarBytes(
+                    scalarValue!uint(stack, base + instruction.b) /
+                    scalarValue!uint(stack, base + instruction.c),
+                );
+                stack[
+                    base + instruction.a .. base + instruction.a + uint.sizeof
+                ] = unsignedQuotient4;
+                ++ip;
+                break;
+
+            case modUnsignedInt4:
+                const ubyte[uint.sizeof] unsignedRemainder4 = scalarBytes(
+                    scalarValue!uint(stack, base + instruction.b) %
+                    scalarValue!uint(stack, base + instruction.c),
+                );
+                stack[
+                    base + instruction.a .. base + instruction.a + uint.sizeof
+                ] = unsignedRemainder4;
+                ++ip;
+                break;
+
             case shlInt4:
                 const ubyte[int.sizeof] leftShifted = scalarBytes(
                     scalarValue!int(stack, base + instruction.b) <<
