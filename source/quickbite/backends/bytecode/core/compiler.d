@@ -3578,6 +3578,23 @@ private struct Compiler {
             return;
         }
 
+        // A bare `U u;` for a union defaults from the FIRST declared member's
+        // own default value, reinterpreted as every other member's overlapping
+        // bytes, not from each field's independent default the way a struct's
+        // disjoint fields do. DMD's own `defaultInitLiteral` already encodes
+        // this rule (it nulls out every field beyond the first member's byte
+        // extent), so reuse its literal instead of re-deriving the rule here.
+        if (source.isVarExp !is null && declaration.isUnionDeclaration !is null) {
+            import dmd.typesem: defaultInitLiteral;
+
+            auto literal = variable.type.toBasetype.isTypeStruct
+                .defaultInitLiteral(variable.loc).isStructLiteralExp;
+            if (literal !is null) {
+                compileStructLiteralInto(offset, literal);
+                return;
+            }
+        }
+
         if (source.isVarExp !is null &&
             compileDefaultStructFields(offset, declaration))
             return;
@@ -6419,9 +6436,8 @@ private struct Compiler {
                 rhs = extend(rhs, ScalarType.int_);
             const actualOp = op == Op.shrInt4
                 ? (isSigned(lhs.type) ? Op.shrInt8 : Op.ushrInt8)
-                : op == Op.ushrInt4 ? Op.ushrInt8 : Op.shlInt4;
-            if (actualOp != Op.shlInt4)
-                return emitBinary(actualOp, lhs, rhs, scalarType(shift.type));
+                : op == Op.ushrInt4 ? Op.ushrInt8 : Op.shlInt8;
+            return emitBinary(actualOp, lhs, rhs, scalarType(shift.type));
         }
         const actualOp = op == Op.shrInt4 && !isSigned(lhs.type)
             ? Op.ushrInt4
@@ -7945,6 +7961,18 @@ private struct Compiler {
             auto descriptorResult = new Operand;
             *descriptorResult = Operand(field.offset, ScalarType.void_);
             return descriptorResult;
+        }
+
+        // A static-array field `T[N] a` (`u.a = [x, y]`) writes each element
+        // inline at `field.offset + index * elementSize`, the same as a
+        // static-array local's own whole-array literal assignment.
+        if (field.type.toBasetype.ty == TY.Tsarray) {
+            if (auto literal = rhs.isArrayLiteralExp) {
+                compileStaticArrayLiteral(field.offset, field.type, literal);
+                auto arrayResult = new Operand;
+                *arrayResult = Operand(field.offset, ScalarType.void_);
+                return arrayResult;
+            }
         }
 
         // A pointer field `T* p` (`tracker.postblits = &count`) holds an 8-byte

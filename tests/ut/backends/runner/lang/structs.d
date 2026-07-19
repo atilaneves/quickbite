@@ -2084,8 +2084,6 @@ static foreach (backend; Matrix!(
         "real DMD's own CTFE engine refuses this exact read with " ~
         "\"reinterpretation through overlapped field 'i' is not allowed " ~
         "in CTFE\""),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported struct initializer in bytecode core: u\""),
 )) {
     @("union.untouchedSiblingDefaultsFromFirstMemberBits." ~
         backend.stringof)
@@ -2162,9 +2160,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses this exact read with " ~
         "\"cannot read uninitialized variable 'a' in CTFE\""),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported left shift in bytecode core: " ~
-        "cast(long)high << 32\""),
 )) {
     @("union.writeThroughScalarMemberIsVisibleThroughStructMember." ~
         backend.stringof)
@@ -2197,9 +2192,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses this exact read with " ~
         "\"'u.a[0]' is used before initialized\""),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported left shift in bytecode core: " ~
-        "cast(long)high << 32\""),
 )) {
     @("union.writeThroughScalarMemberIsVisibleThroughArrayMember." ~
         backend.stringof)
@@ -2234,8 +2226,6 @@ static foreach (backend; Matrix!(
         "real DMD's own CTFE engine refuses this exact read with " ~
         "\"reinterpretation through overlapped field 'l' is not allowed " ~
         "in CTFE\""),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported type in bytecode core: int[2]\""),
 )) {
     @("union.writeThroughArrayMemberIsVisibleThroughScalarMember." ~
         backend.stringof)
@@ -2274,8 +2264,6 @@ static foreach (backend; Matrix!(
         "real DMD's own CTFE engine refuses this overlapped-field read " ~
         "exactly as the other write-then-read-a-sibling union fixtures " ~
         "above already found"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported type in bytecode core: int[2]\""),
 )) {
     @("union.writeThroughScalarMemberPreservesWiderArraySiblingTail." ~
         backend.stringof)
@@ -2326,8 +2314,6 @@ static foreach (backend; Matrix!(
         "same \"reinterpretation through overlapped field 'i' is not " ~
         "allowed in CTFE\" diagnostic as the scalar-first-member " ~
         "sibling fixture"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported struct initializer in bytecode core: u\""),
 )) {
     @("union.untouchedSiblingDefaultsFromStructFirstMemberBits." ~
         backend.stringof)

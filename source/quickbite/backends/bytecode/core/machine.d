@@ -826,6 +826,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case shlInt8:
+                const ubyte[long.sizeof] leftShifted8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) <<
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = leftShifted8;
+                ++ip;
+                break;
+
             case shrInt8:
                 const ubyte[long.sizeof] rightShifted = scalarBytes(
                     scalarValue!long(stack, base + instruction.b) >>
