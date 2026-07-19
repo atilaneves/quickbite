@@ -4212,14 +4212,6 @@ private struct Walker {
             return runMemcpyCall(call);
         }
 
-        if (call.f !is null && isEmplaceRef(call.f)) {
-            import quickbite.backends.interpreter.interception_guard:
-                enforceInterceptionPolicy;
-
-            enforceInterceptionPolicy(call.f, "isEmplaceRef");
-            return runEmplaceRefCall(call);
-        }
-
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
                 GCArrayHook, tryGCArrayHook;
@@ -4592,15 +4584,6 @@ private struct Walker {
             return Value.void_;
 
         return runExpression(argument);
-    }
-
-    private Value runEmplaceRefCall(imported!"dmd.expression".CallExp call) {
-        if (call.arguments is null || call.arguments.length != 2)
-            throw new Exception("Unsupported eval call.");
-
-        const value = runExpression((*call.arguments)[1]);
-        writeLocation((*call.arguments)[0], value);
-        return Value.void_;
     }
 
     private Value runMemcpyCall(imported!"dmd.expression".CallExp call) {
@@ -11955,15 +11938,6 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
 
     return function_.toChars.fromStringz.idup;
 }
-
-private bool isEmplaceRef(imported!"dmd.func".FuncDeclaration function_) {
-    import std.conv: text;
-    import std.string: startsWith;
-
-    return text(function_.toPrettyChars)
-        .startsWith("core.internal.lifetime.emplaceRef!(");
-}
-
 
 private struct SliceAlias {
     public imported!"dmd.declaration".VarDeclaration source;

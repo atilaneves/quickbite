@@ -111,13 +111,6 @@ private bool isExemptInterception(
 
     const prettyName = text(function_.toPrettyChars);
 
-    // `core.internal.lifetime.emplaceRef` has D source. Tracked in §9.10 for
-    // deletion (`runEmplaceRefCall`/`isEmplaceRef`): retire once the value
-    // model sees cast-aliasing, or native layout lands, and the real body
-    // can execute.
-    if (prettyName.startsWith("core.internal.lifetime.emplaceRef!("))
-        return true;
-
     // `std.conv.text`: the one pre-existing, deliberate exemption named in
     // §8 (perf scaffolding).
     if (isStdConvTextName(function_))

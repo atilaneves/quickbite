@@ -671,13 +671,16 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      capacity helpers ordinary body-less FFI over real addressable
      blocks, and reduces `runMemcpyCall` to the plain FFI or intrinsic
      byte copy once both endpoints are native ranges. Struct-native
-     storage retires `runEmplaceRefCall`/`isEmplaceRef`, by letting the
-     real `core.internal.lifetime.emplaceRef` body write through the
-     destination address, and retires `reinterpretLocalPointerLoad`, by
-     making `*cast(T*) &local` a load of the same bytes at a different
-     static type rather than a name match. Class-object storage retires
-     the need for class-argument writeback. Each deletion lands with its
-     §9.10 ratchet fixtures green through the real path.
+     storage has retired `runEmplaceRefCall`/`isEmplaceRef`: the real
+     `core.internal.lifetime.emplaceRef` body writes through the
+     destination address, including default initialization and constructor
+     forwarding. Postblit execution remains an interpreter expression-
+     execution gap, not a reason to restore name interception. Struct-native
+     storage also retires `reinterpretLocalPointerLoad`, by making
+     `*cast(T*) &local` a load of the same bytes at a different static type
+     rather than a name match. Class-object storage retires the need for
+     class-argument writeback. Each deletion lands with its §9.10 ratchet
+     fixtures green through the real path.
 
    **Current frontier** — what remains, given the Status section's
    covered shapes:
@@ -694,11 +697,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      `reinterpretLocalPointerLoad` shim. Pointer, `real`, widening, and
      other aggregate reinterprets remain unsupported; a non-fitting write
      through a promoted cell fails loudly rather than silently miswriting.
-     The `gc_*` capacity hooks, `lastGCArrayUsedAllocation`,
-     `runMemcpyCall`, and `runEmplaceRefCall`/`isEmplaceRef` still need
-     retirement. Whole class-value reads now re-derive every supported
-     field from the cell in one pass, so passing onward, printing, and
-     equality no longer see a stale boxed snapshot.
+     The `gc_*` capacity hooks, `lastGCArrayUsedAllocation`, and
+     `runMemcpyCall` still need retirement. Whole class-value reads now
+     re-derive every supported field from the cell in one pass, so passing
+     onward, printing, and equality no longer see a stale boxed snapshot.
    - Structural gaps needing a design, not surgery: per-activation cell
      keying (all cell maps key on `VarDeclaration`, so recursive
      activations of the same function share one cell — a real
