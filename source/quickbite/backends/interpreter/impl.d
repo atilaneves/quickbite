@@ -2125,15 +2125,17 @@ private struct Walker {
         auto var = dot.e1.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable !is null) {
+            // Mutable because DMD declarations do not expose a const API.
+            auto storageVariable = refLocalStorageVariable(variable);
             const fieldIndex = receiverClassType(dot.e1) !is null
                 ? classFieldIndex(dot)
                 : structFieldIndex(dot);
-            if (auto forReceiver = variable in fieldAddressAllocations)
+            if (auto forReceiver = storageVariable in fieldAddressAllocations)
                 if (auto id = fieldIndex in *forReceiver)
                     return *id;
 
             const id = ++allocationCount;
-            fieldAddressAllocations[variable][fieldIndex] = id;
+            fieldAddressAllocations[storageVariable][fieldIndex] = id;
             fieldSnapshotAllocationIds[id] = true;
             return id;
         }
@@ -3147,10 +3149,12 @@ private struct Walker {
             auto source = var is null ? null : var.var.isVarDeclaration;
             if (source is null)
                 continue;
+            // Mutable because DMD declarations do not expose a const API.
+            auto storageSource = child.refLocalStorageVariable(source);
 
-            const isClass = source.type.toBasetype.isTypeClass !is null;
+            const isClass = storageSource.type.toBasetype.isTypeClass !is null;
             if (isClass) {
-                auto cell = source in child.classCells;
+                auto cell = storageSource in child.classCells;
                 if (cell is null)
                     continue;
 
@@ -3158,10 +3162,10 @@ private struct Walker {
                 // Mutable because layout.fieldByteOffset follows DMD's
                 // mutable VarDeclaration API.
                 auto field = classFields(
-                    source.type.toBasetype.isTypeClass.sym,
+                    storageSource.type.toBasetype.isTypeClass.sym,
                 )[fieldIndex];
                 child.structFieldAliases[parameter] = StructFieldAlias(
-                    source,
+                    storageSource,
                     fieldIndex,
                     true,
                 );
@@ -3172,13 +3176,13 @@ private struct Walker {
                 continue;
             }
 
-            auto cell = source in child.structCells;
+            auto cell = storageSource in child.structCells;
             if (cell is null)
                 continue;
 
             const fieldIndex = structFieldIndex(dot);
             child.structFieldAliases[parameter] = StructFieldAlias(
-                source,
+                storageSource,
                 fieldIndex,
             );
             child.scalarCells[parameter] = cell.block.subRange(
@@ -3208,17 +3212,18 @@ private struct Walker {
             auto dot = argument is null ? null : argument.isDotVarExp;
             auto var = dot is null ? null : dot.e1.isVarExp;
             auto source = var is null ? null : var.var.isVarDeclaration;
+            if (source is null)
+                continue;
+            // Mutable because DMD declarations do not expose a const API.
+            auto storageSource = refLocalStorageVariable(source);
             if (
-                source is null ||
-                (
-                    source.type.toBasetype.isTypeStruct is null &&
-                    source.type.toBasetype.isTypeClass is null
-                )
+                storageSource.type.toBasetype.isTypeStruct is null &&
+                storageSource.type.toBasetype.isTypeClass is null
             )
                 continue;
 
             const id = fieldSnapshotAllocationId(dot);
-            if (source.type.toBasetype.isTypeClass !is null)
+            if (storageSource.type.toBasetype.isTypeClass !is null)
                 promoteClassFieldCell(dot, id);
             else
                 promoteStructFieldCell(dot, id);

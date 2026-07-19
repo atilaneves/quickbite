@@ -2400,6 +2400,36 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Direct fields reached through a source struct and its plain ref alias denote
+// one storage location when passed by ref.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve aliased struct-field ref-argument identity"),
+)) {
+    @("structField.aliasedRefArgumentsPreserveAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            void verify(ref int first, ref int second) {
+                assert(&first == &second);
+                first = 99;
+                assert(second == 99);
+            }
+
+            unittest {
+                S source = S(42);
+                ref S alias_ = source;
+                verify(source.value, alias_.value);
+                assert(source.value == 99);
+            }
+        });
+    }
+}
+
 // Two ref parameters bound from the same direct class field denote one
 // storage location, just like the corresponding direct struct-field case.
 static foreach (backend; Matrix!(

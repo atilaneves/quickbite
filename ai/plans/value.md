@@ -31,12 +31,13 @@ stand:
   scalar-field pointers that survive a reference rebind, including direct
   scalar-field `ref` locals with the same address identity; plain `ref` class
   locals with source/alias address identity and assignment through the alias;
-  direct scalar aggregate fields passed by `ref`, including repeated-argument
-  address identity; plain `ref` struct locals, including whole-value reads
-  through the alias and source/alias address identity; and plain `ref` static
-  array locals with source/alias address identity, element addresses and
-  writes through the alias, plus whole-value assignment through an alias when
-  the source has a promoted nested-array cell;
+  direct scalar aggregate fields passed by `ref`, including address identity
+  across repeated arguments and a struct source/ref-alias pair; plain `ref`
+  struct locals, including whole-value reads through the alias and source/alias
+  address identity; and plain `ref` static array locals with source/alias
+  address identity, element addresses and writes through the alias, plus
+  whole-value assignment through an alias when the source has a promoted
+  nested-array cell;
   and union member overlap, including default-init reinterpretation.
 - Invalidation is detach-on-rebind: a rebind drops the variable's cell and
   pointer-id memo; only a same-storage mutation refreshes that binding in
@@ -47,9 +48,9 @@ stand:
   the shapes above), whole-value reads of aliased structs and arrays outside
   the promoted shapes; dynamic-array- and
   class-typed fields, nesting deeper than one level, `ref`-parameter address
-  identity outside repeated plain-variable aggregate arguments and repeated
-  direct scalar aggregate fields, and the remaining `interpreter.md` §9.10
-  shims.
+  identity outside repeated plain-variable aggregate arguments and direct
+  scalar aggregate fields reached repeatedly or through a struct source/ref
+  alias pair, and the remaining `interpreter.md` §9.10 shims.
 
 ## Audit findings (June 2026)
 
@@ -349,7 +350,8 @@ a checked fact; do not relearn them.
   aggregate parameter addresses diverge.
 - A direct scalar aggregate field passed by `ref` reuses the caller's memoized
   field pointer and aliases each parameter's scalar cell to that field's
-  subrange. Repeating a struct or class field must therefore preserve address
+  subrange. Repeating a struct or class field, or reaching a struct field
+  through its source and a plain `ref` alias, must therefore preserve address
   identity and mutation authority without a separate field-path cell family.
 - A direct scalar aggregate-field `ref` local uses the same field-alias
   mechanism for both struct and class receivers. When the field already has
@@ -770,8 +772,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      pointers (nested-struct and static-array field pointers still follow
      the variable slot after a reference rebind); and `ref`-parameter address
      identity outside repeated plain-variable `ref` aggregate arguments
-     (structs, classes, and static arrays) and repeated direct scalar aggregate
-     fields, which share mutation authority and direct parameter addresses.
+     (structs, classes, and static arrays) and direct scalar aggregate fields
+     reached repeatedly or through a struct source/ref alias, which share
+     mutation authority and direct parameter addresses.
      Non-plain-variable aggregate arguments
      remain boxed copies plus end-of-call writeback.
    - Field-path generalization: nesting deeper than one level has no
