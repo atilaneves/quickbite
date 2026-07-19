@@ -247,6 +247,10 @@ a checked fact; do not relearn them.
   rules.
 - `native_scalar` deliberately excludes `real` (`Tfloat80`): its 80-bit
   padded layout is host- and ABI-specific, not a portable native scalar.
+- Integer offsetting of a native pointer preserves the native-pointer carrier
+  and applies the byte delta already scaled from the expression's static
+  pointer type. Do not route it through the boxed pointer's allocation id or
+  element snapshot.
 
 ### Containers (`NativeBlock`/`NativeArray`/`NativeStruct`)
 
@@ -727,16 +731,13 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      the union residuals in Contracts (aggregate members beyond plain
      structs, promotion for unions with non-scalar members, aggregate
      default-init siblings).
-   - Native-pointer arithmetic: the design sketch's "pointers become real
-     addresses into that storage" is unmet for pointers that already are
-     native. Offsetting a native pointer by an integer is refused
-     outright, so interpreted code that walks a raw native buffer (an
-     FFI-returned pointer, `GC.malloc`/`pureMalloc` storage) cannot index
-     it; only the interpreter's own boxed pointer variant supports
-     arithmetic. This blocks retiring the `gc_*` array-capacity hooks:
-     their `void[]`-returning shape reaches real druntime code that does
-     native-pointer arithmetic, so the hooks cannot become ordinary
-     body-less FFI leaves until this is modelled.
+   - Native-pointer arithmetic: integer offsetting now walks raw native
+     buffers (including `GC.malloc` storage). Pointer difference, ordering,
+     and mixed native/boxed-pointer operations remain modelled only for the
+     interpreter's boxed pointer variant. These remaining operations block
+     retiring the `gc_*` array-capacity hooks: their `void[]`-returning shape
+     reaches real druntime code that subtracts pointers before the hooks can
+     become ordinary body-less FFI leaves.
    - Open questions from the design sketch: lifetime contracts for blocks
      borrowed from arbitrary C owners; what a guest pointer into a grown
      array should observe, and whether that deserves a diagnostic rather

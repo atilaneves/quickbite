@@ -1102,6 +1102,9 @@ public struct Value {
                 pointer.allocation,
                 pointer.offset + delta,
             )),
+            (const(NativePointer) pointer) => Value(NativePointer(
+                cast(void*) (cast(size_t) pointer.pointer + delta),
+            )),
             (_) {
                 throw new Exception("Expected pointer.");
                 return Value.void_;

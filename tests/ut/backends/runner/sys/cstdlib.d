@@ -184,6 +184,34 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A pointer returned by the host GC remains directly addressable after the
+// interpreter applies D's statically-scaled integer pointer arithmetic.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host GC allocation"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "body-less GC.malloc is not yet available to the bytecode backend"),
+)) {
+    @("gc.malloc.nativePointerArithmetic." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                import core.memory: GC;
+
+                auto bytes = cast(ubyte*) GC.malloc(4);
+                auto second = bytes + 1;
+                *second = 42;
+                auto first = second - 1;
+                *first = 41;
+
+                assert(bytes[0] == 41);
+                assert(bytes[1] == 42);
+                GC.free(bytes);
+            }
+        });
+    }
+}
+
 
 // Design-driving expected-failure tests for a future host FFI bridge.
 //
