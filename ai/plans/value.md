@@ -669,8 +669,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      Array-native storage retires the `gc_*` capacity hook stubs and the
      `lastGCArrayUsedAllocation` side channel, by making druntime's
      capacity helpers ordinary body-less FFI over real addressable
-     blocks, and reduces `runMemcpyCall` to the plain FFI or intrinsic
-     byte copy once both endpoints are native ranges. Struct-native
+     blocks. `memcpy` already uses ordinary body-less FFI: a local pointer
+     whose target has an authoritative scalar cell crosses the seam as
+     that cell's real address, while boxed array pointers retain the FFI
+     marshaller's buffer-and-writeback path. Struct-native
      storage has retired `runEmplaceRefCall`/`isEmplaceRef`: the real
      `core.internal.lifetime.emplaceRef` body writes through the
      destination address, including default initialization and constructor
@@ -697,10 +699,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      `reinterpretLocalPointerLoad` shim. Pointer, `real`, widening, and
      other aggregate reinterprets remain unsupported; a non-fitting write
      through a promoted cell fails loudly rather than silently miswriting.
-     The `gc_*` capacity hooks, `lastGCArrayUsedAllocation`, and
-     `runMemcpyCall` still need retirement. Whole class-value reads now
-     re-derive every supported field from the cell in one pass, so passing
-     onward, printing, and equality no longer see a stale boxed snapshot.
+     The `gc_*` capacity hooks and `lastGCArrayUsedAllocation` still need
+     retirement. Whole class-value reads now re-derive every supported
+     field from the cell in one pass, so passing onward, printing, and
+     equality no longer see a stale boxed snapshot.
    - Structural gaps needing a design, not surgery: per-activation cell
      keying (all cell maps key on `VarDeclaration`, so recursive
      activations of the same function share one cell — a real

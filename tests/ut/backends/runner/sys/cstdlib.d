@@ -389,6 +389,30 @@ static foreach (backend; Matrix!(
 }
 
 
+enum memcpyPartialScalarSource = q{
+    unittest {
+        import core.stdc.string: memcpy;
+
+        uint source = 0xffff_ffff;
+        uint destination;
+
+        memcpy(&destination, &source, 1);
+
+        assert(destination != 0);
+    }
+};
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
+)) {
+    @("memcpy.partialScalarCopiesByteCount." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(memcpyPartialScalarSource);
+    }
+}
+
+
 // Distilled from cerealed's ScopeBuffer.put, which grows via realloc and
 // slice-assigns through the char* field.
 enum reallocSliceAssignSource = q{

@@ -4204,14 +4204,6 @@ private struct Walker {
             return runArrayOpAddAssignCall(call);
         }
 
-        if (call.f !is null && functionName(call.f) == "memcpy") {
-            import quickbite.backends.interpreter.interception_guard:
-                enforceInterceptionPolicy;
-
-            enforceInterceptionPolicy(call.f, "memcpy");
-            return runMemcpyCall(call);
-        }
-
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
                 GCArrayHook, tryGCArrayHook;
@@ -4470,7 +4462,7 @@ private struct Walker {
                         !call.f.needThis &&
                         tryCallNative(
                             call.f,
-                            arguments,
+                            nativeCellPointerArguments(arguments),
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
                             nativeOutParameterInputValues(argumentExpressions),
@@ -4568,6 +4560,29 @@ private struct Walker {
         throw new Exception("Unsupported eval call.");
     }
 
+    // A local pointer whose target has native authoritative storage can cross
+    // the FFI seam as that storage's real address. Other local-pointer shapes
+    // remain boxed and retain the existing unsupported diagnostic.
+    private Value[] nativeCellPointerArguments(in Value[] arguments) {
+        auto result = arguments.dup; // Replaces eligible pointer values below.
+        foreach (ref argument; result) {
+            if (!argument.isLocalPointer)
+                continue;
+
+            // Mutable lookup preserves the declaration's class qualifier for
+            // use as an associative-array key below.
+            auto variable = argument.localPointerId in localPointers;
+            if (variable is null)
+                continue;
+
+            // Mutable because the native callee may write through this address.
+            auto cell = *variable in scalarCells;
+            if (cell !is null)
+                argument = Value.nativePointerValue(cell.address);
+        }
+        return result;
+    }
+
     // A `ref` argument aliases the caller's storage; compiled D binds the
     // address without reading through it. Evaluating it like an ordinary
     // rvalue throws when the caller's local is still `= void` (cerealed's
@@ -4584,53 +4599,6 @@ private struct Walker {
             return Value.void_;
 
         return runExpression(argument);
-    }
-
-    private Value runMemcpyCall(imported!"dmd.expression".CallExp call) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-
-        if (call.arguments is null || call.arguments.length < 2)
-            throw new Exception("Unsupported eval call.");
-
-        auto destinationExpression = (*call.arguments)[0];
-        auto sourceExpression = (*call.arguments)[1];
-        const destination = runExpression(destinationExpression);
-        const sourcePointer = runExpression(sourceExpression);
-        auto sourcePointerType = memcpyElementPointerType(sourceExpression);
-        const elementSize = typeByteSize(
-            sourcePointerType.toBasetype.nextOf.toBasetype,
-        );
-        const count = call.arguments.length < 3
-            ? sourcePointer.pointerLength
-            : cast(size_t) runExpression((*call.arguments)[2]).asLong / elementSize;
-
-        if (destination.isNativePointer) {
-            foreach (index; 0 .. count) {
-                const source = readPointerElement(
-                    sourcePointerType,
-                    sourcePointer,
-                    index,
-                );
-                storeNativePointerElement(
-                    sourcePointerType,
-                    destination,
-                    index,
-                    source,
-                );
-            }
-            return destination;
-        }
-
-        Value[] source;
-        foreach (index; 0 .. count)
-            source ~= readPointerElement(sourcePointerType, sourcePointer, index);
-
-        if (source.length != 0 && source[0].isStruct) {
-            writePointerElements(destinationExpression, destination, source);
-            return destination;
-        }
-
-        return destination;
     }
 
     private Value runGCArrayHookCall(
@@ -4698,22 +4666,6 @@ private struct Walker {
         }
 
         return pointer.pointerIndex(index);
-    }
-
-    private imported!"dmd.mtype".Type memcpyElementPointerType(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        auto type = expression.type;
-        auto pointed = type.toBasetype.nextOf;
-        if (pointed is null || pointed.toBasetype.ty != TY.Tvoid)
-            return type;
-
-        if (auto cast_ = expression.isCastExp)
-            return memcpyElementPointerType(cast_.e1);
-
-        return type;
     }
 
     // Run an interpreted delegate that native code called back into through the
