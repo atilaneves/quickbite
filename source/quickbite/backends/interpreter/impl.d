@@ -10934,10 +10934,7 @@ private struct Walker {
             child.result = Value(false);
             child.thisValue = structVal;
             child.hasThis = true;
-            child.fieldAddressAllocations = fieldAddressAllocations.dup;
-            child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
-            child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
-            child.allocationCount = allocationCount;
+            forkPerFrameCellsInto(child);
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;

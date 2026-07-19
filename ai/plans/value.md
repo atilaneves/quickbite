@@ -645,9 +645,6 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      (`Walker.forkPerFrameCellsInto`); that is the model for the rest.
      Merge and drop should likewise become single dispatch points instead
      of per-family calls hand-wired at every site.
-   - `runNewStructPointerExpression`'s fork site still duplicates a
-     narrow three-field subset with no recorded rationale; confirm it is
-     deliberate or fold it into the common path.
    - `runNewClassExpression`'s child neither dupes nor merges the
      array/struct pointer maps at all — a pre-existing asymmetry to
      resolve when the fork/merge points are unified.
