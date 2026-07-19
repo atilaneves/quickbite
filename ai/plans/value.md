@@ -674,11 +674,11 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    narrower field set than their siblings.
    - Do NOT add an eleventh family. Direct and one-level-nested struct/class
      field allocation identity use the common `(root variable, field PATH)`
-     key; direct scalar class fields also use it for reverse lookup. Migrate
-     the remaining reverse lookup/read/write/writeback families onto that key
-     and composed native views. Paths such as `a[i].inner.x` must be data, not
-     bespoke map families, so promote/read/write/merge/writeback/drop each
-     ultimately exist once.
+     key; direct scalar struct and class fields also use it for reverse
+     lookup. Migrate the remaining reverse lookup/read/write/writeback families
+     onto that key and composed native views. Paths such as `a[i].inner.x` must
+     be data, not bespoke map families, so promote/read/write/merge/writeback/
+     drop each ultimately exist once.
    **Design sketch** (the frame for all of this work). A *native block*
    is a stable byte range laid out with DMD's own offsets, stride, and
    alignment; a *handle* is the interpreter-owned metadata for one block
@@ -788,7 +788,7 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      remain boxed copies plus end-of-call writeback.
    - Field-path generalization: the common root-plus-path key handles
      allocation identity for direct and one-level-nested struct/class fields
-     and reverse lookup for direct scalar class fields. The other
+     and reverse lookup for direct scalar struct and class fields. The other
      shape-specific reverse lookup/read/write/writeback families still need
      migration. Nesting deeper than one level has no promotion, write-through,
      or pointer-identity support. Extend the common mechanism, never add

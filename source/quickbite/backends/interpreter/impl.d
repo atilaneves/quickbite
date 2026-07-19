@@ -183,14 +183,6 @@ private struct Walker {
     // existing boxed `locals` path.
     private NativeStruct[VarDeclaration] structCells;
 
-    // Reverse lookup from a promoted `&s.field` pointer's allocation id
-    // (`fieldPathAddressAllocations`'s own id, reused rather than duplicated)
-    // back to which struct variable and field index (declaration order)
-    // share the SAME `structCells` entry's bytes -- the struct-field
-    // counterpart of `arrayAllocationVariables`' reverse lookup for `&a[i]`.
-    private VarDeclaration[size_t] structFieldPointerVariables;
-    private size_t[size_t] structFieldPointerFieldIndices;
-
     // Set by `writeThroughStructFieldPointer` for the receiver variable it
     // wrote into, mirroring `arrayPointerWritebacks` above: a cross-frame
     // write (the receiver is the CALLER's own local, absent from the
@@ -204,16 +196,16 @@ private struct Walker {
     // Reverse lookup from a promoted `&s.arr[i]` pointer's allocation id back
     // to which struct variable and (static-array) field index share the SAME
     // `structCells` entry's bytes -- the array-typed-field counterpart of
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices` above,
+    // the common direct-field reverse lookup,
     // needed because a static-array field's pointer carries an element
     // offset (`Value.pointerElementOffset`) and its cell view is a
     // `NativeArray` (`NativeStruct.arrayField`), not the single scalar byte
-    // range `structFieldPointerVariables` resolves to. Populated by
+    // range the direct-field reverse lookup resolves to. Populated by
     // `promoteStructArrayFieldCell`, called from `arrayPointer`'s
     // `DotVarExp` branch (mirroring `promoteStructFieldCell`'s role for a
     // scalar field). Cross-frame follow-up (2026-07-15): now duplicated into
     // child-frame walkers and merged back exactly like
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`
+    // the common direct-field reverse lookup
     // (`mergeStructArrayFieldPointerVariableMaps`), so a `&s.arr[i]` pointer
     // does survive being passed into another function; see
     // `structArrayFieldPointerWritebacks` below for the write-through side.
@@ -238,12 +230,12 @@ private struct Walker {
     // plain struct local, and `x` a scalar field of `inner`. The cell view
     // is `NativeStruct.structField(outerIndex).field(innerIndex)` -- a
     // nested `NativeStruct` sharing the parent's block -- rather than the
-    // single top-level field range `structFieldPointerVariables` resolves
+    // single top-level field range `fieldPointerPaths` resolves
     // to. Populated by `promoteNestedStructFieldCell`, called from
     // `addressOfExpression`'s `DotVarExp` branch alongside
     // `promoteStructFieldCell` (mirroring how `arrayPointer`'s `DotVarExp`
     // branch already combines `promoteStructArrayFieldCell` with the same
-    // memoized id). Like `structFieldPointerVariables`, the id is memoized --
+    // memoized id). Like the direct-field reverse lookup, the id is memoized --
     // here per (root variable, outer field index, inner field index) via
     // `fieldPathAddressAllocations` -- so repeated `&s.inner.x` evaluations
     // share one identity, matching real addresses. Duplicated into
@@ -280,7 +272,7 @@ private struct Walker {
     // `addressOfExpression`'s `DotVarExp` branch alongside the existing
     // struct/nested-struct/class promotion calls. Narrower than
     // `nestedStructFieldPointerVariables` in the same way that map is
-    // narrower than `structFieldPointerVariables`: the id is never memoized
+    // narrower than the direct-field reverse lookup: the id is never memoized
     // (this receiver shape already takes `fieldSnapshotAllocationId`'s
     // fresh-id fallback, same as the non-array nested-field case), and this
     // is same-frame only -- no cross-frame duping/merge/writeback, left as a
@@ -315,9 +307,9 @@ private struct Walker {
     private NativeBlock[VarDeclaration] classCells;
 
     // Common reverse lookup from a field pointer's allocation id to its root
-    // variable and DMD field-index path. Direct scalar class fields are the
-    // first migrated family; the remaining shape-specific maps move here
-    // without changing this representation.
+    // variable and DMD field-index path. Direct scalar struct and class fields
+    // are migrated; the remaining shape-specific maps move here without
+    // changing this representation.
     private FieldPathKey[size_t] fieldPointerPaths;
     // A class-field pointer remains attached to the object after the variable
     // used to reach it is rebound. Retain that object's cell by allocation id
@@ -2280,8 +2272,6 @@ private struct Walker {
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
-        child.structFieldPointerVariables = structFieldPointerVariables.dup;
-        child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
         child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
         child.structArrayFieldPointerVariables = structArrayFieldPointerVariables.dup;
         child.structArrayFieldPointerFieldIndices =
@@ -2901,7 +2891,7 @@ private struct Walker {
     // role in `arrayPointer`) and records `id` -- the SAME allocation id
     // `addressOfExpression`'s caller already memoized via
     // `fieldSnapshotAllocationId` -- in the reverse lookup
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`, so a
+    // common `fieldPointerPaths` reverse lookup, so a
     // later deref-read through this id's pointer
     // (`structFieldPointerCellValue`) can find the same cell and field. A
     // no-op (no cell, no reverse-lookup entry) for a non-`VarExp` receiver
@@ -2926,8 +2916,7 @@ private struct Walker {
         if ((variable in structCells) is null)
             return;
 
-        structFieldPointerVariables[id] = variable;
-        structFieldPointerFieldIndices[id] = structFieldIndex(dot);
+        fieldPointerPaths[id] = directFieldPathKey(variable, structFieldIndex(dot));
     }
 
     // Eagerly gives an address-taken class local a `classCells` cell the
@@ -2982,7 +2971,7 @@ private struct Walker {
     // points `target` at the SAME `NativeBlock` -- `NativeBlock` is a value
     // struct whose `bytes` is a slice, so copying it (`classCells[target] =
     // *cell`) shares the one underlying byte range, exactly like two
-    // `structFieldPointerVariables` entries sharing a `structCells` block.
+    // direct-field reverse-lookup entries sharing a `structCells` block.
     // A no-op when `source` is not a bare `VarExp` (e.g. `c2 = f();`), or
     // `target` is not class-typed, or `promoteClassCell` itself is a no-op
     // (a dataseg variable, or a receiver whose boxed value is not a class
@@ -3744,8 +3733,8 @@ private struct Walker {
     }
 
     // Drops `variable`'s `structCells` entry (if any) together with every
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices` reverse-
-    // lookup entry that pointed at it: dropping only the forward `structCells`
+    // direct-struct `fieldPointerPaths` reverse-lookup entry that pointed at
+    // it: dropping only the forward `structCells`
     // entry would leave
     // a stale `&s.field` pointer's allocation id mapped to `variable`, so a
     // later dereference through that stale id could resolve into whatever
@@ -3753,7 +3742,7 @@ private struct Walker {
     // promotes next instead of correctly finding no cell at all. Called from
     // every fresh-binding site alongside `scalarCells.remove`/
     // `arrayCells.remove`. Collects matching ids before removing rather than
-    // mutating `structFieldPointerVariables` while iterating it.
+    // mutating `fieldPointerPaths` while iterating it.
     //
     // Also drops field-path memo entries rooted at `variable`: that forward
     // memo -- `fieldSnapshotAllocationId`'s own
@@ -3765,20 +3754,18 @@ private struct Walker {
     // the new binding retook the field's address. Without a fresh id, a
     // stale pointer minted under the OLD binding (e.g. held across a
     // recursive call that re-declares `variable`) still resolves -- via
-    // `structFieldPointerVariables`, re-populated under the SAME id -- into
+    // `fieldPointerPaths`, re-populated under the SAME id -- into
     // whatever cell THIS binding promotes, instead of correctly declining.
     private void dropStructCell(VarDeclaration variable) {
         structCells.remove(variable);
 
         size_t[] staleIds;
-        foreach (id, pointedVariable; structFieldPointerVariables)
-            if (pointedVariable is variable)
+        foreach (id, path; fieldPointerPaths)
+            if (path.root is variable)
                 staleIds ~= id;
 
-        foreach (id; staleIds) {
-            structFieldPointerVariables.remove(id);
-            structFieldPointerFieldIndices.remove(id);
-        }
+        foreach (id; staleIds)
+            fieldPointerPaths.remove(id);
 
         // Same stale-id cleanup for the array-typed-field reverse lookup -- a
         // `&s.arr[i]` id left behind here would let a pointer minted BEFORE
@@ -3911,7 +3898,7 @@ private struct Walker {
     // `...InnerFieldIndices` siblings) that pointed at `variable`
     // (2026-07-16): `promoteArrayNestedStructFieldCell` (`&a[i].
     // inner.x`) populates these four maps but, unlike every other pointer
-    // family's own reverse lookup (`structFieldPointerVariables`/
+    // family's own reverse lookup (`fieldPointerPaths`/
     // `nestedStructFieldPointerVariables`/etc., all cleaned by
     // `dropStructCell`), nothing here ever cleaned them -- a fresh binding
     // of the same `VarDeclaration` (a loop body re-executing the same
@@ -5790,7 +5777,6 @@ private struct Walker {
         mergeFieldPathAddressAllocations(child);
         fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
         arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeStructFieldPointerVariableMaps(child);
         structFieldPointerWritebacks = child.structFieldPointerWritebacks;
         mergeStructArrayFieldPointerVariableMaps(child);
         structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
@@ -5849,39 +5835,8 @@ private struct Walker {
                 arrayAllocations[variable] = id;
     }
 
-    // Struct sibling of the merge above -- `structFieldPointerVariables`/
-    // `FieldIndices` merge the identical, conflict-free way: ids are globally
-    // unique, so a
-    // key present in both this frame's and the callee's copy always names
-    // the same variable/field index.
-    //
-    // Symmetric guard (2026-07-14): applied here too,
-    // keyed on (variable, field index) rather than just variable, since a
-    // struct can have several independently-addressed fields -- a child
-    // entry is skipped only when this frame's own field-path memo
-    // forward map already binds the SAME (variable, field index) pair to a
-    // DIFFERENT id. Escaping a pointer to a local struct field upward is UB
-    // in real D (unlike a dynamic array element, a struct field is not
-    // GC-allocated), so no fixture exercises this guard directly; it is
-    // symmetric hardening only, applied because it did not regress the
-    // existing cross-frame struct fixtures.
-    private void mergeStructFieldPointerVariableMaps(ref Walker child) {
-        foreach (id, variable; child.structFieldPointerVariables) {
-            auto fieldIndex = id in child.structFieldPointerFieldIndices;
-            if (fieldIndex !is null)
-                if (auto ownId = directFieldPathKey(variable, *fieldIndex)
-                        in fieldPathAddressAllocations)
-                    if (*ownId != id)
-                        continue;
-
-            structFieldPointerVariables[id] = variable;
-            if (fieldIndex !is null)
-                structFieldPointerFieldIndices[id] = *fieldIndex;
-        }
-    }
-
-    // Array-typed-field sibling of `mergeStructFieldPointerVariableMaps`
-    // above (struct-static-array-field cross-frame follow-up, 2026-07-15):
+    // Array-typed-field sibling of the common direct-field reverse lookup
+    // (struct-static-array-field cross-frame follow-up, 2026-07-15):
     // `structArrayFieldPointerVariables`/
     // `FieldIndices` merge the identical, conflict-free way -- the id space
     // is shared with the scalar-field maps (both mint through the same
@@ -6214,7 +6169,8 @@ private struct Walker {
     // returns to it, or `s.field` would still read the pre-call value even
     // though `*p` already sees the write.
     private void writeBackStructFieldPointerTargets(ref Walker child) {
-        foreach (_, variable; child.structFieldPointerVariables) {
+        foreach (_, path; child.fieldPointerPaths) {
+            auto variable = path.root;
             if ((variable in child.structFieldPointerWritebacks) is null)
                 continue;
 
@@ -8391,7 +8347,7 @@ private struct Walker {
     // `current` (the receiver's own boxed value) can be absent here even on
     // a genuine hit: a CROSS-FRAME write (`variable` is the CALLER's own
     // local, `id` recorded before the call and shared into this callee's
-    // frame only via the duped `structFieldPointerVariables`/`structCells`)
+    // frame only via the duped `fieldPointerPaths`/`structCells`)
     // finds `variable` in neither this frame's parameters nor its `locals`
     // at all -- it was never bound here. The write still lands in the
     // shared cell either way; `structFieldPointerWritebacks` flags
@@ -8402,33 +8358,33 @@ private struct Walker {
     // `current`, when present, still declines a rebind (no longer a
     // struct) exactly as before.
     private bool writeThroughStructFieldPointer(in Value pointer, in Value value) {
-        auto variable = pointer.pointerAllocation in structFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 1)
             return false;
 
-        auto cell = *variable in structCells;
+        auto variable = path.root;
+
+        auto cell = variable in structCells;
         if (cell is null)
             return false;
 
-        auto fieldIndex = pointer.pointerAllocation in structFieldPointerFieldIndices;
-        if (fieldIndex is null)
-            return false;
+        const fieldIndex = path.indices[0];
 
-        auto current = *variable in locals;
+        auto current = variable in locals;
         if (current !is null && !current.isStruct)
             return false;
 
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
         writeScalar(
-            cell.fieldDeclaration(*fieldIndex).type,
-            cell.field(*fieldIndex),
+            cell.fieldDeclaration(fieldIndex).type,
+            cell.field(fieldIndex),
             value,
         );
         if (current !is null)
-            locals[*variable] = current.withStructField(*fieldIndex, value);
-        structFieldPointerWritebacks[*variable] = true;
-        uninitializedLocals.remove(*variable);
+            locals[variable] = current.withStructField(fieldIndex, value);
+        structFieldPointerWritebacks[variable] = true;
+        uninitializedLocals.remove(variable);
         return true;
     }
 
@@ -10607,21 +10563,19 @@ private struct Walker {
         if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
             return false;
 
-        auto variable = pointer.pointerAllocation in structFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 1)
             return false;
 
-        auto cell = *variable in structCells;
+        auto cell = path.root in structCells;
         if (cell is null)
             return false;
 
-        auto fieldIndex = pointer.pointerAllocation in structFieldPointerFieldIndices;
-        if (fieldIndex is null)
-            return false;
+        const fieldIndex = path.indices[0];
 
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        value = readScalar(cell.fieldDeclaration(*fieldIndex).type, cell.field(*fieldIndex));
+        value = readScalar(cell.fieldDeclaration(fieldIndex).type, cell.field(fieldIndex));
         return true;
     }
 
