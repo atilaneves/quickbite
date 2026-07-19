@@ -1285,6 +1285,34 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A plain nested named function reading the enclosing method's `this` (not a
+// capturing lambda) through a module-level (non-function-nested) struct.
+static foreach (backend; Matrix!()) {
+    @("struct.nestedFunctionReadsCapturedThisField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int f;
+
+                int m() {
+                    int helper() {
+                        return this.f;
+                    }
+                    return helper();
+                }
+            }
+
+            unittest {
+                S s;
+                s.f = 10;
+
+                assert(s.m == 10);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported bytecode assignment target.") and IR (unmapped struct
 // type assert) cannot run struct-typed fields yet.
 static foreach (backend; Matrix!()) {

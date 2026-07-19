@@ -652,12 +652,18 @@ lifetime as the dependency bytecode cache.
   either one resolves to the nearest enclosing method's own `vthis`
   (`hasThis(sc)` walking up through nested scopes). The compiler recognises
   this case (`capturedThisStructDeclaration`) for both shapes, keyed only on
-  `vthis` plus the enclosing parent being a struct method; a direct
-  unqualified call to such a named nested function gets a call-site receiver
-  branch in `methodReceiverOffset` for the plain `VarExp` callee shape,
-  alongside the `DotVarExp`/`FuncExp` shapes. This is a `this`-receiver
-  question, not the captured-locals-environment work above, and does not by
-  itself require a closure environment. A lambda that captures a plain
+  `vthis` plus the enclosing parent being a struct method, and only when the
+  enclosing struct itself is not function-nested: a struct declared inside a
+  function (a voldemort type) appends an extra hidden context-pointer field
+  after its declared fields (`AggregateDeclaration.isNested`), which the
+  frame layout this path builds does not account for, so a function-nested
+  struct falls back to the plain "unsupported" diagnostic instead of
+  resolving `this.field`. A direct unqualified call to such a named nested
+  function gets a call-site receiver branch in `methodReceiverOffset` for the
+  plain `VarExp` callee shape, alongside the `DotVarExp`/`FuncExp` shapes.
+  This is a `this`-receiver question, not the captured-locals-environment
+  work above, and does not by itself require a closure environment. A lambda
+  that captures a plain
   enclosing *local* (not `this`) remains unmodelled and does need the
   captured-locals environment described above; an immediately-invoked void
   lambda whose body is a single expression statement can avoid needing that

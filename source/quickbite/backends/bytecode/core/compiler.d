@@ -3914,6 +3914,13 @@ private struct Compiler {
     // here, but only `this`-capturing nested functions are exercised; a
     // local-capturing one would read the wrong slot, which the leading-edge
     // closures work must address.
+    //
+    // A struct declared inside a function (a voldemort type) carries an extra
+    // hidden context-pointer field appended after its declared fields
+    // (`AggregateDeclaration.isNested`), which shifts every field's runtime
+    // offset from the plain by-declaration-order offset this path assumes.
+    // Only claim the `this`-receiver shape for a non-nested enclosing struct;
+    // a nested one falls back to the "unsupported" diagnostic.
     private imported!"dmd.dstruct".StructDeclaration
     capturedThisStructDeclaration(FuncDeclaration function_) {
         if (function_.vthis is null)
@@ -3922,9 +3929,13 @@ private struct Compiler {
         auto enclosing = enclosingMethodOf(function_);
         if (enclosing is null)
             return null;
-        if (auto aggregate = enclosing.isThis())
-            return aggregate.isStructDeclaration;
-        return null;
+        auto aggregate = enclosing.isThis();
+        if (aggregate is null)
+            return null;
+        auto structDeclaration = aggregate.isStructDeclaration;
+        if (structDeclaration is null || structDeclaration.isNested)
+            return null;
+        return structDeclaration;
     }
 
     private bool needsNestedFrameContext(FuncDeclaration function_) {
