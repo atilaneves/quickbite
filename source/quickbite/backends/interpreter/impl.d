@@ -10156,10 +10156,10 @@ private struct Walker {
         return defaultValue(field);
     }
 
-    // Scalar sibling only, matching `withUnionFieldWrite`'s aggregate scope:
-    // returns `false` (leaving `value`
+    // Scalar or plain-struct sibling, matching `withUnionFieldWrite`'s
+    // aggregate scope: returns `false` (leaving `value`
     // untouched) for index 0 itself, a non-union literal, a sibling that
-    // isn't `native_scalar.isNativeScalarType`, or a first member that is
+    // is neither a native scalar nor a plain struct, or a first member that is
     // neither `isNativeScalarType`, a plain (non-union) struct, nor a
     // scalar-element static array -- so the caller's existing independent-
     // `defaultValue` fallback applies unchanged in every other case,
@@ -10191,7 +10191,11 @@ private struct Walker {
         if (unionType is null)
             return false;
 
-        if (!isNativeScalarType(field.type))
+        const siblingScalar = isNativeScalarType(field.type);
+        auto siblingStructType = field.type.toBasetype.isTypeStruct;
+        const siblingStruct = siblingStructType !is null
+            && siblingStructType.sym.isUnionDeclaration is null;
+        if (!siblingScalar && !siblingStruct)
             return false;
 
         auto firstField = structLiteralField(literal, 0);
@@ -10220,7 +10224,16 @@ private struct Walker {
             writeScalar(firstField.type, cell.field(0), fieldsSoFar[0]);
         }
 
-        value = readScalar(field.type, cell.field(index));
+        if (siblingScalar) {
+            value = readScalar(field.type, cell.field(index));
+        } else {
+            auto current = defaultValue(field);
+            if (!current.isStruct)
+                return false;
+
+            auto siblingCell = cell.structField(index);
+            value = structValueFromCell(current, siblingCell);
+        }
         return true;
     }
 

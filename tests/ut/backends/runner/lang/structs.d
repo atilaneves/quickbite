@@ -1900,6 +1900,39 @@ static foreach (backend; Matrix!(
     }
 }
 
+// An untouched plain-struct sibling reads the same first-member default bits
+// as a scalar sibling. The struct's scalar field spans the first float's NaN
+// representation, so independently defaulting the struct would incorrectly
+// produce zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped struct field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this union struct initializer"),
+)) {
+    @("union.untouchedStructSiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                int bits;
+            }
+
+            union U {
+                float value;
+                Payload payload;
+            }
+
+            unittest {
+                U value;
+                assert(value.payload.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses this exact read with " ~
