@@ -94,7 +94,13 @@ value.md       how the interpreter represents runtime results and addressable
                loads) is value.md's, handled per the §8 triage rule — red
                fixture here, Interpreter omitted, root fix there. The #386
                shims for such classes are tracked debt (§9.10), not
-               precedent.
+               precedent. value.md decisions 15-18 (2026-07-20) commit its
+               end state (native-layout storage, a place is an address plus
+               its static type, no FFI marshalling; deleting `Value` is the
+               completion signal) and a two-track migration in which THIS
+               plan is the workingness track and leads; the representation
+               track lands in parallel behavior-neutral slices plus one
+               small authority switch.
 bytecode.md    a different backend; native-layout execution. Out of scope.
 ```
 
@@ -534,6 +540,16 @@ ceiling classes arrives via the representation change, not via name-based
 shims that approximate it — a shim that skips construction semantics or
 fabricates a hook's return value is a silent wrong answer, the worst class
 in §7's own triage.
+
+**Freeze corollary (2026-07-20, `value.md` decisions 17/18).** The same
+gap-fixture-and-wait treatment applies to a class whose root fix needs new
+boxed FFI marshalling (`ffi_marshal.d` rungs — new argument, out-parameter,
+or struct shapes; e.g. the automem `pthread_mutexattr_init` class if it
+needs one): the `ffi.md` §34.3 `B*` ladder is cancelled and the boxed
+marshaller is life support. The tie-breaker is decided — a blocked package
+waits and re-earns its rows at the authority switch; do not re-decide it
+mid-triage. Ordinary language-surface correctness fixes to boxed machinery
+remain always in order: working first.
 
 **Interception policy (added 2026-07-09).** Name-based interception of a
 called function is reserved for functions the frontend has **no body** for
@@ -2270,9 +2286,9 @@ classes (§8 triage rule) with name-based shims. They were merged deliberately �
 each is load-bearing for the frontier state, and deleting one before its real
 replacement exists only re-masks the classes behind it — but they are **debt,
 not precedent**. Each entry names its defect and its retirement condition; the
-retirement trigger for all of them is `value.md`'s native-layout-aggregates
-experiment (its remaining-work item 7). A shim is deleted only when its
-fixtures stay green through the real path.
+retirement trigger for all of them is `value.md`'s authority switch
+(decisions 15/17; its remaining-work item 5). A shim is deleted only when
+its fixtures stay green through the real path.
 
 ```text
 shim                                  defect / divergence            retire when
