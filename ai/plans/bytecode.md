@@ -675,25 +675,45 @@ behaviour.
   represent "no data" distinctly from "data at offset 0") applied consistently
   across the compiler, and would need to account for both descriptor layouts
   in play, not a local fix in one place.
-- A `string` sub-slice (`b = a[lo .. hi]`) now stays in the compact {data
-  offset, length} representation via `Op.stringSubSlice`
+- A `string` sub-slice (`b = a[lo .. hi]`) stays in the compact {data offset,
+  length} representation via `Op.stringSubSlice`
   (`compileCompactStringSliceInto`) when both the slice and its source are
-  `char`-string-typed, so `.ptr`/`.length`/indexing on `b` resolve into the
-  real program-data segment instead of the sub-slice's real-pointer 16-byte
-  descriptor (built for a genuine dynamic-array destination) getting
-  truncated to its first 8 bytes and reinterpreted as a bogus compact
-  descriptor. `compileAssignExpression`'s plain-`VarExp` lvalue path now
-  copies the descriptor at `stringSliceSize` for a string-typed local instead
-  of sizing the copy from `scalarType(declaration.type)` (`void_`/size 0), so
-  `b = <string expr>;` against an *already-declared* string local copies the
-  right-hand side correctly whether it is another string local, a string
-  literal, or a compact sub-slice. A related gap surfaced while isolating
-  this and remains open: `string s = p[lo .. hi];` from a pointer source (not
-  another string) still produces a wild dataOffset, because a real
-  heap/pointer address has no program-data-relative origin to stay compact
-  around — fixing that needs the same heap-backed dual representation
-  `.idup`/`.dup` string initializers already use (`_dynamicArrayLocals`), not
-  the same-typed compact arithmetic added here. The compact path and its
+  `char`-string-typed *and* the source is itself compact, so `.ptr`/
+  `.length`/indexing on `b` resolve into the real program-data segment
+  instead of the sub-slice's real-pointer 16-byte descriptor (built for a
+  genuine dynamic-array destination) getting truncated to its first 8 bytes
+  and reinterpreted as a bogus compact descriptor. A heap-backed source (one
+  already registered in `_dynamicArrayLocals`, e.g. reached through
+  `.idup`/`.dup`) has no program-data-relative origin to stay compact
+  around, so slicing or reassigning from one instead goes through the
+  general dynamic-array path and shares that source's real heap block;
+  `stringSourceIsHeapBacked` (compiler.d) is the provenance test every one of
+  these call sites shares — it must not be replaced by inspecting
+  `Operand.isString` after the fact, because a `string[N]`/`string[]` element
+  read yields an unflagged operand at the same compact-shaped stride, and
+  because the general `dynamicArrayDescriptorOrNull` treats any `string[]`
+  element as a nested array-of-arrays descriptor (`string`'s own basetype is
+  `Tarray`). A local's declaration or plain reassignment reads this
+  provenance from the right-hand side and, on a heap-backed result, rebinds
+  the destination onto a fresh 16-byte `_dynamicArrayLocals` slot dropping
+  its old compact map entries — a local cannot hold a 16-byte descriptor in
+  an 8-byte compact slot. Reassigning a *heap-backed*-declared local (whether
+  from a compact or another heap-backed source) is not yet supported and
+  throws a clean "Unsupported assignment" diagnostic rather than misreading,
+  since such a local was never given a compact-sized `_locals` slot to fall
+  back into. Duplicating an operand that is *itself* already string-typed
+  (`s.idup`/`s.dup` where `s: string`) is a separate, deeper, currently
+  unsupported gap: `tryArrayDuplication` requires its argument to not be a
+  `string` (so that a mutable `char[]`'s `.idup`/`.dup` reaches the
+  dynamic-array duplication path untouched), which means a *string* operand
+  degrades to DMD's generic `_dup`/`_d_newarrayU` runtime call chain and
+  throws "Unsupported new array runtime call" instead of producing a
+  heap-backed copy; a heap-backed string is still reachable today, just not
+  through duplicating an operand that is already a `string`. A related gap
+  remains open: `string s = p[lo .. hi];` from a pointer source (not another
+  string) still produces a wild dataOffset, because a real heap/pointer
+  address has no program-data-relative origin to stay compact around and is
+  not registered in `_dynamicArrayLocals` either. The compact path and its
   `compileSliceInto` fallback both gate on `char` specifically
   (`isCharStringType`): the bounds are code-unit offsets, but program data is
   always stored as UTF-8 bytes (`stringChars`), so a `wstring`/`dstring`

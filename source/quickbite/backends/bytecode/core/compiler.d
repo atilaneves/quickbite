@@ -2083,21 +2083,27 @@ private struct Compiler {
         }
 
         if (auto slice = expression.isSliceExp) {
-            // A string sliced from a string source stays in the compact
+            // A string sliced from a compact string source (a data-segment
+            // literal or a `_stringLocals` local) stays in the compact
             // {dataOffset, length} representation every other compact-string
             // consumer (`.ptr`, `.length`, indexing, a `string` local's plain
             // `Op.copy` initializer) expects; `compileSliceInto` below always
             // builds a real-pointer 16-byte descriptor, which is only correct
-            // when the destination is a genuine dynamic array. A string
-            // sliced from a pointer (`p[0 .. 3]`) has no compact source to
-            // stay relative to, so it still falls through to the general
-            // path below (a pre-existing, separately tracked divergence, not
-            // introduced here). The compact bounds are code-unit offsets over
-            // program data that is always stored as UTF-8 bytes
-            // (`stringChars`), so this is only correct for a `char` element;
-            // a `wstring`/`dstring` sub-slice falls through to the general
-            // path instead of computing silently-wrong offsets.
-            if (isCharStringType(slice.type) && isCharStringType(slice.e1.type)) {
+            // when the destination is a genuine dynamic array. A heap-backed
+            // source (registered in `_dynamicArrayLocals`, e.g. from
+            // `.idup`/`.dup`) has no program-data-relative origin to stay
+            // compact around, so it falls through to the general dynamic-array
+            // path below and shares that source's real heap block instead. A
+            // string sliced from a pointer (`p[0 .. 3]`) has no compact source
+            // either and falls through the same way (a pre-existing,
+            // separately tracked divergence, not introduced here). The compact
+            // bounds are code-unit offsets over program data that is always
+            // stored as UTF-8 bytes (`stringChars`), so the compact path is
+            // only correct for a `char` element; a `wstring`/`dstring`
+            // sub-slice falls through to the general path instead of
+            // computing silently-wrong offsets.
+            if (isCharStringType(slice.type) && isCharStringType(slice.e1.type) &&
+                !stringSourceIsHeapBacked(slice.e1)) {
                 const offset = allocateBytes(stringSliceSize, 4);
                 compileCompactStringSliceInto(offset, slice);
                 return Operand(offset, ScalarType.void_, true);
@@ -2958,16 +2964,18 @@ private struct Compiler {
         // initializer's slice into it.
         const isString = isStringType(variable.type);
 
-        // A `string`/`wstring`/`dstring` initialised from a heap-producing
-        // `.idup`/`.dup` is not a read-only data-segment slice but a 16-byte
-        // {ptr, length} heap descriptor like an ordinary dynamic array. Store it
-        // as a dynamic-array local (char/wchar/dchar element) so its code units
-        // read back through the slice machinery; `_aApply*` UTF iteration over
-        // such a string then reads the source as a normal slice descriptor.
+        // A `string`/`wstring`/`dstring` initialised from a heap-backed
+        // source (`.idup`/`.dup`, a sub-slice of a heap-backed string, or a
+        // direct reference to one) is not a read-only data-segment slice but
+        // a 16-byte {ptr, length} heap descriptor like an ordinary dynamic
+        // array. Store it as a dynamic-array local (char/wchar/dchar element)
+        // so its code units read back through the slice machinery; `_aApply*`
+        // UTF iteration over such a string then reads the source as a normal
+        // slice descriptor.
         if (isString && variable._init !is null)
             if (auto expInit = variable._init.isExpInitializer)
-                if (tryArrayDuplication(
-                        initializerExpression(expInit.exp)) !is null) {
+                if (stringSourceIsHeapBacked(
+                        initializerExpression(expInit.exp))) {
                     const heapElement =
                         dynamicArrayElementType(variable.type);
                     const heapOffset =
@@ -3009,6 +3017,29 @@ private struct Compiler {
             operand.offset,
             cast(ushort) slotSize,
         );
+    }
+
+    // A string-typed source expression whose value is a heap-backed 16-byte
+    // {ptr, length} descriptor rather than the compact 8-byte {dataOffset,
+    // length} form: a `.idup`/`.dup` duplication, a sub-slice of one, a cast
+    // of one, or a direct reference to a local already registered in
+    // `_dynamicArrayLocals`. This deliberately does not delegate to the
+    // general `dynamicArrayDescriptorOrNull`: that function's `IndexExp`
+    // branch treats any array-typed element (including a `string` element of
+    // a `string[]`, since `string`'s own basetype is `Tarray`) as a nested
+    // array-of-arrays descriptor, which would misclassify an ordinary
+    // compact-shaped `string[N]`/`string[]` element read as heap-backed.
+    private bool stringSourceIsHeapBacked(Expression source) {
+        if (tryArrayDuplication(source) !is null)
+            return true;
+        if (auto slice = source.isSliceExp)
+            return stringSourceIsHeapBacked(slice.e1);
+        if (auto cast_ = source.isCastExp)
+            return stringSourceIsHeapBacked(cast_.e1);
+        if (auto variable = source.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return (declaration in _dynamicArrayLocals) !is null;
+        return false;
     }
 
     private bool compileRefLocalDeclaration(VarDeclaration variable) {
@@ -5451,10 +5482,15 @@ private struct Compiler {
         // `Op.stringSliceToArray` reinterprets the source's compact
         // {dataOffset, length} bytes as a `char`-element real descriptor
         // (`stringChars` always stores UTF-8 bytes), which is only correct
-        // for a `char` string; a `wstring`/`dstring` source falls through to
-        // `dynamicArrayDescriptor`, which throws its own clean diagnostic
-        // rather than silently misreading code-unit offsets as byte offsets.
-        if (isCharStringType(slice.e1.type)) {
+        // for a `char` string whose source is itself still compact; a
+        // `wstring`/`dstring` source, or a heap-backed source already
+        // registered in `_dynamicArrayLocals`, falls through to
+        // `dynamicArrayDescriptor` instead — for the heap-backed case that
+        // resolves the source's real descriptor directly, and for a wide
+        // string it throws its own clean diagnostic rather than silently
+        // misreading code-unit offsets as byte offsets.
+        if (isCharStringType(slice.e1.type) &&
+            !stringSourceIsHeapBacked(slice.e1)) {
             const string_ = compileExpression(slice.e1);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             _code ~= Instruction(
@@ -7753,6 +7789,29 @@ private struct Compiler {
                 "Unsupported assignment in bytecode core: ",
                 expressionChars(assign),
             ));
+
+        // A compact-declared `string` local's slot is only `stringSliceSize`
+        // (8) bytes wide, but a heap-backed source (`.idup`/`.dup`, a
+        // sub-slice of one, or another heap-backed string) carries a real
+        // 16-byte {ptr, length} descriptor that would overrun it. Rebind the
+        // local onto a fresh 16-byte slot and route it through the same
+        // dynamic-array local map a genuine `T[]` uses, instead of truncating
+        // the copy into the old slot.
+        if (isStringType(declaration.type) &&
+            stringSourceIsHeapBacked(assign.e2)) {
+            const heapOffset =
+                allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy, heapOffset, rhs.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
+            _dynamicArrayLocals[declaration] = DynamicArrayLocal(
+                heapOffset, dynamicArrayElementType(declaration.type),
+            );
+            _locals.remove(declaration);
+            _stringLocals.remove(declaration);
+            return Operand(heapOffset, ScalarType.void_);
+        }
 
         // A `string` local's slot holds the compact {dataOffset, length}
         // descriptor, not a scalar; `scalarType` maps it to `void_`/size 0, so

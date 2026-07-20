@@ -3064,3 +3064,72 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+/++
+    A sub-slice of a heap-backed `string` (produced by `.idup`, not a
+    data-segment literal) reads the sliced bytes and length from the source's
+    real heap block rather than from a compact {dataOffset, length}
+    descriptor built from the wrong operand width.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.heapBackedStringSubSliceReadsSlicedBytesAndLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char letter(int index) {
+                return cast(char) ('a' + index);
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[] source = [
+                    letter(0), letter(1), letter(2),
+                    letter(3), letter(4), letter(5),
+                ];
+                string a = source.idup;
+                string b = a[seed(1) .. seed(3)];
+
+                assert(b.length == 2);
+                assert(b[0] == 'b');
+                assert(b[1] == 'c');
+            }
+        });
+    }
+}
+
+/++
+    Reassigning an already-declared, compact-descriptor `string` local
+    (`b = "x";`) from a heap-backed `string` source (`.idup`) must copy the
+    full 16-byte {ptr, length} descriptor, not the compact 8-byte width,
+    which would only copy the source's low pointer bytes.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceCopiesDescriptor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char letter(int index) {
+                return cast(char) ('a' + index);
+            }
+
+            unittest {
+                char[] source = [
+                    letter(0), letter(1), letter(2),
+                    letter(3), letter(4), letter(5),
+                ];
+                string a = source.idup;
+                string b = "x";
+                b = a;
+
+                assert(b.length == 6);
+                assert(b[0] == 'a');
+                assert(b[5] == 'f');
+            }
+        });
+    }
+}
