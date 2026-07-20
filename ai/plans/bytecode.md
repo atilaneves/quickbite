@@ -432,7 +432,8 @@ changed:
 1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
    `std.conv.text` dependency path over an exception message character array.
 2. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
-   lazy evaluation over a mutating struct-typed caller local.
+   lazy evaluation over a mutating struct-typed caller local. Its next blocker
+   is `ulong <<=` compound assignment in `Reader.read64`.
 3. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.

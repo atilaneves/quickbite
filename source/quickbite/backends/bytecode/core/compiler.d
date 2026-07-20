@@ -196,6 +196,12 @@ private struct Compiler {
         ushort valueSize;
     }
 
+    private static struct MethodReceiver {
+        ushort offset;
+        ushort writeBackFrameIndex;
+        ushort writeBackSize;
+    }
+
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
         // compiled callee is an ordinary function.
@@ -296,6 +302,7 @@ private struct Compiler {
                     _structLocals[parameter] = StructLocal(
                         offset, structDeclarationOf(parameter.type),
                     );
+                    _capturedOffsets[parameter] = offset;
                     continue;
                 }
 
@@ -3630,6 +3637,7 @@ private struct Compiler {
         const offset = allocateStructBlock(variable.type);
         auto declaration = structDeclarationOf(variable.type);
         _structLocals[variable] = StructLocal(offset, declaration);
+        _capturedOffsets[variable] = offset;
 
         zeroFrameBlock(offset, cast(uint) staticArraySize(variable.type));
 
@@ -4071,6 +4079,33 @@ private struct Compiler {
         ));
     }
 
+    // A captured struct local belongs to the caller frame, whereas a struct
+    // method's hidden `this` is an inline block in this frame. Materialise the
+    // captured block for the call, then preserve the caller-visible mutation by
+    // writing the whole block back once the callee returns.
+    private MethodReceiver methodReceiver(CallExp call) {
+        import dmd.astenums: TY;
+
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto variable = dot.e1.isVarExp)
+                if (auto declaration = variable.var.isVarDeclaration)
+                    if (_hasNestedContext &&
+                        declaration.type.toBasetype.ty == TY.Tstruct &&
+                        declaration !in _structLocals)
+                        if (auto captured = declaration in _capturedOffsets) {
+                            const offset = allocateStructBlock(declaration.type);
+                            const frameIndex = capturedFrameIndex(*captured);
+                            const blockSize = cast(ushort)
+                                staticArraySize(declaration.type);
+                            _code ~= Instruction(
+                                Op.frameLoad, offset, frameIndex, blockSize,
+                            );
+                            return MethodReceiver(offset, frameIndex, blockSize);
+                        }
+
+        return MethodReceiver(methodReceiverOffset(call), 0, 0);
+    }
+
     // A struct receiver returned by `ref`, or through `&`, from one of the
     // receiver call's own `ref` parameters aliases that caller lvalue. Resolve
     // nested forwarding calls from the inside out, passing each recovered
@@ -4285,9 +4320,9 @@ private struct Compiler {
                 // so the receiver is not evaluated a second time.
                 auto function_ = callFunction(call);
                 if (function_ !is null && function_.isCtorDeclaration !is null) {
-                    const receiver = methodReceiverOffset(call);
+                    const receiver = MethodReceiver(methodReceiverOffset(call));
                     compileCall(call, &receiver);
-                    return receiver;
+                    return receiver.offset;
                 }
 
                 return compileCall(call).offset;
@@ -7946,7 +7981,10 @@ private struct Compiler {
         if (destination is null)
             return null;
 
-        compileCall(call, evaluatedReceiver);
+        const receiver = evaluatedReceiver is null
+            ? null
+            : new MethodReceiver(*evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
         const value = compileExpression(rhs);
         const scalar = memberReturnScalar(returned);
         if (value.type != scalar)
@@ -8022,7 +8060,10 @@ private struct Compiler {
         if (destination is null)
             return null;
 
-        compileCall(call, evaluatedReceiver);
+        const receiver = evaluatedReceiver is null
+            ? null
+            : new MethodReceiver(*evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
         const value = compileExpression(rhs);
         const scalar = memberReturnScalar(selected);
         if (value.type != scalar)
@@ -9491,7 +9532,7 @@ private struct Compiler {
 
     private Operand compileCall(
         CallExp call,
-        const ushort* evaluatedMethodReceiver = null,
+        const MethodReceiver* evaluatedMethodReceiver = null,
         const size_t* evaluatedReferenceArgumentIndex = null,
         const ushort* evaluatedReferenceArgumentOffset = null,
     ) {
@@ -9614,19 +9655,22 @@ private struct Compiler {
         const argumentArea = allocateBytes(layout.blockSize, 8);
         Operand classReceiver;
         bool hasClassReceiver;
+        MethodReceiver structReceiver;
+        bool hasStructReceiver;
 
         // A struct method call `receiver.method(args)` passes the receiver as
         // the hidden `this` block (by reference) at the start of the argument
         // area: store the receiver's frame offset there, which the machine
         // dereferences on entry and writes back on return.
         if (layout.hasThis) {
-            const receiver = evaluatedMethodReceiver is null
-                ? methodReceiverOffset(call)
+            structReceiver = evaluatedMethodReceiver is null
+                ? methodReceiver(call)
                 : *evaluatedMethodReceiver;
+            hasStructReceiver = true;
             _code ~= Instruction(
                 Op.loadConstant,
                 cast(ushort) (argumentArea + layout.thisOffset),
-                constantIndex(receiver),
+                constantIndex(structReceiver.offset),
                 cast(ushort) size(ScalarType.uint_),
             );
         }
@@ -9751,6 +9795,13 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.pointerOffset,
                 compileSizeConstant(0),
+            );
+        if (hasStructReceiver && structReceiver.writeBackSize != 0)
+            _code ~= Instruction(
+                Op.frameStore,
+                structReceiver.offset,
+                structReceiver.writeBackFrameIndex,
+                structReceiver.writeBackSize,
             );
         if (isPointerType(call.type))
             return Operand(
