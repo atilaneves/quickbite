@@ -4645,6 +4645,40 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; Matrix!()) {
+    @("pointer.borrowedSliceAppendRebindsWhenGrowthFails." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int four() {
+                return 4;
+            }
+
+            unittest {
+                int[] array = [one(), two(), three()];
+                int[] slice = array[0 .. 1];
+                int* pointer = &slice[0];
+                slice ~= four();
+                assert(slice == [1, 4]);
+                assert(array == [1, 2, 3]);
+                assert(*pointer == 1);
+            }
+        });
+    }
+}
+
 // `mergeArrayAllocationMaps`
 // unconditionally unions a child's reverse (`arrayAllocationVariables`)
 // entries into the parent. A child's OWN fresh rebind of a shared

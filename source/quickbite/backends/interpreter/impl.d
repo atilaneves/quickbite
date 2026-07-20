@@ -10170,12 +10170,32 @@ private struct Walker {
             promoteArrayCell(variable);
         if (auto cell = variable in arrayCells) {
             const newLength = cell.length + 1;
+            bool rebound;
             if (!cell.tryExpandUsedTo(newLength)) {
-                cell.reserve(newLength);
-                cell.setLength(newLength);
+                if (
+                    cell.ownership == NativeBlock.Ownership.borrowed &&
+                    variable in sliceAliases
+                ) {
+                    auto replacement = NativeArray.allocate(
+                        cell.elementType,
+                        newLength,
+                    );
+                    replacement.block.bytes[0 .. cell.block.byteLength] =
+                        cell.block.bytes;
+                    dropArrayCell(variable);
+                    arrayCells[variable] = replacement;
+                    cell = variable in arrayCells;
+                    rebound = true;
+                } else {
+                    cell.reserve(newLength);
+                    cell.setLength(newLength);
+                }
             }
             writeArrayCellElement(*cell, newLength - 1, value);
-            locals[variable] = arrayValueFromCell(*current, *cell);
+            const boxedCurrent = rebound
+                ? Value.arrayValue(arrayElements(*current))
+                : *current;
+            locals[variable] = arrayValueFromCell(boxedCurrent, *cell);
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
             return locals[variable];
