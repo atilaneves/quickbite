@@ -1961,6 +1961,34 @@ static foreach (backend; Matrix!(
     }
 }
 
+// An untouched nested static-array sibling reads the first member's default
+// bits through its scalar leaf. Independently defaulting either array level
+// would incorrectly produce zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped nested static-array field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this union nested-static-array initializer"),
+)) {
+    @("union.untouchedNestedArraySiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float value;
+                int[1][1] bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits[0][0] == 0x7FC00000);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses this exact read with " ~

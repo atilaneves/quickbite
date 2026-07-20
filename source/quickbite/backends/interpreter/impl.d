@@ -9377,23 +9377,32 @@ private struct Walker {
         return readScalar(cell.elementType, cell.element(index));
     }
 
-    // Re-derives a static-array `Value` from `cell`'s scalar-element bytes
+    // Re-derives a static-array `Value` from `cell`'s scalar-leaf bytes
     // (the static-array-element counterpart of `structValueFromCell`, used
     // by `readArrayCellElement`'s branch above): every element is read back
     // from the cell -- authoritative once a write-through-pointer or a
     // direct element write touched it. Unlike `structValueFromCell`'s
     // per-field overlay onto a `current` base value, there is no non-scalar
     // sub-element here to preserve -- `promoteArrayCell` only ever creates
-    // this cell shape when every element is `native_scalar.
-    // isNativeScalarType` -- so this builds a fresh element array outright
-    // rather than taking a base `Value` to overlay onto.
+    // this cell shape when every leaf is `native_scalar.isNativeScalarType`.
+    // Nested static-array elements recurse through `NativeArray.arrayElement`;
+    // scalar elements terminate in the shared scalar codec.
     private Value arrayValueFromCell(ref NativeArray cell) {
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
         Value[] elements;
         elements.length = cell.length;
-        foreach (index; 0 .. cell.length)
-            elements[index] = readScalar(cell.elementType, cell.element(index));
+        foreach (index; 0 .. cell.length) {
+            if (cell.elementType.isTypeSArray) {
+                auto elementCell = cell.arrayElement(index);
+                elements[index] = arrayValueFromCell(elementCell);
+            } else {
+                elements[index] = readScalar(
+                    cell.elementType,
+                    cell.element(index),
+                );
+            }
+        }
 
         return Value.nativeArrayValue(elements, cell.block.address);
     }
@@ -10156,7 +10165,7 @@ private struct Walker {
         return defaultValue(field);
     }
 
-    // Scalar, plain-struct, or scalar-element-static-array sibling, matching
+    // Scalar, plain-struct, or scalar-leaf-static-array sibling, matching
     // `withUnionFieldWrite`'s aggregate scope: returns `false` (leaving `value`
     // untouched) for index 0 itself, a non-union literal, a sibling that
     // is none of those supported shapes, or a first member that is neither
@@ -10195,8 +10204,7 @@ private struct Walker {
         auto siblingStructType = field.type.toBasetype.isTypeStruct;
         const siblingStruct = siblingStructType !is null
             && siblingStructType.sym.isUnionDeclaration is null;
-        const siblingArray = isStaticArrayType(field.type)
-            && isNativeScalarType(field.type.toBasetype.nextOf.toBasetype);
+        const siblingArray = isScalarLeafStaticArray(field.type);
         if (!siblingScalar && !siblingStruct && !siblingArray)
             return false;
 
@@ -10236,19 +10244,23 @@ private struct Walker {
             auto siblingCell = cell.structField(index);
             value = structValueFromCell(current, siblingCell);
         } else {
-            auto current = defaultValue(field);
-            if (!current.isArray)
-                return false;
-
             auto siblingCell = cell.arrayField(index);
-            auto siblingElementType = field.type.toBasetype.nextOf.toBasetype;
-            foreach (elementIndex; 0 .. current.length)
-                current = current.withArrayElement(elementIndex,
-                    readScalar(siblingElementType,
-                        siblingCell.element(elementIndex)));
-            value = current;
+            value = arrayValueFromCell(siblingCell);
         }
         return true;
+    }
+
+    private bool isScalarLeafStaticArray(imported!"dmd.mtype".Type type) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+
+        if (!isStaticArrayType(type))
+            return false;
+
+        auto elementType = type.toBasetype.nextOf.toBasetype;
+        while (isStaticArrayType(elementType))
+            elementType = elementType.nextOf.toBasetype;
+        return isNativeScalarType(elementType);
     }
 
     private Value structLiteralFieldValue(
