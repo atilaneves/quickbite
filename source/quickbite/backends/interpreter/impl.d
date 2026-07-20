@@ -833,6 +833,11 @@ private struct Walker {
         if (!_activationFrame.hasSlot(variable))
             return;
 
+        if (variable.type.toBasetype.isTypeDArray !is null) {
+            mirrorSliceToFrame(variable, value);
+            return;
+        }
+
         if (!isPlaceComposable(variable.type))
             return;
 
@@ -840,6 +845,60 @@ private struct Walker {
             return;
 
         writeValue(placeAt(_activationFrame, variable), value);
+    }
+
+    // The slice sibling of `mirrorToFrame`'s place-composed write above: a
+    // slice is not `place_value.isPlaceComposable` (its elements live behind
+    // a stored pointer, not inline in the frame slot), so its frame slot
+    // instead mirrors the native `{ length, ptr }` header `place.Place.index`
+    // already reads through for a slice place -- built here the same way
+    // `NativeArray.borrow`/`writeSliceHeader` build and write one anywhere
+    // else in this file (see `classSliceField`). Authority stays with
+    // `locals`, exactly as `mirrorToFrame` documents: this never writes a
+    // header it cannot vouch for, it simply skips --
+    //
+    // - a local already promoted to `arrayCells` (a slice local can get its
+    //   own cell, `promoteSliceArrayCell`): that cell, not the boxed `value`
+    //   here, is the authority for it, matching `assertFrameMirror`'s own
+    //   identical exclusion.
+    // - a boxed value that is not (yet) `isArray` (still `void`, or mid-
+    //   construction), matching `placeShapeMatches`'s equivalent guard for
+    //   the composable shapes above.
+    // - a non-empty slice whose `arrayNativeAddress` is `null`: a boxed
+    //   `Value[]` tree assembled with no backing native block (e.g. a slice
+    //   of a plain array literal never promoted to a cell) has no single
+    //   stable element pointer to mirror. Only length 0 is safe to mirror
+    //   with a `null` pointer -- an empty slice's header is legitimately
+    //   `{ 0, null }` either way.
+    //
+    // Never throws otherwise: `NativeArray.writeSliceHeader`'s own two
+    // checks (bounds, scanned destination) can never fail here -- the
+    // destination is this slot's own frame block, sized to exactly
+    // `NativeArray.sliceHeaderByteLength` bytes by `layout.typeByteSize` for
+    // a slice type (the `(void[]).sizeof` header, no more), and a frame
+    // with any slice slot already scans conservatively
+    // (`frame_block.frameHasPointers` via `layout.typeHasPointers`, true for
+    // every `Type.isTypeDArray`).
+    private void mirrorSliceToFrame(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.native_array: NativeArray;
+
+        if (variable in arrayCells)
+            return;
+
+        if (!value.isArray)
+            return;
+
+        const nativeAddress = value.arrayNativeAddress;
+        if (nativeAddress is null && value.length != 0)
+            return;
+
+        auto arrayType = variable.type.toBasetype.isTypeDArray;
+        auto array = NativeArray.borrow(
+            arrayType.next, cast(void*) nativeAddress, value.length);
+
+        const byteOffset = cast(size_t)
+            (_activationFrame.slotAddress(variable) - _activationFrame.block.address);
+        array.writeSliceHeader(_activationFrame.block, byteOffset);
     }
 
     // Whether `value`'s own top-level shape matches what `place_value.
@@ -887,6 +946,11 @@ private struct Walker {
         if (!_activationFrame.hasSlot(variable))
             return;
 
+        if (variable.type.toBasetype.isTypeDArray !is null) {
+            assertFrameSliceMirror(variable, value);
+            return;
+        }
+
         if (!isPlaceComposable(variable.type))
             return;
 
@@ -905,6 +969,51 @@ private struct Walker {
         assert(
             frameBytesAt(_activationFrame.slotAddress(variable), length) == scratch.bytes,
             "frame mirror diverged from boxed local",
+        );
+    }
+
+    // The slice sibling of `assertFrameMirror`'s place-composed comparison
+    // above, matching `mirrorSliceToFrame`'s own header write in shape and
+    // guards -- a slice's frame slot holds a native `{ length, ptr }`
+    // header, not `place_value`-composed bytes, so its expected bytes are a
+    // freshly written header rather than a `writeValue` composition. The
+    // caller (`assertFrameMirror`) has already excluded a local promoted to
+    // `arrayCells`, so this only ever runs for a slice local `
+    // mirrorSliceToFrame` itself would (or would decline to) mirror; the
+    // remaining guards below -- not yet `isArray`, or a non-empty slice with
+    // no stable `arrayNativeAddress` -- match `mirrorSliceToFrame`'s
+    // identical ones exactly, so this never asserts on a local the mirror
+    // never covered in the first place.
+    private void assertFrameSliceMirror(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.native_array: NativeArray;
+
+        if (!value.isArray)
+            return;
+
+        const nativeAddress = value.arrayNativeAddress;
+        if (nativeAddress is null && value.length != 0)
+            return;
+
+        auto arrayType = variable.type.toBasetype.isTypeDArray;
+        auto array = NativeArray.borrow(
+            arrayType.next, cast(void*) nativeAddress, value.length);
+
+        // `Scan.conservative`, unconditionally, rather than reusing the
+        // composable path's `Scan.no` scratch above: unlike a composable
+        // value's scratch (which `writeValue` never writes a live GC pointer
+        // into), `writeSliceHeader` itself refuses to write a GC-visible
+        // block address into an unscanned destination -- see its own
+        // comment. A conservatively scanned scratch is always an accepted
+        // destination for it, whether or not this particular `nativeAddress`
+        // happens to be GC-visible.
+        auto scratch = NativeBlock.allocate(
+            NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+        array.writeSliceHeader(scratch, 0);
+
+        assert(
+            frameBytesAt(_activationFrame.slotAddress(variable), NativeArray.sliceHeaderByteLength)
+                == scratch.bytes,
+            "frame slice mirror diverged from boxed local",
         );
     }
 

@@ -874,7 +874,9 @@ in parallel and never blocks it.
      place-composable (`place_value.isPlaceComposable`: a native scalar,
      non-union struct, or static array of composable elements) has its
      frame slot kept as a verified shadow, mirrored by `setLocal` and
-     checked against the boxed value on every read), lvalue evaluation
+     checked against the boxed value on every read; a slice local's slot
+     instead holds a `{length, ptr}` header mirror (from the boxed value's
+     stable native backing) verified the same way), lvalue evaluation
      yielding places (a
      `place.Place` is an address plus its static type; `field`/`index`
      compose another place by DMD offsets/strides — `index` on a
