@@ -10179,9 +10179,9 @@ private struct Walker {
         return defaultValue(field);
     }
 
-    // Scalar, plain-struct, or scalar-leaf-static-array sibling, matching
-    // `withUnionFieldWrite`'s aggregate scope: returns `false` (leaving `value`
-    // untouched) for index 0 itself, a non-union literal, a sibling that
+    // Scalar, struct/union, or scalar-leaf-static-array sibling: returns
+    // `false` (leaving `value` untouched) for index 0 itself, a non-union
+    // literal, a sibling that
     // is none of those supported shapes, or a first member that is neither
     // `isNativeScalarType`, a plain (non-union) struct, nor a
     // scalar-leaf static array -- so the caller's existing independent-
@@ -10191,8 +10191,9 @@ private struct Walker {
     // `writeStructCellScalarFields` idiom to seed the transient cell's
     // shared bytes from the first member's already-resolved struct value
     // (scalar leaves only, recursing through nested structs/scalar-leaf
-    // arrays exactly as that helper already does) before reading the
-    // sibling back out.
+    // arrays exactly as that helper already does) before reading the sibling
+    // back out. A union sibling uses that same reader: each supported field
+    // is independently reconstructed from the one overlapping block.
     private bool unionSiblingDefaultFieldValue(
         imported!"dmd.expression".StructLiteralExp literal,
         in size_t index,
@@ -10214,8 +10215,7 @@ private struct Walker {
 
         const siblingScalar = isNativeScalarType(field.type);
         auto siblingStructType = field.type.toBasetype.isTypeStruct;
-        const siblingStruct = siblingStructType !is null
-            && siblingStructType.sym.isUnionDeclaration is null;
+        const siblingStruct = siblingStructType !is null;
         const siblingArray = isScalarLeafStaticArray(field.type);
         if (!siblingScalar && !siblingStruct && !siblingArray)
             return false;
