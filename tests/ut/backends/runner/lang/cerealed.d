@@ -1399,6 +1399,62 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `lazy` argument's thunk runs on the callee's own interpreter frame, but
+// it is a delegate over the *caller's* live frame: `x++` inside `lazy e`
+// must mutate the caller's `x`, and the caller's next read of `x` must see
+// the mutation without the interpreter's own frame/boxed-local mirror
+// diverging (ai/plans/interpreter.md).
+static foreach (backend; Matrix!(
+    // The bytecode core compiles a `lazy` argument's thunk without the
+    // outer local's own slot in scope, so `x++` there falls outside the
+    // `_locals` lookup its post-increment compilation depends on.
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("lazyArgumentMutatesCallerLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int forceLazy(lazy int e) { return e; }
+
+            unittest {
+                int x = 1;
+                const r = forceLazy(x++);
+                assert(r == 1);
+                assert(x == 2);
+            }
+        });
+    }
+}
+
+// The struct-field sibling of the fixture above: the mutated caller local is
+// a struct (frame-covered as a whole composed value, not a bare scalar), so
+// the frame mirror this exercises is the aggregate write path rather than
+// the scalar one.
+static foreach (backend; Matrix!(
+    // Same bytecode-core gap as the fixture above, over a struct field
+    // instead of a bare scalar.
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("lazyArgumentMutatesCallerStructField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+            }
+
+            int forceLazy(lazy int e) { return e; }
+
+            unittest {
+                Counter counter = Counter(1);
+                const r = forceLazy(counter.value++);
+                assert(r == 1);
+                assert(counter.value == 2);
+            }
+        });
+    }
+}
+
 // The owed §9.10 fixture, distilled to a raw pointer-slice reproduction: a
 // pointer slice shrunk to `[0 .. 0]` must retain its backing allocation, so
 // a regrow through `.ptr` still sees the original storage rather than a

@@ -451,6 +451,10 @@ private struct Walker {
         InterpreterInboundTrampolineSession* durableInboundSession;
     private Expression[VarDeclaration] lazyArgumentExpressions;
     private Value[VarDeclaration][VarDeclaration] lazyArgumentLocals;
+    // The caller's own `_activationFrame` at the moment its `lazy` argument
+    // was bound, captured alongside `lazyArgumentLocals` so `runLazyArgument`
+    // can swap `_activationFrame` to it too -- see the comment there.
+    private FrameBlock[VarDeclaration] lazyArgumentFrames;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private ArrayElementAlias[VarDeclaration] arrayElementAliases;
@@ -2496,7 +2500,9 @@ private struct Walker {
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
         forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
+        child.bindFunctionParameters(
+            call.f, arguments, argumentExpressions, locals, _activationFrame,
+        );
 
         try {
             child.runStatement(call.f.fbody);
@@ -2546,6 +2552,7 @@ private struct Walker {
         child.delegates = delegates.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
+        child.lazyArgumentFrames = lazyArgumentFrames.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -6035,7 +6042,9 @@ private struct Walker {
         forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
         registerClassArgumentAliases(function_, argumentExpressions, child);
-        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
+        child.bindFunctionParameters(
+            function_, arguments, argumentExpressions, locals, _activationFrame,
+        );
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
         registerDirectAggregateFieldRefArgumentAliases(
             function_,
@@ -6113,7 +6122,9 @@ private struct Walker {
         child.hasThis = true;
         registerClassArgumentAliases(function_, argumentExpressions, child);
         registerClassThisAlias(function_, receiverExpression, child);
-        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
+        child.bindFunctionParameters(
+            function_, arguments, argumentExpressions, locals, _activationFrame,
+        );
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
         registerDirectAggregateFieldRefArgumentAliases(
             function_,
@@ -6164,6 +6175,7 @@ private struct Walker {
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
+        lazyArgumentFrames = child.lazyArgumentFrames;
         mergePerFrameCellsFrom(child);
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
@@ -6196,6 +6208,7 @@ private struct Walker {
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
+        lazyArgumentFrames = child.lazyArgumentFrames;
         mergePerFrameCellsFrom(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -7126,6 +7139,7 @@ private struct Walker {
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions = null,
         Value[VarDeclaration] callerLocals = null,
+        FrameBlock callerFrame = FrameBlock.init,
     ) {
         if (arguments.length == 0) {
             if (function_.parameters !is null && function_.parameters.length != 0)
@@ -7147,6 +7161,7 @@ private struct Walker {
                         ? argumentExpressions[index]
                         : null,
                     callerLocals,
+                    callerFrame,
                 );
                 continue;
             }
@@ -7250,11 +7265,17 @@ private struct Walker {
     // still points at, so any mutation performed while evaluating the lazy
     // expression (e.g. a forwarded range's cursor advancing) is visible to
     // the declaring frame immediately, exactly as it is for a real D
-    // closure — no separate write-back step is needed.
+    // closure — no separate write-back step is needed. `callerFrame` is
+    // captured the same way: the thunk runs on the callee's `Walker`, whose
+    // own `_activationFrame` has no slot for the caller's locals, so
+    // `runLazyArgument` swaps `_activationFrame` to this captured frame for
+    // the duration of the thunk, keeping `setLocal`'s frame mirror pointed at
+    // the local it is actually writing instead of silently skipping it.
     private void bindLazyFunctionParameter(
         VarDeclaration parameter,
         Expression argumentExpression,
         Value[VarDeclaration] callerLocals,
+        FrameBlock callerFrame,
     ) {
         // Same fresh-binding rule as `bindFunctionParameters`: a lazy
         // parameter is still a new
@@ -7268,6 +7289,8 @@ private struct Walker {
                 lazyArgumentExpressions[parameter] = *expression;
                 if (auto captured = variable in lazyArgumentLocals)
                     lazyArgumentLocals[parameter] = *captured;
+                if (auto capturedFrame = variable in lazyArgumentFrames)
+                    lazyArgumentFrames[parameter] = *capturedFrame;
                 return;
             }
         }
@@ -7277,6 +7300,7 @@ private struct Walker {
 
         lazyArgumentExpressions[parameter] = argumentExpression;
         lazyArgumentLocals[parameter] = callerLocals;
+        lazyArgumentFrames[parameter] = callerFrame;
     }
 
     private Value runLazyArgument(VarDeclaration variable) {
@@ -7288,12 +7312,25 @@ private struct Walker {
         if (captured is null)
             throw new Exception("Unsupported eval call.");
 
+        auto capturedFrame = variable in lazyArgumentFrames;
+        if (capturedFrame is null)
+            throw new Exception("Unsupported eval call.");
+
         auto savedLocals = locals;  // mutated below while evaluating the thunk
-        scope(exit) locals = savedLocals;
+        auto savedFrame = _activationFrame;
+        scope(exit) {
+            locals = savedLocals;
+            _activationFrame = savedFrame;
+        }
 
         // No `.dup`: see the comment on `bindLazyFunctionParameter`. `locals`
-        // becomes the caller's own live table for the duration of the thunk.
+        // becomes the caller's own live table for the duration of the thunk,
+        // and `_activationFrame` becomes the caller's own frame so a mutation
+        // the thunk performs (`setLocal`) mirrors into the slot the caller
+        // will actually read afterwards, instead of the callee's unrelated
+        // frame silently discarding it.
         locals = *captured;
+        _activationFrame = *capturedFrame;
         return runLazyArgumentExpression(*expression);
     }
 
@@ -8675,7 +8712,9 @@ private struct Walker {
         forkPerFrameCellsInto(child);
         child.thisValue = receiver;
         child.hasThis = true;
-        child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
+        child.bindFunctionParameters(
+            function_, arguments, argumentExpressions, locals, _activationFrame,
+        );
 
         try {
             child.runStatement(function_.fbody);
@@ -8747,7 +8786,9 @@ private struct Walker {
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
         forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
-        child.bindFunctionParameters(call.f, arguments, argumentExpressions, locals);
+        child.bindFunctionParameters(
+            call.f, arguments, argumentExpressions, locals, _activationFrame,
+        );
 
         try {
             child.runStatement(call.f.fbody);
@@ -12133,6 +12174,7 @@ private struct Walker {
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
+        lazyArgumentFrames = child.lazyArgumentFrames;
         mergePerFrameCellsFrom(child);
         return child.thisValue;
     }
