@@ -3676,13 +3676,11 @@ private struct Compiler {
             return;
         }
 
-        // A bare `U u;` for a union defaults from the FIRST declared member's
-        // own default value, reinterpreted as every other member's overlapping
-        // bytes, not from each field's independent default the way a struct's
-        // disjoint fields do. DMD's own `defaultInitLiteral` already encodes
-        // this rule (it nulls out every field beyond the first member's byte
-        // extent), so reuse its literal instead of re-deriving the rule here.
-        if (source.isVarExp !is null && declaration.isUnionDeclaration !is null) {
+        // DMD lowers `S value;` through the struct's init-symbol VarExp. Its
+        // `defaultInitLiteral` describes the actual default bytes, including
+        // enum fields and non-zero defaults; use it rather than treating an
+        // init-symbol read as a value stored in the frame.
+        if (source.isVarExp !is null) {
             import dmd.typesem: defaultInitLiteral;
 
             auto literal = variable.type.toBasetype.isTypeStruct
