@@ -10156,11 +10156,11 @@ private struct Walker {
         return defaultValue(field);
     }
 
-    // Scalar or plain-struct sibling, matching `withUnionFieldWrite`'s
-    // aggregate scope: returns `false` (leaving `value`
+    // Scalar, plain-struct, or scalar-element-static-array sibling, matching
+    // `withUnionFieldWrite`'s aggregate scope: returns `false` (leaving `value`
     // untouched) for index 0 itself, a non-union literal, a sibling that
-    // is neither a native scalar nor a plain struct, or a first member that is
-    // neither `isNativeScalarType`, a plain (non-union) struct, nor a
+    // is none of those supported shapes, or a first member that is neither
+    // `isNativeScalarType`, a plain (non-union) struct, nor a
     // scalar-element static array -- so the caller's existing independent-
     // `defaultValue` fallback applies unchanged in every other case,
     // including the still-open gap for a class first member/sibling. When
@@ -10195,7 +10195,9 @@ private struct Walker {
         auto siblingStructType = field.type.toBasetype.isTypeStruct;
         const siblingStruct = siblingStructType !is null
             && siblingStructType.sym.isUnionDeclaration is null;
-        if (!siblingScalar && !siblingStruct)
+        const siblingArray = isStaticArrayType(field.type)
+            && isNativeScalarType(field.type.toBasetype.nextOf.toBasetype);
+        if (!siblingScalar && !siblingStruct && !siblingArray)
             return false;
 
         auto firstField = structLiteralField(literal, 0);
@@ -10226,13 +10228,25 @@ private struct Walker {
 
         if (siblingScalar) {
             value = readScalar(field.type, cell.field(index));
-        } else {
+        } else if (siblingStruct) {
             auto current = defaultValue(field);
             if (!current.isStruct)
                 return false;
 
             auto siblingCell = cell.structField(index);
             value = structValueFromCell(current, siblingCell);
+        } else {
+            auto current = defaultValue(field);
+            if (!current.isArray)
+                return false;
+
+            auto siblingCell = cell.arrayField(index);
+            auto siblingElementType = field.type.toBasetype.nextOf.toBasetype;
+            foreach (elementIndex; 0 .. current.length)
+                current = current.withArrayElement(elementIndex,
+                    readScalar(siblingElementType,
+                        siblingCell.element(elementIndex)));
+            value = current;
         }
         return true;
     }

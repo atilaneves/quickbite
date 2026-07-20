@@ -1933,6 +1933,34 @@ static foreach (backend; Matrix!(
     }
 }
 
+// An untouched scalar-element static-array sibling reads the same first-
+// member default bits as scalar and plain-struct siblings. Independently
+// defaulting the array would incorrectly produce zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped static-array field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this union static-array initializer"),
+)) {
+    @("union.untouchedArraySiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float value;
+                int[1] bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits[0] == 0x7FC00000);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses this exact read with " ~
