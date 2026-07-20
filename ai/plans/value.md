@@ -26,7 +26,9 @@ stand:
   elements; scalar-leaf addresses within plain nested static-array locals;
   struct fields
   (scalar, scalar-element static-array, one-level-nested struct); class
-  fields of the same shapes plus scalar-element dynamic-array fields and
+  fields of the same shapes plus scalar- and struct-element dynamic-array
+  fields, including scalar-field pointer and `ref` aliases within struct
+  elements, and
   class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
   class objects copied from class-typed fields into locals, with promoted
@@ -366,6 +368,10 @@ a checked fact; do not relearn them.
   mechanism for both struct and class receivers. When the field already has
   a memoized address, taking the local's address reuses it; writes refresh the
   receiver's existing native cell rather than creating another cell family.
+- A scalar field reached through an indexed native aggregate composes the
+  array element's native address with DMD's field offset. A `ref` local bound
+  to that field borrows the same byte range through the existing scalar-cell
+  family; it does not acquire a path-specific storage or reverse-lookup map.
 - A whole class-variable read reconstructs every cell-supported field
   from the class cell before the value is returned, passed onward,
   compared, or rendered. Direct field reads alone are insufficient: a
@@ -798,8 +804,8 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      one level has no promotion, write-through, or pointer-identity support.
      Extend the common mechanism, never add another family.
    - Widening not yet done: class-typed fields and dynamic-array fields whose
-     element is not a native scalar have no cell support on either the read or
-     write side;
+     element is neither a native scalar nor a supported non-union struct have
+     no cell support on either the read or write side;
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and

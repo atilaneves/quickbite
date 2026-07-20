@@ -2567,6 +2567,46 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A class slice field whose elements are structs keeps its element storage
+// authoritative after an element field becomes addressable. Pointer and ref
+// mutations must both be visible through a whole-field copy and a whole-object
+// argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class array field element"),
+)) {
+    @("class.structSliceFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            class C {
+                S[] values;
+            }
+
+            int observe(C value) {
+                S[] copy = value.values;
+                return copy[0].x;
+            }
+
+            unittest {
+                C value = new C();
+                value.values = [S(42)];
+                int* pointer = &value.values[0].x;
+                *pointer = 77;
+                ref int alias_ = value.values[0].x;
+                alias_ = 99;
+                S[] field = value.values;
+                assert(field[0].x == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
 // A struct cell promoted through one alias is authoritative for the whole
 // value reached through another alias. SystemLinker therefore observes a
 // pointer write when the aliased struct is passed onward as a value.

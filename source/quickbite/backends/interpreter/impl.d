@@ -1973,6 +1973,19 @@ private struct Walker {
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
 
+            if (auto index = dot.e1.isIndexExp) {
+                import quickbite.backends.interpreter.layout: fieldByteOffset;
+
+                if (auto field = dot.var.isVarDeclaration) {
+                    const elementIndex = runExpression(index.e2).asLong;
+                    const elementPointer = arrayPointer(index.e1, elementIndex, op);
+                    if (elementPointer.isNativePointer)
+                        return elementPointer.pointerOffsetBy(
+                            cast(long) fieldByteOffset(field),
+                        );
+                }
+            }
+
             // Any other field type: a pointer snapshotting the field's
             // current value, mirroring runNewScalarPointerExpression's
             // single-value allocation. The id is memoized per (receiver
@@ -3301,10 +3314,10 @@ private struct Walker {
     // widening, built directly here since a `classCells` entry has no
     // `NativeStruct` wrapper of its own -- see `classCells`'s own field
     // comment), and recurses one level into every (non-union) struct-typed
-    // field, and writes scalar-element dynamic-array headers whose backing
-    // storage is itself a `NativeArray`. Every other non-scalar field
-    // (another class reference, a non-scalar-element dynamic array, or a
-    // union at any level) is left untouched.
+    // field, and writes scalar- or struct-element dynamic-array headers whose
+    // backing storage is itself a `NativeArray`. Every other non-scalar field
+    // (another class reference, an unsupported dynamic-array element shape,
+    // or a union at any level) is left untouched.
     private void writeClassCellScalarFields(
         ref NativeBlock cell,
         imported!"dmd.dclass".ClassDeclaration class_,
@@ -3345,7 +3358,11 @@ private struct Walker {
 
             if (isDynamicArrayType(field.type)) {
                 auto elementType = field.type.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 const fieldValue = classValue.classFieldAt(index);
@@ -3361,9 +3378,9 @@ private struct Walker {
                     );
                 if (fieldValue.arrayNativeAddress is null)
                     foreach (elementIndex; 0 .. fieldValue.length)
-                        writeScalar(
-                            elementType,
-                            arrayCell.element(elementIndex),
+                        writeArrayCellElement(
+                            arrayCell,
+                            elementIndex,
                             fieldValue[elementIndex],
                         );
                 arrayCell.writeSliceHeader(cell, fieldByteOffset(field));
@@ -6254,8 +6271,9 @@ private struct Walker {
     // non-scalar, non-scalar-element-array, non-(non-union)-struct field is
     // left exactly as `current` already had it, matching
     // `writeClassCellScalarFields`'s own bounded reach for this phase's
-    // scope. Scalar-element dynamic-array fields reconstruct through the
-    // slice header stored in the class cell and the referenced element block.
+    // scope. Scalar- and struct-element dynamic-array fields reconstruct
+    // through the slice header stored in the class cell and the referenced
+    // element block.
     private Value classValueFromCell(
         in Value current,
         ref NativeBlock cell,
@@ -6305,7 +6323,11 @@ private struct Walker {
 
             if (isDynamicArrayType(field.type)) {
                 auto elementType = field.type.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 const fieldValue = value.classFieldAt(index);
@@ -7340,9 +7362,8 @@ private struct Walker {
     // serves pointer DEREF reads): `receiverExpression` must resolve to a
     // `classCells` key via `classCellKeyVariable` above (a bare `VarExp`, or
     // a bare `ThisExp` resolving to `currentFunction.vthis`), and
-    // `fieldIndex` must be either a `native_scalar.isNativeScalarType` field
-    // or (aggregate-composition follow-up) a scalar-element static-array
-    // field, or this returns
+    // `fieldIndex` must be a supported scalar or aggregate-composition field,
+    // or this returns
     // `false` and leaves `value` untouched -- every one of those keeps the
     // caller's existing boxed fallback unchanged. `target` is the caller's
     // already-computed boxed receiver value (`runDotVarExpression`'s own
@@ -7417,7 +7438,11 @@ private struct Walker {
 
         if (isDynamicArrayType(field.type)) {
             auto elementType = field.type.toBasetype.nextOf.toBasetype;
-            if (!isNativeScalarType(elementType))
+            auto structType = elementType.isTypeStruct;
+            if (!isNativeScalarType(elementType) && (
+                structType is null ||
+                structType.sym.isUnionDeclaration !is null
+            ))
                 return false;
 
             const fieldValue = target.classFieldAt(fieldIndex);
@@ -11451,10 +11476,39 @@ private struct Walker {
         const isStructFieldAlias = isRefVariable(variable) &&
             dotInitializer !is null;
         size_t arrayElementAliasIndex;
+        Value nativeFieldAliasValue;
+        bool hasNativeFieldAlias;
+        if (
+            isRefVariable(variable) &&
+            dotInitializer !is null &&
+            dotInitializer.e1.isIndexExp !is null
+        ) {
+            import dmd.tokens: EXP;
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType, readScalar;
+
+            if (isNativeScalarType(variable.type)) {
+                const pointer = addressOfExpression(dotInitializer, EXP.address);
+                if (pointer.isNativePointer) {
+                    // Mutable because both the scalar reader and the map
+                    // retain the borrowed byte-range view by mutable value.
+                    auto cell = NativeBlock.borrow(
+                        pointer.asNativePointer,
+                        typeByteSize(variable.type),
+                    );
+                    nativeFieldAliasValue = readScalar(variable.type, cell.bytes);
+                    scalarCells[variable] = cell;
+                    hasNativeFieldAlias = true;
+                }
+            }
+        }
         auto literal = initializer.isFuncExp;
         auto value = storageValue(
             variable.type,
-            literal !is null
+            hasNativeFieldAlias
+                ? nativeFieldAliasValue
+                : literal !is null
                 ? runFunctionLiteralDeclaration(literal)
                 : isArrayElementAlias
                 ? runIndexExpression(indexInitializer, arrayElementAliasIndex)
