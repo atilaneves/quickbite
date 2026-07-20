@@ -796,6 +796,12 @@ private struct Walker {
         return object.classHasType(className(classType.sym));
     }
 
+    // Single write path for a local's boxed value; native-storage mirroring
+    // and the authority switch hook here.
+    private void setLocal(VarDeclaration variable, Value value) {
+        locals[variable] = value;
+    }
+
     private void bindCatchVariable(
         imported!"dmd.statement".Catch catch_,
         in Value object,
@@ -803,7 +809,7 @@ private struct Walker {
         if (catch_.var is null)
             return;
 
-        locals[catch_.var] = nativeExceptionCatchObject(catch_, object);
+        setLocal(catch_.var, nativeExceptionCatchObject(catch_, object));
         uninitializedLocals.remove(catch_.var);
     }
 
@@ -1222,7 +1228,7 @@ private struct Walker {
     ) {
         if (with_.wthis !is null) {
             const structValue = runExpression(with_.exp);
-            locals[with_.wthis] = Value.pointerValue(structValue);
+            setLocal(with_.wthis, Value.pointerValue(structValue));
             runStatement(with_._body);
             if (auto updated = with_.wthis in locals)
                 writeLocation(
@@ -1728,12 +1734,12 @@ private struct Walker {
             if (variable.isDataseg && variable._init !is null) {
                 resolveNonRootInitializer(variable);
                 if (auto initializer = variable._init.isExpInitializer) {
-                    locals[variable] = defaultValue(variable);
+                    setLocal(variable, defaultValue(variable));
                     const value = storageValue(
                         variable.type,
                         runExpression(initializer.exp),
                     );
-                    locals[variable] = value;
+                    setLocal(variable, value);
                     return value;
                 }
             }
@@ -2576,7 +2582,7 @@ private struct Walker {
             // its storage (as aggregate reads do) so writes through the
             // pointer have somewhere to land.
             if (variable in uninitializedLocals && variable !in locals)
-                locals[variable] = defaultValue(variable);
+                setLocal(variable, defaultValue(variable));
 
             if (auto current = variable in locals) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
@@ -4232,7 +4238,7 @@ private struct Walker {
 
         if (auto cell = variable in scalarCells) {
             writeScalar(variable.type, cell.bytes, value);
-            locals[variable] = readScalar(variable.type, cell.bytes);
+            setLocal(variable, readScalar(variable.type, cell.bytes));
             uninitializedLocals.remove(variable);
             return;
         }
@@ -4351,7 +4357,7 @@ private struct Walker {
             classRebinds[variable] = true;
         }
 
-        locals[variable] = value;
+        setLocal(variable, value);
         uninitializedLocals.remove(variable);
     }
 
@@ -4630,7 +4636,7 @@ private struct Walker {
             throw new Exception("Unsupported interpreter pointer target.");
 
         if ((*variable in locals) is null)
-            locals[*variable] = defaultValue(*variable);
+            setLocal(*variable, defaultValue(*variable));
 
         const allocation = scalarBytes((*variable).type, localPointerTarget(pointer));
         if (lower > upper || upper > allocation.length)
@@ -5545,7 +5551,7 @@ private struct Walker {
                 ? elements[index - lower]
                 : (*current)[index];
 
-        locals[variable] = Value.arrayValue(updated);
+        setLocal(variable, Value.arrayValue(updated));
         uninitializedLocals.remove(variable);
         return locals[variable];
     }
@@ -5714,7 +5720,7 @@ private struct Walker {
 
         if (auto found = (*call.arguments)[2].isVarExp)
             if (auto foundVariable = found.var.isVarDeclaration)
-                locals[foundVariable] = Value(contains);
+                setLocal(foundVariable, Value(contains));
 
         return Value.pointerValue(
             contains
@@ -5751,7 +5757,7 @@ private struct Walker {
 
         const key = runExpression((*call.arguments)[1]);
         const removed = current.assocArrayContains(key);
-        locals[variable] = current.withoutAssocArrayKey(key);
+        setLocal(variable, current.withoutAssocArrayKey(key));
         return Value(removed);
     }
 
@@ -5860,7 +5866,7 @@ private struct Walker {
                         child.thisStructArrayFieldAliases = *aliases;
                         foreach (_, sourceVariable; aliases.sources)
                             if (auto value = sourceVariable in locals)
-                                child.locals[sourceVariable] = *value;
+                                child.setLocal(sourceVariable, *value);
                     }
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
@@ -6249,7 +6255,7 @@ private struct Walker {
     private void writeBackGlobals(ref Walker child) {
         foreach (variable, value; child.locals) {
             if (variable.isDataseg)
-                locals[variable] = value;
+                setLocal(variable, value);
         }
     }
 
@@ -6273,7 +6279,7 @@ private struct Walker {
                 continue;
 
             if (auto value = variable in child.locals)
-                locals[variable] = *value;
+                setLocal(variable, *value);
         }
     }
 
@@ -6331,7 +6337,7 @@ private struct Walker {
                     /* arrayIsRefWriteback */ arrayWritebackIsMutation(variable, child),
                 );
             else
-                locals[variable] = *value;
+                setLocal(variable, *value);
         }
     }
 
@@ -6376,7 +6382,7 @@ private struct Walker {
             if (cell is null)
                 continue;
 
-            locals[variable] = structValueFromCell(*current, *cell);
+            setLocal(variable, structValueFromCell(*current, *cell));
         }
     }
 
@@ -6399,7 +6405,7 @@ private struct Walker {
             if (cell is null)
                 continue;
 
-            locals[variable] = structValueFromCell(*current, *cell);
+            setLocal(variable, structValueFromCell(*current, *cell));
         }
     }
 
@@ -6427,7 +6433,7 @@ private struct Walker {
             if (cell is null)
                 continue;
 
-            locals[variable] = structValueFromCell(*current, *cell);
+            setLocal(variable, structValueFromCell(*current, *cell));
         }
     }
 
@@ -6456,7 +6462,7 @@ private struct Walker {
             if (classType is null || classType.sym is null)
                 continue;
 
-            locals[variable] = classValueFromCell(*current, *cell, classType.sym);
+            setLocal(variable, classValueFromCell(*current, *cell, classType.sym));
         }
     }
 
@@ -6492,7 +6498,7 @@ private struct Walker {
             if (classType is null || classType.sym is null)
                 continue;
 
-            locals[variable] = classValueFromCell(*current, *cell, classType.sym);
+            setLocal(variable, classValueFromCell(*current, *cell, classType.sym));
         }
     }
 
@@ -6521,7 +6527,7 @@ private struct Walker {
             if (classType is null || classType.sym is null)
                 continue;
 
-            locals[variable] = classValueFromCell(*current, *cell, classType.sym);
+            setLocal(variable, classValueFromCell(*current, *cell, classType.sym));
         }
     }
 
@@ -6785,7 +6791,7 @@ private struct Walker {
 
     private void seedChildLocal(ref Walker child, VarDeclaration variable) {
         if (auto value = variable in locals)
-            child.locals[variable] = *value;
+            child.setLocal(variable, *value);
     }
 
     private bool isArrayVariable(VarDeclaration variable) {
@@ -6837,7 +6843,7 @@ private struct Walker {
     private void writeBackThisStructArrayFieldAliases(ref Walker child) {
         foreach (_, sourceVariable; child.thisStructArrayFieldAliases.sources) {
             if (auto value = sourceVariable in child.locals)
-                locals[sourceVariable] = *value;
+                setLocal(sourceVariable, *value);
         }
     }
 
@@ -6924,7 +6930,7 @@ private struct Walker {
             // recursion reuses the same
             // `VarDeclaration` for a parameter at every call depth.
             dropNonClassCells(parameter);
-            locals[parameter] = arguments[index];
+            setLocal(parameter, arguments[index]);
 
             // `runRefArgumentExpression` seeds a `ref` argument still bound to
             // an uninitialized caller local with a bare `Value.void_`
@@ -7028,7 +7034,7 @@ private struct Walker {
         // stack slot for its own `VarDeclaration`, so drop any inherited/
         // stale cell.
         dropNonClassCells(parameter);
-        locals[parameter] = Value.undisplayable;
+        setLocal(parameter, Value.undisplayable);
 
         if (auto variable = lazyExpressionVariable(argumentExpression)) {
             if (auto expression = variable in lazyArgumentExpressions) {
@@ -7237,7 +7243,7 @@ private struct Walker {
                     if (auto var = argument.isVarExp)
                         if (auto variable = var.var.isVarDeclaration) {
                             dropArrayCell(variable);
-                            locals[variable] = *value;
+                            setLocal(variable, *value);
                             uninitializedLocals.remove(variable);
                             promoteArrayCell(variable);
                             continue;
@@ -8293,7 +8299,7 @@ private struct Walker {
                         pointeeSize <= cell.bytes.length
                     ) {
                         writeScalar(pointeeType, cell.bytes[0 .. pointeeSize], value);
-                        locals[*variable] = readScalar((*variable).type, cell.bytes);
+                        setLocal(*variable, readScalar((*variable).type, cell.bytes));
                         uninitializedLocals.remove(*variable);
                         return;
                     }
@@ -8313,7 +8319,7 @@ private struct Walker {
                     dropArrayCell(*variable);
                     arrayRebinds[*variable] = true;
                 }
-                locals[*variable] = value;
+                setLocal(*variable, value);
                 uninitializedLocals.remove(*variable);
                 return;
             }
@@ -8653,21 +8659,21 @@ private struct Walker {
             return false;
 
         if (!current.isArray) {
-            locals[*variable] = scalarWithByte(
+            setLocal(*variable, scalarWithByte(
                 (*variable).type,
                 *current,
                 cast(size_t) pointer.pointerElementOffset,
                 value,
-            );
+            ));
             arrayPointerWritebacks[*variable] = true;
             uninitializedLocals.remove(*variable);
             return true;
         }
 
-        locals[*variable] = current.withArrayElement(
+        setLocal(*variable, current.withArrayElement(
             cast(size_t) pointer.pointerElementOffset,
             value,
-        );
+        ));
         // A write THROUGH the pointer (`*p = x`, `p[k] = x`) must refresh the
         // same promoted `arrayCells` entry a direct element write
         // (`writeIndexLocation`) already keeps current, or a second pointer
@@ -8736,7 +8742,7 @@ private struct Walker {
             value,
         );
         if (current !is null)
-            locals[variable] = current.withStructField(fieldIndex, value);
+            setLocal(variable, current.withStructField(fieldIndex, value));
         structFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
         return true;
@@ -8786,7 +8792,7 @@ private struct Walker {
 
         if (current !is null) {
             const updatedField = current.structFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
-            locals[*variable] = current.withStructField(*fieldIndex, updatedField);
+            setLocal(*variable, current.withStructField(*fieldIndex, updatedField));
         }
         structArrayFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
@@ -8840,7 +8846,7 @@ private struct Walker {
         if (current !is null) {
             const updatedInner = current.structFieldAt(outerFieldIndex)
                 .withStructField(innerFieldIndex, value);
-            locals[variable] = current.withStructField(outerFieldIndex, updatedInner);
+            setLocal(variable, current.withStructField(outerFieldIndex, updatedInner));
         }
         nestedStructFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
@@ -8903,7 +8909,7 @@ private struct Walker {
         if (current !is null)
             if (auto currentCell = variable in classCells)
                 if (currentCell.bytes.ptr is cell.bytes.ptr)
-                    locals[variable] = current.withClassField(fieldIndex, value);
+                    setLocal(variable, current.withClassField(fieldIndex, value));
         classFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
         return true;
@@ -8970,7 +8976,7 @@ private struct Walker {
         if (current !is null) {
             const updatedInner = current.classFieldAt(outerFieldIndex)
                 .withStructField(innerFieldIndex, value);
-            locals[variable] = current.withClassField(outerFieldIndex, updatedInner);
+            setLocal(variable, current.withClassField(outerFieldIndex, updatedInner));
         }
         nestedClassStructFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
@@ -9040,7 +9046,7 @@ private struct Walker {
 
         if (current !is null) {
             const updatedField = current.classFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
-            locals[*variable] = current.withClassField(*fieldIndex, updatedField);
+            setLocal(*variable, current.withClassField(*fieldIndex, updatedField));
         }
         classArrayFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
@@ -9176,7 +9182,7 @@ private struct Walker {
         if (current is null)
             throw new Exception("Unsupported interpreter assignment target.");
 
-        locals[variable] = current.withArrayElement(arrayIndex, value);
+        setLocal(variable, current.withArrayElement(arrayIndex, value));
         writeThroughSliceAlias(variable, arrayIndex, value);
         writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
@@ -9435,7 +9441,7 @@ private struct Walker {
                 const authoritative = classCellOverlaidValue(dot.e1, receiver);
                 const source = authoritative.classFieldAt(fieldIndex);
                 if (index.lengthVar !is null)
-                    locals[index.lengthVar] = Value(source.length);
+                    setLocal(index.lengthVar, Value(source.length));
                 const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
                 const value = runExpression(rhs);
                 const updatedArray = source.withArrayElement(arrayIndex, value);
@@ -9459,7 +9465,7 @@ private struct Walker {
             const receiver = runExpression(dot.e1);
             const source = receiver.structFieldAt(fieldIndex);
             if (index.lengthVar !is null)
-                locals[index.lengthVar] = Value(source.length);
+                setLocal(index.lengthVar, Value(source.length));
             const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
             const value = runExpression(rhs);
             const updatedArray = source.withArrayElement(arrayIndex, value);
@@ -9483,7 +9489,7 @@ private struct Walker {
 
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
         const value = runExpression(rhs);
-        locals[variable] = current.withArrayElement(arrayIndex, value);
+        setLocal(variable, current.withArrayElement(arrayIndex, value));
         writeThroughSliceAlias(variable, arrayIndex, value);
         writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
@@ -9788,7 +9794,7 @@ private struct Walker {
         const value = function_ is null
             ? runExpression(rhs)
             : functionPointerValue(function_);
-        locals[alias_.source] = current.withAssocArrayEntry(alias_.key, value);
+        setLocal(alias_.source, current.withAssocArrayEntry(alias_.key, value));
         uninitializedLocals.remove(alias_.source);
         return value;
     }
@@ -9825,10 +9831,10 @@ private struct Walker {
         const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
         const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
         const value = runExpression(rhs);
-        locals[variable] = current.withArrayElement(
+        setLocal(variable, current.withArrayElement(
             outerIndex,
             (*current)[outerIndex].withArrayElement(innerIndex, value),
-        );
+        ));
         const updatedOuter = locals[variable][outerIndex];
         writeThroughArrayCell(variable, outerIndex, updatedOuter);
         uninitializedLocals.remove(variable);
@@ -9911,7 +9917,7 @@ private struct Walker {
                 : block ? copyArrayValue(value)
                 : value.isArray ? value[index - lower] : value;
 
-        locals[variable] = Value.arrayValue(elements);
+        setLocal(variable, Value.arrayValue(elements));
         uninitializedLocals.remove(variable);
 
         // A promoted `arrayCells` entry
@@ -10219,13 +10225,13 @@ private struct Walker {
             const boxedCurrent = rebound
                 ? Value.arrayValue(arrayElements(*current))
                 : *current;
-            locals[variable] = arrayValueFromCell(boxedCurrent, *cell);
+            setLocal(variable, arrayValueFromCell(boxedCurrent, *cell));
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
             return locals[variable];
         }
 
-        locals[variable] = current.withAppendedArrayElement(value);
+        setLocal(variable, current.withAppendedArrayElement(value));
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
 
@@ -10303,7 +10309,7 @@ private struct Walker {
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
         const appended = (*current)[arrayIndex]
             .withAppendedArrayElement(runExpression(rhs));
-        locals[variable] = current.withArrayElement(arrayIndex, appended);
+        setLocal(variable, current.withArrayElement(arrayIndex, appended));
         uninitializedLocals.remove(variable);
         return appended;
     }
@@ -10470,12 +10476,12 @@ private struct Walker {
                         offset,
                         offset + source.length,
                     );
-                    locals[sourceVariable] = arrayValueFromCarrier(
+                    setLocal(sourceVariable, arrayValueFromCarrier(
                         sourceView,
                         sourceCarrier,
                         allocation,
                         offset,
-                    );
+                    ));
                     result = arrayValueFromCarrier(
                         targetView,
                         targetCarrier,
@@ -10859,7 +10865,7 @@ private struct Walker {
     ) {
         const source = runExpression(slice.e1);
         if (slice.lengthVar !is null)
-            locals[slice.lengthVar] = Value(source.length);
+            setLocal(slice.lengthVar, Value(source.length));
         lower = slice.lwr is null
             ? 0
             : cast(size_t) runExpression(slice.lwr).asLong;
@@ -11048,7 +11054,7 @@ private struct Walker {
         if (variable is null)
             return;
 
-        locals[variable] = receiverWriteback;
+        setLocal(variable, receiverWriteback);
         uninitializedLocals.remove(variable);
     }
 
@@ -11150,7 +11156,7 @@ private struct Walker {
         // size_t.max instead of the intended last-element index.
         const source = runExpression(index.e1);
         if (index.lengthVar !is null)
-            locals[index.lengthVar] = Value(source.length);
+            setLocal(index.lengthVar, Value(source.length));
 
         // matches CTFE, which formats the index as unsigned
         arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
@@ -12011,7 +12017,7 @@ private struct Walker {
         // `runExpression`'s VarExp branch already applies to a directly
         // uninitialized local, so the write has real storage to land in.
         if (alias_.source in uninitializedLocals)
-            locals[alias_.source] = defaultValue(alias_.source);
+            setLocal(alias_.source, defaultValue(alias_.source));
 
         auto source = alias_.source in locals;
         if (source is null)
@@ -12071,7 +12077,7 @@ private struct Walker {
             return;
         }
 
-        locals[alias_.source] = source.withArrayElement(alias_.lower + index, value);
+        setLocal(alias_.source, source.withArrayElement(alias_.lower + index, value));
         // A slice-expression parameter (bound
         // via `recordParameterSliceAlias`, which never calls
         // `promoteSliceArrayCell`) has no `arrayCells` entry of its own, but
@@ -12099,7 +12105,7 @@ private struct Walker {
         if (source is null)
             throw new Exception("Unsupported interpreter struct field alias target.");
 
-        locals[*sourceVariable] = source.withArrayElement(index, value);
+        setLocal(*sourceVariable, source.withArrayElement(index, value));
         // Once `sourceVariable` has a
         // promoted `arrayCells` entry (needing no address-of at all --
         // `foreach (v; a)` promotes it via `promoteSliceArrayCell`), a
@@ -12148,7 +12154,7 @@ private struct Walker {
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
             const value = defaultLocalValue(variable);
-            locals[variable] = value;
+            setLocal(variable, value);
             structArrayFieldAliases.remove(variable);
             structFieldAliases.remove(variable);
             return value;
@@ -12172,7 +12178,7 @@ private struct Walker {
                 )
             ) {
                 const value = defaultValue(variable);
-                locals[variable] = value;
+                setLocal(variable, value);
                 uninitializedLocals.remove(variable);
                 sliceAliases.remove(variable);
                 structArrayFieldAliases.remove(variable);
@@ -12183,7 +12189,7 @@ private struct Walker {
             // DMD default-initialises struct locals with `variable = 0`
             if (isStructType(variable.type) && blit.e2.isIntegerExp !is null) {
                 const value = defaultValue(variable);
-                locals[variable] = value;
+                setLocal(variable, value);
                 uninitializedLocals.remove(variable);
                 sliceAliases.remove(variable);
                 structArrayFieldAliases.remove(variable);
@@ -12215,7 +12221,7 @@ private struct Walker {
                 const result = runExpression(initializer);
                 uninitializedLocals.remove(variable);
                 if (result.isStruct) {
-                    locals[variable] = result;
+                    setLocal(variable, result);
                     return result;
                 }
                 if (auto value = variable in locals)
@@ -12227,7 +12233,7 @@ private struct Walker {
 
         if (initializer.isNullExp !is null && isDynamicArrayType(variable.type)) {
             auto value = Value.arrayValue([]);
-            locals[variable] = value;
+            setLocal(variable, value);
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
             structArrayFieldAliases.remove(variable);
@@ -12237,7 +12243,7 @@ private struct Walker {
 
         if (initializer.isNullExp !is null && isAssocArrayType(variable.type)) {
             auto value = Value.assocArrayValue([], []);
-            locals[variable] = value;
+            setLocal(variable, value);
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
             structArrayFieldAliases.remove(variable);
@@ -12248,7 +12254,7 @@ private struct Walker {
         if (auto slice = initializer.isSliceExp) {
             size_t lower;
             auto value = runSliceExpression(slice, lower);
-            locals[variable] = value;
+            setLocal(variable, value);
             uninitializedLocals.remove(variable);
             arrayElementAliases.remove(variable);
             recordSliceAlias(variable, slice, lower);
@@ -12303,7 +12309,7 @@ private struct Walker {
                 ? runIndexExpression(indexInitializer, arrayElementAliasIndex)
                 : runExpression(initializer),
         );
-        locals[variable] = value;
+        setLocal(variable, value);
         bindScalarArrayCastView(variable, initializer);
         registerClassAliasIfPlainVar(variable, initializer);
         // A plain `ref` aggregate local denotes `source`'s storage, so share
@@ -12474,7 +12480,7 @@ private struct Walker {
         if (source is null)
             throw new Exception("Unsupported interpreter array element alias target.");
 
-        locals[alias_.source] = source.withArrayElement(alias_.index, value);
+        setLocal(alias_.source, source.withArrayElement(alias_.index, value));
         auto sliceAlias = alias_.source in sliceAliases;
         if (sliceAlias is null || (sliceAlias.source in locals) !is null)
             writeThroughSliceAlias(alias_.source, alias_.index, value);
@@ -12531,9 +12537,9 @@ private struct Walker {
             );
 
         if (source !is null)
-            locals[alias_.source] = alias_.isClass
+            setLocal(alias_.source, alias_.isClass
                 ? source.withClassField(alias_.index, value)
-                : source.withStructField(alias_.index, value);
+                : source.withStructField(alias_.index, value));
         // A `ref` local bound directly to an
         // aggregate field (`ref int r = s.x;`, recorded via
         // `recordStructFieldAlias`) must also refresh `alias_.source`'s
