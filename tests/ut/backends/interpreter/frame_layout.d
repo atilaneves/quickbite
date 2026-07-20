@@ -3,7 +3,7 @@ module ut.backends.interpreter.frame_layout;
 
 import ut;
 import quickbite.frontend.compiler: parseSnippet;
-import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
+import quickbite.backends.interpreter.frame_layout: computeFrameLayout, cachedFrameLayout;
 import dmd.func: FuncDeclaration;
 import dmd.dmodule: Module;
 import dmd.arraytypes: Dsymbols;
@@ -191,4 +191,20 @@ unittest {
 
     xOffset.should == 16;
     layout.byteLength.should == 24;
+}
+
+
+@("cachedFrameLayout.equalsComputeFrameLayoutAndIsStableAcrossCalls")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbiteFrameCached(int a, long b) {} },
+        "quickbiteFrameCached",
+    );
+
+    auto expected = computeFrameLayout(function_);
+    auto first = cachedFrameLayout(function_);
+    auto second = cachedFrameLayout(function_);
+
+    first.should == expected;
+    second.should == first;
 }

@@ -147,6 +147,8 @@ private struct Walker {
     import dmd.expression: DivExp, Expression, ModExp;
     import dmd.func: FuncDeclaration;
     import dmd.statement: Statement;
+    import quickbite.backends.interpreter.frame_block: FrameBlock;
+    import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.native_struct: NativeStruct;
@@ -470,6 +472,10 @@ private struct Walker {
     private bool runningCalledFunction;
     private bool inUnitTest;
     private FuncDeclaration currentFunction;
+
+    // Per-activation native storage block; authority still lives in
+    // `locals`/cells until reads route through it.
+    private FrameBlock _activationFrame;
     private Value thisValue;
     private bool hasThis;
     private Value pendingFinallyBodyException;
@@ -2249,6 +2255,9 @@ private struct Walker {
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = call.f;
+        auto layout = cachedFrameLayout(call.f);
+        if (layout.byteLength > 0)
+            child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
         child.result = Value(false);
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
@@ -5783,6 +5792,9 @@ private struct Walker {
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
+        auto layout = cachedFrameLayout(function_);
+        if (layout.byteLength > 0)
+            child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = (captureLocals || function_.isNested)
             ? locals.dup
@@ -5835,6 +5847,9 @@ private struct Walker {
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
+        auto layout = cachedFrameLayout(function_);
+        if (layout.byteLength > 0)
+            child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = locals.dup;
         forkPerFrameCellsInto(child);
@@ -6792,6 +6807,9 @@ private struct Walker {
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
+        auto layout = cachedFrameLayout(function_);
+        if (layout.byteLength > 0)
+            child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = locals.dup;
         forkPerFrameCellsInto(child);
@@ -8414,6 +8432,9 @@ private struct Walker {
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
+        auto layout = cachedFrameLayout(function_);
+        if (layout.byteLength > 0)
+            child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
         child.result = Value(false);
@@ -8484,6 +8505,9 @@ private struct Walker {
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = call.f;
+        auto layout = cachedFrameLayout(call.f);
+        if (layout.byteLength > 0)
+            child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
         child.result = Value(false);
@@ -11745,6 +11769,9 @@ private struct Walker {
             Walker child;
             child.runningCalledFunction = true;
             child.currentFunction = new_.member;
+            auto layout = cachedFrameLayout(new_.member);
+            if (layout.byteLength > 0)
+                child._activationFrame = FrameBlock.allocate(layout);
             child.result = Value(false);
             child.thisValue = structVal;
             child.hasThis = true;
@@ -11855,6 +11882,9 @@ private struct Walker {
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = new_.member;
+        auto layout = cachedFrameLayout(new_.member);
+        if (layout.byteLength > 0)
+            child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = locals.dup;
         forkPerFrameCellsInto(child);

@@ -82,6 +82,31 @@ private size_t alignedUp(in size_t value, in size_t alignment) pure nothrow @nog
 }
 
 
+// Memoized `computeFrameLayout` results, keyed by function. A plain module
+// variable is thread-local storage in D, so this needs no synchronisation;
+// a `FuncDeclaration`'s frame layout never changes once computed, so the
+// cache never needs invalidation.
+private FrameLayout[imported!"dmd.func".FuncDeclaration] _frameLayoutCache;
+
+
+// `computeFrameLayout(function_)`, memoized: the first call for `function_`
+// walks its body and caches the result; every later call for the same
+// `function_` returns the cached layout instead of re-walking it.
+public FrameLayout cachedFrameLayout(
+    imported!"dmd.func".FuncDeclaration function_,
+) @safe {
+    if (auto cached = function_ in _frameLayoutCache)
+        return *cached;
+
+    // `auto`, not `const`: `FrameLayout` holds an associative array, so a
+    // `const` local cannot convert to the mutable `FrameLayout` this
+    // function returns and stores.
+    auto layout = computeFrameLayout(function_);
+    _frameLayoutCache[function_] = layout;
+    return layout;
+}
+
+
 // Every owning local of `function_`'s activation, in encounter order:
 // its value parameters (skipping `ref`/`out`/`lazy`, which alias the
 // caller's storage instead of owning a slot), then every variable

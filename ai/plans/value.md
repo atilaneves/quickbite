@@ -867,7 +867,9 @@ in parallel and never blocks it.
      `frame_layout.computeFrameLayout` from DMD's own per-type size and
      alignment, and the block itself allocated by `frame_block.FrameBlock`
      with a scan policy chosen from `layout.typeHasPointers` over each
-     slotted local's type), lvalue evaluation yielding places (a
+     slotted local's type — allocated per activation and held on
+     `Walker._activationFrame`, with authority still in `locals`/cells
+     until reads route through it), lvalue evaluation yielding places (a
      `place.Place` is an address plus its static type; `field`/`index`
      compose another place by DMD offsets/strides and scalar load/store
      routes through the `native_scalar` codec; `lvalue_place.placeOfLvalue`
