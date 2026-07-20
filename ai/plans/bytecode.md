@@ -630,6 +630,17 @@ lifetime as the dependency bytecode cache.
   lambda whose body is a single expression statement can avoid needing that
   environment by inlining the statement into the caller the same way a
   single-`return`-expression IIFE already inlines.
+- `capturedThisStructDeclaration` is keyed only on `vthis` plus the enclosing
+  parent being a (non-nested) struct method, so a nested function that reads
+  BOTH an enclosing local and `this.field` is also claimed by this
+  `this`-receiver shape, even though its true DMD context is a frame/closure
+  environment covering the local, not the struct receiver. This is safe
+  rather than silently wrong: claiming the shape skips building a captured-
+  locals environment for the function, so the local's own read never
+  resolves and throws its own "Unsupported variable" diagnostic before any
+  receiver value is used (`struct.nestedFunctionReadsCapturedLocalAndThisField`
+  pins this). A pure-local capture (no `this` use at all) inside a struct
+  method throws the identical diagnostic for the same reason.
 
 The compiled-D exposing behaviour is:
 

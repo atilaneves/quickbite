@@ -1313,6 +1313,43 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Sibling of the fixture above, but `helper` also reads an enclosing local
+// (`x`), not just `this`. Bytecode currently throws its own clean diagnostic
+// on the captured-local read rather than producing a wrong value: no closure
+// environment is built for a function claimed as this-receiver-shaped, so `x`
+// never resolves.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws \"Unsupported variable in bytecode core: x\" for the captured local read"),
+)) {
+    @("struct.nestedFunctionReadsCapturedLocalAndThisField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int f;
+
+                int m() {
+                    int x = 3;
+
+                    int helper() {
+                        return x + this.f;
+                    }
+
+                    return helper();
+                }
+            }
+
+            unittest {
+                S s;
+                s.f = 10;
+
+                assert(s.m == 13);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported bytecode assignment target.") and IR (unmapped struct
 // type assert) cannot run struct-typed fields yet.
 static foreach (backend; Matrix!()) {

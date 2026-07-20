@@ -3944,11 +3944,15 @@ private struct Compiler {
     // The enclosing struct whose `this` a nested function reads, or null if
     // `function_` is not such a function. The function is nested in a struct
     // method and holds a context (`vthis`); the struct is the method's
-    // receiver aggregate. Capturing an enclosing *local* (rather than `this`)
-    // is not yet modelled -- such a function's `this.field` would still route
-    // here, but only `this`-capturing nested functions are exercised; a
-    // local-capturing one would read the wrong slot, which the leading-edge
-    // closures work must address.
+    // receiver aggregate. This claims the receiver shape for any vthis-
+    // carrying nested function under a struct method regardless of what else
+    // it captures, so a function that ALSO reads an enclosing local (not just
+    // `this`) is claimed here too. That is safe rather than silently wrong:
+    // claiming this shape skips building a closure environment for the
+    // function, so the captured local's own read never resolves and throws
+    // its own "Unsupported variable" diagnostic before any receiver value
+    // could be used. Capturing an enclosing local is not yet modelled; the
+    // leading-edge closures work must address it.
     //
     // A struct declared inside a function (a voldemort type) carries an extra
     // hidden context-pointer field appended after its declared fields
