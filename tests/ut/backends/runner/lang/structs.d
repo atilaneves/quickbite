@@ -1617,7 +1617,7 @@ static foreach (backend; Matrix!()) {
 // Repeated forwarding of the same ref-foreach element must preserve its
 // identity across every ref parameter. Each mutation therefore reaches the
 // same array element instead of competing through independent snapshots.
-static foreach (backend; AliasSeq!(Bytecode, Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("struct.foreachRefRepeatedArgumentPreservesAlias." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
