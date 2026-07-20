@@ -96,6 +96,26 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A whole-value read through the source binding sees writes made through a
+// same-width scalar cast view, not the boxed descriptor's stale elements.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastUpdatesWholeSourceValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte runtime = 1;
+                byte[] signed = [runtime];
+                ubyte[] raw = cast(ubyte[]) signed;
+                raw[0] = 2;
+
+                assert(signed == [cast(byte) 2]);
+            }
+        });
+    }
+}
+
 // Assignment of a same-width scalar array cast preserves the same storage
 // aliasing as declaration initialization.
 static foreach (backend; Matrix!()) {

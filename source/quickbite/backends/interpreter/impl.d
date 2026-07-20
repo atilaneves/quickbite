@@ -9638,12 +9638,34 @@ private struct Walker {
         in Value current,
         ref NativeArray cell,
     ) {
-        // Allocation-carrying cast views retain their boxed descriptor: the
-        // carrier cell remains authoritative for element reads and writes,
-        // while the descriptor preserves its allocation-base coordinate
-        // across calls and source rebinds.
-        if (current.arrayAllocationId != 0)
-            return current;
+        // Allocation-carrying cast views retain their allocation-base
+        // coordinate, but their elements must be decoded afresh from the
+        // authoritative carrier bytes. Returning `current` here would retain
+        // the right identity while exposing its stale boxed snapshot.
+        if (current.arrayAllocationId != 0) {
+            const id = current.arrayAllocationId;
+            auto carrier = id in arrayAllocationCarriers;
+            if (carrier is null)
+                throw new Exception("Array allocation carrier is missing.");
+
+            auto typedCarrier = carrier.reinterpretElements(
+                cell.elementType,
+            );
+            const offset = current.arrayAllocationOffset;
+            if (
+                offset > typedCarrier.length ||
+                current.length > typedCarrier.length - offset
+            )
+                throw new Exception(
+                    "Array cell view exceeds its allocation carrier.",
+                );
+
+            auto view = typedCarrier.slice(
+                offset,
+                offset + current.length,
+            );
+            return arrayValueFromCarrier(view, typedCarrier, id, offset);
+        }
 
         if (cell.elementType.isTypeSArray) {
             Value[] elements;
