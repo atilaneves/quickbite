@@ -222,33 +222,9 @@ private struct Walker {
     // that actually owns `variable`.
     private bool[VarDeclaration] structArrayFieldPointerWritebacks;
 
-    // Reverse lookup from a promoted `&s.inner.x` pointer's allocation id back
-    // to which struct variable and (outer, inner) field-index pair share the
-    // SAME `structCells` entry's bytes -- the nested-struct-field
-    // counterpart of the struct-static-array-field case above, one level
-    // of struct-field nesting only: `inner` must itself be a (non-union) struct field of a
-    // plain struct local, and `x` a scalar field of `inner`. The cell view
-    // is `NativeStruct.structField(outerIndex).field(innerIndex)` -- a
-    // nested `NativeStruct` sharing the parent's block -- rather than the
-    // single top-level field range `fieldPointerPaths` resolves
-    // to. Populated by `promoteNestedStructFieldCell`, called from
-    // `addressOfExpression`'s `DotVarExp` branch alongside
-    // `promoteStructFieldCell` (mirroring how `arrayPointer`'s `DotVarExp`
-    // branch already combines `promoteStructArrayFieldCell` with the same
-    // memoized id). Like the direct-field reverse lookup, the id is memoized --
-    // here per (root variable, outer field index, inner field index) via
-    // `fieldPathAddressAllocations` -- so repeated `&s.inner.x` evaluations
-    // share one identity, matching real addresses. Duplicated into
-    // child-frame walkers and merged back exactly like
-    // `structArrayFieldPointerVariables`/
-    // `FieldIndices` (`mergeNestedStructFieldPointerVariableMaps`), so a
-    // `&s.inner.x` pointer does survive being passed into another function;
-    // see `nestedStructFieldPointerWritebacks` below for the write-through
-    // side.
-    private VarDeclaration[size_t] nestedStructFieldPointerVariables;
-    private size_t[size_t] nestedStructFieldPointerOuterFieldIndices;
-    private size_t[size_t] nestedStructFieldPointerInnerFieldIndices;
-
+    // Cross-frame writes through a common two-index `fieldPointerPaths`
+    // entry still need the owning frame's boxed mirror refreshed after the
+    // shared `structCells` bytes change.
     // Set by `writeThroughNestedStructFieldPointer` for the receiver variable
     // it wrote into, the nested-field sibling of
     // `structArrayFieldPointerWritebacks`: a cross-frame write (the receiver
@@ -259,19 +235,19 @@ private struct Walker {
     // the frame that actually owns `variable`.
     private bool[VarDeclaration] nestedStructFieldPointerWritebacks;
 
-    // Array-element sibling of `nestedStructFieldPointerVariables` above:
+    // Array-element sibling of the common nested-field reverse lookup:
     // `&a[i].inner.x` where `a` is a dynamic array of a (non-union) struct
     // whose `inner` field is itself a (non-union) struct, and `x` is a
     // scalar field of `inner`. The cell view is `NativeArray.
     // structElement(elementIndex).structField(outerIndex).field(innerIndex)`
     // -- composing the array-of-struct cell's own per-element
     // `NativeStruct` view (`promoteArrayCell`'s struct-element branch) with
-    // the same nested-`NativeStruct` view `nestedStructFieldPointerVariables`
-    // already resolves through, both pre-existing composition accessors.
+    // the same nested-`NativeStruct` view the common field path resolves
+    // through, both pre-existing composition accessors.
     // Populated by `promoteArrayNestedStructFieldCell`, called from
     // `addressOfExpression`'s `DotVarExp` branch alongside the existing
     // struct/nested-struct/class promotion calls. Narrower than
-    // `nestedStructFieldPointerVariables` in the same way that map is
+    // the common nested-field reverse lookup in the same way that family is
     // narrower than the direct-field reverse lookup: the id is never memoized
     // (this receiver shape already takes `fieldSnapshotAllocationId`'s
     // fresh-id fallback, same as the non-array nested-field case), and this
@@ -329,8 +305,8 @@ private struct Walker {
     // Reverse lookup from a promoted `&c.inner.x` pointer's allocation id
     // back to which class variable and (outer, inner) field-index pair share
     // the SAME `classCells` entry's bytes -- the class-receiver sibling of
-    // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
-    // `...InnerFieldIndices` above, one level of struct-field nesting only:
+    // the common two-index struct field path above, one level of struct-field
+    // nesting only:
     // `inner` must itself be a (non-union) struct field of a plain class
     // local, and `x` a scalar field of `inner`. The cell view is a
     // `NativeStruct` adopted over `classCells[variable].subRange(outerOffset,
@@ -347,9 +323,8 @@ private struct Walker {
     // `writeThroughNestedClassStructFieldPointer`, wired into
     // `writeLocation`'s `PtrExp` arm and `writePointerTarget` alongside its
     // struct/class-field siblings. Cross-frame follow-up (2026-07-15): now
-    // duplicated into child-frame walkers and merged back exactly like
-    // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
-    // `...InnerFieldIndices` (`mergeNestedClassStructFieldPointerVariableMaps`
+    // duplicated into child-frame walkers and merged back by
+    // `mergeNestedClassStructFieldPointerVariableMaps`
     // -- a plain union merge, unmemoized through the direct field-path map
     // for the same reason the struct-receiver sibling's own id is: the
     // receiver's `dot.e1` is itself a `DotVarExp`, so `fieldSnapshotAllocationId`
@@ -2277,11 +2252,6 @@ private struct Walker {
         child.structArrayFieldPointerFieldIndices =
             structArrayFieldPointerFieldIndices.dup;
         child.structArrayFieldPointerWritebacks = structArrayFieldPointerWritebacks.dup;
-        child.nestedStructFieldPointerVariables = nestedStructFieldPointerVariables.dup;
-        child.nestedStructFieldPointerOuterFieldIndices =
-            nestedStructFieldPointerOuterFieldIndices.dup;
-        child.nestedStructFieldPointerInnerFieldIndices =
-            nestedStructFieldPointerInnerFieldIndices.dup;
         child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
         child.fieldPathAddressAllocations = fieldPathAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
@@ -2830,8 +2800,8 @@ private struct Walker {
     // same seed/refresh treatment, applied recursively (the recursion itself
     // is not depth-limited, even though the address-of/pointer-deref
     // machinery that reads it back currently only resolves one level of
-    // nesting -- see the `nestedStructFieldPointerVariables` field
-    // declaration comment). Every other non-scalar field (dynamic
+    // nesting -- see the common field-path comment). Every other non-scalar
+    // field (dynamic
     // array/slice, class, or a union at any level) is left untouched,
     // matching this narrow slice's scope -- only an address-taken scalar
     // field, scalar-element static-array field, or (one level deep) nested
@@ -3604,8 +3574,7 @@ private struct Walker {
     // declarations' own comment above). Gives the receiver a `structCells`
     // entry (`promoteStructCell`, same as `promoteStructFieldCell`/
     // `promoteStructArrayFieldCell`) and records `id` in the
-    // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
-    // `...InnerFieldIndices` reverse lookup, so a later deref-read/write-
+    // common `fieldPointerPaths` reverse lookup, so a later deref-read/write-
     // through this id's pointer (`nestedStructFieldPointerCellValue`/
     // `writeThroughNestedStructFieldPointer`) can find the same cell and
     // field path. A no-op (no cell, no reverse-lookup entry) for anything
@@ -3641,9 +3610,10 @@ private struct Walker {
         if ((variable in structCells) is null)
             return;
 
-        nestedStructFieldPointerVariables[id] = variable;
-        nestedStructFieldPointerOuterFieldIndices[id] = structFieldIndex(innerDot);
-        nestedStructFieldPointerInnerFieldIndices[id] = structFieldIndex(dot);
+        fieldPointerPaths[id] = fieldPathKey(
+            variable,
+            [structFieldIndex(innerDot), structFieldIndex(dot)],
+        );
     }
 
     // Array-element sibling of `promoteNestedStructFieldCell` above: `&a[i].
@@ -3782,19 +3752,6 @@ private struct Walker {
             structArrayFieldPointerFieldIndices.remove(id);
         }
 
-        // Same stale-id cleanup for the nested-struct-field reverse lookup,
-        // for the same reason as the two cleanups above.
-        size_t[] staleNestedFieldIds;
-        foreach (id, pointedVariable; nestedStructFieldPointerVariables)
-            if (pointedVariable is variable)
-                staleNestedFieldIds ~= id;
-
-        foreach (id; staleNestedFieldIds) {
-            nestedStructFieldPointerVariables.remove(id);
-            nestedStructFieldPointerOuterFieldIndices.remove(id);
-            nestedStructFieldPointerInnerFieldIndices.remove(id);
-        }
-
         removeFieldPathAddressAllocations(variable);
     }
 
@@ -3898,8 +3855,8 @@ private struct Walker {
     // `...InnerFieldIndices` siblings) that pointed at `variable`
     // (2026-07-16): `promoteArrayNestedStructFieldCell` (`&a[i].
     // inner.x`) populates these four maps but, unlike every other pointer
-    // family's own reverse lookup (`fieldPointerPaths`/
-    // `nestedStructFieldPointerVariables`/etc., all cleaned by
+    // family's own reverse lookup (`fieldPointerPaths` and the remaining
+    // shape-specific maps, all cleaned by
     // `dropStructCell`), nothing here ever cleaned them -- a fresh binding
     // of the same `VarDeclaration` (a loop body re-executing the same
     // `DeclarationExp`) left an EARLIER pointer's id still mapped to
@@ -5780,7 +5737,6 @@ private struct Walker {
         structFieldPointerWritebacks = child.structFieldPointerWritebacks;
         mergeStructArrayFieldPointerVariableMaps(child);
         structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
-        mergeNestedStructFieldPointerVariableMaps(child);
         nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
         mergeFieldPointerPaths(child);
         classFieldPointerWritebacks = child.classFieldPointerWritebacks;
@@ -5858,36 +5814,6 @@ private struct Walker {
         }
     }
 
-    // Nested-struct-field sibling of `mergeStructArrayFieldPointerVariableMaps`
-    // above (nested-struct-field cross-frame follow-up, 2026-07-15).
-    // Follow-up (2026-07-16, cross-frame nested-field pointer-identity): an
-    // id in this map is memoized through the field-path map. Once that map is
-    // duped into every child `Walker`, a
-    // (root variable, outer field index, inner field index) triple can
-    // collide the same way a (variable, field index) pair can for the
-    // sibling merges, so this merge needs the identical symmetric guard:
-    // skipped only when this frame's own field-path forward map already binds
-    // the same triple to a different id.
-    private void mergeNestedStructFieldPointerVariableMaps(ref Walker child) {
-        foreach (id, variable; child.nestedStructFieldPointerVariables) {
-            auto outerFieldIndex = id in child.nestedStructFieldPointerOuterFieldIndices;
-            auto innerFieldIndex = id in child.nestedStructFieldPointerInnerFieldIndices;
-            if (outerFieldIndex !is null && innerFieldIndex !is null)
-                if (auto ownId = fieldPathKey(
-                        variable,
-                        [*outerFieldIndex, *innerFieldIndex],
-                    ) in fieldPathAddressAllocations)
-                    if (*ownId != id)
-                        continue;
-
-            nestedStructFieldPointerVariables[id] = variable;
-            if (outerFieldIndex !is null)
-                nestedStructFieldPointerOuterFieldIndices[id] = *outerFieldIndex;
-            if (innerFieldIndex !is null)
-                nestedStructFieldPointerInnerFieldIndices[id] = *innerFieldIndex;
-        }
-    }
-
     // Common reverse-map merge. The owning frame's forward memo wins when
     // the same path names a different activation's allocation id.
     private void mergeFieldPointerPaths(ref Walker child) {
@@ -5902,8 +5828,8 @@ private struct Walker {
         }
     }
 
-    // Nested-class-struct-field sibling of `mergeNestedStructFieldPointerVariableMaps`
-    // above (remaining aggregate-composition cross-frame follow-up,
+    // Nested-class-struct-field sibling of the common field-path merge above
+    // (remaining aggregate-composition cross-frame follow-up,
     // 2026-07-15). Follow-up (2026-07-16, cross-frame
     // nested-field pointer-identity): `&c.inner.x` shares the SAME
     // field-path memo the struct-receiver sibling's own comment now
@@ -6217,7 +6143,11 @@ private struct Walker {
     // `*pointer` deref does, so the owning frame's boxed `locals` mirror
     // must be refreshed here too.
     private void writeBackNestedStructFieldPointerTargets(ref Walker child) {
-        foreach (_, variable; child.nestedStructFieldPointerVariables) {
+        foreach (_, path; child.fieldPointerPaths) {
+            if (path.indices.length != 2)
+                continue;
+
+            auto variable = path.root;
             if ((variable in child.nestedStructFieldPointerWritebacks) is null)
                 continue;
 
@@ -8453,7 +8383,7 @@ private struct Walker {
     // `writeThroughStructArrayFieldPointer` -- a CROSS-FRAME write
     // (`variable` is the CALLER's own local, `id` recorded before the call
     // and shared into this callee's frame only via the duped
-    // `nestedStructFieldPointerVariables`/`structCells`) finds `variable` in
+    // `fieldPointerPaths`/`structCells`) finds `variable` in
     // neither this frame's parameters nor its `locals` at all. The write
     // still lands in the shared cell either way; `nestedStructFieldPointerWritebacks`
     // flags `variable` so `writeBackNestedStructFieldPointerTargets` can
@@ -8461,39 +8391,35 @@ private struct Walker {
     // `current`, when present, still declines a rebind (no longer a struct)
     // exactly as before.
     private bool writeThroughNestedStructFieldPointer(in Value pointer, in Value value) {
-        auto variable = pointer.pointerAllocation in nestedStructFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 2)
             return false;
 
-        auto cell = *variable in structCells;
+        auto variable = path.root;
+        auto cell = variable in structCells;
         if (cell is null)
             return false;
 
-        auto outerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerOuterFieldIndices;
-        if (outerFieldIndex is null)
-            return false;
+        const outerFieldIndex = path.indices[0];
+        const innerFieldIndex = path.indices[1];
 
-        auto innerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerInnerFieldIndices;
-        if (innerFieldIndex is null)
-            return false;
-
-        auto current = *variable in locals;
+        auto current = variable in locals;
         if (current !is null && !current.isStruct)
             return false;
 
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        auto nestedCell = cell.structField(*outerFieldIndex);
-        writeScalar(nestedCell.fieldDeclaration(*innerFieldIndex).type,
-            nestedCell.field(*innerFieldIndex), value);
+        auto nestedCell = cell.structField(outerFieldIndex);
+        writeScalar(nestedCell.fieldDeclaration(innerFieldIndex).type,
+            nestedCell.field(innerFieldIndex), value);
 
         if (current !is null) {
-            const updatedInner = current.structFieldAt(*outerFieldIndex)
-                .withStructField(*innerFieldIndex, value);
-            locals[*variable] = current.withStructField(*outerFieldIndex, updatedInner);
+            const updatedInner = current.structFieldAt(outerFieldIndex)
+                .withStructField(innerFieldIndex, value);
+            locals[variable] = current.withStructField(outerFieldIndex, updatedInner);
         }
-        nestedStructFieldPointerWritebacks[*variable] = true;
-        uninitializedLocals.remove(*variable);
+        nestedStructFieldPointerWritebacks[variable] = true;
+        uninitializedLocals.remove(variable);
         return true;
     }
 
@@ -10712,28 +10638,23 @@ private struct Walker {
         if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
             return false;
 
-        auto variable = pointer.pointerAllocation in nestedStructFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 2)
             return false;
 
-        auto cell = *variable in structCells;
+        auto cell = path.root in structCells;
         if (cell is null)
             return false;
 
-        auto outerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerOuterFieldIndices;
-        if (outerFieldIndex is null)
-            return false;
-
-        auto innerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerInnerFieldIndices;
-        if (innerFieldIndex is null)
-            return false;
+        const outerFieldIndex = path.indices[0];
+        const innerFieldIndex = path.indices[1];
 
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        auto nestedCell = cell.structField(*outerFieldIndex);
+        auto nestedCell = cell.structField(outerFieldIndex);
         value = readScalar(
-            nestedCell.fieldDeclaration(*innerFieldIndex).type,
-            nestedCell.field(*innerFieldIndex),
+            nestedCell.fieldDeclaration(innerFieldIndex).type,
+            nestedCell.field(innerFieldIndex),
         );
         return true;
     }
