@@ -10156,15 +10156,15 @@ private struct Walker {
         return defaultValue(field);
     }
 
-    // Scalar sibling only, matching `withUnionFieldWrite`'s identical scope
-    // for a WRITTEN struct field: returns `false` (leaving `value`
+    // Scalar sibling only, matching `withUnionFieldWrite`'s aggregate scope:
+    // returns `false` (leaving `value`
     // untouched) for index 0 itself, a non-union literal, a sibling that
     // isn't `native_scalar.isNativeScalarType`, or a first member that is
-    // neither `isNativeScalarType` nor a plain (non-union) struct -- so the
-    // caller's existing independent-`defaultValue` fallback applies
-    // unchanged in every other case, including the still-open gap
-    // for a static-array or class first member/sibling. When the
-    // first member is a struct, reuses `withUnionFieldWrite`'s own
+    // neither `isNativeScalarType`, a plain (non-union) struct, nor a
+    // scalar-element static array -- so the caller's existing independent-
+    // `defaultValue` fallback applies unchanged in every other case,
+    // including the still-open gap for a class first member/sibling. When
+    // the first member is a struct, reuses `withUnionFieldWrite`'s own
     // `writeStructCellScalarFields` idiom to seed the transient cell's
     // shared bytes from the first member's already-resolved struct value
     // (scalar leaves only, recursing through nested structs/scalar-element
@@ -10177,7 +10177,9 @@ private struct Walker {
         in Value[] fieldsSoFar,
         out Value value,
     ) {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, readScalar, writeScalar;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, readScalar, writeScalar;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
 
         if (index == 0 || fieldsSoFar.length == 0 || literal.sd is null)
             return false;
@@ -10200,14 +10202,20 @@ private struct Walker {
         auto firstFieldStructType = firstField.type.toBasetype.isTypeStruct;
         const firstFieldStruct = firstFieldStructType !is null
             && firstFieldStructType.sym.isUnionDeclaration is null;
+        const firstFieldArray = isStaticArrayType(firstField.type)
+            && isNativeScalarType(firstField.type.toBasetype.nextOf.toBasetype)
+            && fieldsSoFar[0].isArray;
 
-        if (!firstFieldScalar && !firstFieldStruct)
+        if (!firstFieldScalar && !firstFieldStruct && !firstFieldArray)
             return false;
 
         auto cell = NativeStruct.allocate(unionType);
         if (firstFieldStruct) {
             auto firstCell = cell.structField(0);
             writeStructCellScalarFields(firstCell, fieldsSoFar[0]);
+        } else if (firstFieldArray) {
+            auto firstCell = cell.arrayField(0);
+            writeStaticArrayCellScalarElements(firstCell, fieldsSoFar[0]);
         } else {
             writeScalar(firstField.type, cell.field(0), fieldsSoFar[0]);
         }

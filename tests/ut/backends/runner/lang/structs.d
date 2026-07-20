@@ -2145,3 +2145,32 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// A scalar-element static array in the first union member initializes the
+// whole overlapping block, just as a scalar or plain-struct first member
+// does. Its first float's default NaN bits are therefore visible through the
+// untouched scalar sibling.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this static-array union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromArrayFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float[1] values;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
