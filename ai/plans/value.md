@@ -867,7 +867,8 @@ in parallel and never blocks it.
      `frame_layout.computeFrameLayout` from DMD's own per-type size and
      alignment, and the block itself allocated by `frame_block.FrameBlock`
      with a scan policy chosen from `layout.typeHasPointers` over each
-     slotted local's type — allocated per activation and held on
+     slotted local's type — allocated per activation, including the
+     top-level walker running a unittest/REPL body, and held on
      `Walker._activationFrame`, with authority still in `locals`/cells
      until reads route through it — a non-address-taken local whose type is
      place-composable (`place_value.isPlaceComposable`: a native scalar,

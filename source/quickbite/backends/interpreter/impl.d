@@ -11,6 +11,8 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         EvalResult,
         ReplSession,
         displayString;
+    import quickbite.backends.interpreter.frame_block: FrameBlock;
+    import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
@@ -35,6 +37,9 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
             walker.inUnitTest = function_.isUnitTestDeclaration !is null;
+            auto layout = cachedFrameLayout(function_);
+            if (layout.byteLength > 0)
+                walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(function_.fbody);
             return EvalResult(displayString(walker.result, function_));
         } catch (Exception exception) {
@@ -53,6 +58,9 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
             walker.inUnitTest = true;
+            auto layout = cachedFrameLayout(unitTest);
+            if (layout.byteLength > 0)
+                walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(unitTest.fbody);
             return EvalResult("");
         } catch (Exception exception) {
@@ -68,6 +76,9 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         try {
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
+            auto layout = cachedFrameLayout(function_);
+            if (layout.byteLength > 0)
+                walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(function_.fbody);
             return EvalResult(walker.result.asCharArrayString);
         } catch (Exception exception) {
