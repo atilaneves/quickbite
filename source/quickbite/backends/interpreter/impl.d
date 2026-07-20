@@ -2327,6 +2327,27 @@ private struct Walker {
                     isDynamicArrayType, isStaticArrayType;
 
                 if (isDynamicArrayType(dot.type)) {
+                    auto receiver = dot.e1.isVarExp;
+                    auto structVariable = receiver is null
+                        ? null
+                        : receiver.var.isVarDeclaration;
+                    if (
+                        structVariable !is null &&
+                        structVariable.type.toBasetype.isTypeStruct !is null
+                    ) {
+                        structVariable = refLocalStorageVariable(structVariable);
+                        promoteStructCell(structVariable);
+                        if (auto cell = structVariable in structCells) {
+                            auto fieldCell = cell.sliceField(
+                                structFieldIndex(dot),
+                            );
+                            return Value.nativePointerValue(
+                                fieldCell.block.address + offset *
+                                    typeByteSize(dot.type.toBasetype.nextOf),
+                            );
+                        }
+                    }
+
                     auto variable = classCellKeyVariable(dot.e1);
                     if (variable !is null) {
                         promoteClassCell(variable);
@@ -2849,8 +2870,8 @@ private struct Walker {
     // is not depth-limited, even though the address-of/pointer-deref
     // machinery that reads it back currently only resolves one level of
     // nesting -- see the common field-path comment). Every other non-scalar
-    // field (dynamic
-    // array/slice, class, or a union at any level) is left untouched,
+    // field (class, an unsupported dynamic-array element shape, or a union
+    // at any level) is left untouched,
     // matching this narrow slice's scope -- only an address-taken scalar
     // field, scalar-element static-array field, or (one level deep) nested
     // scalar field is ever read back through a `structCells` entry, so
@@ -2862,9 +2883,11 @@ private struct Walker {
     // later deref-read (`structArrayFieldPointerCellValue`/
     // `nestedStructFieldPointerCellValue`).
     private void writeStructCellScalarFields(ref NativeStruct cell, in Value structValue) {
+        import quickbite.backends.interpreter.layout: fieldByteOffset;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         foreach (index; 0 .. cell.fieldCount) {
             auto fieldType = cell.fieldDeclaration(index).type;
@@ -2894,6 +2917,40 @@ private struct Walker {
                         elementIndex,
                         fieldValue[elementIndex],
                     );
+                continue;
+            }
+
+            if (isDynamicArrayType(fieldType)) {
+                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
+                    continue;
+
+                const fieldValue = structValue.structFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = fieldValue.arrayNativeAddress is null
+                    ? NativeArray.allocate(elementType, fieldValue.length)
+                    : NativeArray.borrow(
+                        elementType,
+                        cast(void*) fieldValue.arrayNativeAddress,
+                        fieldValue.length,
+                    );
+                if (fieldValue.arrayNativeAddress is null)
+                    foreach (elementIndex; 0 .. fieldValue.length)
+                        writeArrayCellElement(
+                            arrayCell,
+                            elementIndex,
+                            fieldValue[elementIndex],
+                        );
+                arrayCell.writeSliceHeader(
+                    cell.block,
+                    fieldByteOffset(cell.fieldDeclaration(index)),
+                );
                 continue;
             }
 
@@ -6461,7 +6518,8 @@ private struct Walker {
     private Value structValueFromCell(in Value current, ref NativeStruct cell) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         Value value = current;
         foreach (index; 0 .. cell.fieldCount) {
@@ -6505,6 +6563,27 @@ private struct Walker {
                     );
                 }
                 value = value.withStructField(index, fieldValue);
+                continue;
+            }
+
+            if (isDynamicArrayType(fieldType)) {
+                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
+                    continue;
+
+                const fieldValue = value.structFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = cell.sliceField(index);
+                value = value.withStructField(
+                    index,
+                    arrayValueFromCell(fieldValue, arrayCell),
+                );
                 continue;
             }
 
