@@ -879,7 +879,11 @@ in parallel and never blocks it.
      `place.Place` is an address plus its static type; `field`/`index`
      compose another place by DMD offsets/strides — `index` on a
      pointer or slice place follows the place's own stored pointer (or
-     the slice header's `ptr`) rather than indexing inline — and scalar
+     the slice header's `ptr`) rather than indexing inline, `deref`
+     follows a pointer or class place's own stored pointer/reference to
+     the pointee/object body (keeping the class type, so a following
+     `field` composes at the DMD class field offset) so pointer-deref
+     and class-field lvalues can compose — and scalar
      load/store routes through the `native_scalar` codec; `lvalue_place.placeOfLvalue`
      composes a place for the variable, struct-field, and index lvalue shapes
      from a caller-supplied base-address resolver and index evaluator

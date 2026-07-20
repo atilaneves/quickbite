@@ -101,6 +101,38 @@ public struct Place {
         return Place(placeAdd(_address, i * typeByteSize(array.next)), array.next);
     }
 
+    // A `Place` at the location this place's own stored pointer/reference
+    // points to -- two cases, matching how each type stores that reference:
+    //
+    // - Pointer (`Type.isTypePointer`): this place's own address holds a
+    //   stored `T*` value, exactly as `index`'s pointer branch reads it --
+    //   `deref` returns a `Place` at that stored address, with the pointee's
+    //   own type (`pointer.next`).
+    // - Class (`Type.isTypeClass`): a class variable holds a reference to
+    //   its object body, so this place's own address holds that stored
+    //   reference -- `deref` returns a `Place` at the object body's own
+    //   address, keeping THIS place's class type (rather than some separate
+    //   "object body" type) so a following `.field(classField)` composes at
+    //   `objectAddress + fieldByteOffset(field)`: DMD's class field offsets
+    //   are already relative to the object's own start.
+    //
+    // No bounds/null check either way: a raw pointer/reference's validity is
+    // the caller's concern, the same contract `index`'s pointer branch
+    // already carries. Every other type is refused -- only a pointer or
+    // class place holds a stored address to follow.
+    public Place deref() @safe {
+        if (auto pointer = _type.isTypePointer)
+            return Place(readStoredPointer(_address), pointer.next);
+
+        if (_type.isTypeClass)
+            return Place(readStoredPointer(_address), _type);
+
+        throw new Exception(
+            "quickbite.backends.interpreter.place.Place.deref: only a "
+            ~ "pointer or class place can be dereferenced",
+        );
+    }
+
     // Reads the scalar at this place's address, at this place's own
     // static type, via `native_scalar.readScalar` -- this primitive never
     // grows a second scalar<->bytes codec. Only a native scalar type

@@ -5,7 +5,7 @@ import ut;
 import ut.backends.interpreter: structTypeOf;
 import quickbite.frontend.compiler: parseSnippet;
 import quickbite.backends.interpreter.place: Place, placeAt;
-import quickbite.backends.interpreter.layout: fieldByteOffset, structFields, typeByteSize;
+import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
 import quickbite.backends.interpreter.frame_block: FrameBlock;
@@ -13,8 +13,29 @@ import quickbite.lang: Value;
 import dmd.func: FuncDeclaration;
 import dmd.dmodule: Module;
 import dmd.arraytypes: Dsymbols;
+import dmd.mtype: TypeClass;
 
 private:
+
+
+// Parses `source`, finds the `class` named `name` among the module's
+// top-level members, and returns its (now semantically analysed)
+// `TypeClass` -- the class-typed sibling of `ut.backends.interpreter.
+// structTypeOf`, mirroring `place_value.d`'s own local `classTypeOf` (needed
+// here too, for `Place.deref`'s class-place fixtures below).
+TypeClass classTypeOf(in string source, in string name) {
+    auto moduleResult = parseSnippet(source);
+
+    foreach (member; *moduleResult.module_.members)
+        if (auto class_ = member.isClassDeclaration)
+            if (class_.ident.toString == name) {
+                auto classType = class_.type.isTypeClass;
+                assert(classType !is null, "class `" ~ name ~ "`'s type is not a TypeClass");
+                return classType;
+            }
+
+    assert(false, "class `" ~ name ~ "` not found in parsed snippet");
+}
 
 
 FuncDeclaration findFunction(
@@ -172,6 +193,109 @@ unittest {
 
     // Element 2's write must not perturb element 0.
     root.index(0).loadScalar.asLong.should == 0;
+}
+
+
+// The centrepiece for `deref` on a POINTER place: the place's own address
+// holds a stored `int*`, and `deref` must land ON the stored pointer's own
+// address, at the pointee's element type -- a scalar round trip through the
+// deref'd place must reach the same bytes `index(0)` already does.
+@("Place.deref.pointerPlaceFollowsTheStoredPointerToThePointeeAndScalarRoundTrips")
+unittest {
+    auto holderType = structTypeOf(q{ struct PointerHolder { int* p; } }, "PointerHolder");
+    auto pointerType = structFields(holderType)[0].type;
+
+    auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+    auto pointerBlock = NativeBlock.allocate(typeByteSize(pointerType), NativeBlock.Scan.no);
+    *(cast(void**) pointerBlock.address) = pointee.address;
+
+    auto root = placeAt(pointerBlock, pointerType);
+    auto dereffed = root.deref;
+
+    dereffed.address.should == pointee.address;
+    (dereffed.type is pointerType.nextOf).should == true;
+
+    int written = 4;
+    written = written * 5 + 3;
+    dereffed.storeScalar(Value(written));
+
+    root.index(0).loadScalar.asLong.should == written;
+}
+
+
+class C {
+    int x;
+    long y;
+}
+
+
+// The centrepiece for `deref` on a CLASS place: a class variable's own
+// address holds a stored REFERENCE to its object body (decision 15), not
+// the object's bytes -- `deref` must land on that referenced object body,
+// keeping the class type so a following `.field` composes at
+// `objectAddress + fieldByteOffset(field)`, DMD's own class field offset.
+// The object body block here is sized and laid out from
+// `layout.classFields`/`fieldByteOffset` alone (never a guessed offset).
+// `C.x.offsetof`/`C.y.offsetof`/`__traits(classInstanceSize, C)` are the
+// HOST compiler's own numbers for an identically-shaped class (its own
+// object header included, unlike a struct's `.offsetof`) -- cross-checking
+// against them is what proves the parsed snippet's `fieldByteOffset`/
+// `typeByteSize` numbers are DMD's own, not a guess this test made up.
+@("Place.deref.classPlaceFollowsTheStoredReferenceToTheObjectBodyAndFieldsComposeAtDmdOffsets")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; long y; } }, "C");
+    auto fields = classFields(classType.sym);
+    auto xField = fields[0];
+    auto yField = fields[1];
+
+    fieldByteOffset(xField).should == C.x.offsetof;
+    fieldByteOffset(yField).should == C.y.offsetof;
+
+    size_t bodyByteSize;
+    foreach (field; fields) {
+        const end = fieldByteOffset(field) + typeByteSize(field.type);
+        if (end > bodyByteSize)
+            bodyByteSize = end;
+    }
+    bodyByteSize.should == __traits(classInstanceSize, C);
+
+    auto body_ = NativeBlock.allocate(bodyByteSize, NativeBlock.Scan.no);
+
+    auto referenceBlock = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *(cast(void**) referenceBlock.address) = body_.address;
+
+    auto root = placeAt(referenceBlock, classType);
+    auto dereffed = root.deref;
+
+    dereffed.address.should == body_.address;
+    (dereffed.type is classType).should == true;
+
+    int writtenX = 2;
+    writtenX = writtenX * 6 + 1;
+    long writtenY = 100L;
+    writtenY = writtenY * 3 + 4;
+
+    dereffed.field(xField).storeScalar(Value(writtenX));
+    dereffed.field(yField).storeScalar(Value(writtenY));
+
+    (cast(size_t) dereffed.field(xField).address).should == cast(size_t) body_.address + fieldByteOffset(xField);
+    (cast(size_t) dereffed.field(yField).address).should == cast(size_t) body_.address + fieldByteOffset(yField);
+
+    dereffed.field(xField).loadScalar.asLong.should == writtenX;
+    dereffed.field(yField).loadScalar.asLong.should == writtenY;
+}
+
+
+@("Place.deref.nonPointerNonClassPlaceThrows")
+unittest {
+    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    root.deref.shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place.Place.deref: only a "
+        ~ "pointer or class place can be dereferenced",
+    );
 }
 
 
