@@ -885,11 +885,12 @@ in parallel and never blocks it.
      `field` composes at the DMD class field offset) so pointer-deref
      and class-field lvalues can compose — and scalar
      load/store routes through the `native_scalar` codec; `lvalue_place.placeOfLvalue`
-     composes a place for the variable, struct-field, and index lvalue shapes
-     from a caller-supplied base-address resolver and index evaluator
-     (`a[i]` = `placeOfLvalue(a).index(evalIndex(i))`, uniform over a
-     static-array, pointer, or slice base), refusing class receivers and
-     anything else needing a pointer load),
+     composes a place for the variable, struct- and class-field, index, and
+     pointer-deref lvalue shapes from a caller-supplied base-address resolver
+     and index evaluator (`a[i]` = `placeOfLvalue(a).index(evalIndex(i))`,
+     uniform over a static-array, pointer, or slice base; a class receiver's
+     field and `*p` both compose through `Place.deref`), refusing anything
+     else),
      loads/stores routed through places, module-level guest state bound to
      blocks by `module_table.ModuleTable` per the existing extern-data
      rules, whole-aggregate read/write composed over places down to scalar

@@ -5,9 +5,11 @@ private:
 
 
 // Composes a `Place` for the pure address-composition lvalue shapes: a bare
-// variable, a chain of struct-field accesses reached through `DotVarExp`
-// receivers whose own place is struct-typed (inline value storage, so the
-// field sits at a fixed offset from the receiver's own address), or an
+// variable, a chain of field accesses reached through `DotVarExp` receivers
+// (a struct receiver's field sits inline at a fixed offset from the
+// receiver's own address; a class receiver holds a reference, so its field
+// composes through `Place.deref` onto the object body first), a `PtrExp`
+// (`*p`) that composes through `Place.deref` onto the pointee, or an
 // `IndexExp` over a base place that is itself one of these shapes.
 // `resolveBase` supplies the base address for a variable, and `evalIndex`
 // evaluates an `IndexExp`'s own index subexpression to a `size_t` -- the only
@@ -17,10 +19,9 @@ private:
 // i))`, which `Place.index` resolves uniformly for a static-array, pointer,
 // or slice base (following the stored pointer for the latter two).
 //
-// Every other lvalue shape refuses rather than guesses: a class-typed
-// receiver holds a reference, so its field lives behind a pointer that must
-// be loaded first; `PtrExp`, `CommaExp`, and anything else fall through to
-// the same refusal. Those all arrive with wiring to the expression evaluator.
+// Every other lvalue shape refuses rather than guesses: `CommaExp` and
+// anything else fall through to the same refusal. Those arrive with wiring
+// to the expression evaluator.
 public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     imported!"dmd.expression".Expression expr,
     void* delegate(imported!"dmd.declaration".VarDeclaration) @safe resolveBase,
@@ -54,14 +55,19 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
             );
 
         auto receiver = placeOfLvalue(dotVarExpReceiver(dot), resolveBase, evalIndex);
-        if (receiver.type.isTypeStruct is null)
-            throw new Exception(
-                "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
-                ~ "DotVarExp receiver is not a struct-typed place",
-            );
+        if (receiver.type.isTypeStruct !is null)
+            return receiver.field(field);
+        if (receiver.type.isTypeClass !is null)
+            return receiver.deref.field(field);
 
-        return receiver.field(field);
+        throw new Exception(
+            "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
+            ~ "DotVarExp receiver is not a struct- or class-typed place",
+        );
     }
+
+    if (auto ptr = expr.isPtrExp)
+        return placeOfLvalue(ptrExpBase(ptr), resolveBase, evalIndex).deref;
 
     throw new Exception(
         "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
@@ -117,4 +123,14 @@ private imported!"dmd.expression".Expression indexExpIndex(
     imported!"dmd.expression".IndexExp index,
 ) @trusted {
     return index.e2;
+}
+
+
+// `ptr`'s own operand expression -- `PtrExp.e1` (inherited from `UnaExp`) is
+// a plain field, and `PtrExp` is not itself `@safe`-annotated, so this is
+// the `@trusted` boundary for reading it.
+private imported!"dmd.expression".Expression ptrExpBase(
+    imported!"dmd.expression".PtrExp ptr,
+) @trusted {
+    return ptr.e1;
 }

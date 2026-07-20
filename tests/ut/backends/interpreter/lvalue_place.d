@@ -5,17 +5,36 @@ import ut;
 import ut.backends.interpreter: structTypeOf;
 import quickbite.frontend.compiler: parseSnippet;
 import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
-import quickbite.backends.interpreter.layout: fieldByteOffset, structFields, typeByteSize;
+import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.lang: Value;
 import dmd.func: FuncDeclaration;
 import dmd.dmodule: Module;
 import dmd.arraytypes: Dsymbols;
-import dmd.declaration: VarDeclaration;
 import dmd.expression: Expression, AssignExp;
 import dmd.statement: Statement;
+import dmd.mtype: TypeClass;
 
 private:
+
+
+// Parses `source`, finds the `class` named `name` among the module's
+// top-level members, and returns its (now semantically analysed)
+// `TypeClass` -- mirroring `place.d`'s own local `classTypeOf`, needed here
+// too, for the class-field lvalue fixture below.
+TypeClass classTypeOf(in string source, in string name) {
+    auto moduleResult = parseSnippet(source);
+
+    foreach (member; *moduleResult.module_.members)
+        if (auto class_ = member.isClassDeclaration)
+            if (class_.ident.toString == name) {
+                auto classType = class_.type.isTypeClass;
+                assert(classType !is null, "class `" ~ name ~ "`'s type is not a TypeClass");
+                return classType;
+            }
+
+    assert(false, "class `" ~ name ~ "` not found in parsed snippet");
+}
 
 
 FuncDeclaration findFunction(
@@ -166,26 +185,35 @@ unittest {
 }
 
 
-@("placeOfLvalue.dotVarExp.classReceiverThrows")
+// The centrepiece for a CLASS receiver: `c`'s own place holds a stored
+// reference (decision 15), so the receiver's `Place.deref` must land on the
+// referenced object body before `.field` composes at that body's own
+// `layout.fieldByteOffset` -- the object body block here is sized and laid
+// out from `layout.classFields`/`fieldByteOffset` alone, exactly as `place.d`'s
+// own `Place.deref` class fixture builds one, never a guessed offset.
+@("placeOfLvalue.dotVarExp.classFieldDerefsReceiverThenComposesOffsetWithScalarRoundTrip")
 unittest {
-    auto target = lvalueTargetOf(
-        q{ class C { int x; } void quickbiteLvalueClassField(C c) { c.x = 0; } },
-        "quickbiteLvalueClassField",
-    );
+    enum source = q{ class C { int x; } void quickbiteLvalueClassField(C c) { c.x = 0; } };
 
-    auto block = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.no);
+    auto target = lvalueTargetOf(source, "quickbiteLvalueClassField");
+    auto classType = classTypeOf(source, "C");
+    auto fields = classFields(classType.sym);
+    auto xField = fields[0];
 
-    placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr)).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
-        ~ "DotVarExp receiver is not a struct-typed place",
-    );
-}
+    auto bodyByteSize = fieldByteOffset(xField) + typeByteSize(xField.type);
+    auto body_ = NativeBlock.allocate(bodyByteSize, NativeBlock.Scan.no);
 
+    auto referenceBlock = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *(cast(void**) referenceBlock.address) = body_.address;
 
-// `placeOfLvalue` must throw before ever reaching a `VarExp`/`DotVarExp` and
-// calling the resolver, so this resolver asserts if it is ever called.
-void* refuseResolveBase(VarDeclaration variable) @safe {
-    assert(false, "resolveBase must not be called for a refused shape");
+    auto place = placeOfLvalue(target, (variable) => referenceBlock.address, (expr) => refuseEvalIndex(expr));
+
+    (cast(size_t) place.address).should == cast(size_t) body_.address + fieldByteOffset(xField);
+
+    int written = 8;
+    written = written * 9 + 5;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
 }
 
 
@@ -257,15 +285,26 @@ unittest {
 }
 
 
-@("placeOfLvalue.ptrExp.throws")
+// The centrepiece for a `PtrExp` (`*p`): `p`'s own place holds a stored
+// pointer, so `placeOfLvalue` on the operand followed by `Place.deref` must
+// land ON the stored pointer's own target address, at the pointee's type.
+@("placeOfLvalue.ptrExp.derefsOperandPlaceToPointeeWithScalarRoundTrip")
 unittest {
     auto target = lvalueTargetOf(
         q{ void quickbiteLvaluePtr(int* p) { *p = 0; } },
         "quickbiteLvaluePtr",
     );
 
-    placeOfLvalue(target, (variable) => refuseResolveBase(variable), (expr) => refuseEvalIndex(expr)).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
-        ~ "unsupported lvalue expression",
-    );
+    auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+    auto pointerBlock = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.no);
+    *(cast(void**) pointerBlock.address) = pointee.address;
+
+    auto place = placeOfLvalue(target, (variable) => pointerBlock.address, (expr) => refuseEvalIndex(expr));
+
+    place.address.should == pointee.address;
+
+    int written = 7;
+    written = written * 8 + 2;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
 }
