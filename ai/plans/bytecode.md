@@ -438,8 +438,9 @@ changed:
    source body.
 4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-5. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: imported
-   Phobos module initialization and the host entropy path.
+5. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: the entropy
+   module's `result` struct initializer, before the `__errno_location` host
+   entropy FFI boundary can be reached.
 6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
