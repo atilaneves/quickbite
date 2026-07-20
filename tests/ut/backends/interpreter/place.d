@@ -140,6 +140,84 @@ unittest {
 }
 
 
+struct PointerHolder {
+    int* p;
+}
+
+
+// The centrepiece for `index` on a POINTER place: the place's own address
+// holds a stored `int*`, not element bytes -- element 0 sits at the STORED
+// pointer's own address, and element 2 follows at that same address plus
+// `2 * int.sizeof`, never at any offset from the pointer PLACE's own
+// address (which holds only the 8-byte pointer value itself).
+@("Place.index.pointerElementAddressesFollowTheStoredPointerAndScalarStoreLoadRoundTrips")
+unittest {
+    auto holderType = structTypeOf(q{ struct PointerHolder { int* p; } }, "PointerHolder");
+    auto pointerType = structFields(holderType)[0].type;
+
+    auto ints = NativeBlock.allocate(4 * int.sizeof, NativeBlock.Scan.no);
+    auto pointerBlock = NativeBlock.allocate(typeByteSize(pointerType), NativeBlock.Scan.no);
+    *(cast(void**) pointerBlock.address) = ints.address;
+
+    auto root = placeAt(pointerBlock, pointerType);
+
+    root.index(0).address.should == ints.address;
+    (cast(size_t) root.index(2).address).should == cast(size_t) ints.address + 2 * int.sizeof;
+
+    int written = 6;
+    written = written * 9 + 4;
+    root.index(2).storeScalar(Value(written));
+
+    root.index(2).loadScalar.asLong.should == written;
+
+    // Element 2's write must not perturb element 0.
+    root.index(0).loadScalar.asLong.should == 0;
+}
+
+
+struct SliceHolder {
+    int[] s;
+}
+
+
+// The centrepiece for `index` on a SLICE place: the place's own address
+// holds a `{ length, ptr }` header -- element `i` sits at the header's own
+// `ptr` field plus `i * int.sizeof`, never at any offset from the header's
+// own address (which holds only the 16-byte header itself).
+@("Place.index.sliceElementAddressesFollowTheHeadersPointerAndScalarStoreLoadRoundTrips")
+unittest {
+    import quickbite.backends.interpreter.native_array: NativeArray;
+    import core.exception: AssertError;
+
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[] s; } }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+
+    auto elements = NativeBlock.allocate(3 * int.sizeof, NativeBlock.Scan.no);
+    auto elementsArray = NativeArray.adopt(elements, sliceType.nextOf, 3);
+
+    auto headerBlock = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    elementsArray.writeSliceHeader(headerBlock, 0);
+
+    auto root = placeAt(headerBlock, sliceType);
+
+    root.index(0).address.should == elements.address;
+    (cast(size_t) root.index(1).address).should == cast(size_t) elements.address + int.sizeof;
+    (cast(size_t) root.index(2).address).should == cast(size_t) elements.address + 2 * int.sizeof;
+
+    int written = 3;
+    written = written * 8 + 5;
+    root.index(1).storeScalar(Value(written));
+
+    root.index(1).loadScalar.asLong.should == written;
+
+    // Element 1's write must not perturb elements 0 or 2.
+    root.index(0).loadScalar.asLong.should == 0;
+    root.index(2).loadScalar.asLong.should == 0;
+
+    root.index(3).shouldThrow!AssertError;
+}
+
+
 @("Place.loadScalar.nonScalarPlaceThrows")
 unittest {
     auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");

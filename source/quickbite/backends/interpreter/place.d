@@ -47,27 +47,54 @@ public struct Place {
         return Place(placeAdd(_address, fieldByteOffset(field)), declaredType(field));
     }
 
-    // A `Place` at element `i` of this place's static array: address +
-    // i * stride, with the element type -- the same stride arithmetic
-    // `NativeArray.element` performs over its own block, applied here to a
-    // bare address whose static-array elements sit inline. `i` is bounds-
-    // checked against the array's fixed DMD element count
-    // (`layout.staticArrayLength`). A pointer's or slice's elements do not
-    // sit at this place's own address -- they live behind the pointer value
-    // (or the slice descriptor's `ptr`) stored here -- so element access for
-    // those composes from the elements-base place the stored pointer names,
-    // not from this descriptor address; that path arrives with place-
-    // yielding lvalue evaluation and is refused here rather than reading the
-    // descriptor's own bytes as if they were elements.
+    // A `Place` at element `i`, with the element type -- three cases,
+    // matching how each type actually stores its elements:
+    //
+    // - Static array (`Type.isTypeSArray`): elements sit inline at this
+    //   place's own address, so `index` is address + i * stride, the same
+    //   stride arithmetic `NativeArray.element` performs over its own block.
+    //   `i` is bounds-checked against the array's fixed DMD element count
+    //   (`layout.staticArrayLength`).
+    // - Pointer (`Type.isTypePointer`): this place's own address holds a
+    //   stored `T*` value, not element bytes -- `index` follows that stored
+    //   pointer, then applies stride arithmetic from there. No bounds check:
+    //   a raw pointer's extent is unknown, the same "no bounds check"
+    //   contract `NativeBlock.borrow` documents for its own raw-pointer
+    //   input.
+    // - Slice (`Type.isTypeDArray`): this place's own address holds a
+    //   `{ length, ptr }` header (`native_array.d`'s own layout) -- `index`
+    //   reads `ptr` back out of that header, then applies stride arithmetic
+    //   from there, the same "follow the stored pointer" shape as the
+    //   pointer case above but through the header's `ptr` field instead of
+    //   the place's address directly. `i` is bounds-checked against the
+    //   header's own `length` field, since a slice (unlike a raw pointer)
+    //   actually carries that fact.
+    //
+    // Every other type is refused.
     public Place index(in size_t i) @safe {
         import quickbite.backends.interpreter.layout: typeByteSize, staticArrayLength;
+        import quickbite.backends.interpreter.native_array: NativeArray, readSliceHeaderBytes;
+
+        if (auto pointer = _type.isTypePointer)
+            return Place(
+                placeAdd(readStoredPointer(_address), i * typeByteSize(pointer.next)),
+                pointer.next,
+            );
+
+        if (auto slice = _type.isTypeDArray) {
+            auto header = readSliceHeaderBytes(placeBytes(_address, NativeArray.sliceHeaderByteLength));
+            assert(i < header.length, "index out of range for slice place");
+            return Place(
+                placeAdd(header.ptr, i * typeByteSize(slice.next)),
+                slice.next,
+            );
+        }
 
         auto array = _type.isTypeSArray;
         if (array is null)
             throw new Exception(
                 "quickbite.backends.interpreter.place.Place.index: only a "
-                ~ "static-array place indexes inline; a pointer or slice "
-                ~ "place indexes through its stored pointer",
+                ~ "static-array, pointer, or slice place can be indexed",
             );
 
         assert(i < staticArrayLength(array), "index out of range for static array place");
@@ -152,4 +179,16 @@ private void* placeAdd(void* address, in size_t offset) pure nothrow @trusted {
 // at `address` -- never more.
 private ubyte[] placeBytes(void* address, in size_t length) pure nothrow @trusted {
     return (cast(ubyte*) address)[0 .. length];
+}
+
+
+// Reading the pointer value stored at a POINTER place's own address is not
+// `@safe`: `address` holds a raw `T*`/`void*` bit pattern, and reinterpreting
+// it as a `void**` to load that value cannot be verified by the compiler.
+// This is `Place.index`'s `@trusted` boundary for the pointer case, mirroring
+// `placeAdd`/`placeBytes` above; the loaded pointer itself is untrusted data
+// -- `Place.index` does no more with it than the same stride arithmetic
+// `placeAdd` already performs on any other address.
+private void* readStoredPointer(void* address) pure nothrow @trusted {
+    return *cast(void**) address;
 }

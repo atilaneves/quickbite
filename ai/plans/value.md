@@ -877,8 +877,10 @@ in parallel and never blocks it.
      checked against the boxed value on every read), lvalue evaluation
      yielding places (a
      `place.Place` is an address plus its static type; `field`/`index`
-     compose another place by DMD offsets/strides and scalar load/store
-     routes through the `native_scalar` codec; `lvalue_place.placeOfLvalue`
+     compose another place by DMD offsets/strides — `index` on a
+     pointer or slice place follows the place's own stored pointer (or
+     the slice header's `ptr`) rather than indexing inline — and scalar
+     load/store routes through the `native_scalar` codec; `lvalue_place.placeOfLvalue`
      composes a place for the variable and struct-field lvalue shapes from
      a caller-supplied base-address resolver, refusing class receivers and
      anything needing a pointer load or the expression evaluator),
