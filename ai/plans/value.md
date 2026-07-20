@@ -876,7 +876,11 @@ in parallel and never blocks it.
      anything needing a pointer load or the expression evaluator),
      loads/stores routed through places, module-level guest state bound to
      blocks by `module_table.ModuleTable` per the existing extern-data
-     rules. A
+     rules, whole-aggregate read/write composed over places down to scalar
+     leaves by `place_value.readValue`/`writeValue` (native scalar leaves
+     via `Place.loadScalar`/`storeScalar`, non-union struct and static-array
+     shapes recursed field-by-field/element-by-element via `Place.field`/
+     `index`). A
      dynamic-array local holds a real `{length, ptr}` slice
      header; a class variable holds a reference (address) to an object
      block owned by object identity; a union is overlapping bytes.
