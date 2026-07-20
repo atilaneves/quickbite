@@ -16,6 +16,7 @@ int main(string[] args) {
         "ut.backends.interpreter.interception_guard",
         "ut.backends.interpreter.native_block",
         "ut.backends.interpreter.layout",
+        "ut.backends.interpreter.frame_layout",
         "ut.backends.interpreter.native_array",
         "ut.backends.interpreter.native_struct",
         "ut.backends.interpreter.native_scalar",

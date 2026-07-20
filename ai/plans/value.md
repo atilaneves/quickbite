@@ -863,7 +863,9 @@ in parallel and never blocks it.
    (decision 17):
    - Preparation, behavior-neutral, each slice green on its own:
      per-activation frame blocks (one GC block per activation, DMD's
-     own closure model), lvalue evaluation yielding places (address +
+     own closure model, with slot offsets assigned by
+     `frame_layout.computeFrameLayout` from DMD's own per-type size and
+     alignment), lvalue evaluation yielding places (address +
      static type), loads/stores routed through places, module-table
      storage for module-level guest state per the existing extern-data
      rules. A dynamic-array local holds a real `{length, ptr}` slice
