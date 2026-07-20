@@ -2321,8 +2321,10 @@ private struct Walker {
             }
 
             if (auto dot = array.isDotVarExp) {
-                import quickbite.backends.interpreter.layout: typeByteSize;
-                import quickbite.frontend.dmd.types: isDynamicArrayType;
+                import quickbite.backends.interpreter.layout:
+                    classFields, fieldByteOffset, typeByteSize;
+                import quickbite.frontend.dmd.types:
+                    isDynamicArrayType, isStaticArrayType;
 
                 if (isDynamicArrayType(dot.type)) {
                     auto variable = classCellKeyVariable(dot.e1);
@@ -2338,6 +2340,29 @@ private struct Walker {
                             return Value.nativePointerValue(
                                 fieldCell.block.address + offset *
                                     typeByteSize(dot.type.toBasetype.nextOf),
+                            );
+                        }
+                    }
+                }
+
+                auto elementType = dot.type.toBasetype.nextOf.toBasetype;
+                auto structType = elementType.isTypeStruct;
+                if (
+                    isStaticArrayType(dot.type) &&
+                    structType !is null &&
+                    structType.sym.isUnionDeclaration is null
+                ) {
+                    auto variable = classCellKeyVariable(dot.e1);
+                    if (variable !is null) {
+                        promoteClassCell(variable);
+                        if (auto cell = variable in classCells) {
+                            // DMD declaration helpers require a mutable node.
+                            auto field = classFields(
+                                variable.type.toBasetype.isTypeClass.sym,
+                            )[classFieldIndex(dot)];
+                            return Value.nativePointerValue(
+                                cell.address + fieldByteOffset(field) + offset *
+                                    typeByteSize(elementType),
                             );
                         }
                     }
@@ -3340,7 +3365,11 @@ private struct Walker {
 
             if (isStaticArrayType(field.type)) {
                 auto elementType = field.type.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 const fieldValue = classValue.classFieldAt(index);
@@ -3352,7 +3381,11 @@ private struct Walker {
                 const length = staticArrayLength(field.type.toBasetype.isTypeSArray);
                 auto arrayCell = NativeArray.adopt(cell.subRange(offset, size), elementType, length);
                 foreach (elementIndex; 0 .. fieldValue.length)
-                    writeScalar(elementType, arrayCell.element(elementIndex), fieldValue[elementIndex]);
+                    writeArrayCellElement(
+                        arrayCell,
+                        elementIndex,
+                        fieldValue[elementIndex],
+                    );
                 continue;
             }
 
@@ -6300,7 +6333,11 @@ private struct Walker {
 
             if (isStaticArrayType(field.type)) {
                 auto elementType = field.type.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 auto fieldValue = value.classFieldAt(index);
@@ -6312,11 +6349,24 @@ private struct Walker {
                 const length = staticArrayLength(field.type.toBasetype.isTypeSArray);
                 auto arrayCell =
                     NativeArray.adopt(cell.subRange(offset, size), elementType, length);
-                foreach (elementIndex; 0 .. fieldValue.length)
+                foreach (elementIndex; 0 .. fieldValue.length) {
+                    Value elementValue;
+                    if (structType !is null) {
+                        auto elementCell = arrayCell.structElement(elementIndex);
+                        elementValue = structValueFromCell(
+                            fieldValue[elementIndex],
+                            elementCell,
+                        );
+                    } else
+                        elementValue = readScalar(
+                            elementType,
+                            arrayCell.element(elementIndex),
+                        );
                     fieldValue = fieldValue.withArrayElement(
                         elementIndex,
-                        readScalar(elementType, arrayCell.element(elementIndex)),
+                        elementValue,
                     );
+                }
                 value = value.withClassField(index, fieldValue);
                 continue;
             }
@@ -7412,7 +7462,11 @@ private struct Walker {
 
         if (isStaticArrayType(field.type)) {
             auto elementType = field.type.toBasetype.nextOf.toBasetype;
-            if (!isNativeScalarType(elementType))
+            auto structType = elementType.isTypeStruct;
+            if (!isNativeScalarType(elementType) && (
+                structType is null ||
+                structType.sym.isUnionDeclaration !is null
+            ))
                 return false;
 
             const fieldValue = target.classFieldAt(fieldIndex);
@@ -7427,11 +7481,24 @@ private struct Walker {
                 staticArrayLength(field.type.toBasetype.isTypeSArray),
             );
             Value result = fieldValue;
-            foreach (elementIndex; 0 .. fieldValue.length)
+            foreach (elementIndex; 0 .. fieldValue.length) {
+                Value elementValue;
+                if (structType !is null) {
+                    auto elementCell = arrayCell.structElement(elementIndex);
+                    elementValue = structValueFromCell(
+                        fieldValue[elementIndex],
+                        elementCell,
+                    );
+                } else
+                    elementValue = readScalar(
+                        elementType,
+                        arrayCell.element(elementIndex),
+                    );
                 result = result.withArrayElement(
                     elementIndex,
-                    readScalar(elementType, arrayCell.element(elementIndex)),
+                    elementValue,
                 );
+            }
             value = result;
             return true;
         }

@@ -2607,6 +2607,46 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A class static-array field whose elements are structs keeps its inline
+// element storage authoritative after an element field becomes addressable.
+// The mutation must remain visible through whole-field and whole-object reads.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class array field element"),
+)) {
+    @("class.structStaticArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            class C {
+                S[1] values = [S(fortyTwo())];
+            }
+
+            int observe(C value) {
+                S[1] copy = value.values;
+                return copy[0].x;
+            }
+
+            unittest {
+                C value = new C();
+                int* pointer = &value.values[0].x;
+                *pointer = 99;
+                S[1] field = value.values;
+                assert(field[0].x == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
 // A struct cell promoted through one alias is authoritative for the whole
 // value reached through another alias. SystemLinker therefore observes a
 // pointer write when the aliased struct is passed onward as a value.
