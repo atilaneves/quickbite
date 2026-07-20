@@ -77,8 +77,9 @@ This is the load-bearing decision; everything else follows from it.
   a descriptor crossing the bridge unswapped (`int[]*`, a struct with a slice
   field passed by reference) reads ptr-as-length on the native side. The flip
   touches every descriptor read/write site (`subSlice*`, `indexLoad*`, bounds
-  checks; the compact string descriptor should flip for consistency) and needs
-  a bridge round-trip test of a struct containing a slice field.
+  checks), needs a bridge round-trip test of a struct containing a slice
+  field, and sequences with the string-descriptor retirement below, which
+  touches the same sites.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
@@ -89,6 +90,70 @@ This is the load-bearing decision; everything else follows from it.
   references held in frames keep objects alive; conservative scanning of
   large frame regions (false-pointer pinning) and `addRange`/`removeRange`
   churn are known costs the bench checkpoints must watch.
+
+### Strings are ordinary arrays
+
+A `string`-typed frame slot must be a normal 16-byte native-order slice
+descriptor, identical to every other `T[]`. What is special about strings is
+only their backing storage: literal content lives in the immutable program
+data segment (the VM's `.rodata`), stored at the declared element width
+(`char`/`wchar`/`dchar` code units, not unconditionally UTF-8). Offsets into
+that segment appear in exactly one place — constant-pool entries — and are
+materialised into real pointers by a single literal-load instruction at
+descriptor construction. Frames, fields, and the FFI bridge only ever see
+real pointers. Specialness lives in storage, never in the frame — the same
+asymmetry compiled D gives string literals (`.rodata` placement, merged and
+deduped, with no descriptor-shape difference).
+
+Consequences, all by construction: sub-slices, indexing, `.ptr`, assignment,
+bounds checks, and copying reuse the generic dynamic-array paths with zero
+string-specific opcodes; heap-backed strings (`.idup`, appends) are not a
+second representation, just a different pointee, so no provenance predicate
+or compile-time rebinding exists; `null` and `""` are distinguishable by the
+pointer word, giving real string truthiness; `wstring`/`dstring` need no
+gates because storage matches stride. Type never selects a representation;
+nothing inspects a value's origin to decide its shape.
+
+The current implementation predates this contract: a string local holds a
+compact 8-byte {data offset, length} descriptor expanded at each use —
+bootstrap scaffolding from the first string-literal lowering, and the root of
+an entire silent-misread bug family. Migration slices, each independently
+green, folded into and sequenced with the descriptor word-order flip above:
+
+1. Width-faithful literal storage: store code units at the declared element
+   width (`stringCodeUnits!T` exists, unused); pool entries carry
+   {offset, length} in elements; add `loadStringLiteral` (today's
+   `stringSliceToArray`, run once at literal load instead of per consumer).
+   The deferred wide-string gap falls out here rather than being its own
+   project.
+2. String locals become dynamic-array locals through the generic declaration,
+   parameter, and reassignment paths. This slice deletes rather than adds:
+   the reassignment `copySize` special case, the heap-rebind branch and its
+   map surgery, `stringSourceIsHeapBacked`, `_stringLocals`. The
+   conditional-reassignment refusal rows go green because the bug's
+   precondition (two slot widths) no longer exists.
+3. Consumer cleanup: retire `Op.stringSubSlice`, `validateCompactSubSlice`,
+   `compactStringLengthSlot`, `tryStringIndex` (the generic
+   `tryDynamicArrayIndex` catches strings), and `compileStringPointer`'s
+   expansion; sweep every remaining `isStringType` gate in compiler.d — each
+   is either dead or a bug.
+4. Truthiness and null: with a real pointer word, `if (s)` / `assert(s)`
+   compiles as the ordinary pointer test.
+
+Done means: `stringSliceSize`, `_stringLocals`, `Op.stringSubSlice`,
+`Op.stringSliceToArray`, `compileStringPointer`'s compact expansion, and
+`stringSourceIsHeapBacked` no longer exist, and the string suite runs through
+the same compiler paths as the `int[]` suite. The done-criterion is
+greps-return-nothing on purpose: the failure mode of half-migrations is both
+representations surviving. Costs, named: one extra instruction per literal
+load (bench checkpoint), 2-4x data-segment growth per wide-string literal
+(rare), and the CTFE-boundary reifier learns to classify data-segment
+pointers back into offsets at the boundary only (offsets are the portable
+currency; addresses never escape a process). Not in scope: value interning —
+D strings are slices with observable `.ptr` identity and memory-sharing
+sub-slices, so canonical-object interning contradicts the compiled-D oracle;
+deduplicating identical literal bytes inside the data segment is
+storage-side, invisible, and compatible.
 
 ### Runtime type metadata
 Native-layout memory is not enough for the druntime leaves; they also
@@ -634,65 +699,14 @@ behaviour.
   requires multiple simultaneous threads. Host runtime calls and single-thread
   concurrency state already reached by existing rows are not covered by that
   deferral.
-- String/array-slice truthiness (`if (s)`, `!s`, `s ? a : b`, `s && t`, plain
-  `assert(s)`) is D's `ptr !is null`, but the compact 8-byte {data offset,
-  length} slice descriptor a string local or field carries cannot distinguish
-  null from data-at-offset-zero. `compileBoolCondition` refuses any
-  string-typed condition by its AST type before compiling it, rather than
-  trust every operand producer to have set `Operand.isString`: a `string[N]`
-  element read yields a 16-byte chunk at the same stride an ordinary `T[][N]`
-  element uses, but it is not a genuine native {ptr, length} slice descriptor
-  there — it is still the compact 8-byte {data offset, length} descriptor
-  followed by 8 zero-padding bytes, so it cannot carry that flag without
-  corrupting other consumers (`.length`, `==`) that branch on it to mean the
-  compact layout. Implementing real truthiness
-  needs a faithful string-null model (a descriptor or convention that can
-  represent "no data" distinctly from "data at offset 0") applied consistently
-  across the compiler, and would need to account for both descriptor layouts
-  in play, not a local fix in one place.
-- A `string` sub-slice (`b = a[lo .. hi]`) stays in the compact {data offset,
-  length} representation via `Op.stringSubSlice`
-  (`compileCompactStringSliceInto`) when both the slice and its source are
-  `char`-string-typed *and* the source is itself compact, so `.ptr`/
-  `.length`/indexing on `b` resolve into the real program-data segment
-  instead of the sub-slice's real-pointer 16-byte descriptor (built for a
-  genuine dynamic-array destination) getting truncated to its first 8 bytes
-  and reinterpreted as a bogus compact descriptor. A heap-backed source (one
-  already registered in `_dynamicArrayLocals`, e.g. reached through
-  `.idup`/`.dup`) has no program-data-relative origin to stay compact
-  around, so slicing or reassigning from one instead goes through the
-  general dynamic-array path and shares that source's real heap block;
-  `stringSourceIsHeapBacked` (compiler.d) is the provenance test every one of
-  these call sites shares — it must not be replaced by inspecting
-  `Operand.isString` after the fact, because a `string[N]`/`string[]` element
-  read yields an unflagged operand at the same compact-shaped stride, and
-  because the general `dynamicArrayDescriptorOrNull` treats any `string[]`
-  element as a nested array-of-arrays descriptor (`string`'s own basetype is
-  `Tarray`). A local's declaration or plain reassignment reads this
-  provenance from the right-hand side and, on a heap-backed result, rebinds
-  the destination onto a fresh 16-byte `_dynamicArrayLocals` slot dropping
-  its old compact map entries — a local cannot hold a 16-byte descriptor in
-  an 8-byte compact slot. Reassigning a *heap-backed*-declared local (whether
-  from a compact or another heap-backed source) is not yet supported and
-  throws a clean "Unsupported assignment" diagnostic rather than misreading,
-  since such a local was never given a compact-sized `_locals` slot to fall
-  back into. Duplicating an operand that is *itself* already string-typed
-  (`s.idup`/`s.dup` where `s: string`) is a separate, deeper, currently
-  unsupported gap: `tryArrayDuplication` requires its argument to not be a
-  `string` (so that a mutable `char[]`'s `.idup`/`.dup` reaches the
-  dynamic-array duplication path untouched), which means a *string* operand
-  degrades to DMD's generic `_dup`/`_d_newarrayU` runtime call chain and
-  throws "Unsupported new array runtime call" instead of producing a
-  heap-backed copy; a heap-backed string is still reachable today, just not
-  through duplicating an operand that is already a `string`. A related gap
-  remains open: `string s = p[lo .. hi];` from a pointer source (not another
-  string) still produces a wild dataOffset, because a real heap/pointer
-  address has no program-data-relative origin to stay compact around and is
-  not registered in `_dynamicArrayLocals` either. The compact path and its
-  `compileSliceInto` fallback both gate on `char` specifically
-  (`isCharStringType`): the bounds are code-unit offsets, but program data is
-  always stored as UTF-8 bytes (`stringChars`), so a `wstring`/`dstring`
-  sub-slice would silently misread byte offsets as code-unit offsets; such a
-  slice throws the ordinary "unsupported dynamic array access" diagnostic
-  instead. Real `wstring`/`dstring` sub-slice support remains a documented
-  deferral.
+- Strings currently violate the "Strings are ordinary arrays" contract (see
+  Core Architecture): a local holds the compact 8-byte {data offset, length}
+  descriptor, patched around by char-only gates, the
+  `stringSourceIsHeapBacked` provenance predicate, and a heap rebind that is
+  refused outside straight-line code. Interim gaps until the migration
+  slices land, all deleted rather than fixed by them: an unrecognised
+  string-source shape (e.g. a ternary with a heap-backed arm) still defaults
+  to the compact path and misreads; `s.idup` where `s` is already a `string`
+  and `string s = p[lo .. hi];` from a pointer source refuse or misread;
+  string truthiness (`if (s)`) is refused; `wstring`/`dstring` sub-slices
+  are refused.
