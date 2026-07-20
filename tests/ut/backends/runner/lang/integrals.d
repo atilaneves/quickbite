@@ -171,6 +171,34 @@ static foreach (backend; Matrix!(Plus!(IR))) {
     }
 }
 
+static foreach (backend; Matrix!()) {
+    @("unsignedAdditionWrapsAndStaysUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            uint high() {
+                return 4_000_000_000u;
+            }
+
+            unittest {
+                uint a = high;
+                uint b = high;
+
+                // Wraps past uint.max (mod 2^^32) to 3_705_032_704, whose
+                // top bit is set.
+                assert(a + b == 3_705_032_704u);
+
+                // Widening the wrapped sum to ulong must zero-extend, not
+                // sign-extend: a signed interpretation of the wrapped bits
+                // is negative (-589_934_592 as int), which would widen to a
+                // huge, different ulong value.
+                ulong d = a + b;
+                assert(d == 3_705_032_704uL);
+            }
+        });
+    }
+}
+
 // dmd CTFE rejects int.min / -1 as integer overflow; at runtime the same
 // division raises SIGFPE on x86_64, so no runtime backend can pin a value.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
