@@ -172,6 +172,16 @@ private struct Compiler {
                                    // function when it is a UnitTestDeclaration
     private ResultType _currentReturnType; // result type of the function whose
                                            // body is currently being compiled
+    // Nesting depth of conditional/repeated statement bodies (`if`/`else`,
+    // loop, `switch`, `try`/`catch`/`finally`, `with`) around the statement
+    // currently being compiled. Zero means every earlier statement in the
+    // current function is guaranteed to have run exactly once before this
+    // point, in lexical order.
+    private uint _controlFlowDepth;
+    // True when the current function has any `label:`/`goto`, which breaks
+    // lexical-order dominance: a backward goto can re-enter code the compiler
+    // already treated as having run.
+    private bool _functionHasLabels;
 
     private static struct DynamicArrayRefWriteBack {
         ushort valueOffset;
@@ -225,6 +235,12 @@ private struct Compiler {
         _pendingFinallyExceptionClassIndex = noExceptionClass;
         _activeDollarLength = ushort.max;
         _applyBodyExits = null;
+        _controlFlowDepth = 0;
+        {
+            bool[const(void)*] labels;
+            collectLabels(function_.fbody, labels);
+            _functionHasLabels = labels.length > 0;
+        }
 
         import dmd.astenums: TY;
 
@@ -508,6 +524,17 @@ private struct Compiler {
         ));
     }
 
+    // Compile a statement that a later statement is not guaranteed to run
+    // after (an `if`/`else` arm, a loop body, a `switch` body, a `try`/
+    // `catch`/`finally` body, or a `with` body): bump the control-flow depth
+    // around it so a nested assignment can tell it is not at unconditional
+    // straight-line depth.
+    private void compileNestedStatement(Statement statement) {
+        ++_controlFlowDepth;
+        compileStatement(statement);
+        --_controlFlowDepth;
+    }
+
     // Decode the unsigned checked-multiply instruction shape used by portable
     // D source with an x86 runtime fast path. The frontend preserves these
     // operands before DMD consumes its asm statements; every other instruction
@@ -632,12 +659,12 @@ private struct Compiler {
         const condition = compileBoolCondition(if_.condition);
         const falseJump = emitJumpIfFalse(condition);
 
-        compileStatement(if_.ifbody);
+        compileNestedStatement(if_.ifbody);
         const endJump = emitJump;
 
         patchJump(falseJump);
         if (if_.elsebody !is null)
-            compileStatement(if_.elsebody);
+            compileNestedStatement(if_.elsebody);
 
         patchJump(endJump);
     }
@@ -656,7 +683,7 @@ private struct Compiler {
                 _withDerefBases[with_.wthis] = *base;
 
         if (with_._body !is null)
-            compileStatement(with_._body);
+            compileNestedStatement(with_._body);
     }
 
     // `label:` — record the label's instruction index and patch any forward
@@ -747,13 +774,13 @@ private struct Compiler {
         _tryFinallyStack ~= context;
 
         if (tryFinally._body !is null)
-            compileStatement(tryFinally._body);
+            compileNestedStatement(tryFinally._body);
 
         _tryFinallyStack.length -= 1;
 
         // The normal fall-through exit also runs the finally.
         if (tryFinally.finalbody !is null)
-            compileStatement(tryFinally.finalbody);
+            compileNestedStatement(tryFinally.finalbody);
     }
 
     // Re-emit the `finally` blocks of the innermost `count` `try`/`finally`
@@ -910,7 +937,7 @@ private struct Compiler {
         );
 
         if (tryCatch._body !is null)
-            compileStatement(tryCatch._body);
+            compileNestedStatement(tryCatch._body);
 
         // Normal completion of the try body: drop the handler group and skip the
         // catch bodies.
@@ -933,7 +960,7 @@ private struct Compiler {
                     catchObject.nextMessageOffset;
             }
 
-            compileStatement(catch_.handler);
+            compileNestedStatement(catch_.handler);
             if (catch_.var !is null)
                 _exceptionObjectLocals.remove(catch_.var);
 
@@ -1138,7 +1165,7 @@ private struct Compiler {
         _loopStack ~= context;
 
         if (for_._body !is null)
-            compileStatement(for_._body);
+            compileNestedStatement(for_._body);
 
         // `continue` lands on the increment, then falls through to the re-test.
         foreach (index; _loopStack[$ - 1].continuePatches)
@@ -1173,7 +1200,7 @@ private struct Compiler {
         _loopStack ~= context;
 
         if (do_._body !is null)
-            compileStatement(do_._body);
+            compileNestedStatement(do_._body);
 
         // `continue` lands on the condition test, then re-runs the body if true.
         foreach (index; _loopStack[$ - 1].continuePatches)
@@ -1211,7 +1238,7 @@ private struct Compiler {
                     patchJumpTo(patch, _code.length);
                 _loopStack[$ - 1].continuePatches = null;
 
-                compileStatement((*unrolled.statements)[index]);
+                compileNestedStatement((*unrolled.statements)[index]);
             }
 
         // A `continue` in the final iteration, plus every `break`, lands past the
@@ -1321,7 +1348,7 @@ private struct Compiler {
         _switchStack ~= switchContext;
 
         if (switch_._body !is null)
-            compileStatement(switch_._body);
+            compileNestedStatement(switch_._body);
 
         // The end of a case body falls through to the next case body; the final
         // body must skip the dispatch chain entirely.
@@ -7774,9 +7801,23 @@ private struct Compiler {
         // 16-byte {ptr, length} descriptor that would overrun it. Rebind the
         // local onto a fresh 16-byte slot and route it through the same
         // dynamic-array local map a genuine `T[]` uses, instead of truncating
-        // the copy into the old slot.
+        // the copy into the old slot. Every already-compiled read of this
+        // local targets its old compact slot address, so the rebind is only
+        // sound when this assignment provably dominates every later read in
+        // the current function: unconditional straight-line code (not inside
+        // an `if`/`else`, loop, `switch`, `try`/`catch`/`finally`, or `with`
+        // body) in a function with no `label:`/`goto` (a backward goto could
+        // re-enter code compiled before the rebind). Refuse otherwise rather
+        // than let a skipped or repeated execution read stale or zero-init
+        // data through the old slot.
         if (isStringType(declaration.type) &&
             stringSourceIsHeapBacked(assign.e2)) {
+            if (_controlFlowDepth != 0 || _functionHasLabels)
+                throw new Exception(text(
+                    "Unsupported assignment in bytecode core: ",
+                    expressionChars(assign),
+                ));
+
             const heapOffset =
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
             _code ~= Instruction(
@@ -9992,7 +10033,7 @@ private struct Compiler {
         size_t[] bodyExits;
         auto previousExits = _applyBodyExits;
         _applyBodyExits = &bodyExits;
-        compileStatement(literal.fd.fbody);
+        compileNestedStatement(literal.fd.fbody);
         _applyBodyExits = previousExits;
 
         const one = compileSizeConstant(1);
@@ -10886,7 +10927,7 @@ private struct Compiler {
         size_t[] bodyExits;
         auto previousExits = _applyBodyExits;
         _applyBodyExits = &bodyExits;
-        compileStatement(literal.fd.fbody);
+        compileNestedStatement(literal.fd.fbody);
         _applyBodyExits = previousExits;
 
         const one = compileSizeConstant(1);

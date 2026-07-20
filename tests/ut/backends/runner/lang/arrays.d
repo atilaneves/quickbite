@@ -3133,3 +3133,82 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+/++
+    Reassigning a compact-descriptor `string` local from a heap-backed source
+    inside an untaken `if` branch must not touch `b`: the branch never runs.
++/
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "reassigning a compact string local from a heap-backed source " ~
+        "inside a conditional refuses rather than rebind past a lexical " ~
+        "point that does not dominate every later read"),
+)) {
+    @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInConditionalLeavesUntakenBranchUnchanged." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char letter(int index) {
+                return cast(char) ('a' + index);
+            }
+
+            bool never() {
+                return false;
+            }
+
+            unittest {
+                char[] source = [letter(0), letter(1)];
+                string a = source.idup;
+                string b = "x";
+                if (never())
+                    b = a;
+
+                assert(b.length == 1);
+                assert(b[0] == 'x');
+            }
+        });
+    }
+}
+
+/++
+    Reassigning a compact-descriptor `string` local from a heap-backed source
+    inside a loop body must observe each iteration's own reassignment, not the
+    value the local held before the loop started.
++/
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "reassigning a compact string local from a heap-backed source " ~
+        "inside a loop body refuses rather than rebind past a lexical " ~
+        "point that does not dominate every later read"),
+)) {
+    @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInLoopUpdatesEachIteration." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char letter(int index) {
+                return cast(char) ('a' + index);
+            }
+
+            unittest {
+                char[] source = [letter(0), letter(1)];
+                string a = source.idup;
+                string b = "x";
+                ulong firstLength = 99;
+                ulong secondLength = 99;
+
+                foreach (i; 0 .. 2) {
+                    if (i == 0)
+                        firstLength = b.length;
+                    else
+                        secondLength = b.length;
+                    b = a;
+                }
+
+                assert(firstLength == 1);
+                assert(secondLength == 2);
+            }
+        });
+    }
+}
