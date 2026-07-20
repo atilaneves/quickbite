@@ -897,7 +897,9 @@ in parallel and never blocks it.
      leaves by `place_value.readValue`/`writeValue` (native scalar leaves
      via `Place.loadScalar`/`storeScalar`, non-union struct and static-array
      shapes recursed field-by-field/element-by-element via `Place.field`/
-     `index`). A
+     `index`; `readValue` also reconstructs a slice from its native
+     `{length, ptr}` header and elements — read side only, `writeValue`'s
+     slice case is still deferred pending backing-storage allocation). A
      dynamic-array local holds a real `{length, ptr}` slice
      header; a class variable holds a reference (address) to an object
      block owned by object identity; a union is overlapping bytes.

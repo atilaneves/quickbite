@@ -9,13 +9,16 @@ private:
 // one flat span: a native scalar type reads through `Place.loadScalar`
 // directly; a non-union struct type recurses once per `layout.structFields`
 // field, in declaration order; a static-array type recurses once per
-// `layout.staticArrayLength` element. Anything else -- class, slice/dynamic
-// array, pointer, union, `real` -- has no such place-composed shape: a class
-// needs object identity beyond its own bytes, a slice/pointer's elements
-// live behind a stored address rather than inline at this place, a union has
-// no single field layout to recurse over, and `real` is outside `native_
-// scalar`'s codec (see its own header comment) -- so those throw rather than
-// guessing at a byte interpretation.
+// `layout.staticArrayLength` element; a slice (`Type.isTypeDArray`) reads its
+// native `{ length, ptr }` header (`native_array.readSliceHeaderBytes`) and
+// recurses once per element via `Place.index`, which already follows the
+// header's stored `ptr` -- the read side of a slice's place-composed shape.
+// Anything else -- class, pointer, union, `real` -- has no such
+// place-composed shape: a class needs object identity beyond its own bytes,
+// a pointer's elements live behind a stored address with no length to
+// recurse over, a union has no single field layout to recurse over, and
+// `real` is outside `native_scalar`'s codec (see its own header comment) --
+// so those throw rather than guessing at a byte interpretation.
 public imported!"quickbite.lang".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
@@ -41,6 +44,21 @@ public imported!"quickbite.lang".Value readValue(
     if (arrayType !is null) {
         Value[] elements;
         foreach (i; 0 .. staticArrayLength(arrayType))
+            elements ~= readValue(place.index(i));
+
+        return Value.arrayValue(elements);
+    }
+
+    auto sliceType = type.isTypeDArray;
+    if (sliceType !is null) {
+        import quickbite.backends.interpreter.native_array:
+            NativeArray, readSliceHeaderBytes;
+
+        auto header = readSliceHeaderBytes(
+            sliceHeaderBytes(place.address, NativeArray.sliceHeaderByteLength));
+
+        Value[] elements;
+        foreach (i; 0 .. header.length)
             elements ~= readValue(place.index(i));
 
         return Value.arrayValue(elements);
@@ -133,6 +151,15 @@ private imported!"dmd.mtype".TypeStruct nonUnionStructOf(
     return structType !is null && structType.sym.isUnionDeclaration is null
         ? structType
         : null;
+}
+
+
+// Reinterpreting a raw address as a byte range is not `@safe`; this is the
+// `@trusted` boundary, mirroring `place.d`'s own `placeBytes`. `length` is
+// always `NativeArray.sliceHeaderByteLength`, so the returned slice spans
+// exactly the header bytes at `address` -- never more.
+private ubyte[] sliceHeaderBytes(void* address, in size_t length) pure nothrow @trusted {
+    return (cast(ubyte*) address)[0 .. length];
 }
 
 

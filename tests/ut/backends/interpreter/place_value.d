@@ -173,19 +173,97 @@ unittest {
 }
 
 
-@("place_value.readValue.writeValue.sliceTypeThrows")
+// `writeValue`'s own slice case stays unsupported -- slice write needs
+// backing-storage allocation, out of scope for `writeValue` (see its header
+// comment); `readValue`'s own slice case is exercised separately below, now
+// that it reconstructs a slice from its native header + elements rather than
+// throwing.
+@("place_value.writeValue.sliceTypeThrows")
 unittest {
     auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
     auto sliceType = structFields(holderType)[0].type;
     auto place = Place(null, sliceType);
 
-    readValue(place).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
-    );
-
     writeValue(place, Value.void_).shouldThrowWithMessage(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+// The read-side counterpart of `Place.index`'s own slice-place test
+// (`Place.index.sliceElementAddressesFollowTheHeadersPointerAndScalarStore
+// LoadRoundTrips`): a slice place's own address holds a native `{ length,
+// ptr }` header, and `readValue` must read that header back and recurse
+// once per element via `Place.index`, exactly as it already does for a
+// static array's inline elements.
+@("place_value.readValue.sliceRoundTripsNativeElements")
+unittest {
+    import quickbite.backends.interpreter.native_array: NativeArray;
+
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[] s; } }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+
+    auto elements = NativeBlock.allocate(3 * int.sizeof, NativeBlock.Scan.no);
+    auto elementsArray = NativeArray.adopt(elements, sliceType.nextOf, 3);
+
+    int first = 2;
+    first = first * 4 + 1;
+    int second = 5;
+    second = second * 3 + 2;
+    int third = 9;
+    third = third * 2 + 3;
+
+    writeScalar(sliceType.nextOf, elementsArray.element(0), Value(first));
+    writeScalar(sliceType.nextOf, elementsArray.element(1), Value(second));
+    writeScalar(sliceType.nextOf, elementsArray.element(2), Value(third));
+
+    auto headerBlock = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    elementsArray.writeSliceHeader(headerBlock, 0);
+
+    auto root = placeAt(headerBlock, sliceType);
+
+    readValue(root).should == Value.arrayValue([Value(first), Value(second), Value(third)]);
+}
+
+
+// The struct-element counterpart of the above: a slice's element type is
+// itself a non-union struct, so each element must recurse through
+// `readValue`'s own struct branch rather than being read as flat bytes --
+// the whole-value analogue of `NativeArray.structElement`'s aliasing.
+@("place_value.readValue.sliceOfStructsRoundTripsNativeElements")
+unittest {
+    auto holderType = structTypeOf(q{
+        struct SlicePoint { int x; int y; }
+        struct SlicePointsHolder { SlicePoint[] s; }
+    }, "SlicePointsHolder");
+    auto sliceType = structFields(holderType)[0].type;
+
+    import quickbite.backends.interpreter.native_array: NativeArray;
+
+    auto elements = NativeBlock.allocate(2 * typeByteSize(sliceType.nextOf), NativeBlock.Scan.no);
+    auto elementsArray = NativeArray.adopt(elements, sliceType.nextOf, 2);
+
+    auto headerBlock = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    elementsArray.writeSliceHeader(headerBlock, 0);
+
+    auto root = placeAt(headerBlock, sliceType);
+
+    int firstX = 1;
+    firstX = firstX * 3 + 1;
+    int firstY = 2;
+    firstY = firstY * 3 + 2;
+    int secondX = 3;
+    secondX = secondX * 3 + 3;
+    int secondY = 4;
+    secondY = secondY * 3 + 4;
+
+    auto firstPoint = Value.structValue("SlicePoint", [Value(firstX), Value(firstY)]);
+    auto secondPoint = Value.structValue("SlicePoint", [Value(secondX), Value(secondY)]);
+
+    writeValue(root.index(0), firstPoint);
+    writeValue(root.index(1), secondPoint);
+
+    readValue(root).should == Value.arrayValue([firstPoint, secondPoint]);
 }
 
 
@@ -251,6 +329,17 @@ unittest {
 unittest {
     auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
     isPlaceComposable(holderType).should == false;
+}
+
+
+// `isPlaceComposable` still gates the write-side mirror, which stays
+// slice-free even though `readValue` itself now reconstructs a slice --
+// pinned directly on the slice type, not only via a struct field of one.
+@("place_value.isPlaceComposable.falseForSlice")
+unittest {
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+    isPlaceComposable(sliceType).should == false;
 }
 
 
