@@ -10185,8 +10185,9 @@ private struct Walker {
     // literal, a sibling that
     // is none of those supported shapes, or a first member that is neither
     // `isNativeScalarType`, a struct/union, a scalar-leaf static array, nor a
-    // static array of plain structs -- so the caller's existing independent-
-    // `defaultValue` fallback applies unchanged in every other case,
+    // possibly-nested static array of plain structs -- so the caller's
+    // existing independent-`defaultValue` fallback applies unchanged in every
+    // other case,
     // including the still-open gap for a class first member/sibling. When
     // the first member is a struct or union, reuses `withUnionFieldWrite`'s own
     // `writeStructCellScalarFields` idiom to seed the transient cell's
@@ -10243,12 +10244,7 @@ private struct Walker {
         const firstFieldStruct = firstFieldStructType !is null;
         const firstFieldArray = isScalarLeafStaticArray(firstField.type)
             && fieldsSoFar[0].isArray;
-        auto firstFieldArrayType = firstField.type.toBasetype.isTypeSArray;
-        auto firstFieldArrayStructType = firstFieldArrayType is null
-            ? null
-            : firstFieldArrayType.next.toBasetype.isTypeStruct;
-        const firstFieldStructArray = firstFieldArrayStructType !is null
-            && firstFieldArrayStructType.sym.isUnionDeclaration is null
+        const firstFieldStructArray = isStaticArrayOfPlainStructs(firstField.type)
             && fieldsSoFar[0].isArray;
 
         if (
@@ -10268,13 +10264,7 @@ private struct Walker {
             writeStaticArrayCellScalarElements(firstCell, fieldsSoFar[0]);
         } else if (firstFieldStructArray) {
             auto firstCell = cell.arrayField(0);
-            foreach (elementIndex; 0 .. firstCell.length) {
-                auto elementCell = firstCell.structElement(elementIndex);
-                writeStructCellScalarFields(
-                    elementCell,
-                    fieldsSoFar[0][elementIndex],
-                );
-            }
+            writeStaticArrayCellStructElements(firstCell, fieldsSoFar[0]);
         } else {
             writeScalar(firstField.type, cell.field(0), fieldsSoFar[0]);
         }
@@ -10308,6 +10298,34 @@ private struct Walker {
         return true;
     }
 
+    // Struct-leaf counterpart of `writeStaticArrayCellScalarElements`:
+    // nested arrays compose `NativeArray` views until the existing
+    // `NativeStruct` field writer can seed each plain-struct leaf.
+    private void writeStaticArrayCellStructElements(
+        ref NativeArray cell,
+        in Value arrayValue,
+    ) {
+        if (!arrayValue.isArray)
+            return;
+
+        foreach (index; 0 .. cell.length) {
+            if (index >= arrayValue.length)
+                continue;
+
+            if (cell.elementType.isTypeSArray) {
+                // Mutable because recursive write takes the view by ref.
+                auto elementCell = cell.arrayElement(index);
+                writeStaticArrayCellStructElements(
+                    elementCell,
+                    arrayValue[index],
+                );
+            } else {
+                auto elementCell = cell.structElement(index);
+                writeStructCellScalarFields(elementCell, arrayValue[index]);
+            }
+        }
+    }
+
     private bool isScalarLeafStaticArray(imported!"dmd.mtype".Type type) {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.frontend.dmd.types: isStaticArrayType;
@@ -10319,6 +10337,22 @@ private struct Walker {
         while (isStaticArrayType(elementType))
             elementType = elementType.nextOf.toBasetype;
         return isNativeScalarType(elementType);
+    }
+
+    private bool isStaticArrayOfPlainStructs(
+        imported!"dmd.mtype".Type type,
+    ) {
+        auto elementType = type.toBasetype;
+        do {
+            auto arrayType = elementType.isTypeSArray;
+            if (arrayType is null)
+                return false;
+            elementType = arrayType.next.toBasetype;
+        } while (elementType.isTypeSArray !is null);
+
+        auto structType = elementType.isTypeStruct;
+        return structType !is null &&
+            structType.sym.isUnionDeclaration is null;
     }
 
     private Value structLiteralFieldValue(

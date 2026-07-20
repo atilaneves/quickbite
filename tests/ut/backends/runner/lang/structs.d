@@ -2091,6 +2091,38 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A nested static array of scalar-field structs in the first union member
+// initializes the same shared bytes as its one-level counterpart. The first
+// struct leaf's default float bits are visible through the scalar sibling.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this nested-array-of-struct union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromNestedStructArrayFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                float value;
+            }
+
+            union U {
+                Payload[1][1] payloads;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
 // An untouched scalar-element static-array sibling reads the same first-
 // member default bits as scalar and plain-struct siblings. Independently
 // defaulting the array would incorrectly produce zero.
