@@ -23,6 +23,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     void* delegate(imported!"dmd.declaration".VarDeclaration) @safe resolveBase,
 ) @safe {
     import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.layout: declaredType;
 
     if (auto var = expr.isVarExp) {
         auto variable = varExpDeclaration(var).isVarDeclaration;
@@ -32,7 +33,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
                 ~ "VarExp does not resolve to a variable",
             );
 
-        return Place(resolveBase(variable), variableType(variable));
+        return Place(resolveBase(variable), declaredType(variable));
     }
 
     if (auto dot = expr.isDotVarExp) {
@@ -57,16 +58,6 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
         "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
         ~ "unsupported lvalue expression",
     );
-}
-
-
-// `variable`'s declared type -- a plain field read, but `VarDeclaration` (an
-// `extern (C++)` class) is not itself `@safe`-annotated, so this is the
-// `@trusted` boundary for reading it, mirroring `frame_layout.variableType`.
-private imported!"dmd.mtype".Type variableType(
-    imported!"dmd.declaration".VarDeclaration variable,
-) @trusted {
-    return variable.type;
 }
 
 

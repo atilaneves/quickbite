@@ -50,7 +50,7 @@ public struct FrameLayout {
 public FrameLayout computeFrameLayout(
     imported!"dmd.func".FuncDeclaration function_,
 ) @safe {
-    import quickbite.backends.interpreter.layout: typeByteSize, typeAlignment, typeIsSized;
+    import quickbite.backends.interpreter.layout: typeByteSize, typeAlignment, typeIsSized, declaredType;
     import dmd.declaration: VarDeclaration;
 
     FrameLayout.Slot[VarDeclaration] slots;
@@ -58,7 +58,7 @@ public FrameLayout computeFrameLayout(
     size_t maxAlignment = 1;
 
     foreach (variable; owningLocals(function_)) {
-        auto type = variableType(variable);
+        auto type = declaredType(variable);
         if (!typeIsSized(type))
             continue;
 
@@ -79,16 +79,6 @@ public FrameLayout computeFrameLayout(
 // always a DMD-reported type alignment (>= 1), never zero.
 private size_t alignedUp(in size_t value, in size_t alignment) pure nothrow @nogc @safe {
     return (value + alignment - 1) / alignment * alignment;
-}
-
-
-// `variable`'s declared type -- a plain field read, but `VarDeclaration`
-// (an `extern (C++)` class) is not itself `@safe`-annotated, so this is
-// the `@trusted` boundary for reading it.
-private imported!"dmd.mtype".Type variableType(
-    imported!"dmd.declaration".VarDeclaration variable,
-) @trusted {
-    return variable.type;
 }
 
 

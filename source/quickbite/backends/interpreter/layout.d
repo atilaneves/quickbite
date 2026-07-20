@@ -159,6 +159,23 @@ private size_t staticArrayLengthImpl(imported!"dmd.mtype".TypeSArray type) @trus
 }
 
 
+// `variable`'s declared type (`VarDeclaration.type`), verbatim.
+public imported!"dmd.mtype".Type declaredType(
+    imported!"dmd.declaration".VarDeclaration variable,
+) @safe {
+    return declaredTypeImpl(variable);
+}
+
+// `VarDeclaration.type` is a plain field read, but `VarDeclaration` (an
+// `extern (C++)` class) is not itself `@safe`-annotated; this is the
+// `@trusted` boundary for reading it.
+private imported!"dmd.mtype".Type declaredTypeImpl(
+    imported!"dmd.declaration".VarDeclaration variable,
+) @trusted {
+    return variable.type;
+}
+
+
 // `class_`'s fields, in base-to-derived declaration order: walks
 // `baseClass` from `class_` up to the root, then emits each level's own
 // `fields` starting from the root and working back down, so a derived

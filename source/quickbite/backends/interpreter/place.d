@@ -42,9 +42,9 @@ public struct Place {
     // function forces itself -- mirroring `NativeStruct.field`'s identical
     // reliance on an already-forced offset.
     public Place field(VarDeclaration field) @safe {
-        import quickbite.backends.interpreter.layout: fieldByteOffset;
+        import quickbite.backends.interpreter.layout: fieldByteOffset, declaredType;
 
-        return Place(placeAdd(_address, fieldByteOffset(field)), fieldType(field));
+        return Place(placeAdd(_address, fieldByteOffset(field)), declaredType(field));
     }
 
     // A `Place` at element `i` of this place's static array: address +
@@ -129,18 +129,9 @@ public Place placeAt(
     imported!"quickbite.backends.interpreter.frame_block".FrameBlock frame,
     imported!"dmd.declaration".VarDeclaration variable,
 ) @safe {
-    return Place(frame.slotAddress(variable), fieldType(variable));
-}
+    import quickbite.backends.interpreter.layout: declaredType;
 
-
-// `VarDeclaration.type` is a plain field, but `VarDeclaration` (an
-// `extern (C++)` class) is not itself `@safe`-annotated; this is the
-// `@trusted` boundary, mirroring `frame_layout.d`'s/`frame_block.d`'s own
-// `variableType` helper.
-private imported!"dmd.mtype".Type fieldType(
-    imported!"dmd.declaration".VarDeclaration variable,
-) @trusted {
-    return variable.type;
+    return Place(frame.slotAddress(variable), declaredType(variable));
 }
 
 

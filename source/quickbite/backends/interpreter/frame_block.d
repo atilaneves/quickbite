@@ -69,21 +69,11 @@ private void* slotAddressImpl(void* base, in size_t offset) pure nothrow @truste
 private bool frameHasPointers(
     imported!"quickbite.backends.interpreter.frame_layout".FrameLayout layout,
 ) @safe {
-    import quickbite.backends.interpreter.layout: typeHasPointers;
+    import quickbite.backends.interpreter.layout: typeHasPointers, declaredType;
 
     foreach (variable, slot; layout.slots)
-        if (typeHasPointers(variableType(variable)))
+        if (typeHasPointers(declaredType(variable)))
             return true;
 
     return false;
-}
-
-
-// `variable`'s declared type -- a plain field read, but `VarDeclaration`
-// (an `extern (C++)` class) is not itself `@safe`-annotated, so this is the
-// `@trusted` boundary for reading it, mirroring `frame_layout.variableType`.
-private imported!"dmd.mtype".Type variableType(
-    imported!"dmd.declaration".VarDeclaration variable,
-) @trusted {
-    return variable.type;
 }

@@ -62,22 +62,11 @@ private imported!"quickbite.backends.interpreter.native_block".NativeBlock alloc
     imported!"dmd.declaration".VarDeclaration variable,
 ) @safe {
     import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers, typeIsSized;
+    import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers, typeIsSized, declaredType;
 
-    auto type = variableType(variable);
+    auto type = declaredType(variable);
     assert(typeIsSized(type), "variable has no sized type for module storage");
 
     const scan = typeHasPointers(type) ? NativeBlock.Scan.conservative : NativeBlock.Scan.no;
     return NativeBlock.allocate(typeByteSize(type), scan);
-}
-
-
-// `variable`'s declared type -- a plain field read, but `VarDeclaration`
-// (an `extern (C++)` class) is not itself `@safe`-annotated, so this is the
-// `@trusted` boundary, mirroring `frame_block.d`'s/`frame_layout.d`'s own
-// `variableType` helper.
-private imported!"dmd.mtype".Type variableType(
-    imported!"dmd.declaration".VarDeclaration variable,
-) @trusted {
-    return variable.type;
 }
