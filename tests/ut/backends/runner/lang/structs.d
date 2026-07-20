@@ -1933,6 +1933,34 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A nested scalar-leaf static array in the first union member initializes
+// the same overlapping block as its one-level counterpart. Its first float's
+// default NaN bits are therefore visible through the untouched scalar sibling.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this nested-static-array union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromNestedArrayFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float[1][1] values;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
 // An untouched scalar-element static-array sibling reads the same first-
 // member default bits as scalar and plain-struct siblings. Independently
 // defaulting the array would incorrectly produce zero.

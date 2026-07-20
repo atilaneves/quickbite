@@ -478,7 +478,7 @@ a checked fact; do not relearn them.
   value: the whole block carries the first member's bits, and an
   untouched sibling reads those bits reinterpreted. Scalar, plain-struct, and
   scalar-leaf-static-array siblings are reconstructed from scalar,
-  plain-struct, and scalar-element-static-array first members through one
+  plain-struct, and scalar-leaf-static-array first members through one
   transient native block. Computing each member's default independently
   diverges from compiled D.
 - DMD's own CTFE engine refuses reinterpretation through overlapped union
@@ -825,9 +825,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and
      the union residuals in Contracts (aggregate members beyond plain
-     structs, promotion for unions with non-scalar members, nested-static-array
-     and other unsupported first members or aggregate-valued default-init
-     siblings, and class/dynamic-array first members).
+     structs, promotion for unions with non-scalar members, unsupported first
+     members or aggregate-valued default-init siblings, and class/dynamic-array
+     first members).
    - Native-pointer arithmetic: integer offsetting and pointer difference walk
      raw native buffers (including `GC.malloc` storage). Array pointers into a
      promoted cell cross ordinary body-less FFI as native addresses; native

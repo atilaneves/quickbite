@@ -9310,18 +9310,16 @@ private struct Walker {
         writeScalar(cell.elementType, cell.element(index), value);
     }
 
-    // Writes boxed `arrayValue`'s scalar elements into `cell`'s bytes (the
+    // Writes boxed `arrayValue`'s scalar leaves into `cell`'s bytes (the
     // static-array-element counterpart of `writeStructCellScalarFields`):
     // shared by
     // `promoteArrayCell`'s static-array-element branch (the cell-creation
     // seed) and `writeArrayCellElement`'s own branch above (a direct
     // element write, `a[i] = [...]`, after the cell already exists).
-    // `cell.elementType` is always `native_scalar.isNativeScalarType` by
-    // construction here -- `promoteArrayCell` only ever creates this cell
-    // shape under that same guard -- so there is no nested non-scalar case
-    // to fall back to, unlike `writeStructCellScalarFields`'s own
-    // static-array-field branch. A no-op for a boxed value that isn't
-    // actually an array (defensive, mirroring that same branch's guard).
+    // Nested static-array elements recurse through `NativeArray.arrayElement`;
+    // scalar elements terminate in the shared scalar codec. A no-op for a
+    // boxed value that isn't actually an array (defensive, mirroring
+    // `writeStructCellScalarFields`'s static-array-field branch).
     private void writeStaticArrayCellScalarElements(
         ref NativeArray cell,
         in Value arrayValue,
@@ -9331,9 +9329,25 @@ private struct Walker {
         if (!arrayValue.isArray)
             return;
 
-        foreach (index; 0 .. cell.length)
-            if (index < arrayValue.length)
-                writeScalar(cell.elementType, cell.element(index), arrayValue[index]);
+        foreach (index; 0 .. cell.length) {
+            if (index >= arrayValue.length)
+                continue;
+
+            if (cell.elementType.isTypeSArray) {
+                // Mutable because recursive write takes the view by ref.
+                auto elementCell = cell.arrayElement(index);
+                writeStaticArrayCellScalarElements(
+                    elementCell,
+                    arrayValue[index],
+                );
+            } else {
+                writeScalar(
+                    cell.elementType,
+                    cell.element(index),
+                    arrayValue[index],
+                );
+            }
+        }
     }
 
     // Reads `cell`'s element `index` back into a boxed `Value` (the
@@ -10170,13 +10184,13 @@ private struct Walker {
     // untouched) for index 0 itself, a non-union literal, a sibling that
     // is none of those supported shapes, or a first member that is neither
     // `isNativeScalarType`, a plain (non-union) struct, nor a
-    // scalar-element static array -- so the caller's existing independent-
+    // scalar-leaf static array -- so the caller's existing independent-
     // `defaultValue` fallback applies unchanged in every other case,
     // including the still-open gap for a class first member/sibling. When
     // the first member is a struct, reuses `withUnionFieldWrite`'s own
     // `writeStructCellScalarFields` idiom to seed the transient cell's
     // shared bytes from the first member's already-resolved struct value
-    // (scalar leaves only, recursing through nested structs/scalar-element
+    // (scalar leaves only, recursing through nested structs/scalar-leaf
     // arrays exactly as that helper already does) before reading the
     // sibling back out.
     private bool unionSiblingDefaultFieldValue(
@@ -10188,8 +10202,6 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar, writeScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
-
         if (index == 0 || fieldsSoFar.length == 0 || literal.sd is null)
             return false;
 
@@ -10216,8 +10228,7 @@ private struct Walker {
         auto firstFieldStructType = firstField.type.toBasetype.isTypeStruct;
         const firstFieldStruct = firstFieldStructType !is null
             && firstFieldStructType.sym.isUnionDeclaration is null;
-        const firstFieldArray = isStaticArrayType(firstField.type)
-            && isNativeScalarType(firstField.type.toBasetype.nextOf.toBasetype)
+        const firstFieldArray = isScalarLeafStaticArray(firstField.type)
             && fieldsSoFar[0].isArray;
 
         if (!firstFieldScalar && !firstFieldStruct && !firstFieldArray)
