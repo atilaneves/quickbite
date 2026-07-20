@@ -1,0 +1,193 @@
+module ut.backends.interpreter.place;
+
+
+import ut;
+import ut.backends.interpreter: structTypeOf;
+import quickbite.frontend.compiler: parseSnippet;
+import quickbite.backends.interpreter.place: Place, placeAt;
+import quickbite.backends.interpreter.layout: fieldByteOffset, structFields, typeByteSize;
+import quickbite.backends.interpreter.native_block: NativeBlock;
+import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
+import quickbite.backends.interpreter.frame_block: FrameBlock;
+import quickbite.lang: Value;
+import dmd.func: FuncDeclaration;
+import dmd.dmodule: Module;
+import dmd.arraytypes: Dsymbols;
+
+private:
+
+
+FuncDeclaration findFunction(
+    Module module_,
+    in string name,
+) {
+    return module_.members is null
+        ? null
+        : findFunction(module_.members, name);
+}
+
+// `extern(C)`/`extern(D)`/etc at module scope wraps the declaration in a
+// `LinkDeclaration` (an `AttribDeclaration`), so the `FuncDeclaration` is not
+// a direct member of the module -- recurse into `AttribDeclaration.decl` to
+// find it regardless of how many attribute wrappers surround it.
+FuncDeclaration findFunction(
+    Dsymbols* members,
+    in string name,
+) {
+    import dmd.attrib: AttribDeclaration;
+
+    if (members is null)
+        return null;
+
+    foreach (member; *members) {
+        if (auto function_ = member.isFuncDeclaration)
+            if (function_.ident !is null && function_.ident.toString == name)
+                return function_;
+
+        if (auto attrib = member.isAttribDeclaration)
+            if (auto found = findFunction(attrib.decl, name))
+                return found;
+    }
+
+    return null;
+}
+
+FuncDeclaration parseFunction(in string source, in string name) {
+    auto moduleResult = parseSnippet(source);
+    auto function_ = findFunction(moduleResult.module_, name);
+    assert(function_ !is null, "function `" ~ name ~ "` not found in parsed snippet");
+    return function_;
+}
+
+
+struct P {
+    int x;
+    long y;
+}
+
+
+// The centrepiece for `field`: `P.y` follows `P.x` with the host compiler's
+// own alignment padding (`int` then `long` leaves 4 padding bytes before
+// `y`), so a naive "pack fields with no padding" implementation would put
+// `y` at the wrong address. Store/load-back through each field's own
+// `Place` must also be independent of the other: writing `y` must not
+// perturb `x`'s bytes.
+@("Place.field.addressesMatchLayoutOffsetsAndScalarStoreLoadRoundTripsIndependently")
+unittest {
+    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    auto fields = structFields(type);
+    auto xField = fields[0];
+    auto yField = fields[1];
+
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    auto xPlace = root.field(xField);
+    auto yPlace = root.field(yField);
+
+    xPlace.address.should == block.address;
+    (cast(size_t) yPlace.address).should == cast(size_t) block.address + fieldByteOffset(yField);
+    fieldByteOffset(yField).should == P.y.offsetof;
+
+    // Runtime-computed, not bare literals passed straight to `Value`.
+    int writtenX = 3;
+    writtenX = writtenX * 5 + 1;
+    long writtenY = 1000L;
+    writtenY = writtenY * 7 + 2;
+
+    xPlace.storeScalar(Value(writtenX));
+    yPlace.storeScalar(Value(writtenY));
+
+    xPlace.loadScalar.asLong.should == writtenX;
+    yPlace.loadScalar.asLong.should == writtenY;
+
+    // Overwriting `y` must leave `x`'s already-stored bytes untouched.
+    long overwrittenY = writtenY + 11;
+    yPlace.storeScalar(Value(overwrittenY));
+
+    xPlace.loadScalar.asLong.should == writtenX;
+    yPlace.loadScalar.asLong.should == overwrittenY;
+}
+
+
+struct ArrayHolder {
+    int[4] xs;
+}
+
+
+// The centrepiece for `index`: element 0 sits at the array's own base
+// address, and element 2 follows at `2 * int.sizeof` -- the same stride
+// `NativeArray.element` computes, applied here to a bare `Place` address.
+@("Place.index.staticArrayElementAddressesMatchStrideAndScalarStoreLoadRoundTrips")
+unittest {
+    auto holderType = structTypeOf(q{ struct ArrayHolder { int[4] xs; } }, "ArrayHolder");
+    auto arrayType = structFields(holderType)[0].type;
+
+    auto block = NativeBlock.allocate(typeByteSize(arrayType), NativeBlock.Scan.no);
+    auto root = placeAt(block, arrayType);
+
+    root.index(0).address.should == block.address;
+    (cast(size_t) root.index(2).address).should == cast(size_t) block.address + 2 * int.sizeof;
+
+    int written = 6;
+    written = written * 9 + 4;
+    root.index(2).storeScalar(Value(written));
+
+    root.index(2).loadScalar.asLong.should == written;
+
+    // Element 2's write must not perturb element 0.
+    root.index(0).loadScalar.asLong.should == 0;
+}
+
+
+@("Place.loadScalar.nonScalarPlaceThrows")
+unittest {
+    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    root.loadScalar.shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place.Place.loadScalar: "
+        ~ "type is not a native scalar type",
+    );
+}
+
+
+@("Place.storeScalar.nonScalarPlaceThrows")
+unittest {
+    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    root.storeScalar(Value(1)).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place.Place.storeScalar: "
+        ~ "type is not a native scalar type",
+    );
+}
+
+
+@("Place.placeAt.frameBlockSlotAddressAndDeclaredTypeMatchTheVariablesOwnSlot")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbitePlaceFrameSlot(int a, long b) {} },
+        "quickbitePlaceFrameSlot",
+    );
+    auto layout = computeFrameLayout(function_);
+    auto frame = FrameBlock.allocate(layout);
+    auto a = (*function_.parameters)[0];
+    auto b = (*function_.parameters)[1];
+
+    auto aPlace = placeAt(frame, a);
+    auto bPlace = placeAt(frame, b);
+
+    aPlace.address.should == frame.slotAddress(a);
+    bPlace.address.should == frame.slotAddress(b);
+
+    // Runtime-computed, not a bare literal passed straight to `Value`.
+    int writtenA = 2;
+    writtenA = writtenA * 21;
+
+    aPlace.storeScalar(Value(writtenA));
+
+    aPlace.loadScalar.asLong.should == writtenA;
+}
