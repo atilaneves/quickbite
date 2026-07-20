@@ -10179,7 +10179,8 @@ private struct Walker {
         return defaultValue(field);
     }
 
-    // Scalar, struct/union, or scalar-leaf-static-array sibling: returns
+    // Scalar, struct/union, scalar-leaf-static-array, or one-level static-
+    // array-of-plain-struct sibling: returns
     // `false` (leaving `value` untouched) for index 0 itself, a non-union
     // literal, a sibling that
     // is none of those supported shapes, or a first member that is neither
@@ -10219,7 +10220,18 @@ private struct Walker {
         auto siblingStructType = field.type.toBasetype.isTypeStruct;
         const siblingStruct = siblingStructType !is null;
         const siblingArray = isScalarLeafStaticArray(field.type);
-        if (!siblingScalar && !siblingStruct && !siblingArray)
+        auto siblingArrayType = field.type.toBasetype.isTypeSArray;
+        auto siblingArrayStructType = siblingArrayType is null
+            ? null
+            : siblingArrayType.next.toBasetype.isTypeStruct;
+        const siblingStructArray = siblingArrayStructType !is null
+            && siblingArrayStructType.sym.isUnionDeclaration is null;
+        if (
+            !siblingScalar &&
+            !siblingStruct &&
+            !siblingArray &&
+            !siblingStructArray
+        )
             return false;
 
         auto firstField = structLiteralField(literal, 0);
@@ -10276,6 +10288,19 @@ private struct Walker {
 
             auto siblingCell = cell.structField(index);
             value = structValueFromCell(current, siblingCell);
+        } else if (siblingStructArray) {
+            value = defaultValue(field);
+            if (!value.isArray)
+                return false;
+
+            auto siblingCell = cell.arrayField(index);
+            foreach (elementIndex; 0 .. siblingCell.length) {
+                auto elementCell = siblingCell.structElement(elementIndex);
+                value = value.withArrayElement(
+                    elementIndex,
+                    structValueFromCell(value[elementIndex], elementCell),
+                );
+            }
         } else {
             auto siblingCell = cell.arrayField(index);
             value = arrayValueFromCell(siblingCell);

@@ -1933,6 +1933,38 @@ static foreach (backend; Matrix!(
     }
 }
 
+// An untouched static array of scalar-field structs reads the same first-
+// member default bits as a plain-struct sibling. Independently defaulting the
+// array would incorrectly produce a zero-initialized struct element.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped static-array field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this union static-array-of-struct initializer"),
+)) {
+    @("union.untouchedStructArraySiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                int bits;
+            }
+
+            union U {
+                float value;
+                Payload[1] payloads;
+            }
+
+            unittest {
+                U value;
+                assert(value.payloads[0].bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
 // An untouched nested-union sibling reads the outer union's first-member
 // default bytes through its own scalar member. Independently defaulting the
 // nested union would incorrectly produce zero.

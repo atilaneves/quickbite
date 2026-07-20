@@ -480,9 +480,9 @@ a checked fact; do not relearn them.
   scalar-leaf-static-array, and scalar-field nested-union siblings are
   reconstructed from scalar, plain-struct, scalar-leaf-static-array, and
   scalar-field nested-union first members, plus one-level static arrays of
-  scalar-field plain structs as first members, through one transient native
-  block. Computing each member's default independently diverges from compiled
-  D.
+  scalar-field plain structs as first members or siblings, through one
+  transient native block. Computing each member's default independently
+  diverges from compiled D.
 - DMD's own CTFE engine refuses reinterpretation through overlapped union
   fields (its own diagnostic, not ours), so `Ctfe` is legitimately
   omitted from union-reinterpret test matrices; that divergence is not
@@ -830,8 +830,7 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      promotion for unions with non-scalar members, and default-init first
      members or siblings outside native scalars, recursively scalar-field
      structs/unions, scalar-leaf static arrays, and one-level static arrays of
-     scalar-field plain structs as first members, including class and dynamic
-     array members).
+     scalar-field plain structs, including class and dynamic array members).
    - Native-pointer arithmetic: integer offsetting and pointer difference walk
      raw native buffers (including `GC.malloc` storage). Array pointers into a
      promoted cell cross ordinary body-less FFI as native addresses; native
