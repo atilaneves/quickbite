@@ -2,75 +2,17 @@ module ut.backends.interpreter.lvalue_place;
 
 
 import ut;
-import ut.backends.interpreter: structTypeOf;
+import ut.backends.interpreter: structTypeOf, classTypeOf, findFunction;
 import quickbite.frontend.compiler: parseSnippet;
 import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
 import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.lang: Value;
-import dmd.func: FuncDeclaration;
-import dmd.dmodule: Module;
-import dmd.arraytypes: Dsymbols;
 import dmd.expression: Expression, AssignExp;
 import dmd.statement: Statement;
-import dmd.mtype: TypeClass;
 
 private:
 
-
-// Parses `source`, finds the `class` named `name` among the module's
-// top-level members, and returns its (now semantically analysed)
-// `TypeClass` -- mirroring `place.d`'s own local `classTypeOf`, needed here
-// too, for the class-field lvalue fixture below.
-TypeClass classTypeOf(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-
-    foreach (member; *moduleResult.module_.members)
-        if (auto class_ = member.isClassDeclaration)
-            if (class_.ident.toString == name) {
-                auto classType = class_.type.isTypeClass;
-                assert(classType !is null, "class `" ~ name ~ "`'s type is not a TypeClass");
-                return classType;
-            }
-
-    assert(false, "class `" ~ name ~ "` not found in parsed snippet");
-}
-
-
-FuncDeclaration findFunction(
-    Module module_,
-    in string name,
-) {
-    return module_.members is null
-        ? null
-        : findFunction(module_.members, name);
-}
-
-// `extern(C)`/`extern(D)`/etc at module scope wraps the declaration in a
-// `LinkDeclaration` (an `AttribDeclaration`), so the `FuncDeclaration` is not
-// a direct member of the module -- recurse into `AttribDeclaration.decl` to
-// find it regardless of how many attribute wrappers surround it.
-FuncDeclaration findFunction(
-    Dsymbols* members,
-    in string name,
-) {
-    import dmd.attrib: AttribDeclaration;
-
-    if (members is null)
-        return null;
-
-    foreach (member; *members) {
-        if (auto function_ = member.isFuncDeclaration)
-            if (function_.ident !is null && function_.ident.toString == name)
-                return function_;
-
-        if (auto attrib = member.isAttribDeclaration)
-            if (auto found = findFunction(attrib.decl, name))
-                return found;
-    }
-
-    return null;
-}
 
 // The first assignment's left-hand side found in `statement`, searching
 // through `CompoundStatement`/`ScopeStatement` wrapping to reach the
@@ -186,7 +128,7 @@ unittest {
 
 
 // The centrepiece for a CLASS receiver: `c`'s own place holds a stored
-// reference (decision 15), so the receiver's `Place.deref` must land on the
+// reference, so the receiver's `Place.deref` must land on the
 // referenced object body before `.field` composes at that body's own
 // `layout.fieldByteOffset` -- the object body block here is sized and laid
 // out from `layout.classFields`/`fieldByteOffset` alone, exactly as `place.d`'s

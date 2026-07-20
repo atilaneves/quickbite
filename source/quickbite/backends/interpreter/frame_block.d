@@ -45,6 +45,17 @@ public struct FrameBlock {
         return slotAddressImpl(_block.address, _layout[variable].offset);
     }
 
+    // `variable`'s slot offset from this block's own base address, i.e.
+    // `slotAddress(variable) - block.address` without the pointer
+    // subtraction: the layout's own packed offset for that slot, the same
+    // number `slotAddress` already adds to the block's base. Same
+    // precondition as `slotAddress`: calling this on a local with no slot
+    // is a programming error, asserted the same way.
+    public size_t slotOffset(VarDeclaration variable) const @safe {
+        assert(_layout.has(variable), "variable has no frame slot");
+        return _layout[variable].offset;
+    }
+
     // Whether this activation owns a frame slot for `variable`, so a
     // caller can guard `slotAddress` (and anything built on it) instead of
     // hitting its assert for an aliasing local.

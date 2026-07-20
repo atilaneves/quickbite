@@ -2,59 +2,13 @@ module ut.backends.interpreter.frame_block;
 
 
 import ut;
-import quickbite.frontend.compiler: parseSnippet;
+import ut.backends.interpreter: parseFunction;
 import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
 import quickbite.backends.interpreter.frame_block: FrameBlock;
 import quickbite.backends.interpreter.native_block: NativeBlock;
-import dmd.func: FuncDeclaration;
-import dmd.dmodule: Module;
-import dmd.arraytypes: Dsymbols;
 import dmd.declaration: VarDeclaration;
 
 private:
-
-
-FuncDeclaration findFunction(
-    Module module_,
-    in string name,
-) {
-    return module_.members is null
-        ? null
-        : findFunction(module_.members, name);
-}
-
-// `extern(C)`/`extern(D)`/etc at module scope wraps the declaration in a
-// `LinkDeclaration` (an `AttribDeclaration`), so the `FuncDeclaration` is not
-// a direct member of the module -- recurse into `AttribDeclaration.decl` to
-// find it regardless of how many attribute wrappers surround it.
-FuncDeclaration findFunction(
-    Dsymbols* members,
-    in string name,
-) {
-    import dmd.attrib: AttribDeclaration;
-
-    if (members is null)
-        return null;
-
-    foreach (member; *members) {
-        if (auto function_ = member.isFuncDeclaration)
-            if (function_.ident !is null && function_.ident.toString == name)
-                return function_;
-
-        if (auto attrib = member.isAttribDeclaration)
-            if (auto found = findFunction(attrib.decl, name))
-                return found;
-    }
-
-    return null;
-}
-
-FuncDeclaration parseFunction(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-    auto function_ = findFunction(moduleResult.module_, name);
-    assert(function_ !is null, "function `" ~ name ~ "` not found in parsed snippet");
-    return function_;
-}
 
 
 @("FrameBlock.allocate.slotAddressIsBlockBasePlusSlotOffset")

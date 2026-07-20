@@ -900,27 +900,60 @@ private struct Walker {
         auto array = NativeArray.borrow(
             arrayType.next, cast(void*) nativeAddress, value.length);
 
-        const byteOffset = cast(size_t)
-            (_activationFrame.slotAddress(variable) - _activationFrame.block.address);
-        array.writeSliceHeader(_activationFrame.block, byteOffset);
+        array.writeSliceHeader(_activationFrame.block, _activationFrame.slotOffset(variable));
     }
 
-    // Whether `value`'s own top-level shape matches what `place_value.
-    // readValue`/`writeValue` compose for `type`: a concrete scalar
-    // (`isNumericScalar`/`isCharacter`) for a native scalar type,
-    // `value.isStruct` for a non-union struct type, `value.isArray` for a
-    // static-array type. Callers gate this on `isPlaceComposable(type)`
-    // first, so `type` is always one of exactly those three shapes here.
+    // Whether `value`'s shape matches what `place_value.readValue`/
+    // `writeValue` compose for `type` at EVERY depth, not only the top
+    // level: a concrete scalar (`isNumericScalar`/`isCharacter`) for a
+    // native scalar type; `value.isStruct` AND a field count matching
+    // `layout.structFields.length` AND every field's boxed value itself
+    // matching that field's own declared type, for a non-union struct
+    // type; `value.isArray` AND a length matching `layout.
+    // staticArrayLength` AND every element's boxed value itself matching
+    // the element type, for a static-array type. A mismatch at any depth
+    // fails the whole check -- `writeValue` recurses by position with no
+    // bounds check of its own (`value[i]`, `value.structFieldAt(index)`),
+    // so a boxed value shorter than the type it is being written into
+    // would index out of range. Callers gate this on `isPlaceComposable
+    // (type)` first, so `type` is always one of exactly those three shapes
+    // here.
     private static bool placeShapeMatches(imported!"dmd.mtype".Type type, in Value value) {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.backends.interpreter.layout: structFields, staticArrayLength, declaredType;
 
         if (isNativeScalarType(type))
             return value.isNumericScalar || value.isCharacter;
 
-        if (type.isTypeStruct !is null)
-            return value.isStruct;
+        auto structType = type.isTypeStruct;
+        if (structType !is null) {
+            if (!value.isStruct)
+                return false;
 
-        return value.isArray;
+            auto fields = structFields(structType);
+            if (value.structFieldCount != fields.length)
+                return false;
+
+            foreach (index, field; fields)
+                if (!placeShapeMatches(declaredType(field), value.structFieldAt(index)))
+                    return false;
+
+            return true;
+        }
+
+        auto arrayType = type.isTypeSArray;
+        if (!value.isArray)
+            return false;
+
+        const length = staticArrayLength(arrayType);
+        if (value.length != length)
+            return false;
+
+        foreach (i; 0 .. length)
+            if (!placeShapeMatches(arrayType.next, value[i]))
+                return false;
+
+        return true;
     }
 
     // Asserts that `variable`'s frame slot still agrees with the boxed

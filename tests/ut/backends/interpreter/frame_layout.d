@@ -2,56 +2,10 @@ module ut.backends.interpreter.frame_layout;
 
 
 import ut;
-import quickbite.frontend.compiler: parseSnippet;
+import ut.backends.interpreter: parseFunction;
 import quickbite.backends.interpreter.frame_layout: computeFrameLayout, cachedFrameLayout;
-import dmd.func: FuncDeclaration;
-import dmd.dmodule: Module;
-import dmd.arraytypes: Dsymbols;
 
 private:
-
-
-FuncDeclaration findFunction(
-    Module module_,
-    in string name,
-) {
-    return module_.members is null
-        ? null
-        : findFunction(module_.members, name);
-}
-
-// `extern(C)`/`extern(D)`/etc at module scope wraps the declaration in a
-// `LinkDeclaration` (an `AttribDeclaration`), so the `FuncDeclaration` is not
-// a direct member of the module -- recurse into `AttribDeclaration.decl` to
-// find it regardless of how many attribute wrappers surround it.
-FuncDeclaration findFunction(
-    Dsymbols* members,
-    in string name,
-) {
-    import dmd.attrib: AttribDeclaration;
-
-    if (members is null)
-        return null;
-
-    foreach (member; *members) {
-        if (auto function_ = member.isFuncDeclaration)
-            if (function_.ident !is null && function_.ident.toString == name)
-                return function_;
-
-        if (auto attrib = member.isAttribDeclaration)
-            if (auto found = findFunction(attrib.decl, name))
-                return found;
-    }
-
-    return null;
-}
-
-FuncDeclaration parseFunction(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-    auto function_ = findFunction(moduleResult.module_, name);
-    assert(function_ !is null, "function `" ~ name ~ "` not found in parsed snippet");
-    return function_;
-}
 
 
 @("computeFrameLayout.parametersPackedInOrderAlignedToTheirOwnType")
@@ -191,6 +145,37 @@ unittest {
 
     xOffset.should == 16;
     layout.byteLength.should == 24;
+}
+
+
+@("computeFrameLayout.staticLocalAndManifestConstantHaveNoSlotButAPlainLocalDoes")
+unittest {
+    auto function_ = parseFunction(
+        q{
+            void quickbiteFrameDataSegAndManifest() {
+                static int s;
+                enum e = 5;
+                int x;
+            }
+        },
+        "quickbiteFrameDataSegAndManifest",
+    );
+
+    auto layout = computeFrameLayout(function_);
+
+    layout.slots.length.should == 1;
+
+    size_t xOffset;
+    size_t xSize;
+    foreach (variable, slot; layout.slots)
+        if (variable.ident.toString == "x") {
+            xOffset = slot.offset;
+            xSize = slot.size;
+        }
+
+    xOffset.should == 0;
+    xSize.should == 4;
+    layout.byteLength.should == 4;
 }
 
 

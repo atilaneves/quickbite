@@ -2,83 +2,15 @@ module ut.backends.interpreter.place;
 
 
 import ut;
-import ut.backends.interpreter: structTypeOf;
-import quickbite.frontend.compiler: parseSnippet;
+import ut.backends.interpreter: structTypeOf, classTypeOf, parseFunction;
 import quickbite.backends.interpreter.place: Place, placeAt;
 import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
 import quickbite.backends.interpreter.frame_block: FrameBlock;
 import quickbite.lang: Value;
-import dmd.func: FuncDeclaration;
-import dmd.dmodule: Module;
-import dmd.arraytypes: Dsymbols;
-import dmd.mtype: TypeClass;
 
 private:
-
-
-// Parses `source`, finds the `class` named `name` among the module's
-// top-level members, and returns its (now semantically analysed)
-// `TypeClass` -- the class-typed sibling of `ut.backends.interpreter.
-// structTypeOf`, mirroring `place_value.d`'s own local `classTypeOf` (needed
-// here too, for `Place.deref`'s class-place fixtures below).
-TypeClass classTypeOf(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-
-    foreach (member; *moduleResult.module_.members)
-        if (auto class_ = member.isClassDeclaration)
-            if (class_.ident.toString == name) {
-                auto classType = class_.type.isTypeClass;
-                assert(classType !is null, "class `" ~ name ~ "`'s type is not a TypeClass");
-                return classType;
-            }
-
-    assert(false, "class `" ~ name ~ "` not found in parsed snippet");
-}
-
-
-FuncDeclaration findFunction(
-    Module module_,
-    in string name,
-) {
-    return module_.members is null
-        ? null
-        : findFunction(module_.members, name);
-}
-
-// `extern(C)`/`extern(D)`/etc at module scope wraps the declaration in a
-// `LinkDeclaration` (an `AttribDeclaration`), so the `FuncDeclaration` is not
-// a direct member of the module -- recurse into `AttribDeclaration.decl` to
-// find it regardless of how many attribute wrappers surround it.
-FuncDeclaration findFunction(
-    Dsymbols* members,
-    in string name,
-) {
-    import dmd.attrib: AttribDeclaration;
-
-    if (members is null)
-        return null;
-
-    foreach (member; *members) {
-        if (auto function_ = member.isFuncDeclaration)
-            if (function_.ident !is null && function_.ident.toString == name)
-                return function_;
-
-        if (auto attrib = member.isAttribDeclaration)
-            if (auto found = findFunction(attrib.decl, name))
-                return found;
-    }
-
-    return null;
-}
-
-FuncDeclaration parseFunction(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-    auto function_ = findFunction(moduleResult.module_, name);
-    assert(function_ !is null, "function `" ~ name ~ "` not found in parsed snippet");
-    return function_;
-}
 
 
 struct P {
@@ -230,8 +162,8 @@ class C {
 
 
 // The centrepiece for `deref` on a CLASS place: a class variable's own
-// address holds a stored REFERENCE to its object body (decision 15), not
-// the object's bytes -- `deref` must land on that referenced object body,
+// address holds a stored REFERENCE to its object body, not the object's
+// bytes -- `deref` must land on that referenced object body,
 // keeping the class type so a following `.field` composes at
 // `objectAddress + fieldByteOffset(field)`, DMD's own class field offset.
 // The object body block here is sized and laid out from
@@ -311,7 +243,6 @@ struct SliceHolder {
 @("Place.index.sliceElementAddressesFollowTheHeadersPointerAndScalarStoreLoadRoundTrips")
 unittest {
     import quickbite.backends.interpreter.native_array: NativeArray;
-    import core.exception: AssertError;
 
     auto holderType = structTypeOf(q{ struct SliceHolder { int[] s; } }, "SliceHolder");
     auto sliceType = structFields(holderType)[0].type;
@@ -338,7 +269,10 @@ unittest {
     root.index(0).loadScalar.asLong.should == 0;
     root.index(2).loadScalar.asLong.should == 0;
 
-    root.index(3).shouldThrow!AssertError;
+    root.index(3).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place.Place.index: "
+        ~ "index out of range for slice place",
+    );
 }
 
 

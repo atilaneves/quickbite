@@ -83,7 +83,11 @@ public struct Place {
 
         if (auto slice = _type.isTypeDArray) {
             auto header = readSliceHeaderBytes(placeBytes(_address, NativeArray.sliceHeaderByteLength));
-            assert(i < header.length, "index out of range for slice place");
+            if (i >= header.length)
+                throw new Exception(
+                    "quickbite.backends.interpreter.place.Place.index: "
+                    ~ "index out of range for slice place",
+                );
             return Place(
                 placeAdd(header.ptr, i * typeByteSize(slice.next)),
                 slice.next,
@@ -97,7 +101,11 @@ public struct Place {
                 ~ "static-array, pointer, or slice place can be indexed",
             );
 
-        assert(i < staticArrayLength(array), "index out of range for static array place");
+        if (i >= staticArrayLength(array))
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.index: "
+                ~ "index out of range for static array place",
+            );
         return Place(placeAdd(_address, i * typeByteSize(array.next)), array.next);
     }
 

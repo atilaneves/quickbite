@@ -862,49 +862,53 @@ in parallel and never blocks it.
    bounded, independently green slices, then one small authority switch
    (decision 17):
    - Preparation, behavior-neutral, each slice green on its own:
-     per-activation frame blocks (one GC block per activation, DMD's
-     own closure model, with slot offsets assigned by
-     `frame_layout.computeFrameLayout` from DMD's own per-type size and
-     alignment, and the block itself allocated by `frame_block.FrameBlock`
-     with a scan policy chosen from `layout.typeHasPointers` over each
-     slotted local's type — allocated per activation, including the
-     top-level walker running a unittest/REPL body, and held on
-     `Walker._activationFrame`, with authority still in `locals`/cells
-     until reads route through it — a non-address-taken local whose type is
-     place-composable (`place_value.isPlaceComposable`: a native scalar,
-     non-union struct, or static array of composable elements) has its
-     frame slot kept as a verified shadow, mirrored by `setLocal` and
-     checked against the boxed value on every read; a slice local's slot
-     instead holds a `{length, ptr}` header mirror (from the boxed value's
-     stable native backing) verified the same way), lvalue evaluation
-     yielding places (a
-     `place.Place` is an address plus its static type; `field`/`index`
-     compose another place by DMD offsets/strides — `index` on a
-     pointer or slice place follows the place's own stored pointer (or
-     the slice header's `ptr`) rather than indexing inline, `deref`
-     follows a pointer or class place's own stored pointer/reference to
-     the pointee/object body (keeping the class type, so a following
-     `field` composes at the DMD class field offset) so pointer-deref
-     and class-field lvalues can compose — and scalar
-     load/store routes through the `native_scalar` codec; `lvalue_place.placeOfLvalue`
-     composes a place for the variable, struct- and class-field, index, and
-     pointer-deref lvalue shapes from a caller-supplied base-address resolver
-     and index evaluator (`a[i]` = `placeOfLvalue(a).index(evalIndex(i))`,
-     uniform over a static-array, pointer, or slice base; a class receiver's
-     field and `*p` both compose through `Place.deref`), refusing anything
-     else),
-     loads/stores routed through places, module-level guest state bound to
-     blocks by `module_table.ModuleTable` per the existing extern-data
-     rules, whole-aggregate read/write composed over places down to scalar
-     leaves by `place_value.readValue`/`writeValue` (native scalar leaves
-     via `Place.loadScalar`/`storeScalar`, non-union struct and static-array
-     shapes recursed field-by-field/element-by-element via `Place.field`/
-     `index`; `readValue` also reconstructs a slice from its native
-     `{length, ptr}` header and elements — read side only, `writeValue`'s
-     slice case is still deferred pending backing-storage allocation). A
-     dynamic-array local holds a real `{length, ptr}` slice
-     header; a class variable holds a reference (address) to an object
-     block owned by object identity; a union is overlapping bytes.
+     - Per-activation frame blocks: one GC block per activation, DMD's
+       own closure model, with slot offsets assigned by
+       `frame_layout.computeFrameLayout` from DMD's own per-type size and
+       alignment, and the block itself allocated by
+       `frame_block.FrameBlock` with a scan policy chosen from
+       `layout.typeHasPointers` over each slotted local's type —
+       allocated per activation, including the top-level walker running
+       a unittest/REPL body, and held on `Walker._activationFrame`, with
+       authority still in `locals`/cells until reads route through it. A
+       non-address-taken local whose type is place-composable
+       (`place_value.isPlaceComposable`: a native scalar, non-union
+       struct, or static array of composable elements) has its frame
+       slot kept as a verified shadow, mirrored by `setLocal` and
+       checked against the boxed value on every read; a slice local's
+       slot instead holds a `{length, ptr}` header mirror (from the
+       boxed value's stable native backing) verified the same way.
+     - Lvalue evaluation yielding places: a `place.Place` is an address
+       plus its static type; `field`/`index` compose another place by
+       DMD offsets/strides — `index` on a pointer or slice place follows
+       the place's own stored pointer (or the slice header's `ptr`)
+       rather than indexing inline, `deref` follows a pointer or class
+       place's own stored pointer/reference to the pointee/object body
+       (keeping the class type, so a following `field` composes at the
+       DMD class field offset) so pointer-deref and class-field lvalues
+       can compose — and scalar load/store routes through the
+       `native_scalar` codec. `lvalue_place.placeOfLvalue` composes a
+       place for the variable, struct- and class-field, index, and
+       pointer-deref lvalue shapes from a caller-supplied base-address
+       resolver and index evaluator (`a[i]` =
+       `placeOfLvalue(a).index(evalIndex(i))`, uniform over a
+       static-array, pointer, or slice base; a class receiver's field
+       and `*p` both compose through `Place.deref`), refusing anything
+       else.
+     - Loads/stores routed through places: module-level guest state
+       bound to blocks by `module_table.ModuleTable` per the existing
+       extern-data rules; whole-aggregate read/write composed over
+       places down to scalar leaves by
+       `place_value.readValue`/`writeValue` (native scalar leaves via
+       `Place.loadScalar`/`storeScalar`, non-union struct and
+       static-array shapes recursed field-by-field/element-by-element
+       via `Place.field`/`index`; `readValue` also reconstructs a slice
+       from its native `{length, ptr}` header and elements — read side
+       only, `writeValue`'s slice case is still deferred pending
+       backing-storage allocation). A dynamic-array local holds a real
+       `{length, ptr}` slice header; a class variable holds a reference
+       (address) to an object block owned by object identity; a union
+       is overlapping bytes.
    - The authority switch: native storage becomes the sole authority
      for all bindings. Merge gate: no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/

@@ -136,12 +136,21 @@ private imported!"dmd.declaration".VarDeclaration[] owningLocals(
 }
 
 
-// Whether `variable` aliases another frame's storage rather than owning
-// its own -- a `ref`/`out`/`lazy` parameter, or a `ref` body local.
+// Whether `variable` has no per-activation frame slot to own: either it
+// aliases another frame's storage instead of owning its own (a `ref`/
+// `out`/`lazy` parameter, or a `ref` body local), or it never owns
+// per-activation storage in the first place -- a `static`/`__gshared`/
+// module-level local (`VarDeclaration.isDataseg`), which lives in the
+// module table instead of any one activation's frame, or an `enum`
+// manifest constant (`STC.manifest`), which has no storage at all: DMD
+// substitutes its value at every use rather than allocating it anywhere.
 private bool isAliasingLocal(imported!"dmd.declaration".VarDeclaration variable) @trusted {
     import dmd.astenums: STC;
 
-    return (variable.storage_class & (STC.ref_ | STC.out_ | STC.lazy_)) != STC.none;
+    if ((variable.storage_class & (STC.ref_ | STC.out_ | STC.lazy_ | STC.manifest)) != STC.none)
+        return true;
+
+    return variable.isDataseg;
 }
 
 

@@ -2,60 +2,15 @@ module ut.backends.interpreter.module_table;
 
 
 import ut;
+import ut.backends.interpreter: findVar, parseVar;
 import quickbite.frontend.compiler: parseSnippet;
 import quickbite.backends.interpreter.module_table: ModuleTable;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar, readScalar;
 import quickbite.backends.interpreter.layout: typeByteSize;
 import quickbite.lang: Value;
-import dmd.dmodule: Module;
-import dmd.arraytypes: Dsymbols;
-import dmd.declaration: VarDeclaration;
 
 private:
-
-
-VarDeclaration findVar(
-    Module module_,
-    in string name,
-) {
-    return module_.members is null
-        ? null
-        : findVar(module_.members, name);
-}
-
-// `extern(C)`/`extern(D)`/etc at module scope wraps the declaration in a
-// `LinkDeclaration` (an `AttribDeclaration`), so the `VarDeclaration` is not
-// a direct member of the module -- recurse into `AttribDeclaration.decl` to
-// find it regardless of how many attribute wrappers surround it.
-VarDeclaration findVar(
-    Dsymbols* members,
-    in string name,
-) {
-    import dmd.attrib: AttribDeclaration;
-
-    if (members is null)
-        return null;
-
-    foreach (member; *members) {
-        if (auto variable = member.isVarDeclaration)
-            if (variable.ident !is null && variable.ident.toString == name)
-                return variable;
-
-        if (auto attrib = member.isAttribDeclaration)
-            if (auto found = findVar(attrib.decl, name))
-                return found;
-    }
-
-    return null;
-}
-
-VarDeclaration parseVar(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-    auto variable = findVar(moduleResult.module_, name);
-    assert(variable !is null, "variable `" ~ name ~ "` not found in parsed snippet");
-    return variable;
-}
 
 
 @("ModuleTable.storageFor.stableAddressAcrossRepeatedCalls")

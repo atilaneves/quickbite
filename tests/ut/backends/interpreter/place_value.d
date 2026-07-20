@@ -2,38 +2,17 @@ module ut.backends.interpreter.place_value;
 
 
 import ut;
-import ut.backends.interpreter: structTypeOf;
-import quickbite.frontend.compiler: parseSnippet;
+import ut.backends.interpreter: structTypeOf, classTypeOf;
 import quickbite.backends.interpreter.place_value: readValue, writeValue, isPlaceComposable;
 import quickbite.backends.interpreter.place: Place, placeAt;
 import quickbite.backends.interpreter.layout: fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar;
 import quickbite.lang: Value;
-import dmd.mtype: Type, TypeClass;
+import dmd.mtype: Type;
 import dmd.typesem: sarrayOf, pointerTo;
 
 private:
-
-
-// Parses `source`, finds the `class` named `name` among the module's
-// top-level members, and returns its (now semantically analysed)
-// `TypeClass` -- the class-typed sibling of `ut.backends.interpreter.
-// structTypeOf`/`enumTypeOf`, needed here only for the unsupported-at-place
-// fixtures below.
-TypeClass classTypeOf(in string source, in string name) {
-    auto moduleResult = parseSnippet(source);
-
-    foreach (member; *moduleResult.module_.members)
-        if (auto class_ = member.isClassDeclaration)
-            if (class_.ident.toString == name) {
-                auto classType = class_.type.isTypeClass;
-                assert(classType !is null, "class `" ~ name ~ "`'s type is not a TypeClass");
-                return classType;
-            }
-
-    assert(false, "class `" ~ name ~ "` not found in parsed snippet");
-}
 
 
 struct P {
