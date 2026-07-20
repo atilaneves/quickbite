@@ -6599,7 +6599,8 @@ private struct Compiler {
 
     // Integer multiplication. Pointer arithmetic scales its integer operand
     // through an 8-byte `cast(long)n * elementSize`, so the 8-byte form is the
-    // one that matters here; the 4-byte form mirrors `addInt4`.
+    // one that matters here; the 4-byte form operates on raw bits like
+    // `addInt4`, so signed and unsigned operands share it.
     private Operand compileMultiplyExpression(MulExp multiply) {
         import std.conv: text;
 
@@ -6609,12 +6610,12 @@ private struct Compiler {
             isEightByteInteger(rhs.type))
             return emitBinary(Op.mulInt8, lhs, rhs, lhs.type);
 
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             multiply,
             lhs,
             rhs,
             Op.mulInt4,
-            ScalarType.int_,
+            scalarType(multiply.type),
             "Unsupported multiplication in bytecode core: ",
         );
     }

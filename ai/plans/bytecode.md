@@ -439,7 +439,8 @@ changed:
 4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
 5. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: the
-   host-entropy path.
+   host-entropy path. Resume with 4-byte integer `^=`: Mersenne Twister
+   reaches `z ^= z >> 11` after its seed initialization.
 6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
