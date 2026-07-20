@@ -941,7 +941,11 @@ private struct Walker {
             return true;
         }
 
+        // Reachable only for a composable type (caller gates on
+        // `isPlaceComposable`), which past the scalar and struct arms leaves
+        // exactly a static array -- so `isTypeSArray` is non-null here.
         auto arrayType = type.isTypeSArray;
+        assert(arrayType !is null, "placeShapeMatches: non-composable type");
         if (!value.isArray)
             return false;
 

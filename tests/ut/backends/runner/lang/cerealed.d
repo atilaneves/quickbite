@@ -1403,7 +1403,7 @@ static foreach (backend; Matrix!(
 // it is a delegate over the *caller's* live frame: `x++` inside `lazy e`
 // must mutate the caller's `x`, and the caller's next read of `x` must see
 // the mutation without the interpreter's own frame/boxed-local mirror
-// diverging (ai/plans/interpreter.md).
+// diverging.
 static foreach (backend; Matrix!(
     // The bytecode core compiles a `lazy` argument's thunk without the
     // outer local's own slot in scope, so `x++` there falls outside the
