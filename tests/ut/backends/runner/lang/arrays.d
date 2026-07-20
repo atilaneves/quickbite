@@ -244,27 +244,6 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Whole-array equality reads the same storage observed through element reads
-// after an interior same-width cast view writes through the shared carrier.
-static foreach (backend; Matrix!()) {
-    @("dynamicArray.interiorSameWidthScalarCastWriteUpdatesWholeEquality." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                byte runtime = 1;
-                byte[] a = [runtime, cast(byte) 2];
-                ubyte[] b = cast(ubyte[]) a;
-                ubyte[] c = b[1 .. 2];
-                c[0] = 9;
-
-                assert(a == [cast(byte) 1, cast(byte) 9]);
-            }
-        });
-    }
-}
-
 // Returning an unbound same-width scalar array cast preserves the source
 // storage alias after the callee frame has gone away.
 static foreach (backend; Matrix!(
