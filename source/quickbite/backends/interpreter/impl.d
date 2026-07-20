@@ -800,6 +800,79 @@ private struct Walker {
     // and the authority switch hook here.
     private void setLocal(VarDeclaration variable, Value value) {
         locals[variable] = value;
+        mirrorScalarToFrame(variable, value);
+    }
+
+    // Keeps `variable`'s frame slot in sync with its just-written boxed
+    // value, so the frame can serve as a verified shadow of the boxed
+    // local. Authority stays with `locals`: this never fails a write it
+    // cannot perform cleanly, it simply skips it -- a local with no frame
+    // slot (aliasing `ref`/`out`/`lazy`), a non-scalar type, or a value
+    // that is not itself a concrete scalar (e.g. still `void`) is left
+    // unmirrored rather than risking `storeScalar` throwing.
+    private void mirrorScalarToFrame(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.backends.interpreter.place: placeAt;
+
+        if (!_activationFrame.hasSlot(variable))
+            return;
+
+        if (!isNativeScalarType(variable.type))
+            return;
+
+        if (!(value.isNumericScalar || value.isCharacter))
+            return;
+
+        placeAt(_activationFrame, variable).storeScalar(value);
+    }
+
+    // Asserts that `variable`'s frame slot still agrees with the boxed
+    // `value` about to be returned for it -- makes any gap between the
+    // mirror `setLocal` maintains and the boxed authority show up
+    // deterministically instead of silently drifting. Skips a local whose
+    // cell (not the frame) is authoritative, one with no frame slot, a
+    // non-scalar type, or a boxed value that is not itself a concrete
+    // scalar, matching `mirrorScalarToFrame`'s own guards exactly so this
+    // never asserts on a local the mirror never covered. Compares raw
+    // bytes rather than `Value == Value`: the mirror's contract is byte
+    // equality, not boxed-representation equality, and the two diverge for
+    // values `Value`'s own `==` does not treat as equal to themselves or to
+    // an equivalent reading -- IEEE NaN, and an enum's `EnumValue` boxing
+    // against the plain integral `readScalar` returns for its base type.
+    private void assertScalarFrameMirror(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, writeScalar;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        if (variable in scalarCells)
+            return;
+
+        if (!_activationFrame.hasSlot(variable))
+            return;
+
+        if (!isNativeScalarType(variable.type))
+            return;
+
+        if (!(value.isNumericScalar || value.isCharacter))
+            return;
+
+        const length = typeByteSize(variable.type);
+        ubyte[8] expected;
+        writeScalar(variable.type, expected[0 .. length], value);
+
+        assert(
+            scalarBytesAt(_activationFrame.slotAddress(variable), length) == expected[0 .. length],
+            "frame scalar mirror diverged from boxed local",
+        );
+    }
+
+    // Reinterprets `length` bytes at `address` as a byte slice, for the
+    // raw comparison `assertScalarFrameMirror` needs -- pointer arithmetic
+    // on a raw address is not `@safe`; this is the `@trusted` boundary,
+    // mirroring `place.d`'s own `placeBytes`. `address` is always a frame
+    // slot's own address and `length` its own `layout.typeByteSize`, so the
+    // returned slice spans exactly that slot's bytes.
+    private static ubyte[] scalarBytesAt(void* address, in size_t length) pure nothrow @trusted {
+        return (cast(ubyte*) address)[0 .. length];
     }
 
     private void bindCatchVariable(
@@ -1720,8 +1793,10 @@ private struct Walker {
                     if (current.isStruct)
                         return structValueFromCell(*current, *cell);
 
-            if (auto current = variable in locals)
+            if (auto current = variable in locals) {
+                assertScalarFrameMirror(variable, *current);
                 return *current;
+            }
 
             // A module-level or static variable read before any write (e.g.
             // std.encoding's immutable bomTable): materialize its static

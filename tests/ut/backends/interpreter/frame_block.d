@@ -145,6 +145,30 @@ unittest {
 }
 
 
+@("FrameBlock.hasSlot.trueForSlottedParamFalseForRefParamAndUnrelatedVariable")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbiteFrameBlockHasSlot(int a, ref int b) {} },
+        "quickbiteFrameBlockHasSlot",
+    );
+    auto layout = computeFrameLayout(function_);
+    auto frame = FrameBlock.allocate(layout);
+
+    auto a = (*function_.parameters)[0];
+    auto b = (*function_.parameters)[1];
+
+    auto other = parseFunction(
+        q{ void quickbiteFrameBlockHasSlotUnrelated(int c) {} },
+        "quickbiteFrameBlockHasSlotUnrelated",
+    );
+    auto c = (*other.parameters)[0];
+
+    frame.hasSlot(a).should == true;
+    frame.hasSlot(b).should == false;
+    frame.hasSlot(c).should == false;
+}
+
+
 @("FrameBlock.allocate.zeroSlotFunctionYieldsZeroByteLengthBlock")
 unittest {
     auto function_ = parseFunction(

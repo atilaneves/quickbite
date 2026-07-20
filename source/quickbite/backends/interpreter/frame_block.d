@@ -45,6 +45,13 @@ public struct FrameBlock {
         return slotAddressImpl(_block.address, _layout[variable].offset);
     }
 
+    // Whether this activation owns a frame slot for `variable`, so a
+    // caller can guard `slotAddress` (and anything built on it) instead of
+    // hitting its assert for an aliasing local.
+    public bool hasSlot(VarDeclaration variable) const @safe {
+        return _layout.has(variable);
+    }
+
     public size_t byteLength() const pure nothrow @nogc @safe {
         return _block.byteLength;
     }
