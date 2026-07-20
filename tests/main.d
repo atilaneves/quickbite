@@ -19,6 +19,7 @@ int main(string[] args) {
         "ut.backends.interpreter.frame_layout",
         "ut.backends.interpreter.frame_block",
         "ut.backends.interpreter.place",
+        "ut.backends.interpreter.module_table",
         "ut.backends.interpreter.native_array",
         "ut.backends.interpreter.native_struct",
         "ut.backends.interpreter.native_scalar",

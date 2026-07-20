@@ -871,8 +871,9 @@ in parallel and never blocks it.
      `place.Place` is an address plus its static type; `field`/`index`
      compose another place by DMD offsets/strides and scalar load/store
      routes through the `native_scalar` codec), loads/stores routed
-     through places, module-table storage for module-level guest state
-     per the existing extern-data rules. A dynamic-array local holds a real `{length, ptr}` slice
+     through places, module-level guest state bound to blocks by
+     `module_table.ModuleTable` per the existing extern-data rules. A
+     dynamic-array local holds a real `{length, ptr}` slice
      header; a class variable holds a reference (address) to an object
      block owned by object identity; a union is overlapping bytes.
    - The authority switch: native storage becomes the sole authority
