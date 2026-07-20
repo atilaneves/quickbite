@@ -5,22 +5,26 @@ private:
 
 
 // Composes a `Place` for the pure address-composition lvalue shapes: a bare
-// variable, or a chain of struct-field accesses reached through `DotVarExp`
+// variable, a chain of struct-field accesses reached through `DotVarExp`
 // receivers whose own place is struct-typed (inline value storage, so the
-// field sits at a fixed offset from the receiver's own address). `resolveBase`
-// supplies the base address for a variable -- the only per-caller policy this
-// function needs, so it stays pure address arithmetic over DMD's own AST and
-// offsets, with no subexpression evaluation and no Walker state.
+// field sits at a fixed offset from the receiver's own address), or an
+// `IndexExp` over a base place that is itself one of these shapes.
+// `resolveBase` supplies the base address for a variable, and `evalIndex`
+// evaluates an `IndexExp`'s own index subexpression to a `size_t` -- the only
+// per-caller policy this function needs, so it stays address composition
+// over DMD's own AST and offsets, with no evaluation of its own beyond that
+// and no Walker state. `a[i]` composes as `placeOfLvalue(a).index(evalIndex(
+// i))`, which `Place.index` resolves uniformly for a static-array, pointer,
+// or slice base (following the stored pointer for the latter two).
 //
 // Every other lvalue shape refuses rather than guesses: a class-typed
 // receiver holds a reference, so its field lives behind a pointer that must
-// be loaded first; `IndexExp` needs the index evaluated (and, for a pointer
-// or slice, a pointer load too); `PtrExp`, `CommaExp`, and anything else fall
-// through to the same refusal. Those all arrive with wiring to the expression
-// evaluator.
+// be loaded first; `PtrExp`, `CommaExp`, and anything else fall through to
+// the same refusal. Those all arrive with wiring to the expression evaluator.
 public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     imported!"dmd.expression".Expression expr,
     void* delegate(imported!"dmd.declaration".VarDeclaration) @safe resolveBase,
+    size_t delegate(imported!"dmd.expression".Expression) @safe evalIndex,
 ) @safe {
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.layout: declaredType;
@@ -36,6 +40,11 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
         return Place(resolveBase(variable), declaredType(variable));
     }
 
+    if (auto index = expr.isIndexExp) {
+        auto base = placeOfLvalue(indexExpBase(index), resolveBase, evalIndex);
+        return base.index(evalIndex(indexExpIndex(index)));
+    }
+
     if (auto dot = expr.isDotVarExp) {
         auto field = dotVarExpDeclaration(dot).isVarDeclaration;
         if (field is null)
@@ -44,7 +53,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
                 ~ "DotVarExp does not resolve to a field variable",
             );
 
-        auto receiver = placeOfLvalue(dotVarExpReceiver(dot), resolveBase);
+        auto receiver = placeOfLvalue(dotVarExpReceiver(dot), resolveBase, evalIndex);
         if (receiver.type.isTypeStruct is null)
             throw new Exception(
                 "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
@@ -88,4 +97,24 @@ private imported!"dmd.expression".Expression dotVarExpReceiver(
     imported!"dmd.expression".DotVarExp dot,
 ) @trusted {
     return dot.e1;
+}
+
+
+// `index`'s base expression -- `IndexExp.e1` (inherited from `BinExp`) is a
+// plain field, and `IndexExp` is not itself `@safe`-annotated, so this is the
+// `@trusted` boundary for reading it.
+private imported!"dmd.expression".Expression indexExpBase(
+    imported!"dmd.expression".IndexExp index,
+) @trusted {
+    return index.e1;
+}
+
+
+// `index`'s own index expression -- `IndexExp.e2` (inherited from `BinExp`)
+// is a plain field, and `IndexExp` is not itself `@safe`-annotated, so this
+// is the `@trusted` boundary for reading it.
+private imported!"dmd.expression".Expression indexExpIndex(
+    imported!"dmd.expression".IndexExp index,
+) @trusted {
+    return index.e2;
 }

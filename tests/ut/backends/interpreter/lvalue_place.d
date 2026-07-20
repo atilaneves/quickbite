@@ -90,6 +90,13 @@ Expression lvalueTargetOf(in string source, in string name) {
 }
 
 
+// `placeOfLvalue` must never call `evalIndex` for a shape that has no
+// `IndexExp` in it, so this fake asserts if it is ever called.
+size_t refuseEvalIndex(Expression expr) @safe {
+    assert(false, "evalIndex must not be called for a shape with no IndexExp");
+}
+
+
 @("placeOfLvalue.varExp.matchesResolverAddressAndVariableType")
 unittest {
     auto target = lvalueTargetOf(
@@ -98,7 +105,7 @@ unittest {
     );
 
     auto block = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-    auto place = placeOfLvalue(target, (variable) => block.address);
+    auto place = placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr));
 
     place.address.should == block.address;
     (place.type is target.type).should == true;
@@ -123,7 +130,7 @@ unittest {
     auto xField = structFields(sType)[0];
 
     auto block = NativeBlock.allocate(typeByteSize(sType), NativeBlock.Scan.no);
-    auto place = placeOfLvalue(target, (variable) => block.address);
+    auto place = placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr));
 
     (cast(size_t) place.address).should
         == cast(size_t) block.address + fieldByteOffset(xField);
@@ -145,7 +152,7 @@ unittest {
     auto zField = structFields(innerType)[0];
 
     auto block = NativeBlock.allocate(typeByteSize(sType), NativeBlock.Scan.no);
-    auto place = placeOfLvalue(target, (variable) => block.address);
+    auto place = placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr));
 
     (cast(size_t) place.address).should ==
         cast(size_t) block.address
@@ -168,7 +175,7 @@ unittest {
 
     auto block = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.no);
 
-    placeOfLvalue(target, (variable) => block.address).shouldThrowWithMessage(
+    placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr)).shouldThrowWithMessage(
         "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
         ~ "DotVarExp receiver is not a struct-typed place",
     );
@@ -182,17 +189,71 @@ void* refuseResolveBase(VarDeclaration variable) @safe {
 }
 
 
-@("placeOfLvalue.indexExp.throws")
+@("placeOfLvalue.indexExp.staticArrayBaseComposesStrideWithScalarRoundTrip")
 unittest {
     auto target = lvalueTargetOf(
-        q{ void quickbiteLvalueIndex(int[3] arr) { arr[0] = 0; } },
-        "quickbiteLvalueIndex",
+        q{ void quickbiteLvalueIndexArray(int[4] a) { a[2] = 0; } },
+        "quickbiteLvalueIndexArray",
     );
 
-    placeOfLvalue(target, (variable) => refuseResolveBase(variable)).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
-        ~ "unsupported lvalue expression",
+    auto block = NativeBlock.allocate(4 * int.sizeof, NativeBlock.Scan.no);
+    auto place = placeOfLvalue(target, (variable) => block.address, (index) => 2);
+
+    (cast(size_t) place.address).should == cast(size_t) block.address + 2 * int.sizeof;
+
+    // Runtime-computed, not a bare literal passed straight to `Value`.
+    int written = 3;
+    written = written * 7 + 1;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
+}
+
+
+@("placeOfLvalue.indexExp.pointerBaseFollowsStoredPointerWithScalarRoundTrip")
+unittest {
+    auto target = lvalueTargetOf(
+        q{ void quickbiteLvalueIndexPointer(int* p) { p[1] = 0; } },
+        "quickbiteLvalueIndexPointer",
     );
+
+    auto ints = NativeBlock.allocate(4 * int.sizeof, NativeBlock.Scan.no);
+    auto pointerBlock = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.no);
+    *(cast(void**) pointerBlock.address) = ints.address;
+
+    auto place = placeOfLvalue(target, (variable) => pointerBlock.address, (index) => 1);
+
+    (cast(size_t) place.address).should == cast(size_t) ints.address + int.sizeof;
+
+    int written = 5;
+    written = written * 4 + 3;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
+}
+
+
+@("placeOfLvalue.indexExp.sliceBaseFollowsHeaderPointerWithScalarRoundTrip")
+unittest {
+    import quickbite.backends.interpreter.native_array: NativeArray;
+
+    auto target = lvalueTargetOf(
+        q{ void quickbiteLvalueIndexSlice(int[] s) { s[1] = 0; } },
+        "quickbiteLvalueIndexSlice",
+    );
+    auto elementType = target.isIndexExp.e1.type.nextOf;
+
+    auto elements = NativeBlock.allocate(3 * int.sizeof, NativeBlock.Scan.no);
+    auto elementsArray = NativeArray.adopt(elements, elementType, 3);
+    auto headerBlock = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    elementsArray.writeSliceHeader(headerBlock, 0);
+
+    auto place = placeOfLvalue(target, (variable) => headerBlock.address, (index) => 1);
+
+    (cast(size_t) place.address).should == cast(size_t) elements.address + int.sizeof;
+
+    int written = 9;
+    written = written * 2 + 6;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
 }
 
 
@@ -203,7 +264,7 @@ unittest {
         "quickbiteLvaluePtr",
     );
 
-    placeOfLvalue(target, (variable) => refuseResolveBase(variable)).shouldThrowWithMessage(
+    placeOfLvalue(target, (variable) => refuseResolveBase(variable), (expr) => refuseEvalIndex(expr)).shouldThrowWithMessage(
         "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
         ~ "unsupported lvalue expression",
     );

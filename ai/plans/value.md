@@ -881,9 +881,11 @@ in parallel and never blocks it.
      pointer or slice place follows the place's own stored pointer (or
      the slice header's `ptr`) rather than indexing inline — and scalar
      load/store routes through the `native_scalar` codec; `lvalue_place.placeOfLvalue`
-     composes a place for the variable and struct-field lvalue shapes from
-     a caller-supplied base-address resolver, refusing class receivers and
-     anything needing a pointer load or the expression evaluator),
+     composes a place for the variable, struct-field, and index lvalue shapes
+     from a caller-supplied base-address resolver and index evaluator
+     (`a[i]` = `placeOfLvalue(a).index(evalIndex(i))`, uniform over a
+     static-array, pointer, or slice base), refusing class receivers and
+     anything else needing a pointer load),
      loads/stores routed through places, module-level guest state bound to
      blocks by `module_table.ModuleTable` per the existing extern-data
      rules, whole-aggregate read/write composed over places down to scalar
