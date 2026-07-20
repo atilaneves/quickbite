@@ -2027,6 +2027,38 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A static array of scalar-field structs in the first union member still
+// initializes the union's shared block from its leaves. Its first float's
+// default NaN bits are therefore visible through the scalar sibling.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this static-array-of-struct union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromStructArrayFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                float value;
+            }
+
+            union U {
+                Payload[1] payloads;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
 // An untouched scalar-element static-array sibling reads the same first-
 // member default bits as scalar and plain-struct siblings. Independently
 // defaulting the array would incorrectly produce zero.

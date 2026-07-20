@@ -479,8 +479,10 @@ a checked fact; do not relearn them.
   untouched sibling reads those bits reinterpreted. Scalar, plain-struct,
   scalar-leaf-static-array, and scalar-field nested-union siblings are
   reconstructed from scalar, plain-struct, scalar-leaf-static-array, and
-  scalar-field nested-union first members through one transient native block.
-  Computing each member's default independently diverges from compiled D.
+  scalar-field nested-union first members, plus one-level static arrays of
+  scalar-field plain structs as first members, through one transient native
+  block. Computing each member's default independently diverges from compiled
+  D.
 - DMD's own CTFE engine refuses reinterpretation through overlapped union
   fields (its own diagnostic, not ours), so `Ctfe` is legitimately
   omitted from union-reinterpret test matrices; that divergence is not
@@ -827,7 +829,8 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      the union residuals in Contracts (aggregate members beyond plain structs,
      promotion for unions with non-scalar members, and default-init first
      members or siblings outside native scalars, recursively scalar-field
-     structs/unions, and scalar-leaf static arrays, including class and dynamic
+     structs/unions, scalar-leaf static arrays, and one-level static arrays of
+     scalar-field plain structs as first members, including class and dynamic
      array members).
    - Native-pointer arithmetic: integer offsetting and pointer difference walk
      raw native buffers (including `GC.malloc` storage). Array pointers into a

@@ -10183,8 +10183,8 @@ private struct Walker {
     // `false` (leaving `value` untouched) for index 0 itself, a non-union
     // literal, a sibling that
     // is none of those supported shapes, or a first member that is neither
-    // `isNativeScalarType`, a struct/union, nor a
-    // scalar-leaf static array -- so the caller's existing independent-
+    // `isNativeScalarType`, a struct/union, a scalar-leaf static array, nor a
+    // static array of plain structs -- so the caller's existing independent-
     // `defaultValue` fallback applies unchanged in every other case,
     // including the still-open gap for a class first member/sibling. When
     // the first member is a struct or union, reuses `withUnionFieldWrite`'s own
@@ -10231,8 +10231,20 @@ private struct Walker {
         const firstFieldStruct = firstFieldStructType !is null;
         const firstFieldArray = isScalarLeafStaticArray(firstField.type)
             && fieldsSoFar[0].isArray;
+        auto firstFieldArrayType = firstField.type.toBasetype.isTypeSArray;
+        auto firstFieldArrayStructType = firstFieldArrayType is null
+            ? null
+            : firstFieldArrayType.next.toBasetype.isTypeStruct;
+        const firstFieldStructArray = firstFieldArrayStructType !is null
+            && firstFieldArrayStructType.sym.isUnionDeclaration is null
+            && fieldsSoFar[0].isArray;
 
-        if (!firstFieldScalar && !firstFieldStruct && !firstFieldArray)
+        if (
+            !firstFieldScalar &&
+            !firstFieldStruct &&
+            !firstFieldArray &&
+            !firstFieldStructArray
+        )
             return false;
 
         auto cell = NativeStruct.allocate(unionType);
@@ -10242,6 +10254,15 @@ private struct Walker {
         } else if (firstFieldArray) {
             auto firstCell = cell.arrayField(0);
             writeStaticArrayCellScalarElements(firstCell, fieldsSoFar[0]);
+        } else if (firstFieldStructArray) {
+            auto firstCell = cell.arrayField(0);
+            foreach (elementIndex; 0 .. firstCell.length) {
+                auto elementCell = firstCell.structElement(elementIndex);
+                writeStructCellScalarFields(
+                    elementCell,
+                    fieldsSoFar[0][elementIndex],
+                );
+            }
         } else {
             writeScalar(firstField.type, cell.field(0), fieldsSoFar[0]);
         }
