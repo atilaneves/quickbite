@@ -1986,6 +1986,14 @@ private struct Compiler {
                 "Unsupported compound assignment in bytecode core: ",
             );
 
+        if (auto xorAssign = expression.isXorAssignExp)
+            return compileLocalIntegerCompoundAssign(
+                xorAssign,
+                Op.bitXorInt4,
+                Op.bitXorInt4,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
         if (auto divideAssign = expression.isDivAssignExp)
             return compileDivOrModCompoundAssign(
                 divideAssign,
