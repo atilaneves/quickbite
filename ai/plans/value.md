@@ -869,8 +869,10 @@ in parallel and never blocks it.
      with a scan policy chosen from `layout.typeHasPointers` over each
      slotted local's type — allocated per activation and held on
      `Walker._activationFrame`, with authority still in `locals`/cells
-     until reads route through it — a non-address-taken scalar local's
-     frame slot is kept as a verified shadow, mirrored by `setLocal` and
+     until reads route through it — a non-address-taken local whose type is
+     place-composable (`place_value.isPlaceComposable`: a native scalar,
+     non-union struct, or static array of composable elements) has its
+     frame slot kept as a verified shadow, mirrored by `setLocal` and
      checked against the boxed value on every read), lvalue evaluation
      yielding places (a
      `place.Place` is an address plus its static type; `field`/`index`

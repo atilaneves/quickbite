@@ -800,78 +800,110 @@ private struct Walker {
     // and the authority switch hook here.
     private void setLocal(VarDeclaration variable, Value value) {
         locals[variable] = value;
-        mirrorScalarToFrame(variable, value);
+        mirrorToFrame(variable, value);
     }
 
     // Keeps `variable`'s frame slot in sync with its just-written boxed
     // value, so the frame can serve as a verified shadow of the boxed
-    // local. Authority stays with `locals`: this never fails a write it
-    // cannot perform cleanly, it simply skips it -- a local with no frame
-    // slot (aliasing `ref`/`out`/`lazy`), a non-scalar type, or a value
-    // that is not itself a concrete scalar (e.g. still `void`) is left
-    // unmirrored rather than risking `storeScalar` throwing.
-    private void mirrorScalarToFrame(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+    // local -- for every place-composable local (`place_value.
+    // isPlaceComposable`: a native scalar, a non-union struct, or a static
+    // array of composable elements), not only scalars. Authority stays with
+    // `locals`: this never fails a write it cannot perform cleanly, it
+    // simply skips it -- a local with no frame slot (aliasing `ref`/`out`/
+    // `lazy`), a type `place_value` does not compose, or a value that does
+    // not itself match that type's own shape (e.g. still `void`, or a
+    // struct/array local mid-construction holding a transient boxed value of
+    // the wrong shape) is left unmirrored rather than risking `writeValue`
+    // throwing; a later matching write re-syncs it.
+    private void mirrorToFrame(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
         import quickbite.backends.interpreter.place: placeAt;
 
         if (!_activationFrame.hasSlot(variable))
             return;
 
-        if (!isNativeScalarType(variable.type))
+        if (!isPlaceComposable(variable.type))
             return;
 
-        if (!(value.isNumericScalar || value.isCharacter))
+        if (!placeShapeMatches(variable.type, value))
             return;
 
-        placeAt(_activationFrame, variable).storeScalar(value);
+        writeValue(placeAt(_activationFrame, variable), value);
+    }
+
+    // Whether `value`'s own top-level shape matches what `place_value.
+    // readValue`/`writeValue` compose for `type`: a concrete scalar
+    // (`isNumericScalar`/`isCharacter`) for a native scalar type,
+    // `value.isStruct` for a non-union struct type, `value.isArray` for a
+    // static-array type. Callers gate this on `isPlaceComposable(type)`
+    // first, so `type` is always one of exactly those three shapes here.
+    private static bool placeShapeMatches(imported!"dmd.mtype".Type type, in Value value) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        if (isNativeScalarType(type))
+            return value.isNumericScalar || value.isCharacter;
+
+        if (type.isTypeStruct !is null)
+            return value.isStruct;
+
+        return value.isArray;
     }
 
     // Asserts that `variable`'s frame slot still agrees with the boxed
     // `value` about to be returned for it -- makes any gap between the
     // mirror `setLocal` maintains and the boxed authority show up
     // deterministically instead of silently drifting. Skips a local whose
-    // cell (not the frame) is authoritative, one with no frame slot, a
-    // non-scalar type, or a boxed value that is not itself a concrete
-    // scalar, matching `mirrorScalarToFrame`'s own guards exactly so this
-    // never asserts on a local the mirror never covered. Compares raw
-    // bytes rather than `Value == Value`: the mirror's contract is byte
-    // equality, not boxed-representation equality, and the two diverge for
-    // values `Value`'s own `==` does not treat as equal to themselves or to
-    // an equivalent reading -- IEEE NaN, and an enum's `EnumValue` boxing
-    // against the plain integral `readScalar` returns for its base type.
-    private void assertScalarFrameMirror(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, writeScalar;
+    // cell (not the frame) is authoritative for this shape -- a scalar
+    // promoted to `scalarCells`, a struct to `structCells`, or an array to
+    // `arrayCells` -- one with no frame slot, a type `place_value` does not
+    // compose, or a boxed value that does not itself match that type's own
+    // shape, matching `mirrorToFrame`'s own guards exactly so this never
+    // asserts on a local the mirror never covered. Compares raw bytes rather
+    // than `Value == Value`: the mirror's contract is byte equality, not
+    // boxed-representation equality, and the two diverge for values `Value`'s
+    // own `==` does not treat as equal to themselves or to an equivalent
+    // reading -- IEEE NaN, and an enum's `EnumValue` boxing against the plain
+    // integral `readScalar` returns for its base type.
+    private void assertFrameMirror(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
+        import quickbite.backends.interpreter.place: placeAt;
         import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
 
-        if (variable in scalarCells)
+        if (variable in scalarCells || variable in structCells || variable in arrayCells)
             return;
 
         if (!_activationFrame.hasSlot(variable))
             return;
 
-        if (!isNativeScalarType(variable.type))
+        if (!isPlaceComposable(variable.type))
             return;
 
-        if (!(value.isNumericScalar || value.isCharacter))
+        if (!placeShapeMatches(variable.type, value))
             return;
 
+        // The expected bytes: `value` written through the identical
+        // `place_value.writeValue` composition into a scratch block of the
+        // local's own byte size, rather than a second, hand-rolled encoding
+        // -- the only way the two can ever disagree is a real divergence
+        // between what `setLocal` mirrored earlier and `value` now.
         const length = typeByteSize(variable.type);
-        ubyte[8] expected;
-        writeScalar(variable.type, expected[0 .. length], value);
+        auto scratch = NativeBlock.allocate(length, NativeBlock.Scan.no);
+        writeValue(placeAt(scratch, variable.type), value);
 
         assert(
-            scalarBytesAt(_activationFrame.slotAddress(variable), length) == expected[0 .. length],
-            "frame scalar mirror diverged from boxed local",
+            frameBytesAt(_activationFrame.slotAddress(variable), length) == scratch.bytes,
+            "frame mirror diverged from boxed local",
         );
     }
 
     // Reinterprets `length` bytes at `address` as a byte slice, for the
-    // raw comparison `assertScalarFrameMirror` needs -- pointer arithmetic
-    // on a raw address is not `@safe`; this is the `@trusted` boundary,
-    // mirroring `place.d`'s own `placeBytes`. `address` is always a frame
-    // slot's own address and `length` its own `layout.typeByteSize`, so the
-    // returned slice spans exactly that slot's bytes.
-    private static ubyte[] scalarBytesAt(void* address, in size_t length) pure nothrow @trusted {
+    // raw comparison `assertFrameMirror` needs -- pointer arithmetic on a
+    // raw address is not `@safe`; this is the `@trusted` boundary, mirroring
+    // `place.d`'s own `placeBytes`. `address` is always a frame slot's own
+    // address and `length` its own `layout.typeByteSize`, so the returned
+    // slice spans exactly that slot's bytes.
+    private static ubyte[] frameBytesAt(void* address, in size_t length) pure nothrow @trusted {
         return (cast(ubyte*) address)[0 .. length];
     }
 
@@ -1794,7 +1826,7 @@ private struct Walker {
                         return structValueFromCell(*current, *cell);
 
             if (auto current = variable in locals) {
-                assertScalarFrameMirror(variable, *current);
+                assertFrameMirror(variable, *current);
                 return *current;
             }
 

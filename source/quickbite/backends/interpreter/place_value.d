@@ -28,8 +28,8 @@ public imported!"quickbite.lang".Value readValue(
     if (isNativeScalarType(type))
         return place.loadScalar;
 
-    auto structType = type.isTypeStruct;
-    if (structType !is null && structType.sym.isUnionDeclaration is null) {
+    auto structType = nonUnionStructOf(type);
+    if (structType !is null) {
         Value[] fields;
         foreach (field; structFields(structType))
             fields ~= readValue(place.field(field));
@@ -70,8 +70,8 @@ public void writeValue(
         return;
     }
 
-    auto structType = type.isTypeStruct;
-    if (structType !is null && structType.sym.isUnionDeclaration is null) {
+    auto structType = nonUnionStructOf(type);
+    if (structType !is null) {
         foreach (index, field; structFields(structType))
             writeValue(place.field(field), value.structFieldAt(index));
         return;
@@ -87,6 +87,52 @@ public void writeValue(
     throw new Exception(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+// Whether `type` is one `readValue`/`writeValue` compose down to scalar
+// leaves without throwing: a native scalar; a non-union struct all of whose
+// `layout.structFields` field types are themselves place-composable; or a
+// static array whose element type (`.next`) is place-composable. Recurses
+// the identical dispatch `readValue`/`writeValue` use (`isNativeScalarType`,
+// `nonUnionStructOf`, `isTypeSArray`) so this predicate can never drift from
+// what those two actually accept -- false for a class, slice/dynamic array,
+// pointer, union, or `real`, the same set their own header comment gives.
+public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
+    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+    import quickbite.backends.interpreter.layout: structFields, declaredType;
+
+    if (isNativeScalarType(type))
+        return true;
+
+    auto structType = nonUnionStructOf(type);
+    if (structType !is null) {
+        foreach (field; structFields(structType))
+            if (!isPlaceComposable(declaredType(field)))
+                return false;
+
+        return true;
+    }
+
+    auto arrayType = type.isTypeSArray;
+    if (arrayType !is null)
+        return isPlaceComposable(arrayType.next);
+
+    return false;
+}
+
+
+// `type` narrowed to `TypeStruct`, but only when it is not a union -- the
+// shared "does `readValue`/`writeValue`/`isPlaceComposable` treat this as a
+// field-composed struct" check all three recurse through, so the one place
+// that decides "struct, not union" cannot drift between them.
+private imported!"dmd.mtype".TypeStruct nonUnionStructOf(
+    imported!"dmd.mtype".Type type,
+) @safe {
+    auto structType = type.isTypeStruct;
+    return structType !is null && structType.sym.isUnionDeclaration is null
+        ? structType
+        : null;
 }
 
 

@@ -4,13 +4,14 @@ module ut.backends.interpreter.place_value;
 import ut;
 import ut.backends.interpreter: structTypeOf;
 import quickbite.frontend.compiler: parseSnippet;
-import quickbite.backends.interpreter.place_value: readValue, writeValue;
+import quickbite.backends.interpreter.place_value: readValue, writeValue, isPlaceComposable;
 import quickbite.backends.interpreter.place: Place, placeAt;
 import quickbite.backends.interpreter.layout: fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar;
 import quickbite.lang: Value;
-import dmd.mtype: TypeClass;
+import dmd.mtype: Type, TypeClass;
+import dmd.typesem: sarrayOf, pointerTo;
 
 private:
 
@@ -200,4 +201,67 @@ unittest {
     writeValue(place, Value.void_).shouldThrowWithMessage(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+@("place_value.isPlaceComposable.trueForNativeScalar")
+unittest {
+    isPlaceComposable(Type.tint32).should == true;
+}
+
+
+@("place_value.isPlaceComposable.trueForNonUnionStruct")
+unittest {
+    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    isPlaceComposable(type).should == true;
+}
+
+
+@("place_value.isPlaceComposable.trueForNestedNonUnionStruct")
+unittest {
+    auto type = structTypeOf(q{
+        struct P { int x; long y; }
+        struct Q { P p; int z; }
+    }, "Q");
+    isPlaceComposable(type).should == true;
+}
+
+
+@("place_value.isPlaceComposable.trueForStaticArrayOfScalars")
+unittest {
+    isPlaceComposable(Type.tint32.sarrayOf(3)).should == true;
+}
+
+
+@("place_value.isPlaceComposable.trueForStructWithStaticArrayField")
+unittest {
+    auto type = structTypeOf(q{ struct H { int[3] xs; } }, "H");
+    isPlaceComposable(type).should == true;
+}
+
+
+@("place_value.isPlaceComposable.falseForClass")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; } }, "C");
+    isPlaceComposable(classType).should == false;
+}
+
+
+@("place_value.isPlaceComposable.falseForStructWithSliceField")
+unittest {
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    isPlaceComposable(holderType).should == false;
+}
+
+
+@("place_value.isPlaceComposable.falseForUnion")
+unittest {
+    auto unionType = structTypeOf(q{ union U { int x; long y; } }, "U");
+    isPlaceComposable(unionType).should == false;
+}
+
+
+@("place_value.isPlaceComposable.falseForPointer")
+unittest {
+    isPlaceComposable(Type.tint32.pointerTo).should == false;
 }
