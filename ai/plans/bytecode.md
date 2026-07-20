@@ -337,59 +337,23 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   land together — void-IIFE inlining plus whatever produces the bad
   destination length `copySlice` reads.
 
-  Instrumenting the live descriptor bytes (temporarily; not landed) at the
-  crash site rules out the FFI-bridge {ptr, length}/{length, ptr} word-order
-  violation described above as the cause: both the destination and source
-  pointer words `copySlice` reads decode as ordinary, plausible 48-bit
-  user-space heap addresses in their expected position, never as a
-  length-sized quantity landing where a pointer should be or vice versa. The
-  corrupt half is specifically the *length* word, which reads as a small
-  (tens-of-thousands) integer with no plausible relationship to the true
-  element count (2, the digit count of the rendered `ulong`). A minimal
-  hand-rolled reproduction of `Appender`'s own `ensureAddable`/`put` shape
-  (a heap-allocated `Data* _data` struct holding a `size_t capacity` and a
-  `T[] arr` field, grown via `GC.qalloc` and `cast(T*) bi.base)[0 .. len]`,
-  then `bigData[len .. newlen] = items[]`) does *not* reproduce the crash on
-  its own — copySlice's descriptors are correct there. The crash needs the
-  real Phobos call shape, where `ensureAddable`'s growth path and
-  `put(Range)`'s `bigDataFun` (a nested named function, not the IIFE this
-  row's other fix targets, since it takes an argument) both read/write the
-  same conceptual `_data.arr` field across a real nested-function-call
-  boundary.
+  Ruled out: the FFI-bridge {ptr, length}/{length, ptr} word-order
+  violation described above — both descriptor words decode as plausible
+  addresses/lengths in their expected positions; the corrupt value is
+  specifically the length word of one destination sub-slice.
 
-  Instrumenting every `Op.pointerLoad16`/`Op.pointerStore16` (the load/store
-  that materialises or writes back a struct-pointer field's slice
-  descriptor) and `Op.sliceLength`/`Op.subSlice*` execution by frame offset
-  shows the mechanism: several sibling frame slots that each hold their own
-  materialised copy of `_data.arr`'s descriptor get a fresh
-  `Op.pointerLoad16` immediately before every read and correctly track the
-  field's value as it changes (0, then 1, then 2 elements). Exactly one
-  frame slot — read via `Op.sliceLength`/`Op.subSlice` to compute the
-  destination sub-slice for the second `put`'s element copy — is never
-  refreshed by any `Op.pointerLoad16` across the whole run; it still holds
-  whatever was written there earlier, so by the time the second `put` reads
-  it as a length, the value is stale in a way that has no relation to the
-  live struct field. This means one specific compiled access to `_data.arr`
-  (most likely inside `bigDataFun`, given the recent partial nested-function
-  `this`-capture work this backend already carries — see Closures below) is
-  not re-materialising its slice descriptor from the live heap struct on
-  every dynamic execution the way the other, structurally identical accesses
-  to the same field do.
-
-  This is diagnosed, not fixed: pinning down which compiled instruction
-  produces that one stale slot needs compile-time instrumentation (which AST
-  expression each frame offset in the compiled `ensureAddable`/`put(Range)`
-  bodies corresponds to), not just runtime value dumps, and any fix must not
-  regress the already-landed nested-function receiver work. Whoever picks up
-  this row next should add that compile-time instrumentation around
-  `dynamicArrayDescriptorOrNull`'s struct-pointer-field branch (compiler.d,
-  the "`p.field` through a heap struct pointer" case) for a `bigDataFun`-style
-  nested-function call, confirm whether it reuses a `DynamicArrayLocal`
-  computed before entering the nested call instead of materialising a fresh
-  one inside it, and fix that specific site rather than the general
-  {ptr, length} bridge-swap flip (ruled out above as this crash's cause).
-- A shared FFI layer struct-return cache-sizing bug (`ffi/core.d`'s
-  `callViaLibffi`) is fixed; cross-track FFI work, see `ffi.md` §34.7.
+  Diagnosis: several frame slots each hold their own materialised copy of
+  the heap struct's `_data.arr` descriptor, refreshed by a fresh
+  `Op.pointerLoad16` before every read. Exactly one slot — read via
+  `Op.sliceLength`/`Op.subSlice` for the second `put`'s destination
+  sub-slice — is never refreshed and holds a stale value unrelated to the
+  live field. Diagnosed, not fixed: pinning down which compiled access to
+  `_data.arr` (likely inside `bigDataFun`) skips re-materialising its
+  descriptor needs compile-time instrumentation over
+  `dynamicArrayDescriptorOrNull`'s struct-pointer-field branch (compiler.d),
+  not runtime value dumps — confirm whether it reuses a `DynamicArrayLocal`
+  from before the nested call instead of materialising a fresh one, and fix
+  that site.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark

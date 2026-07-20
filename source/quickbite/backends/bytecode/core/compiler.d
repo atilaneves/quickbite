@@ -2095,13 +2095,8 @@ private struct Compiler {
             // compact around, so it falls through to the general dynamic-array
             // path below and shares that source's real heap block instead. A
             // string sliced from a pointer (`p[0 .. 3]`) has no compact source
-            // either and falls through the same way (a pre-existing,
-            // separately tracked divergence, not introduced here). The compact
-            // bounds are code-unit offsets over program data that is always
-            // stored as UTF-8 bytes (`stringChars`), so the compact path is
-            // only correct for a `char` element; a `wstring`/`dstring`
-            // sub-slice falls through to the general path instead of
-            // computing silently-wrong offsets.
+            // either and falls through the same way. Char strings only — see
+            // `isCharStringType`.
             if (isCharStringType(slice.type) && isCharStringType(slice.e1.type) &&
                 !stringSourceIsHeapBacked(slice.e1)) {
                 const offset = allocateBytes(stringSliceSize, 4);
@@ -2384,19 +2379,10 @@ private struct Compiler {
     }
 
     // `s[i]` for a `string` (`immutable(char)[]`): the local holds the
-    // compact 8-byte {data offset, length} descriptor, not the full 16-byte
-    // {ptr, length} slice descriptor the indexing machinery reads through, so
-    // expand it with `Op.stringSliceToArray` first (the same expansion
-    // `compileStringPointer` uses for `s.ptr`) and index that. Null if
-    // `index` is not an access into a `string`-typed expression.
-    //
-    // Scoped to `char`-element strings only: every string literal is stored
-    // in the data segment UTF-8-encoded regardless of its declared element
-    // width (`quickbite.frontend.dmd.string_literals.stringChars`), so a
-    // `wstring`/`dstring` descriptor's length and byte layout do not match
-    // its `wchar`/`dchar` element stride; indexing one through this same
-    // expansion would silently read the wrong bytes rather than the
-    // element-width mismatch this falls back to today.
+    // compact 8-byte descriptor; expand via `Op.stringSliceToArray` (as
+    // `compileStringPointer` does) before indexing. Char strings only — see
+    // `isCharStringType`. Null if `index` is not an access into a
+    // `string`-typed expression.
     private Operand* tryStringIndex(IndexExp index) {
         import dmd.astenums: TY;
 
@@ -5484,15 +5470,14 @@ private struct Compiler {
 
         DynamicArrayLocal descriptor;
         // `Op.stringSliceToArray` reinterprets the source's compact
-        // {dataOffset, length} bytes as a `char`-element real descriptor
-        // (`stringChars` always stores UTF-8 bytes), which is only correct
-        // for a `char` string whose source is itself still compact; a
-        // `wstring`/`dstring` source, or a heap-backed source already
-        // registered in `_dynamicArrayLocals`, falls through to
-        // `dynamicArrayDescriptor` instead — for the heap-backed case that
-        // resolves the source's real descriptor directly, and for a wide
-        // string it throws its own clean diagnostic rather than silently
-        // misreading code-unit offsets as byte offsets.
+        // {dataOffset, length} bytes as a `char`-element real descriptor;
+        // char strings only — see `isCharStringType`. A heap-backed source
+        // already registered in `_dynamicArrayLocals`, or a `wstring`/
+        // `dstring` source, falls through to `dynamicArrayDescriptor`
+        // instead — for the heap-backed case that resolves the source's
+        // real descriptor directly, and for a wide string it throws its own
+        // clean diagnostic rather than silently misreading code-unit
+        // offsets as byte offsets.
         if (isCharStringType(slice.e1.type) &&
             !stringSourceIsHeapBacked(slice.e1)) {
             const string_ = compileExpression(slice.e1);
@@ -6013,22 +5998,11 @@ private struct Compiler {
     }
 
     // Advance a static-array base pointer by `indexExpression * elementType`'s
-    // size, the shared scaling both `staticArrayElementPointer` (a
-    // compile-time-constant frame base) and `tryStaticArrayRuntimeAddress` (a
-    // runtime-computed base, for a nested static-array index chain) build on.
-    // The result's `pointerElement` is `void_` for a sub-array or struct
-    // element (an intermediate view with no scalar load/store opcode of its
-    // own), matching `storeThroughPointer`'s existing convention of deriving
-    // such an element's width from DMD's `Type.size()` instead. `lengthSlot`
-    // is a frame offset holding the size_t dimension of the static array
-    // `indexExpression` indexes into: a fresh compile-time constant when the
-    // base is the static array's own inline storage, or an already-
-    // materialised slice descriptor's length word when the base is a
-    // dynamic-array-typed alias of it (e.g. a `foreach` loop's hidden slice
-    // temporary over a `ref` static-array parameter, whose own type is the
-    // slice type, not the static array's). Either way a runtime index past
-    // it is bounds checked like compiled D rather than left as unchecked
-    // pointer arithmetic.
+    // size, bounds checked against the size_t dimension at `lengthSlot`. The
+    // result's `pointerElement` is `void_` for a sub-array or struct element
+    // (an intermediate view with no scalar load/store opcode of its own),
+    // matching `storeThroughPointer`'s convention of deriving such an
+    // element's width from DMD's `Type.size()` instead.
     private Operand advanceStaticArrayPointer(
         in Operand basePointer,
         Expression indexExpression,
@@ -13643,10 +13617,15 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
 }
 
 // A `string` specifically (immutable `char`-element array), excluding
-// `wstring`/`dstring`. `compileStringLiteral` stores all string data as UTF-8
-// bytes regardless of element type, so code that reinterprets those bytes
-// through a pointer (`compileStringPointer`) is only correct for `char`
-// elements.
+// `wstring`/`dstring`. Every string literal is stored in the data segment as
+// UTF-8 bytes regardless of its declared element width
+// (`quickbite.frontend.dmd.string_literals.stringChars`), so code that reads
+// those bytes as `char`-sized code units — the compact-string fast paths
+// (compact slicing, indexing, `.ptr`/`.length`) and anything reinterpreting
+// them through a pointer (`compileStringPointer`) — is only correct for a
+// `char` element; a `wstring`/`dstring`'s length and byte layout would not
+// match its `wchar`/`dchar` element stride, so such values fall through to
+// the general, slower path instead of silently computing wrong offsets.
 private bool isCharStringType(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
