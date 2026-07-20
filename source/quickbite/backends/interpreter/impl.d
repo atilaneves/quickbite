@@ -2352,6 +2352,27 @@ private struct Walker {
                     structType !is null &&
                     structType.sym.isUnionDeclaration is null
                 ) {
+                    auto receiver = dot.e1.isVarExp;
+                    auto structVariable = receiver is null
+                        ? null
+                        : receiver.var.isVarDeclaration;
+                    if (
+                        structVariable !is null &&
+                        structVariable.type.toBasetype.isTypeStruct !is null
+                    ) {
+                        structVariable = refLocalStorageVariable(structVariable);
+                        promoteStructCell(structVariable);
+                        if (auto cell = structVariable in structCells) {
+                            auto fieldCell = cell.arrayField(
+                                structFieldIndex(dot),
+                            );
+                            return Value.nativePointerValue(
+                                fieldCell.block.address + offset *
+                                    typeByteSize(elementType),
+                            );
+                        }
+                    }
+
                     auto variable = classCellKeyVariable(dot.e1);
                     if (variable !is null) {
                         promoteClassCell(variable);
@@ -2855,7 +2876,11 @@ private struct Walker {
 
             if (isStaticArrayType(fieldType)) {
                 auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 const fieldValue = structValue.structFieldAt(index);
@@ -2864,7 +2889,11 @@ private struct Walker {
 
                 auto arrayCell = cell.arrayField(index);
                 foreach (elementIndex; 0 .. fieldValue.length)
-                    writeScalar(elementType, arrayCell.element(elementIndex), fieldValue[elementIndex]);
+                    writeArrayCellElement(
+                        arrayCell,
+                        elementIndex,
+                        fieldValue[elementIndex],
+                    );
                 continue;
             }
 
@@ -6445,7 +6474,11 @@ private struct Walker {
 
             if (isStaticArrayType(fieldType)) {
                 auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 auto fieldValue = value.structFieldAt(index);
@@ -6453,11 +6486,24 @@ private struct Walker {
                     continue;
 
                 auto arrayCell = cell.arrayField(index);
-                foreach (elementIndex; 0 .. fieldValue.length)
+                foreach (elementIndex; 0 .. fieldValue.length) {
+                    Value elementValue;
+                    if (structType !is null) {
+                        auto elementCell = arrayCell.structElement(elementIndex);
+                        elementValue = structValueFromCell(
+                            fieldValue[elementIndex],
+                            elementCell,
+                        );
+                    } else
+                        elementValue = readScalar(
+                            elementType,
+                            arrayCell.element(elementIndex),
+                        );
                     fieldValue = fieldValue.withArrayElement(
                         elementIndex,
-                        readScalar(elementType, arrayCell.element(elementIndex)),
+                        elementValue,
                     );
+                }
                 value = value.withStructField(index, fieldValue);
                 continue;
             }

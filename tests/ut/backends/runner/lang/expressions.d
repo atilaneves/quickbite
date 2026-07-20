@@ -2647,6 +2647,46 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A struct static-array field whose elements are structs keeps its inline
+// element storage authoritative after an element field becomes addressable.
+// The mutation must remain visible through whole-field and whole-struct reads.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a struct array field element"),
+)) {
+    @("struct.structStaticArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            struct Outer {
+                Inner[1] values = [Inner(fortyTwo())];
+            }
+
+            int observe(Outer value) {
+                Inner[1] copy = value.values;
+                return copy[0].x;
+            }
+
+            unittest {
+                Outer value;
+                int* pointer = &value.values[0].x;
+                *pointer = 99;
+                Inner[1] field = value.values;
+                assert(field[0].x == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
 // A struct cell promoted through one alias is authoritative for the whole
 // value reached through another alias. SystemLinker therefore observes a
 // pointer write when the aliased struct is passed onward as a value.

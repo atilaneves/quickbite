@@ -24,11 +24,11 @@ stand:
   including whole-value reads for all three promoted element shapes, slice,
   `foreach (ref ...)` aliasing, and scalar-leaf addresses within static-array
   elements; scalar-leaf addresses within plain nested static-array locals;
-  struct fields (scalar, scalar-element static-array, one-level-nested
-  struct); class fields (scalar, scalar- and struct-element static-array,
-  one-level-nested struct) plus scalar- and struct-element dynamic-array
-  fields, including scalar-field pointer and `ref` aliases within struct
-  elements, and
+  struct fields (scalar, scalar- and struct-element static-array,
+  one-level-nested struct); class fields (scalar, scalar- and struct-element
+  static-array, one-level-nested struct) plus scalar- and struct-element
+  dynamic-array fields, including scalar-field pointer and `ref` aliases
+  within struct elements, and
   class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
   class objects copied from class-typed fields into locals, with promoted
@@ -377,6 +377,10 @@ a checked fact; do not relearn them.
   offset, element stride, and struct field offset; whole-field and whole-class
   reads overlay the element from that same byte range rather than introducing
   a class-array pointer-map family for the struct shape.
+- A struct element within a struct static-array field is likewise inline in
+  the owning struct cell. Its address and whole-value reads compose through
+  `NativeStruct.arrayField` and `NativeArray.structElement`; the scalar-only
+  field-pointer maps are not widened to represent this native-address shape.
 - A whole class-variable read reconstructs every cell-supported field
   from the class cell before the value is returned, passed onward,
   compared, or rendered. Direct field reads alone are insufficient: a
