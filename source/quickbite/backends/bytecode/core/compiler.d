@@ -12703,6 +12703,8 @@ private struct Compiler {
             return sliceDescriptorSize;
 
         auto element = type.toBasetype.nextOf;
+        if (element.toBasetype.ty == TY.Tvoid)
+            return 1;
         if (element.toBasetype.ty == TY.Tstruct ||
             element.toBasetype.ty == TY.Tsarray)
             return cast(uint) staticArraySize(element);
