@@ -1285,6 +1285,71 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A plain nested named function reading the enclosing method's `this` (not a
+// capturing lambda) through a module-level (non-function-nested) struct.
+static foreach (backend; Matrix!()) {
+    @("struct.nestedFunctionReadsCapturedThisField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int f;
+
+                int m() {
+                    int helper() {
+                        return this.f;
+                    }
+                    return helper();
+                }
+            }
+
+            unittest {
+                S s;
+                s.f = 10;
+
+                assert(s.m == 10);
+            }
+        });
+    }
+}
+
+// Sibling of the fixture above, but `helper` also reads an enclosing local
+// (`x`), not just `this`. Bytecode currently throws its own clean diagnostic
+// on the captured-local read rather than producing a wrong value: no closure
+// environment is built for a function claimed as this-receiver-shaped, so `x`
+// never resolves.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "throws \"Unsupported variable in bytecode core: x\" for the captured local read"),
+)) {
+    @("struct.nestedFunctionReadsCapturedLocalAndThisField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int f;
+
+                int m() {
+                    int x = 3;
+
+                    int helper() {
+                        return x + this.f;
+                    }
+
+                    return helper();
+                }
+            }
+
+            unittest {
+                S s;
+                s.f = 10;
+
+                assert(s.m == 13);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported bytecode assignment target.") and IR (unmapped struct
 // type assert) cannot run struct-typed fields yet.
 static foreach (backend; Matrix!()) {
@@ -2110,8 +2175,6 @@ static foreach (backend; Matrix!(
         "real DMD's own CTFE engine refuses this exact read with " ~
         "\"reinterpretation through overlapped field 'i' is not allowed " ~
         "in CTFE\""),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported struct initializer in bytecode core: u\""),
 )) {
     @("union.untouchedSiblingDefaultsFromFirstMemberBits." ~
         backend.stringof)
@@ -2467,9 +2530,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses this exact read with " ~
         "\"cannot read uninitialized variable 'a' in CTFE\""),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported left shift in bytecode core: " ~
-        "cast(long)high << 32\""),
 )) {
     @("union.writeThroughScalarMemberIsVisibleThroughStructMember." ~
         backend.stringof)
@@ -2502,9 +2562,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses this exact read with " ~
         "\"'u.a[0]' is used before initialized\""),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported left shift in bytecode core: " ~
-        "cast(long)high << 32\""),
 )) {
     @("union.writeThroughScalarMemberIsVisibleThroughArrayMember." ~
         backend.stringof)
@@ -2539,8 +2596,6 @@ static foreach (backend; Matrix!(
         "real DMD's own CTFE engine refuses this exact read with " ~
         "\"reinterpretation through overlapped field 'l' is not allowed " ~
         "in CTFE\""),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported type in bytecode core: int[2]\""),
 )) {
     @("union.writeThroughArrayMemberIsVisibleThroughScalarMember." ~
         backend.stringof)
@@ -2579,8 +2634,6 @@ static foreach (backend; Matrix!(
         "real DMD's own CTFE engine refuses this overlapped-field read " ~
         "exactly as the other write-then-read-a-sibling union fixtures " ~
         "above already found"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported type in bytecode core: int[2]\""),
 )) {
     @("union.writeThroughScalarMemberPreservesWiderArraySiblingTail." ~
         backend.stringof)
@@ -2631,8 +2684,6 @@ static foreach (backend; Matrix!(
         "same \"reinterpretation through overlapped field 'i' is not " ~
         "allowed in CTFE\" diagnostic as the scalar-first-member " ~
         "sibling fixture"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported struct initializer in bytecode core: u\""),
 )) {
     @("union.untouchedSiblingDefaultsFromStructFirstMemberBits." ~
         backend.stringof)

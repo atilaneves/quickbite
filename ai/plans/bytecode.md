@@ -77,8 +77,9 @@ This is the load-bearing decision; everything else follows from it.
   a descriptor crossing the bridge unswapped (`int[]*`, a struct with a slice
   field passed by reference) reads ptr-as-length on the native side. The flip
   touches every descriptor read/write site (`subSlice*`, `indexLoad*`, bounds
-  checks; the compact string descriptor should flip for consistency) and needs
-  a bridge round-trip test of a struct containing a slice field.
+  checks), needs a bridge round-trip test of a struct containing a slice
+  field, and sequences with the string-descriptor retirement below, which
+  touches the same sites.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
@@ -89,6 +90,70 @@ This is the load-bearing decision; everything else follows from it.
   references held in frames keep objects alive; conservative scanning of
   large frame regions (false-pointer pinning) and `addRange`/`removeRange`
   churn are known costs the bench checkpoints must watch.
+
+### Strings are ordinary arrays
+
+A `string`-typed frame slot must be a normal 16-byte native-order slice
+descriptor, identical to every other `T[]`. What is special about strings is
+only their backing storage: literal content lives in the immutable program
+data segment (the VM's `.rodata`), stored at the declared element width
+(`char`/`wchar`/`dchar` code units, not unconditionally UTF-8). Offsets into
+that segment appear in exactly one place — constant-pool entries — and are
+materialised into real pointers by a single literal-load instruction at
+descriptor construction. Frames, fields, and the FFI bridge only ever see
+real pointers. Specialness lives in storage, never in the frame — the same
+asymmetry compiled D gives string literals (`.rodata` placement, merged and
+deduped, with no descriptor-shape difference).
+
+Consequences, all by construction: sub-slices, indexing, `.ptr`, assignment,
+bounds checks, and copying reuse the generic dynamic-array paths with zero
+string-specific opcodes; heap-backed strings (`.idup`, appends) are not a
+second representation, just a different pointee, so no provenance predicate
+or compile-time rebinding exists; `null` and `""` are distinguishable by the
+pointer word, giving real string truthiness; `wstring`/`dstring` need no
+gates because storage matches stride. Type never selects a representation;
+nothing inspects a value's origin to decide its shape.
+
+The current implementation predates this contract: a string local holds a
+compact 8-byte {data offset, length} descriptor expanded at each use —
+bootstrap scaffolding from the first string-literal lowering, and the root of
+an entire silent-misread bug family. Migration slices, each independently
+green, folded into and sequenced with the descriptor word-order flip above:
+
+1. Width-faithful literal storage: store code units at the declared element
+   width (`stringCodeUnits!T` exists, unused); pool entries carry
+   {offset, length} in elements; add `loadStringLiteral` (today's
+   `stringSliceToArray`, run once at literal load instead of per consumer).
+   The deferred wide-string gap falls out here rather than being its own
+   project.
+2. String locals become dynamic-array locals through the generic declaration,
+   parameter, and reassignment paths. This slice deletes rather than adds:
+   the reassignment `copySize` special case, the heap-rebind branch and its
+   map surgery, `stringSourceIsHeapBacked`, `_stringLocals`. The
+   conditional-reassignment refusal rows go green because the bug's
+   precondition (two slot widths) no longer exists.
+3. Consumer cleanup: retire `Op.stringSubSlice`, `validateCompactSubSlice`,
+   `compactStringLengthSlot`, `tryStringIndex` (the generic
+   `tryDynamicArrayIndex` catches strings), and `compileStringPointer`'s
+   expansion; sweep every remaining `isStringType` gate in compiler.d — each
+   is either dead or a bug.
+4. Truthiness and null: with a real pointer word, `if (s)` / `assert(s)`
+   compiles as the ordinary pointer test.
+
+Done means: `stringSliceSize`, `_stringLocals`, `Op.stringSubSlice`,
+`Op.stringSliceToArray`, `compileStringPointer`'s compact expansion, and
+`stringSourceIsHeapBacked` no longer exist, and the string suite runs through
+the same compiler paths as the `int[]` suite. The done-criterion is
+greps-return-nothing on purpose: the failure mode of half-migrations is both
+representations surviving. Costs, named: one extra instruction per literal
+load (bench checkpoint), 2-4x data-segment growth per wide-string literal
+(rare), and the CTFE-boundary reifier learns to classify data-segment
+pointers back into offsets at the boundary only (offsets are the portable
+currency; addresses never escape a process). Not in scope: value interning —
+D strings are slices with observable `.ptr` identity and memory-sharing
+sub-slices, so canonical-object interning contradicts the compiled-D oracle;
+deduplicating identical literal bytes inside the data segment is
+storage-side, invisible, and compatible.
 
 ### Runtime type metadata
 Native-layout memory is not enough for the druntime leaves; they also
@@ -318,25 +383,42 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   acceptable handoff noise.
 - `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is the one
   remaining red enabled row (`std.conv.text` rendering a `ubyte[]` into an
-  exception message through `std.array.Appender`). It needs, in dependency
-  order: (1) the native bridge accepting a `TY.Tclass`-typed defaulted `null`
-  argument, not only `TY.Tpointer` (every `core.memory.GC.*` leaf defaults a
-  trailing `TypeInfo ti = null`); (2) struct-by-value native returns (e.g.
-  `GC.qalloc`'s `BlkInfo`), the same aggregate-return capability `div`/`ldiv`
-  below already needs; (3) the nested-function `this`-receiver capture
-  described under Closures; (4) `DivAssignExp` (`x /= y`), which has no
-  compiler support at all today (only add/sub/mul/shr/shl/or compound-assign
-  are wired); (5) 4-byte unsigned (`uint`) addition, unsupported because the
-  narrow-int addition fallback hardcodes a signed-`int` result instead of
-  using the expression's own scalar type the way its `or`/`and`/`xor`
-  siblings already do; and (6) inlining a void IIFE whose body is a single
-  expression statement (Phobos's common `(() @trusted { ... })()` escape
-  idiom), the same way a single-`return` IIFE already inlines, so a local it
-  reads does not need a full closure environment. Items (4)-(6) surfaced
-  only once (1)-(3) let compilation reach far enough; a further, still-
-  unisolated crash (an out-of-bounds `copySlice` while `Appender.put`
-  assigns into a grown buffer) appears after fixing (4)-(6), so at least one
-  more gap remains beyond this list.
+  exception message through `std.array.Appender`). The row is blocked on
+  inlining a void IIFE whose body is a single expression statement (Phobos's
+  common `(() @trusted { ... })()` escape idiom, e.g. `std.array.Appender`'s
+  `() @trusted { memcpy(bi.base, ...); }()` growth-copy in `ensureAddable`),
+  the same way a single-`return` IIFE already inlines (mirroring
+  `immediateLambdaReturn`/`singleReturnExpression` for a bare `ExpStatement`
+  instead of a `ReturnStatement`); reproduces standalone as `std.conv.text`
+  with two or more arguments of any type (minimal: `text("a",
+  someUlongLocal)`), surfacing as "Unsupported variable in bytecode core:
+  bi". Inlining that IIFE alone is not safe to land on its own: it turns
+  this row's failure from a caught exception (tolerated as "failing as
+  expected") into a process-terminating `SIGSEGV` — an out-of-bounds
+  `copySlice` (the slice-copy helper in `backends/bytecode/core/machine.d`)
+  while `Appender.put` assigns into the buffer `ensureAddable` just grew,
+  reachable with the same `text("a", ulongLocal)` repro — which would crash
+  any `bin/ut --random` run that reaches this row. The two fixes need to
+  land together — void-IIFE inlining plus whatever produces the bad
+  destination length `copySlice` reads.
+
+  Ruled out: the FFI-bridge {ptr, length}/{length, ptr} word-order
+  violation described above — both descriptor words decode as plausible
+  addresses/lengths in their expected positions; the corrupt value is
+  specifically the length word of one destination sub-slice.
+
+  Diagnosis: several frame slots each hold their own materialised copy of
+  the heap struct's `_data.arr` descriptor, refreshed by a fresh
+  `Op.pointerLoad16` before every read. Exactly one slot — read via
+  `Op.sliceLength`/`Op.subSlice` for the second `put`'s destination
+  sub-slice — is never refreshed and holds a stale value unrelated to the
+  live field. Diagnosed, not fixed: pinning down which compiled access to
+  `_data.arr` (likely inside `bigDataFun`) skips re-materialising its
+  descriptor needs compile-time instrumentation over
+  `dynamicArrayDescriptorOrNull`'s struct-pointer-field branch (compiler.d),
+  not runtime value dumps — confirm whether it reuses a `DynamicArrayLocal`
+  from before the nested call instead of materialising a fresh one, and fix
+  that site.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
@@ -366,9 +448,7 @@ After it is empty, search all backend matrices and characterization pins for
 remaining Bytecode exclusions. Preserve only exclusions that are genuine
 oracle characterizations or architectural non-goals with an explicit reason.
 An unsupported implementation is not, by itself, a permanent divergence from
-the compiled-D oracle. In particular, the existing `div`/`ldiv` struct-return
-characterization remains future native-bridge work even though it is not an
-`unconfirmed` row.
+the compiled-D oracle.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
@@ -376,8 +456,9 @@ row reaches them:
 - Scalar slice fill is limited to 4-byte basic elements; other widths,
   aggregate elements, and static-array slice fills still need general
   semantics.
-- Dynamic-array sub-slices reject an upper bound beyond the source length;
-  pointer-slice bounds and lower-bound diagnostics remain incomplete.
+- Dynamic-array and string sub-slices reject an upper bound beyond the source
+  length and a lower bound greater than the upper bound; pointer-slice bounds
+  remain unchecked.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
 - Struct aliases and whole-local assignment do not yet cover all heap fields,
@@ -559,19 +640,36 @@ lifetime as the dependency bytecode cache.
   any non-`static` function whose `toParent2` is a function, regardless of
   whether it is a `FuncLiteralDeclaration`), and `ThisExp` resolution inside
   either one resolves to the nearest enclosing method's own `vthis`
-  (`hasThis(sc)` walking up through nested scopes). The compiler's existing
-  literal-only recognition of this case generalizes by dropping the
-  `isFuncLiteralDeclaration` restriction; a direct unqualified call to such a
-  named nested function additionally needs a call-site receiver branch,
-  since the callee there is a plain `VarExp` naming the function rather than
-  the `DotVarExp`/`FuncExp` shapes already handled. This is a `this`-receiver
-  question, not the captured-locals-environment work above, and does not by
-  itself require a closure environment. A lambda that captures a plain
+  (`hasThis(sc)` walking up through nested scopes). The compiler recognises
+  this case (`capturedThisStructDeclaration`) for both shapes, keyed only on
+  `vthis` plus the enclosing parent being a struct method, and only when the
+  enclosing struct itself is not function-nested: a struct declared inside a
+  function (a voldemort type) appends an extra hidden context-pointer field
+  after its declared fields (`AggregateDeclaration.isNested`), which the
+  frame layout this path builds does not account for, so a function-nested
+  struct falls back to the plain "unsupported" diagnostic instead of
+  resolving `this.field`. A direct unqualified call to such a named nested
+  function gets a call-site receiver branch in `methodReceiverOffset` for the
+  plain `VarExp` callee shape, alongside the `DotVarExp`/`FuncExp` shapes.
+  This is a `this`-receiver question, not the captured-locals-environment
+  work above, and does not by itself require a closure environment. A lambda
+  that captures a plain
   enclosing *local* (not `this`) remains unmodelled and does need the
   captured-locals environment described above; an immediately-invoked void
   lambda whose body is a single expression statement can avoid needing that
   environment by inlining the statement into the caller the same way a
   single-`return`-expression IIFE already inlines.
+- `capturedThisStructDeclaration` is keyed only on `vthis` plus the enclosing
+  parent being a (non-nested) struct method, so a nested function that reads
+  BOTH an enclosing local and `this.field` is also claimed by this
+  `this`-receiver shape, even though its true DMD context is a frame/closure
+  environment covering the local, not the struct receiver. This is safe
+  rather than silently wrong: claiming the shape skips building a captured-
+  locals environment for the function, so the local's own read never
+  resolves and throws its own "Unsupported variable" diagnostic before any
+  receiver value is used (`struct.nestedFunctionReadsCapturedLocalAndThisField`
+  pins this). A pure-local capture (no `this` use at all) inside a struct
+  method throws the identical diagnostic for the same reason.
 
 The compiled-D exposing behaviour is:
 
@@ -601,19 +699,14 @@ behaviour.
   requires multiple simultaneous threads. Host runtime calls and single-thread
   concurrency state already reached by existing rows are not covered by that
   deferral.
-- String/array-slice truthiness (`if (s)`, `!s`, `s ? a : b`, `s && t`, plain
-  `assert(s)`) is D's `ptr !is null`, but the compact 8-byte {data offset,
-  length} slice descriptor a string local or field carries cannot distinguish
-  null from data-at-offset-zero. `compileBoolCondition` refuses any
-  string-typed condition by its AST type before compiling it, rather than
-  trust every operand producer to have set `Operand.isString`: a `string[N]`
-  element read yields a 16-byte chunk at the same stride an ordinary `T[][N]`
-  element uses, but it is not a genuine native {ptr, length} slice descriptor
-  there — it is still the compact 8-byte {data offset, length} descriptor
-  followed by 8 zero-padding bytes, so it cannot carry that flag without
-  corrupting other consumers (`.length`, `==`) that branch on it to mean the
-  compact layout. Implementing real truthiness
-  needs a faithful string-null model (a descriptor or convention that can
-  represent "no data" distinctly from "data at offset 0") applied consistently
-  across the compiler, and would need to account for both descriptor layouts
-  in play, not a local fix in one place.
+- Strings currently violate the "Strings are ordinary arrays" contract (see
+  Core Architecture): a local holds the compact 8-byte {data offset, length}
+  descriptor, patched around by char-only gates, the
+  `stringSourceIsHeapBacked` provenance predicate, and a heap rebind that is
+  refused outside straight-line code. Interim gaps until the migration
+  slices land, all deleted rather than fixed by them: an unrecognised
+  string-source shape (e.g. a ternary with a heap-backed arm) still defaults
+  to the compact path and misreads; `s.idup` where `s` is already a `string`
+  and `string s = p[lo .. hi];` from a pointer source refuse or misread;
+  string truthiness (`if (s)`) is refused; `wstring`/`dstring` sub-slices
+  are refused.

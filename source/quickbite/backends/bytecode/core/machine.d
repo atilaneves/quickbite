@@ -237,6 +237,27 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case stringSubSlice:
+                const sourceDataOffset = scalarValue!uint(
+                    stack, base + instruction.b,
+                );
+                const sourceLength = scalarValue!uint(
+                    stack, base + instruction.b + uint.sizeof,
+                );
+                const lo = scalarValue!size_t(stack, base + instruction.c);
+                const hi = scalarValue!size_t(
+                    stack, base + instruction.c + size_t.sizeof,
+                );
+                validateCompactSubSlice(sourceLength, lo, hi);
+                writeCompactStringDescriptor(
+                    stack,
+                    base + instruction.a,
+                    cast(uint) (sourceDataOffset + lo),
+                    cast(uint) (hi - lo),
+                );
+                ++ip;
+                break;
+
             case sliceLength:
                 stack[
                     base + instruction.a .. base + instruction.a + size_t.sizeof
@@ -277,6 +298,14 @@ package(quickbite.backends.bytecode) RunResult run(
                     stack[
                         base + instruction.a .. base + instruction.a + storeSize
                     ],
+                );
+                ++ip;
+                break;
+
+            case checkStaticArrayIndex:
+                enforceIndexInBounds(
+                    scalarValue!size_t(stack, base + instruction.a),
+                    scalarValue!size_t(stack, base + instruction.b),
                 );
                 ++ip;
                 break;
@@ -746,6 +775,17 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case modInt8:
+                const ubyte[long.sizeof] remainder8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) %
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[
+                    base + instruction.a .. base + instruction.a + long.sizeof
+                ] = remainder8;
+                ++ip;
+                break;
+
             case subInt4:
                 const ubyte[int.sizeof] difference = scalarBytes(
                     scalarValue!int(stack, base + instruction.b) -
@@ -796,6 +836,28 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case divUnsignedInt4:
+                const ubyte[uint.sizeof] unsignedQuotient4 = scalarBytes(
+                    scalarValue!uint(stack, base + instruction.b) /
+                    scalarValue!uint(stack, base + instruction.c),
+                );
+                stack[
+                    base + instruction.a .. base + instruction.a + uint.sizeof
+                ] = unsignedQuotient4;
+                ++ip;
+                break;
+
+            case modUnsignedInt4:
+                const ubyte[uint.sizeof] unsignedRemainder4 = scalarBytes(
+                    scalarValue!uint(stack, base + instruction.b) %
+                    scalarValue!uint(stack, base + instruction.c),
+                );
+                stack[
+                    base + instruction.a .. base + instruction.a + uint.sizeof
+                ] = unsignedRemainder4;
+                ++ip;
+                break;
+
             case shlInt4:
                 const ubyte[int.sizeof] leftShifted = scalarBytes(
                     scalarValue!int(stack, base + instruction.b) <<
@@ -823,6 +885,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = unsignedRightShifted;
+                ++ip;
+                break;
+
+            case shlInt8:
+                const ubyte[long.sizeof] leftShifted8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) <<
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = leftShifted8;
                 ++ip;
                 break;
 
@@ -2195,6 +2267,20 @@ private void writeSliceDescriptorPointer(
         nativeToLittleEndian(length);
 }
 
+// Write a compact string descriptor {dataOffset, length} (each a uint) at
+// `offset`. Never touches a native pointer, so a sub-slice-of-a-sub-slice
+// chain stays entirely in program-data-relative offsets.
+private void writeCompactStringDescriptor(
+    ref ubyte[] stack,
+    in size_t offset,
+    in uint dataOffset,
+    in uint length,
+) @safe {
+    stack[offset .. offset + uint.sizeof] = scalarBytes(dataOffset);
+    stack[offset + uint.sizeof .. offset + 2 * uint.sizeof] =
+        scalarBytes(length);
+}
+
 private uint elementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
@@ -2244,10 +2330,38 @@ private void validateSubSlice(
 ) @safe {
     import std.conv: text;
 
+    if (lo > hi)
+        throw new Exception(text(
+            "slice [", lo, " .. ", hi,
+            "] has a larger lower index than upper index",
+        ));
+
     const length = scalarValue!size_t(
         stack,
         sourceOffset + size_t.sizeof,
     );
+    if (hi > length)
+        throw new Exception(text(
+            "slice [", lo, " .. ", hi,
+            "] extends past source array of length ", length,
+        ));
+}
+
+// Same bounds check as `validateSubSlice`, but against a compact string
+// descriptor's uint length rather than a full descriptor's size_t length.
+private void validateCompactSubSlice(
+    in uint length,
+    in size_t lo,
+    in size_t hi,
+) @safe {
+    import std.conv: text;
+
+    if (lo > hi)
+        throw new Exception(text(
+            "slice [", lo, " .. ", hi,
+            "] has a larger lower index than upper index",
+        ));
+
     if (hi > length)
         throw new Exception(text(
             "slice [", lo, " .. ", hi,
@@ -2586,6 +2700,20 @@ private void applyArrayAddAssign4(
         destination[index] = left[index] + right[index];
 }
 
+// Throw druntime's array-bounds message if `index` is not less than
+// `length`. The single check `elementAddress` (slice-descriptor indexing)
+// and `Op.checkStaticArrayIndex` (static-array indexing) both call, so every
+// bounds failure raises byte-for-byte the same diagnostic.
+private void enforceIndexInBounds(in size_t index, in size_t length) @safe pure {
+    import std.conv: text;
+
+    if (index >= length)
+        throw new Exception(text(
+            "index [", index, "] is out of bounds for array of length ",
+            length,
+        ));
+}
+
 // The native address of element `index` within the slice descriptor at
 // `descriptorOffset`, bounds checked against the descriptor's length word.
 private ubyte* elementAddress(
@@ -2594,14 +2722,8 @@ private ubyte* elementAddress(
     in size_t index,
     in uint elementSize,
 ) @trusted {
-    import std.conv: text;
-
     const length = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
-    if (index >= length)
-        throw new Exception(text(
-            "index [", index, "] is out of bounds for array of length ",
-            length,
-        ));
+    enforceIndexInBounds(index, length);
 
     const pointer = scalarValue!size_t(stack, descriptorOffset);
     return cast(ubyte*) (pointer + index * elementSize);
@@ -3037,6 +3159,11 @@ private final class BytecodeNativeMarshaller:
         const ty = type.toBasetype.ty;
         if (ty == TY.Tvoid)
             return direction == NativeMarshaller.Direction.fromNative;
+        // A by-value struct only crosses back out of a native call (the
+        // return value); the compiler emits no struct-by-value argument
+        // shape today.
+        if (ty == TY.Tstruct)
+            return direction == NativeMarshaller.Direction.fromNative;
         return ty == TY.Tbool || ty == TY.Tint32 || ty == TY.Tuns32 ||
             ty == TY.Tint64 || ty == TY.Tuns64 || ty == TY.Tfloat64 ||
             ty == TY.Tpointer || ty == TY.Tclass || ty == TY.Tarray;
@@ -3144,6 +3271,13 @@ private final class BytecodeNativeMarshaller:
         // handoff.
         if (type.toBasetype.ty == TY.Tarray)
             return null;
+
+        // A struct return's destination is already sized and aligned to the
+        // struct's own layout (`emitNativeCall`); libffi copies back exactly
+        // that many bytes for a struct return, unlike a narrow scalar return,
+        // which needs the padded `ffi_arg`-wide buffer below.
+        if (type.toBasetype.ty == TY.Tstruct)
+            return &_stack[_destination];
 
         if (nativeResultSize(type) < ffi_arg.sizeof)
             return null;

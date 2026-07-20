@@ -212,6 +212,16 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // b into a native dynamic-array descriptor {data.ptr + dataOffset, length}
     // at frame offset a. The backing data remains the immutable program segment.
     stringSliceToArray,
+    // Form a sub-slice of a compact string descriptor without ever expanding it
+    // to a native pointer: a: destination compact descriptor offset, b: source
+    // compact descriptor offset, c: offset of an adjacent {lo, hi} pair of
+    // size_t bounds. The new descriptor is {srcDataOffset + lo, hi - lo}, both
+    // still uint offsets into the program data segment. Bounds checked against
+    // the source length. Keeps a `string` sub-slice in the compact
+    // representation every other compact-string consumer (`.ptr`, `.length`,
+    // indexing) expects; `stringSliceToArray` above only ever expands a
+    // *read*, never a value stored back into another compact `string` slot.
+    stringSubSlice,
     // Read the length word of the slice descriptor at frame offset b into the
     // size_t slot at frame offset a.
     sliceLength,
@@ -238,6 +248,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // checked against the outer length. Backs storing an inner array into an
     // array-of-arrays element.
     indexStore16,
+    // Check that the size_t index at frame offset a is less than the size_t
+    // length at frame offset b, raising `indexLoad`/`indexStore`'s exact
+    // "index [n] is out of bounds for array of length N" diagnostic
+    // otherwise. Backs bounds checking for a static-array element pointer,
+    // which unlike a slice descriptor carries no length word of its own.
+    checkStaticArrayIndex,
     // Form a sub-slice descriptor sharing the source's backing memory:
     // a: destination descriptor offset, b: source descriptor offset, c: offset
     // of an adjacent {lo, hi} pair of size_t bounds. The new descriptor is
@@ -404,14 +420,18 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     divInt8, // a: destination frame offset, b: lhs, c: rhs (signed 8-byte div)
     divUnsignedInt8, // a: destination, b: lhs, c: rhs (unsigned 8-byte div)
     modUnsignedInt8, // a: destination, b: lhs, c: rhs (unsigned 8-byte mod)
+    modInt8, // a: destination, b: lhs, c: rhs (signed 8-byte mod)
     subInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt8, // a: destination frame offset, b: lhs, c: rhs
     divInt4, // a: destination frame offset, b: lhs, c: rhs (signed division)
     modInt4, // a: destination frame offset, b: lhs, c: rhs (signed remainder)
+    divUnsignedInt4, // a: destination, b: lhs, c: rhs (unsigned 4-byte div)
+    modUnsignedInt4, // a: destination, b: lhs, c: rhs (unsigned 4-byte mod)
     shlInt4, // a: destination frame offset, b: lhs, c: rhs
     shrInt4, // a: destination frame offset, b: lhs, c: rhs (signed shift)
     ushrInt4, // a: destination frame offset, b: lhs, c: rhs (zero-fill shift)
+    shlInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
     shrInt8, // a: destination frame offset, b: lhs, c: rhs (signed shift)
     ushrInt8, // a: destination frame offset, b: lhs, c: rhs (zero-fill shift)
     bitAndInt4, // a: destination frame offset, b: lhs, c: rhs

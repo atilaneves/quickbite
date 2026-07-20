@@ -788,8 +788,12 @@ private bool callViaLibffi(
             argumentValues[abiSourceIndex(linkage, nargs, abiIndex)];
 
     // The return buffer must be at least ffi_arg-wide (8 bytes) and aligned,
-    // even for narrow returns.
-    const returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
+    // even for narrow returns. Size it from `preparedReturnFfi`, not the
+    // fresh `returnFfi` built above: on a cached-CIF hit, `returnFfi` never
+    // goes through `ffi_prep_cif` (only the first caller's copy, now held by
+    // the cache, does), so a struct return's `.size` would still read its
+    // zero default and undersize the buffer for every call after the first.
+    const returnSize = preparedReturnFfi.size < 8 ? 8 : preparedReturnFfi.size;
     auto returnSlot = returnsRef ? null : marshaller.resultAddress(returnType);
     auto returnBuffer = returnSlot is null ? new ubyte[](returnSize) : null;
     auto returnAddress = returnSlot is null ? returnBuffer.ptr : returnSlot;

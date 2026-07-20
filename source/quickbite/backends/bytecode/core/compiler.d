@@ -172,6 +172,16 @@ private struct Compiler {
                                    // function when it is a UnitTestDeclaration
     private ResultType _currentReturnType; // result type of the function whose
                                            // body is currently being compiled
+    // Nesting depth of conditional/repeated statement bodies (`if`/`else`,
+    // loop, `switch`, `try`/`catch`/`finally`, `with`) around the statement
+    // currently being compiled. Zero means every earlier statement in the
+    // current function is guaranteed to have run exactly once before this
+    // point, in lexical order.
+    private uint _controlFlowDepth;
+    // True when the current function has any `label:`/`goto`, which breaks
+    // lexical-order dominance: a backward goto can re-enter code the compiler
+    // already treated as having run.
+    private bool _functionHasLabels;
 
     private static struct DynamicArrayRefWriteBack {
         ushort valueOffset;
@@ -225,6 +235,12 @@ private struct Compiler {
         _pendingFinallyExceptionClassIndex = noExceptionClass;
         _activeDollarLength = ushort.max;
         _applyBodyExits = null;
+        _controlFlowDepth = 0;
+        {
+            bool[const(void)*] labels;
+            collectLabels(function_.fbody, labels);
+            _functionHasLabels = labels.length > 0;
+        }
 
         import dmd.astenums: TY;
 
@@ -508,6 +524,17 @@ private struct Compiler {
         ));
     }
 
+    // Compile a statement that a later statement is not guaranteed to run
+    // after (an `if`/`else` arm, a loop body, a `switch` body, a `try`/
+    // `catch`/`finally` body, or a `with` body): bump the control-flow depth
+    // around it so a nested assignment can tell it is not at unconditional
+    // straight-line depth.
+    private void compileNestedStatement(Statement statement) {
+        ++_controlFlowDepth;
+        compileStatement(statement);
+        --_controlFlowDepth;
+    }
+
     // Decode the unsigned checked-multiply instruction shape used by portable
     // D source with an x86 runtime fast path. The frontend preserves these
     // operands before DMD consumes its asm statements; every other instruction
@@ -632,12 +659,12 @@ private struct Compiler {
         const condition = compileBoolCondition(if_.condition);
         const falseJump = emitJumpIfFalse(condition);
 
-        compileStatement(if_.ifbody);
+        compileNestedStatement(if_.ifbody);
         const endJump = emitJump;
 
         patchJump(falseJump);
         if (if_.elsebody !is null)
-            compileStatement(if_.elsebody);
+            compileNestedStatement(if_.elsebody);
 
         patchJump(endJump);
     }
@@ -656,7 +683,7 @@ private struct Compiler {
                 _withDerefBases[with_.wthis] = *base;
 
         if (with_._body !is null)
-            compileStatement(with_._body);
+            compileNestedStatement(with_._body);
     }
 
     // `label:` — record the label's instruction index and patch any forward
@@ -747,13 +774,13 @@ private struct Compiler {
         _tryFinallyStack ~= context;
 
         if (tryFinally._body !is null)
-            compileStatement(tryFinally._body);
+            compileNestedStatement(tryFinally._body);
 
         _tryFinallyStack.length -= 1;
 
         // The normal fall-through exit also runs the finally.
         if (tryFinally.finalbody !is null)
-            compileStatement(tryFinally.finalbody);
+            compileNestedStatement(tryFinally.finalbody);
     }
 
     // Re-emit the `finally` blocks of the innermost `count` `try`/`finally`
@@ -910,7 +937,7 @@ private struct Compiler {
         );
 
         if (tryCatch._body !is null)
-            compileStatement(tryCatch._body);
+            compileNestedStatement(tryCatch._body);
 
         // Normal completion of the try body: drop the handler group and skip the
         // catch bodies.
@@ -933,7 +960,7 @@ private struct Compiler {
                     catchObject.nextMessageOffset;
             }
 
-            compileStatement(catch_.handler);
+            compileNestedStatement(catch_.handler);
             if (catch_.var !is null)
                 _exceptionObjectLocals.remove(catch_.var);
 
@@ -1138,7 +1165,7 @@ private struct Compiler {
         _loopStack ~= context;
 
         if (for_._body !is null)
-            compileStatement(for_._body);
+            compileNestedStatement(for_._body);
 
         // `continue` lands on the increment, then falls through to the re-test.
         foreach (index; _loopStack[$ - 1].continuePatches)
@@ -1173,7 +1200,7 @@ private struct Compiler {
         _loopStack ~= context;
 
         if (do_._body !is null)
-            compileStatement(do_._body);
+            compileNestedStatement(do_._body);
 
         // `continue` lands on the condition test, then re-runs the body if true.
         foreach (index; _loopStack[$ - 1].continuePatches)
@@ -1211,7 +1238,7 @@ private struct Compiler {
                     patchJumpTo(patch, _code.length);
                 _loopStack[$ - 1].continuePatches = null;
 
-                compileStatement((*unrolled.statements)[index]);
+                compileNestedStatement((*unrolled.statements)[index]);
             }
 
         // A `continue` in the final iteration, plus every `break`, lands past the
@@ -1321,7 +1348,7 @@ private struct Compiler {
         _switchStack ~= switchContext;
 
         if (switch_._body !is null)
-            compileStatement(switch_._body);
+            compileNestedStatement(switch_._body);
 
         // The end of a case body falls through to the next case body; the final
         // body must skip the dispatch chain entirely.
@@ -1959,6 +1986,20 @@ private struct Compiler {
                 "Unsupported compound assignment in bytecode core: ",
             );
 
+        if (auto divideAssign = expression.isDivAssignExp)
+            return compileDivOrModCompoundAssign(
+                divideAssign,
+                false,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
+        if (auto moduloAssign = expression.isModAssignExp)
+            return compileDivOrModCompoundAssign(
+                moduloAssign,
+                true,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
         // `arr.length = n` (and other lowered assignments) arrive as a
         // LoweredAssignExp, whose op is not `EXP.assign`, so isAssignExp misses
         // it; it is still an AssignExp with the original lvalue in e1.
@@ -2061,10 +2102,34 @@ private struct Compiler {
                 return *element;
             if (auto element = tryDynamicArrayIndex(index))
                 return *element;
+            if (auto element = tryStringIndex(index))
+                return *element;
+            if (auto element = tryStaticArrayRuntimeIndex(index))
+                return *element;
             return compileStaticArrayIndex(index);
         }
 
         if (auto slice = expression.isSliceExp) {
+            // A string sliced from a compact string source (a data-segment
+            // literal or a `_stringLocals` local) stays in the compact
+            // {dataOffset, length} representation every other compact-string
+            // consumer (`.ptr`, `.length`, indexing, a `string` local's plain
+            // `Op.copy` initializer) expects; `compileSliceInto` below always
+            // builds a real-pointer 16-byte descriptor, which is only correct
+            // when the destination is a genuine dynamic array. A heap-backed
+            // source (registered in `_dynamicArrayLocals`, e.g. from
+            // `.idup`/`.dup`) has no program-data-relative origin to stay
+            // compact around, so it falls through to the general dynamic-array
+            // path below and shares that source's real heap block instead. A
+            // string sliced from a pointer (`p[0 .. 3]`) has no compact source
+            // either and falls through the same way. Char strings only — see
+            // `isCharStringType`.
+            if (isCharStringType(slice.type) && isCharStringType(slice.e1.type) &&
+                !stringSourceIsHeapBacked(slice.e1)) {
+                const offset = allocateBytes(stringSliceSize, 4);
+                compileCompactStringSliceInto(offset, slice);
+                return Operand(offset, ScalarType.void_, true);
+            }
             const elementType = dynamicArrayElementType(slice.type);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileSliceInto(offset, elementType, slice);
@@ -2338,6 +2403,28 @@ private struct Compiler {
             );
 
         return null;
+    }
+
+    // `s[i]` for a `string` (`immutable(char)[]`): the local holds the
+    // compact 8-byte descriptor; expand via `Op.stringSliceToArray` (as
+    // `compileStringPointer` does) before indexing. Char strings only — see
+    // `isCharStringType`. Null if `index` is not an access into a
+    // `string`-typed expression.
+    private Operand* tryStringIndex(IndexExp index) {
+        import dmd.astenums: TY;
+
+        if (!isStringType(index.e1.type))
+            return null;
+        if (index.e1.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
+            return null;
+
+        const string_ = compileExpression(index.e1);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(Op.stringSliceToArray, offset, string_.offset);
+        return loadDynamicArrayElement(
+            offset, dynamicArrayElementType(index.e1.type), index.e2,
+            index.type,
+        );
     }
 
     // The slice descriptor for an array-valued expression that is not a known
@@ -2890,16 +2977,18 @@ private struct Compiler {
         // initializer's slice into it.
         const isString = isStringType(variable.type);
 
-        // A `string`/`wstring`/`dstring` initialised from a heap-producing
-        // `.idup`/`.dup` is not a read-only data-segment slice but a 16-byte
-        // {ptr, length} heap descriptor like an ordinary dynamic array. Store it
-        // as a dynamic-array local (char/wchar/dchar element) so its code units
-        // read back through the slice machinery; `_aApply*` UTF iteration over
-        // such a string then reads the source as a normal slice descriptor.
+        // A `string`/`wstring`/`dstring` initialised from a heap-backed
+        // source (`.idup`/`.dup`, a sub-slice of a heap-backed string, or a
+        // direct reference to one) is not a read-only data-segment slice but
+        // a 16-byte {ptr, length} heap descriptor like an ordinary dynamic
+        // array. Store it as a dynamic-array local (char/wchar/dchar element)
+        // so its code units read back through the slice machinery; `_aApply*`
+        // UTF iteration over such a string then reads the source as a normal
+        // slice descriptor.
         if (isString && variable._init !is null)
             if (auto expInit = variable._init.isExpInitializer)
-                if (tryArrayDuplication(
-                        initializerExpression(expInit.exp)) !is null) {
+                if (stringSourceIsHeapBacked(
+                        initializerExpression(expInit.exp))) {
                     const heapElement =
                         dynamicArrayElementType(variable.type);
                     const heapOffset =
@@ -2941,6 +3030,29 @@ private struct Compiler {
             operand.offset,
             cast(ushort) slotSize,
         );
+    }
+
+    // A string-typed source expression whose value is a heap-backed 16-byte
+    // {ptr, length} descriptor rather than the compact 8-byte {dataOffset,
+    // length} form: a `.idup`/`.dup` duplication, a sub-slice of one, a cast
+    // of one, or a direct reference to a local already registered in
+    // `_dynamicArrayLocals`. This deliberately does not delegate to the
+    // general `dynamicArrayDescriptorOrNull`: that function's `IndexExp`
+    // branch treats any array-typed element (including a `string` element of
+    // a `string[]`, since `string`'s own basetype is `Tarray`) as a nested
+    // array-of-arrays descriptor, which would misclassify an ordinary
+    // compact-shaped `string[N]`/`string[]` element read as heap-backed.
+    private bool stringSourceIsHeapBacked(Expression source) {
+        if (tryArrayDuplication(source) !is null)
+            return true;
+        if (auto slice = source.isSliceExp)
+            return stringSourceIsHeapBacked(slice.e1);
+        if (auto cast_ = source.isCastExp)
+            return stringSourceIsHeapBacked(cast_.e1);
+        if (auto variable = source.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return (declaration in _dynamicArrayLocals) !is null;
+        return false;
     }
 
     private bool compileRefLocalDeclaration(VarDeclaration variable) {
@@ -3564,6 +3676,23 @@ private struct Compiler {
             return;
         }
 
+        // A bare `U u;` for a union defaults from the FIRST declared member's
+        // own default value, reinterpreted as every other member's overlapping
+        // bytes, not from each field's independent default the way a struct's
+        // disjoint fields do. DMD's own `defaultInitLiteral` already encodes
+        // this rule (it nulls out every field beyond the first member's byte
+        // extent), so reuse its literal instead of re-deriving the rule here.
+        if (source.isVarExp !is null && declaration.isUnionDeclaration !is null) {
+            import dmd.typesem: defaultInitLiteral;
+
+            auto literal = variable.type.toBasetype.isTypeStruct
+                .defaultInitLiteral(variable.loc).isStructLiteralExp;
+            if (literal !is null) {
+                compileStructLiteralInto(offset, literal);
+                return;
+            }
+        }
+
         if (source.isVarExp !is null &&
             compileDefaultStructFields(offset, declaration))
             return;
@@ -3814,35 +3943,51 @@ private struct Compiler {
         if (auto aggregate = function_.isThis())
             return aggregate.isStructDeclaration;
 
-        // A nested `delegate` lambda that captures the enclosing method's `this`
-        // (`() => this.field`) receives that `this` as its context. DMD models
-        // the context as `vthis` (`__capture`, typed `void*`) and resolves the
-        // captured field's `ThisExp.var` to the enclosing method's own `vthis`.
-        // Give the lambda a hidden `this` block of the enclosing struct so the
-        // ordinary receiver ABI carries the context and `this.field` resolves
-        // against it.
+        // A nested function that reads the enclosing method's `this` -- a
+        // capturing lambda (`() => this.field`) or a plain nested named
+        // function (`int helper() { return this.field; }`) -- receives that
+        // `this` as its context. DMD models the context as `vthis` (typed
+        // `void*`) and resolves the captured field's `ThisExp.var` to the
+        // enclosing method's own `vthis`. Give the nested function a hidden
+        // `this` block of the enclosing struct so the ordinary receiver ABI
+        // carries the context and `this.field` resolves against it.
         return capturedThisStructDeclaration(function_);
     }
 
-    // The enclosing struct whose `this` a capturing delegate lambda reads, or
-    // null if `function_` is not such a lambda. The lambda is nested in a struct
-    // method and holds a context (`vthis`); the struct is the method's receiver
-    // aggregate. Capturing an enclosing *local* (rather than `this`) is not yet
-    // modelled -- such a lambda's `this.field` would still route here, but only
-    // `this`-capturing lambdas are exercised; a local-capturing one would read
-    // the wrong slot, which the leading-edge closures work must address.
+    // The enclosing struct whose `this` a nested function reads, or null if
+    // `function_` is not such a function. The function is nested in a struct
+    // method and holds a context (`vthis`); the struct is the method's
+    // receiver aggregate. This claims the receiver shape for any vthis-
+    // carrying nested function under a struct method regardless of what else
+    // it captures, so a function that ALSO reads an enclosing local (not just
+    // `this`) is claimed here too. That is safe rather than silently wrong:
+    // claiming this shape skips building a closure environment for the
+    // function, so the captured local's own read never resolves and throws
+    // its own "Unsupported variable" diagnostic before any receiver value
+    // could be used. Capturing an enclosing local is not yet modelled; the
+    // leading-edge closures work must address it.
+    //
+    // A struct declared inside a function (a voldemort type) carries an extra
+    // hidden context-pointer field appended after its declared fields
+    // (`AggregateDeclaration.isNested`), which shifts every field's runtime
+    // offset from the plain by-declaration-order offset this path assumes.
+    // Only claim the `this`-receiver shape for a non-nested enclosing struct;
+    // a nested one falls back to the "unsupported" diagnostic.
     private imported!"dmd.dstruct".StructDeclaration
     capturedThisStructDeclaration(FuncDeclaration function_) {
-        auto literal = function_.isFuncLiteralDeclaration;
-        if (literal is null || function_.vthis is null)
+        if (function_.vthis is null)
             return null;
 
         auto enclosing = enclosingMethodOf(function_);
         if (enclosing is null)
             return null;
-        if (auto aggregate = enclosing.isThis())
-            return aggregate.isStructDeclaration;
-        return null;
+        auto aggregate = enclosing.isThis();
+        if (aggregate is null)
+            return null;
+        auto structDeclaration = aggregate.isStructDeclaration;
+        if (structDeclaration is null || structDeclaration.isNested)
+            return null;
+        return structDeclaration;
     }
 
     private bool needsNestedFrameContext(FuncDeclaration function_) {
@@ -3904,6 +4049,14 @@ private struct Compiler {
         // FuncExp), and its hidden `this` block is the enclosing method's own
         // `this` receiver, already present in this frame.
         if (call.e1.isFuncExp !is null && _hasThis)
+            return _thisLocal.offset;
+
+        // A direct unqualified call to a nested named function that reads the
+        // enclosing method's `this` (`helper()`, where `int helper() { return
+        // this.field; }`): the callee is a plain VarExp naming the function,
+        // and its hidden `this` block is the enclosing method's own `this`
+        // receiver, already present in this frame.
+        if (call.e1.isVarExp !is null && _hasThis)
             return _thisLocal.offset;
 
         throw new Exception(text(
@@ -5343,7 +5496,17 @@ private struct Compiler {
         }
 
         DynamicArrayLocal descriptor;
-        if (isStringType(slice.e1.type)) {
+        // `Op.stringSliceToArray` reinterprets the source's compact
+        // {dataOffset, length} bytes as a `char`-element real descriptor;
+        // char strings only — see `isCharStringType`. A heap-backed source
+        // already registered in `_dynamicArrayLocals`, or a `wstring`/
+        // `dstring` source, falls through to `dynamicArrayDescriptor`
+        // instead — for the heap-backed case that resolves the source's
+        // real descriptor directly, and for a wide string it throws its own
+        // clean diagnostic rather than silently misreading code-unit
+        // offsets as byte offsets.
+        if (isCharStringType(slice.e1.type) &&
+            !stringSourceIsHeapBacked(slice.e1)) {
             const string_ = compileExpression(slice.e1);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             _code ~= Instruction(
@@ -5389,6 +5552,59 @@ private struct Compiler {
             descriptor.offset,
             bounds,
         );
+    }
+
+    // Emit a compact string sub-slice descriptor into frame offset
+    // `destination` from a `SliceExp` over a string source, sharing that
+    // source's compact {dataOffset, length} space via `Op.stringSubSlice`
+    // rather than expanding through a native pointer. Lower and upper bounds
+    // (default `0` and `source.length` for the whole-slice form `s[]`) are
+    // materialised into an adjacent `{lo, hi}` size_t pair the same way
+    // `compileSliceInto` does.
+    private void compileCompactStringSliceInto(
+        in ushort destination,
+        SliceExp slice,
+    ) {
+        const string_ = compileExpression(slice.e1);
+
+        const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const savedDollarLength = _activeDollarLength;
+        _activeDollarLength = compactStringLengthSlot(string_.offset);
+        const lo = slice.lwr is null
+            ? compileSizeConstant(0)
+            : compileExpression(slice.lwr).offset;
+        _code ~= Instruction(
+            Op.copy, bounds, lo, cast(ushort) size_t.sizeof,
+        );
+
+        const hi = slice.upr is null || isDollarExpression(slice.upr)
+            ? _activeDollarLength
+            : compileExpression(slice.upr).offset;
+        _activeDollarLength = savedDollarLength;
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (bounds + size_t.sizeof),
+            hi,
+            cast(ushort) size_t.sizeof,
+        );
+
+        _code ~= Instruction(
+            Op.stringSubSlice, destination, string_.offset, bounds,
+        );
+    }
+
+    // Read a compact string descriptor's uint length field at
+    // `compactOffset + uint.sizeof` and zero-extend it into a fresh size_t
+    // slot, for the implicit upper bound of a whole-slice `s[]` or a `$`
+    // inside a compact-string sub-slice's bounds.
+    private ushort compactStringLengthSlot(in ushort compactOffset) {
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(
+            Op.zeroExtend4to8,
+            offset,
+            cast(ushort) (compactOffset + uint.sizeof),
+        );
+        return offset;
     }
 
     // `p[lo .. hi]` over a pointer: write a slice descriptor
@@ -5761,6 +5977,7 @@ private struct Compiler {
             auto result = new Operand;
             *result = staticArrayElementPointer(
                 staticArrayBaseOffset(index.e1), index.e2, index.type,
+                compileSizeConstant(staticArrayLength(index.e1.type)),
             );
             return result;
         }
@@ -5773,6 +5990,7 @@ private struct Compiler {
             auto result = new Operand;
             *result = staticArrayElementPointer(
                 descriptor.staticArrayOffset, index.e2, index.type,
+                sliceLengthSlot(*descriptor),
             );
             return result;
         }
@@ -5792,12 +6010,39 @@ private struct Compiler {
         in ushort baseOffset,
         Expression indexExpression,
         Type elementType,
+        in ushort lengthSlot,
     ) {
         const basePointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameAddress, basePointer, baseOffset);
 
+        const basePointerOperand = Operand(
+            basePointer, ScalarType.ulong_, false, true, ScalarType.void_,
+        );
+        return advanceStaticArrayPointer(
+            basePointerOperand, indexExpression, elementType, lengthSlot,
+        );
+    }
+
+    // Advance a static-array base pointer by `indexExpression * elementType`'s
+    // size, bounds checked against the size_t dimension at `lengthSlot`. The
+    // result's `pointerElement` is `void_` for a sub-array or struct element
+    // (an intermediate view with no scalar load/store opcode of its own),
+    // matching `storeThroughPointer`'s convention of deriving such an
+    // element's width from DMD's `Type.size()` instead.
+    private Operand advanceStaticArrayPointer(
+        in Operand basePointer,
+        Expression indexExpression,
+        Type elementType,
+        in ushort lengthSlot,
+    ) {
+        import dmd.astenums: TY;
+
         const indexSlot = compileExpression(indexExpression);
+        _code ~= Instruction(
+            Op.checkStaticArrayIndex, indexSlot.offset, lengthSlot,
+        );
+
         const scaled =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         const stride =
@@ -5805,11 +6050,129 @@ private struct Compiler {
         _code ~= Instruction(Op.mulInt8, scaled, indexSlot.offset, stride);
 
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.addInt8, pointer, basePointer, scaled);
+        _code ~= Instruction(Op.addInt8, pointer, basePointer.offset, scaled);
 
-        return Operand(
-            pointer, ScalarType.ulong_, false, true, scalarType(elementType),
-        );
+        const ty = elementType.toBasetype.ty;
+        const pointerElement = ty == TY.Tsarray ||
+            ty == TY.Tstruct ||
+            ty == TY.Tarray
+                ? ScalarType.void_
+                : scalarType(elementType);
+        return Operand(pointer, ScalarType.ulong_, false, true, pointerElement);
+    }
+
+    // The runtime address of a static-array location: a static-array local's
+    // frame slot, a static-array struct field's inline offset, or
+    // (recursively) a further index into either. Mirrors
+    // `staticArrayBaseOffset`'s walk but computes the address with actual
+    // pointer arithmetic instead of folding into a single compile-time
+    // offset, so a non-constant index anywhere in the chain (`m[i][j]`) is
+    // supported. Null if `expression` does not denote a static-array
+    // location at all.
+    private Operand* tryStaticArrayRuntimeAddress(Expression expression) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto offset = declaration in _staticArrayLocals)
+                    return frameAddressOperand(*offset);
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                return frameAddressOperand(field.offset);
+
+        if (auto index = expression.isIndexExp) {
+            auto base = tryStaticArrayRuntimeAddress(index.e1);
+            if (base is null)
+                return null;
+
+            auto result = new Operand;
+            *result = advanceStaticArrayPointer(
+                *base, index.e2, index.type,
+                compileSizeConstant(staticArrayLength(index.e1.type)),
+            );
+            return result;
+        }
+
+        return null;
+    }
+
+    // The runtime address of a static-array local's (or field's) own frame
+    // slot, as a pointer operand with no scalar element type of its own yet
+    // (the caller advances it by an index, or reads/writes the whole block).
+    private Operand* frameAddressOperand(in ushort offset) {
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameAddress, pointer, offset);
+        auto result = new Operand;
+        *result =
+            Operand(pointer, ScalarType.ulong_, false, true, ScalarType.void_);
+        return result;
+    }
+
+    // True if any index in a static-array `IndexExp` chain (`m[i]`,
+    // `m[i][j]`) is not a compile-time constant, in which case the element's
+    // address must be computed at runtime (`tryStaticArrayRuntimeAddress`)
+    // rather than folded into a fixed frame offset
+    // (`locateStaticArrayElement`/`staticArrayBaseOffset`).
+    private bool staticArrayChainNeedsRuntimeAddress(IndexExp index) {
+        if (index.e2.isIntegerExp is null)
+            return true;
+
+        if (auto inner = index.e1.isIndexExp)
+            return staticArrayChainNeedsRuntimeAddress(inner);
+
+        return false;
+    }
+
+    // `m[i][j]` (or deeper) read where at least one index in the chain is a
+    // runtime value: resolve the full chain to a runtime address and load
+    // the scalar leaf through it. A fully constant chain is left to
+    // `compileStaticArrayIndex`'s cheaper compile-time offset path, and a
+    // chain whose result is itself a sub-array/struct view (not yet fully
+    // indexed) is left unhandled here. Null if `index` is not a static-array
+    // access at all.
+    private Operand* tryStaticArrayRuntimeIndex(IndexExp index) {
+        import dmd.astenums: TY;
+
+        if (!indexesStaticArray(index.e1))
+            return null;
+
+        if (!staticArrayChainNeedsRuntimeAddress(index))
+            return null;
+
+        const ty = index.type.toBasetype.ty;
+        if (ty == TY.Tsarray || ty == TY.Tstruct || ty == TY.Tarray)
+            return null;
+
+        auto pointer = tryStaticArrayRuntimeAddress(index);
+        if (pointer is null)
+            return null;
+
+        auto result = new Operand;
+        *result = loadThroughPointer(*pointer, compileSizeConstant(0));
+        return result;
+    }
+
+    // `m[i][j] = rhs` (or deeper) where at least one index in the chain is a
+    // runtime value: resolve the leaf address at runtime and write through
+    // it, the runtime-address counterpart to `tryStaticArrayElement`'s
+    // compile-time-offset path. Null if `index` is not a static-array
+    // element access, or the chain is fully constant (handled above).
+    private Operand* tryStaticArrayRuntimeElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        if (!indexesStaticArray(index.e1))
+            return null;
+
+        if (!staticArrayChainNeedsRuntimeAddress(index))
+            return null;
+
+        auto pointer = tryStaticArrayRuntimeAddress(index);
+        if (pointer is null)
+            return null;
+
+        auto result = new Operand;
+        *result = storeThroughPointer(*pointer, compileSizeConstant(0), rhs);
+        return result;
     }
 
     // `&local` / `&base.field`: the native address of a scalar local's frame
@@ -6116,12 +6479,12 @@ private struct Compiler {
             scalarType(add.type) == lhs.type)
             return emitBinary(Op.addInt8, lhs, rhs, lhs.type);
 
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             add,
             lhs,
             rhs,
             Op.addInt4,
-            ScalarType.int_,
+            scalarType(add.type),
             "Unsupported addition in bytecode core: ",
         );
     }
@@ -6275,6 +6638,12 @@ private struct Compiler {
             return emitBinary(
                 Op.divUnsignedInt8, lhs, rhs, ScalarType.ulong_,
             );
+        if (lhs.type == ScalarType.long_ && rhs.type == ScalarType.long_)
+            return emitBinary(Op.divInt8, lhs, rhs, ScalarType.long_);
+        if (lhs.type == ScalarType.uint_ && rhs.type == ScalarType.uint_)
+            return emitBinary(
+                Op.divUnsignedInt4, lhs, rhs, ScalarType.uint_,
+            );
 
         return compileIntBinaryResult(
             divide,
@@ -6293,6 +6662,12 @@ private struct Compiler {
             return emitBinary(
                 Op.modUnsignedInt8, lhs, rhs, ScalarType.ulong_,
             );
+        if (lhs.type == ScalarType.long_ && rhs.type == ScalarType.long_)
+            return emitBinary(Op.modInt8, lhs, rhs, ScalarType.long_);
+        if (lhs.type == ScalarType.uint_ && rhs.type == ScalarType.uint_)
+            return emitBinary(
+                Op.modUnsignedInt4, lhs, rhs, ScalarType.uint_,
+            );
 
         return compileIntBinaryResult(
             modulo,
@@ -6302,6 +6677,88 @@ private struct Compiler {
             ScalarType.int_,
             "Unsupported modulo in bytecode core: ",
         );
+    }
+
+    // `x /= y` and `x %= y` on an integer local. Unlike add/sub/mul/shift/or's
+    // compound-assign, which reuse one op4/op8 pair regardless of signedness
+    // because two's-complement addition and multiplication don't care about
+    // sign, division and modulo need the operation's own signedness to pick
+    // the opcode, matching the choice `compileDivideExpression`/
+    // `compileModuloExpression` make for the binary form. That signedness is
+    // not always the lvalue's: DMD performs the division at the usual-
+    // arithmetic-conversion type of the two operands and only converts back
+    // to the lvalue's type on store, so e.g. `int x; uint u; x /= u;` divides
+    // as unsigned even though `x` is signed. DMD exposes that operation type
+    // by wrapping `e1` in a `CastExp` to it whenever it differs from the
+    // lvalue's declared type (`compoundAssignLocalDeclaration` unwraps that
+    // same cast to find the lvalue); reading `assign.e1.type` therefore gives
+    // the operation type directly.
+    private Operand compileDivOrModCompoundAssign(
+        BinExp assign,
+        in bool isModulo,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
+        auto declaration = compoundAssignLocalDeclaration(assign.e1);
+        auto slot = compoundAssignLocalSlot(declaration);
+        if (slot is null)
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        const lvalueType = scalarType(declaration.type);
+        const rhs = compileExpression(assign.e2);
+        if (!isCompoundIntegerScalar(lvalueType) ||
+            !isCompoundIntegerScalar(rhs.type))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        if (isEightByteInteger(lvalueType) != isEightByteInteger(rhs.type) ||
+            (isEightByteInteger(lvalueType) && rhs.type != lvalueType))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        const operationType = scalarType(assign.e1.type);
+        if (!isIntegerScalar(operationType))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(assign),
+            ));
+
+        Op op;
+        if (operationType == ScalarType.ulong_)
+            op = isModulo ? Op.modUnsignedInt8 : Op.divUnsignedInt8;
+        else if (operationType == ScalarType.long_)
+            op = isModulo ? Op.modInt8 : Op.divInt8;
+        else if (operationType == ScalarType.uint_)
+            op = isModulo ? Op.modUnsignedInt4 : Op.divUnsignedInt4;
+        else
+            op = isModulo ? Op.modInt4 : Op.divInt4;
+
+        const lhs = integerOperationOperand(
+            Operand(*slot, lvalueType),
+            operationType,
+        );
+        const rhsValue = integerOperationOperand(rhs, operationType);
+        const destination = size(lvalueType) == size(operationType)
+            ? *slot
+            : allocate(operationType);
+        _code ~= Instruction(op, destination, lhs.offset, rhsValue.offset);
+        if (destination != *slot)
+            _code ~= Instruction(
+                Op.copy,
+                *slot,
+                destination,
+                cast(ushort) size(lvalueType),
+            );
+
+        return Operand(*slot, lvalueType);
     }
 
     private Operand compileShiftExpression(
@@ -6319,9 +6776,8 @@ private struct Compiler {
                 rhs = extend(rhs, ScalarType.int_);
             const actualOp = op == Op.shrInt4
                 ? (isSigned(lhs.type) ? Op.shrInt8 : Op.ushrInt8)
-                : op == Op.ushrInt4 ? Op.ushrInt8 : Op.shlInt4;
-            if (actualOp != Op.shlInt4)
-                return emitBinary(actualOp, lhs, rhs, scalarType(shift.type));
+                : op == Op.ushrInt4 ? Op.ushrInt8 : Op.shlInt8;
+            return emitBinary(actualOp, lhs, rhs, scalarType(shift.type));
         }
         const actualOp = op == Op.shrInt4 && !isSigned(lhs.type)
             ? Op.ushrInt4
@@ -7167,6 +7623,14 @@ private struct Compiler {
             if (auto store = tryDynamicArrayElementAssign(index, assign.e2))
                 return *store;
 
+        // `m[i][j] = rhs` for a nested static-array element where a runtime
+        // index appears anywhere in the chain: write through the
+        // runtime-computed element address.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store =
+                    tryStaticArrayRuntimeElementAssign(index, assign.e2))
+                return *store;
+
         // `matrix[] = [...]` broadcasts a one-dimensional row literal to each
         // row of a multidimensional static array in place.
         if (auto slice = assign.e1.isSliceExp)
@@ -7260,6 +7724,21 @@ private struct Compiler {
                 return compileCapturedAssign(declaration, *captured, assign);
         if (declaration !is null)
             if (auto destination = declaration in _structLocals) {
+                // DMD's zero-init blit marker (an `IntegerExp(0)` retyped to
+                // the struct type, e.g. an `out` parameter's synthesized
+                // entry zero-init) is not a struct value to read through
+                // `structBaseOffsetOrMaterialise` -- it means "zero this
+                // block", the same meaning `compileStructDeclaration` already
+                // gives it for a fresh local's own initializer.
+                if (auto integer = assign.e2.isIntegerExp)
+                    if (integer.toInteger == 0) {
+                        zeroFrameBlock(
+                            destination.offset,
+                            cast(uint) staticArraySize(declaration.type),
+                        );
+                        return Operand(destination.offset, ScalarType.void_);
+                    }
+
                 bool resolved;
                 const source = structBaseOffsetOrMaterialise(
                     assign.e2,
@@ -7316,11 +7795,56 @@ private struct Compiler {
                 expressionChars(assign),
             ));
 
+        // A compact-declared `string` local's slot is only `stringSliceSize`
+        // (8) bytes wide, but a heap-backed source (`.idup`/`.dup`, a
+        // sub-slice of one, or another heap-backed string) carries a real
+        // 16-byte {ptr, length} descriptor that would overrun it. Rebind the
+        // local onto a fresh 16-byte slot and route it through the same
+        // dynamic-array local map a genuine `T[]` uses, instead of truncating
+        // the copy into the old slot. Every already-compiled read of this
+        // local targets its old compact slot address, so the rebind is only
+        // sound when this assignment provably dominates every later read in
+        // the current function: unconditional straight-line code (not inside
+        // an `if`/`else`, loop, `switch`, `try`/`catch`/`finally`, or `with`
+        // body) in a function with no `label:`/`goto` (a backward goto could
+        // re-enter code compiled before the rebind). Refuse otherwise rather
+        // than let a skipped or repeated execution read stale or zero-init
+        // data through the old slot.
+        if (isStringType(declaration.type) &&
+            stringSourceIsHeapBacked(assign.e2)) {
+            if (_controlFlowDepth != 0 || _functionHasLabels)
+                throw new Exception(text(
+                    "Unsupported assignment in bytecode core: ",
+                    expressionChars(assign),
+                ));
+
+            const heapOffset =
+                allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy, heapOffset, rhs.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
+            _dynamicArrayLocals[declaration] = DynamicArrayLocal(
+                heapOffset, dynamicArrayElementType(declaration.type),
+            );
+            _locals.remove(declaration);
+            _stringLocals.remove(declaration);
+            return Operand(heapOffset, ScalarType.void_);
+        }
+
+        // A `string` local's slot holds the compact {dataOffset, length}
+        // descriptor, not a scalar; `scalarType` maps it to `void_`/size 0, so
+        // sizing the copy from `type` (as every other local does) would copy
+        // nothing. Copy the descriptor width instead, matching how a `string`
+        // declaration's own initializer copy is sized.
+        const copySize = isStringType(declaration.type)
+            ? stringSliceSize
+            : size(type);
         _code ~= Instruction(
             Op.copy,
             *slot,
             rhs.offset,
-            cast(ushort) size(type),
+            cast(ushort) copySize,
         );
         return Operand(*slot, type);
     }
@@ -7847,6 +8371,18 @@ private struct Compiler {
             return descriptorResult;
         }
 
+        // A static-array field `T[N] a` (`u.a = [x, y]`) writes each element
+        // inline at `field.offset + index * elementSize`, the same as a
+        // static-array local's own whole-array literal assignment.
+        if (field.type.toBasetype.ty == TY.Tsarray) {
+            if (auto literal = rhs.isArrayLiteralExp) {
+                compileStaticArrayLiteral(field.offset, field.type, literal);
+                auto arrayResult = new Operand;
+                *arrayResult = Operand(field.offset, ScalarType.void_);
+                return arrayResult;
+            }
+        }
+
         // A pointer field `T* p` (`tracker.postblits = &count`) holds an 8-byte
         // raw address; copy the rhs pointer value into the field slot.
         if (isPointerType(field.type)) {
@@ -8237,6 +8773,23 @@ private struct Compiler {
         if (descriptor is null)
             return null;
 
+        // A static array indexed by a runtime (non-constant) index resolves
+        // here as a descriptor materialised into a throwaway heap copy
+        // (`compileStaticArrayAsDynamicInto`); writing through that copy would
+        // never reach the real static-array storage. Write through a pointer
+        // into the static array's own inline frame offset instead, the same
+        // element address `tryPointerToElement` computes for `&arr[i]`.
+        if (descriptor.isStaticArrayView) {
+            const pointer = staticArrayElementPointer(
+                descriptor.staticArrayOffset, index.e2, index.type,
+                sliceLengthSlot(*descriptor),
+            );
+            auto viewResult = new Operand;
+            *viewResult =
+                storeThroughPointer(pointer, compileSizeConstant(0), rhs);
+            return viewResult;
+        }
+
         const value = compileExpression(rhs);
         const savedDollarLength = _activeDollarLength;
         _activeDollarLength = sliceLengthSlot(*descriptor);
@@ -8354,7 +8907,10 @@ private struct Compiler {
     }
 
     // Locate a static-array element, or null if `index` is not an access into
-    // a known static-array local (so other index forms fall through).
+    // a known static-array local (so other index forms fall through), or a
+    // nested index in the chain (`m[i][2]`'s `i`) is a runtime value that
+    // `locateStaticArrayElement` cannot fold into a compile-time offset
+    // (`tryStaticArrayRuntimeElementAssign` handles that case instead).
     private StaticArrayElement* tryStaticArrayElement(
         IndexExp index,
     ) {
@@ -8362,6 +8918,9 @@ private struct Compiler {
             return null;
 
         if (!indexesStaticArray(index.e1))
+            return null;
+
+        if (staticArrayChainNeedsRuntimeAddress(index))
             return null;
 
         auto result = new StaticArrayElement;
@@ -9197,7 +9756,8 @@ private struct Compiler {
              returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
              returnTy != TY.Tuns64 &&
              returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
-             returnTy != TY.Tpointer && returnTy != TY.Tarray) ||
+             returnTy != TY.Tpointer && returnTy != TY.Tarray &&
+             returnTy != TY.Tstruct) ||
             call.arguments is null || call.arguments.length == 0)
             return null;
 
@@ -9256,8 +9816,13 @@ private struct Compiler {
                 auto parameterList =
                     function_.type.toBasetype.isTypeFunction.parameterList;
                 auto parameter = parameterList[index];
+                // A defaulted `const TypeInfo ti = null` parameter (the
+                // common shape of every `core.memory.GC.*` leaf) has a class
+                // reference type, which is pointer-sized and crosses the FFI
+                // bridge the same way a raw pointer does.
                 if (parameter is null ||
-                    parameter.type.toBasetype.ty != TY.Tpointer)
+                    (parameter.type.toBasetype.ty != TY.Tpointer &&
+                     parameter.type.toBasetype.ty != TY.Tclass))
                     return null;
                 argumentTypes[index] = parameter.type.toBasetype;
                 _code ~= Instruction(
@@ -9363,12 +9928,22 @@ private struct Compiler {
         // scalar tag; it is a 16-byte {ptr, length} slice descriptor, the same
         // shape every other array-typed frame slot uses.
         const isArrayReturn = returnType.toBasetype.ty == TY.Tarray;
-        const returnScalar = isArrayReturn
+        // A struct return (e.g. `GC.qalloc`'s `BlkInfo`, libc's `div_t`) is an
+        // inline block sized and aligned to the struct's own layout, the same
+        // shape every other struct-by-value result uses
+        // (`structBaseOffsetOrMaterialise`).
+        const isStructReturn = returnType.toBasetype.ty == TY.Tstruct;
+        const returnScalar = isArrayReturn || isStructReturn
             ? ScalarType.void_
             : scalarType(returnType.toBasetype);
-        const destination = isArrayReturn
-            ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
-            : allocate(returnScalar);
+        const destination = isStructReturn
+            ? allocateBytes(
+                cast(uint) staticArraySize(returnType),
+                staticArrayAlign(returnType),
+            )
+            : isArrayReturn
+                ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
+                : allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
         _program.nativeCalls ~=
             NativeCall(function_, argumentTypes, outParameterOffsets.dup);
@@ -9458,7 +10033,7 @@ private struct Compiler {
         size_t[] bodyExits;
         auto previousExits = _applyBodyExits;
         _applyBodyExits = &bodyExits;
-        compileStatement(literal.fd.fbody);
+        compileNestedStatement(literal.fd.fbody);
         _applyBodyExits = previousExits;
 
         const one = compileSizeConstant(1);
@@ -10352,7 +10927,7 @@ private struct Compiler {
         size_t[] bodyExits;
         auto previousExits = _applyBodyExits;
         _applyBodyExits = &bodyExits;
-        compileStatement(literal.fd.fbody);
+        compileNestedStatement(literal.fd.fbody);
         _applyBodyExits = previousExits;
 
         const one = compileSizeConstant(1);
@@ -13083,10 +13658,15 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
 }
 
 // A `string` specifically (immutable `char`-element array), excluding
-// `wstring`/`dstring`. `compileStringLiteral` stores all string data as UTF-8
-// bytes regardless of element type, so code that reinterprets those bytes
-// through a pointer (`compileStringPointer`) is only correct for `char`
-// elements.
+// `wstring`/`dstring`. Every string literal is stored in the data segment as
+// UTF-8 bytes regardless of its declared element width
+// (`quickbite.frontend.dmd.string_literals.stringChars`), so code that reads
+// those bytes as `char`-sized code units — the compact-string fast paths
+// (compact slicing, indexing, `.ptr`/`.length`) and anything reinterpreting
+// them through a pointer (`compileStringPointer`) — is only correct for a
+// `char` element; a `wstring`/`dstring`'s length and byte layout would not
+// match its `wchar`/`dchar` element stride, so such values fall through to
+// the general, slower path instead of silently computing wrong offsets.
 private bool isCharStringType(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 

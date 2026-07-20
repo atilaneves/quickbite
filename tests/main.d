@@ -37,6 +37,7 @@ int main(string[] args) {
         "ut.backends.runner.sys.concurrency",
         "ut.backends.runner.sys.cstdlib",
         "ut.backends.runner.sys.file",
+        "ut.backends.runner.sys.gc",
         "ut.backends.runner.sys.random",
         "ut.orc.elf",
         "ut.backends.native.llvm_jit",

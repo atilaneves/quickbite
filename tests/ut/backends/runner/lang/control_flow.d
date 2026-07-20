@@ -146,15 +146,12 @@ static foreach (backend; Matrix!()) {
 // evaluated the `IntegerExp` as a scalar `Value(0)` and clobbered `s`'s
 // boxed struct value with a bare int. The following `s.x = one();` field
 // write then threw ("Expected struct.") from `Value.withStructField`, which
-// requires a `Value.Struct` receiver. `Bytecode` (a separate, actively
-// developed backend) is omitted per the "never pin an in-development
-// backend's refusal" convention: it throws its own unrelated "Unsupported
-// assignment in bytecode core: s = 0" for this shape, not a wrong value.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode " ~
-        "core: s = 0\" for this shape, not a wrong value"),
-)) {
+// requires a `Value.Struct` receiver. The bytecode core hit the same
+// zero-init-blit shape: a struct-typed local's whole-struct assignment
+// dispatch tried to read the `IntegerExp(0)` marker as a struct value via
+// `structBaseOffsetOrMaterialise` instead of recognising it as "zero this
+// block".
+static foreach (backend; Matrix!()) {
     @("function.outStructParameterFieldWriteIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)

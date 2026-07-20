@@ -1079,6 +1079,57 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("staticArray.elementWriteWithRuntimeIndexUpdatesRealArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int index = seed(2);
+                values[index] = 42;
+
+                assert(values[2] == 42);
+                assert(values[0] == 0);
+                assert(values[1] == 0);
+                assert(values[3] == 0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.multipleElementWritesWithRuntimeIndicesAllPersist." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int first = seed(1);
+                int second = seed(3);
+
+                values[first] = 10;
+                values[second] = 20;
+
+                assert(values[0] == 0);
+                assert(values[1] == 10);
+                assert(values[2] == 0);
+                assert(values[3] == 20);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("staticArray.multidimensionalSliceBlockAssignRepeatsRow." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1100,6 +1151,279 @@ static foreach (backend; Matrix!()) {
                 assert(matrix[1][1] == first + 1);
             }
         });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.nestedElementReadWithRuntimeIndicesReadsRealArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                matrix[0][0] = seed(7);
+                matrix[1][2] = seed(9);
+                int i = seed(1);
+                int j = seed(2);
+
+                assert(matrix[i][j] == 9);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.nestedElementWriteWithRuntimeIndexUpdatesRealArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(1);
+                matrix[i][2] = seed(42);
+
+                assert(matrix[1][2] == 42);
+                assert(matrix[0][0] == 0);
+            }
+        });
+    }
+}
+
+// A runtime index past a static array's compile-time-known dimension is
+// bounds checked exactly like a dynamic array's runtime index: compiled
+// code raises druntime's `ArrayIndexError` text. `Ctfe`'s own bounds check
+// uses the divergent backtick-range wording pinned below.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("staticArray.elementWriteWithRuntimeIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int index = seed(7);
+                values[index] = 42;
+            }
+        }).shouldThrowWithMessage(
+            "index [7] is out of bounds for array of length 4",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.elementWriteWithRuntimeIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int index = seed(7);
+                values[index] = 42;
+            }
+        }).shouldThrowWithMessage("array index 7 is out of bounds `[0..4]`");
+    }
+}
+
+// A runtime outer index past a nested static array's dimension is bounds
+// checked the same way, whether the chain is being read or written.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+)) {
+    @("staticArray.nestedElementReadWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(5);
+                int j = seed(1);
+
+                assert(matrix[i][j] == 0);
+            }
+        }).shouldThrowWithMessage(
+            "index [5] is out of bounds for array of length 2",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("staticArray.nestedElementReadWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(5);
+                int j = seed(1);
+
+                assert(matrix[i][j] == 0);
+            }
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..2]`");
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("staticArray.nestedElementWriteWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(5);
+                matrix[i][2] = seed(1);
+            }
+        }).shouldThrowWithMessage(
+            "index [5] is out of bounds for array of length 2",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.nestedElementWriteWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(5);
+                matrix[i][2] = seed(1);
+            }
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..2]`");
+    }
+}
+
+// A runtime inner index past a nested static array's dimension is bounds
+// checked too, independently of the (in-range) outer index.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+)) {
+    @("staticArray.nestedElementReadWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(0);
+                int j = seed(9);
+
+                assert(matrix[i][j] == 0);
+            }
+        }).shouldThrowWithMessage(
+            "index [9] is out of bounds for array of length 3",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("staticArray.nestedElementReadWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(0);
+                int j = seed(9);
+
+                assert(matrix[i][j] == 0);
+            }
+        }).shouldThrowWithMessage("array index 9 is out of bounds `[0..3]`");
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("staticArray.nestedElementWriteWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(0);
+                int j = seed(9);
+                matrix[i][j] = seed(1);
+            }
+        }).shouldThrowWithMessage(
+            "index [9] is out of bounds for array of length 3",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.nestedElementWriteWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] matrix;
+                int i = seed(0);
+                int j = seed(9);
+                matrix[i][j] = seed(1);
+            }
+        }).shouldThrowWithMessage("array index 9 is out of bounds `[0..3]`");
     }
 }
 
@@ -2473,6 +2797,430 @@ static foreach (backend; Matrix!()) {
                 string s = text();
 
                 assert(s.ptr[1] == 0xCE);
+            }
+        });
+    }
+}
+
+
+/++
+    `s[i]` for a `string` local reads the code unit directly (without going
+    through `.ptr` first), matching the compiled-D oracle.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringIndexReadsElementAtRuntimeIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string s = "hello";
+                int index = seed(1);
+
+                assert(s[index] == 'e');
+                assert(s[0] == 'h');
+            }
+        });
+    }
+}
+
+
+/++
+    `.ptr` of a `string` sub-slice (`a[lo .. hi]`) reads the sliced region, not
+    a wild address: the sub-slice descriptor must resolve to a real pointer
+    into the original string's backing data, offset by `lo`.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringSubSlicePointerReadsSlicedByte." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string a = "abcdef";
+                string b = a[seed(1) .. seed(3)];
+                immutable(char)* p = b.ptr;
+
+                assert(b.length == 2);
+                assert(p[0] == 'b');
+                assert(b[0] == 'b');
+            }
+        });
+    }
+}
+
+
+// An inverted sub-slice (`a[lo .. hi]` with `lo > hi`) must throw before a
+// length is formed: computing `hi - lo` as an unsigned length silently wraps
+// to a huge value instead of raising the bounds error compiled D raises.
+// `Ctfe` and `Interpreter` are pinned separately below with their own
+// divergent wording (confirmed via `bin/qb`, not guessed).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe's own compile-time bounds check reports " ~
+        "\"slice `[4..2]` exceeds array bounds `[0..6]`\"; see sibling pin below"),
+    Omit!(Interpreter, Because.diverges,
+        "Interpreter's sub-slice construction path raises druntime's plain " ~
+        "\"Range violation\"; see sibling pin below"),
+)) {
+    @("dynamicArray.stringSubSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string a = "abcdef";
+                string b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage(
+            "slice [4 .. 2] has a larger lower index than upper index",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("dynamicArray.stringSubSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string a = "abcdef";
+                string b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage(
+            "slice `[4..2]` exceeds array bounds `[0..6]`",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("dynamicArray.stringSubSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string a = "abcdef";
+                string b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage("Range violation");
+    }
+}
+
+// Same inverted-bounds invariant, exercised through the general dynamic-array
+// sub-slice path (`subSlice4`/`validateSubSlice`) rather than the compact
+// string descriptor path (`stringSubSlice`/`validateCompactSubSlice`) above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe's own compile-time bounds check reports " ~
+        "\"slice `[4..2]` exceeds array bounds `[0..6]`\"; see sibling pin below"),
+    Omit!(Interpreter, Because.diverges,
+        "Interpreter's sub-slice construction path raises druntime's plain " ~
+        "\"Range violation\"; see sibling pin below"),
+)) {
+    @("dynamicArray.subSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[] a = [1, 2, 3, 4, 5, 6];
+                int[] b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage(
+            "slice [4 .. 2] has a larger lower index than upper index",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("dynamicArray.subSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[] a = [1, 2, 3, 4, 5, 6];
+                int[] b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage(
+            "slice `[4..2]` exceeds array bounds `[0..6]`",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("dynamicArray.subSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[] a = [1, 2, 3, 4, 5, 6];
+                int[] b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage("Range violation");
+    }
+}
+
+
+/++
+    Plain reassignment of an already-declared `string` local from another
+    `string` local (`b = a;`) must copy the full slice descriptor. A `string`
+    local's slot holds a compact 8-byte {dataOffset, length} descriptor, which
+    the scalar type mapping reports as size 0, so a naive scalar-sized copy
+    would silently write nothing and leave `b` unchanged.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringLocalReassignmentFromVariableCopiesDescriptor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string greeting() {
+                return "hello";
+            }
+
+            unittest {
+                string a = greeting();
+                string b = "x";
+                b = a;
+
+                assert(b.length == 5);
+                assert(b[0] == 'h');
+            }
+        });
+    }
+}
+
+
+/++
+    Plain reassignment of an already-declared `string` local from a string
+    literal (`b = "hello";`) exercises the same reassignment path with a
+    literal right-hand side rather than a variable read.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringLocalReassignmentFromLiteralCopiesDescriptor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string placeholder(string value) {
+                return value;
+            }
+
+            unittest {
+                string b = placeholder("x");
+                b = "hello";
+
+                assert(b.length == 5);
+                assert(b[0] == 'h');
+            }
+        });
+    }
+}
+
+
+/++
+    Plain reassignment of an already-declared `string` local from a sub-slice
+    of another `string` local (`b = a[lo .. hi];`) exercises the same
+    reassignment path with a compact-descriptor sub-slice right-hand side.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringLocalReassignmentFromSubSliceCopiesDescriptor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string source() {
+                return "abcdef";
+            }
+
+            unittest {
+                string a = source();
+                string b = "x";
+                int lo = 1;
+                int hi = 3;
+                b = a[lo .. hi];
+
+                assert(b.length == 2);
+                assert(b[0] == 'b');
+            }
+        });
+    }
+}
+
+/++
+    A sub-slice of a heap-backed `string` (produced by `.idup`, not a
+    data-segment literal) reads the sliced bytes and length from the source's
+    real heap block rather than from a compact {dataOffset, length}
+    descriptor built from the wrong operand width.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.heapBackedStringSubSliceReadsSlicedBytesAndLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char letter(int index) {
+                return cast(char) ('a' + index);
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[] source = [
+                    letter(0), letter(1), letter(2),
+                    letter(3), letter(4), letter(5),
+                ];
+                string a = source.idup;
+                string b = a[seed(1) .. seed(3)];
+
+                assert(b.length == 2);
+                assert(b[0] == 'b');
+                assert(b[1] == 'c');
+            }
+        });
+    }
+}
+
+/++
+    Reassigning an already-declared, compact-descriptor `string` local
+    (`b = "x";`) from a heap-backed `string` source (`.idup`) must copy the
+    full 16-byte {ptr, length} descriptor, not the compact 8-byte width,
+    which would only copy the source's low pointer bytes.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceCopiesDescriptor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char letter(int index) {
+                return cast(char) ('a' + index);
+            }
+
+            unittest {
+                char[] source = [
+                    letter(0), letter(1), letter(2),
+                    letter(3), letter(4), letter(5),
+                ];
+                string a = source.idup;
+                string b = "x";
+                b = a;
+
+                assert(b.length == 6);
+                assert(b[0] == 'a');
+                assert(b[5] == 'f');
+            }
+        });
+    }
+}
+
+/++
+    Reassigning a compact-descriptor `string` local from a heap-backed source
+    inside an untaken `if` branch must not touch `b`: the branch never runs.
++/
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "reassigning a compact string local from a heap-backed source " ~
+        "inside a conditional refuses rather than rebind past a lexical " ~
+        "point that does not dominate every later read"),
+)) {
+    @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInConditionalLeavesUntakenBranchUnchanged." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char letter(int index) {
+                return cast(char) ('a' + index);
+            }
+
+            bool never() {
+                return false;
+            }
+
+            unittest {
+                char[] source = [letter(0), letter(1)];
+                string a = source.idup;
+                string b = "x";
+                if (never())
+                    b = a;
+
+                assert(b.length == 1);
+                assert(b[0] == 'x');
+            }
+        });
+    }
+}
+
+/++
+    Reassigning a compact-descriptor `string` local from a heap-backed source
+    inside a loop body must observe each iteration's own reassignment, not the
+    value the local held before the loop started.
++/
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "reassigning a compact string local from a heap-backed source " ~
+        "inside a loop body refuses rather than rebind past a lexical " ~
+        "point that does not dominate every later read"),
+)) {
+    @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInLoopUpdatesEachIteration." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char letter(int index) {
+                return cast(char) ('a' + index);
+            }
+
+            unittest {
+                char[] source = [letter(0), letter(1)];
+                string a = source.idup;
+                string b = "x";
+                ulong firstLength = 99;
+                ulong secondLength = 99;
+
+                foreach (i; 0 .. 2) {
+                    if (i == 0)
+                        firstLength = b.length;
+                    else
+                        secondLength = b.length;
+                    b = a;
+                }
+
+                assert(firstLength == 1);
+                assert(secondLength == 2);
             }
         });
     }
