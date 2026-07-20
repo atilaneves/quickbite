@@ -9777,7 +9777,7 @@ private struct Compiler {
              returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
              returnTy != TY.Tpointer && returnTy != TY.Tarray &&
              returnTy != TY.Tstruct) ||
-            call.arguments is null || call.arguments.length == 0)
+            call.arguments is null)
             return null;
 
         const argumentArea = allocateNativeArgumentArea(call.arguments.length);

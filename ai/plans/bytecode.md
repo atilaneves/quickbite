@@ -439,7 +439,8 @@ changed:
 4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
 5. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: the
-   `__errno_location` host entropy FFI boundary.
+   host-entropy path; after its source-less `__errno_location` leaf, it
+   reaches a sub-slice with an unhandled element size.
 6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 

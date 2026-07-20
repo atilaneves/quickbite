@@ -79,6 +79,27 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `__errno_location` has no source body and returns a native `ref int`.
+enum errnoLocationSource = q{
+    unittest {
+        import core.stdc.errno: __errno_location;
+
+        const value = __errno_location;
+
+        assert(value >= 0);
+    }
+};
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call the host errno accessor"),
+)) {
+    @("errnoLocation.value." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(errnoLocationSource);
+    }
+}
+
 enum strtolSource = q{
     unittest {
         import core.stdc.stdlib: strtol;
