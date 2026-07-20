@@ -318,53 +318,23 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   acceptable handoff noise.
 - `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is the one
   remaining red enabled row (`std.conv.text` rendering a `ubyte[]` into an
-  exception message through `std.array.Appender`). Struct-by-value native
-  returns now work in general (`tryCompileNativeCall`'s return-type gate
-  accepts `TY.Tstruct`; `emitNativeCall` allocates the destination at the
-  struct's own size/alignment, the same shape a non-native struct-by-value
-  call result already uses, see `structBaseOffsetOrMaterialise`;
-  `BytecodeNativeMarshaller` (`backends/bytecode/core/machine.d`) hands
-  libffi the destination frame slot directly as the struct's own resultAddress
-  rather than the narrow-scalar padded-buffer path), so `GC.qalloc`'s
-  `BlkInfo` return compiles and `GC.extend`/`GC.qalloc` no longer block the
-  row. The nested-function `this`-receiver capture described under Closures
-  landed (`capturedThisStructDeclaration` now recognises any nested function
-  with a `vthis`, not only `FuncLiteralDeclaration`, and
-  `methodReceiverOffset` has a receiver branch for a direct unqualified call
-  whose callee is a plain `VarExp` naming such a function), so
-  `std.array.Appender.reserve`'s block-extend path (a plain nested named
-  function reading `this`) no longer throws "Unsupported expression in
-  bytecode core: this". `DivAssignExp`/`ModAssignExp` (`x /= y`, `x %= y`)
-  are now wired (`compileDivOrModCompoundAssign`), picking the
-  signed-vs-unsigned opcode from the operation's own type — DMD's usual-
-  arithmetic-conversion result, read off `assign.e1.type` where DMD wraps the
-  lvalue in a conversion cast, not the lvalue's own declared type, since a
-  signed lvalue combined with an unsigned operand divides/mods as unsigned
-  (`divUnsignedInt8`/`modUnsignedInt8` for `ulong`, `divInt8`/`modInt8` for
-  `long`, `divUnsignedInt4`/`modUnsignedInt4` for `uint`, `divInt4`/`modInt4`
-  otherwise).
-  4-byte unsigned (`uint`) addition is also fixed: the narrow-int addition
-  fallback now routes through `compileInt4BinaryResult` with the expression's
-  own scalar type instead of hardcoding a signed `int` result, matching its
-  `or`/`and`/`xor` siblings. The row is now blocked on inlining a void IIFE
-  whose body is a single expression statement (Phobos's common
-  `(() @trusted { ... })()` escape idiom, e.g. `std.array.Appender`'s
+  exception message through `std.array.Appender`). The row is blocked on
+  inlining a void IIFE whose body is a single expression statement (Phobos's
+  common `(() @trusted { ... })()` escape idiom, e.g. `std.array.Appender`'s
   `() @trusted { memcpy(bi.base, ...); }()` growth-copy in `ensureAddable`),
-  the same way a single-`return` IIFE already inlines; reproduces standalone
-  as `std.conv.text` with two or more arguments of any type (minimal:
-  `text("a", someUlongLocal)`), surfacing as "Unsupported variable in
-  bytecode core: bi". A spike of that inlining (mirroring
-  `immediateLambdaReturn`/`singleReturnExpression` for a bare
-  `ExpStatement` instead of a `ReturnStatement`) does make that diagnostic
-  disappear, but it uncovers the next gap immediately rather than fixing the
-  row: an out-of-bounds `copySlice` (`backends/bytecode/core/machine.d:2542`)
-  segfaults the whole process while `Appender.put` assigns into the buffer
-  `ensureAddable` just grew, reachable with the same `text("a", ulongLocal)`
-  repro. Landing the void-IIFE inlining alone is not safe to commit on its
-  own: it turns this row's failure from a caught exception (tolerated as
-  "failing as expected") into a process-terminating `SIGSEGV`, which would
-  crash any `bin/ut --random` run that reaches this row. The two fixes need
-  to land together — void-IIFE inlining plus whatever produces the bad
+  the same way a single-`return` IIFE already inlines (mirroring
+  `immediateLambdaReturn`/`singleReturnExpression` for a bare `ExpStatement`
+  instead of a `ReturnStatement`); reproduces standalone as `std.conv.text`
+  with two or more arguments of any type (minimal: `text("a",
+  someUlongLocal)`), surfacing as "Unsupported variable in bytecode core:
+  bi". Inlining that IIFE alone is not safe to land on its own: it turns
+  this row's failure from a caught exception (tolerated as "failing as
+  expected") into a process-terminating `SIGSEGV` — an out-of-bounds
+  `copySlice` (the slice-copy helper in `backends/bytecode/core/machine.d`)
+  while `Appender.put` assigns into the buffer `ensureAddable` just grew,
+  reachable with the same `text("a", ulongLocal)` repro — which would crash
+  any `bin/ut --random` run that reaches this row. The two fixes need to
+  land together — void-IIFE inlining plus whatever produces the bad
   destination length `copySlice` reads.
 
   Instrumenting the live descriptor bytes (temporarily; not landed) at the
@@ -418,18 +388,8 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   computed before entering the nested call instead of materialising a fresh
   one inside it, and fix that specific site rather than the general
   {ptr, length} bridge-swap flip (ruled out above as this crash's cause).
-- Landing struct-by-value native returns exposed a latent cache bug in the
-  shared FFI layer (`ffi/core.d`'s `callViaLibffi`): on a `cachedNativeCif`
-  hit, the return buffer's size was read from the current call's freshly
-  built (never `ffi_prep_cif`-ed) `ffi_type`, not the cached, already-prepped
-  one (`preparedReturnFfi`); a struct return's size defaults to zero until
-  prepped, so any call after the one that populated the cache undersized its
-  return buffer. This is backend-agnostic (the cache is keyed by
-  `FuncDeclaration`, shared process-wide across every backend), and was only
-  ever latent because no marshaller drove a struct return through the cached
-  path more than once until Bytecode started calling `div`/`ldiv`/`GC.qalloc`
-  alongside the Interpreter/SystemLinker/LLVMJit tests that already did.
-  Fixed by sizing the buffer from `preparedReturnFfi` instead.
+- A shared FFI layer struct-return cache-sizing bug (`ffi/core.d`'s
+  `callViaLibffi`) is fixed; cross-track FFI work, see `ffi.md` §34.7.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
