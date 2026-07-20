@@ -1966,6 +1966,39 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A nested union in the first member initializes the outer union's shared
+// block from its own first-member default bits. Its scalar sibling therefore
+// sees the nested float's NaN representation instead of an independent zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this nested-union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromNestedUnionFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union Payload {
+                float value;
+                int bits;
+            }
+
+            union U {
+                Payload payload;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
 // A nested scalar-leaf static array in the first union member initializes
 // the same overlapping block as its one-level counterpart. Its first float's
 // default NaN bits are therefore visible through the untouched scalar sibling.

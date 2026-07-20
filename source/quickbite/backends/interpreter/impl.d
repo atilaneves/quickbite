@@ -10183,17 +10183,19 @@ private struct Walker {
     // `false` (leaving `value` untouched) for index 0 itself, a non-union
     // literal, a sibling that
     // is none of those supported shapes, or a first member that is neither
-    // `isNativeScalarType`, a plain (non-union) struct, nor a
+    // `isNativeScalarType`, a struct/union, nor a
     // scalar-leaf static array -- so the caller's existing independent-
     // `defaultValue` fallback applies unchanged in every other case,
     // including the still-open gap for a class first member/sibling. When
-    // the first member is a struct, reuses `withUnionFieldWrite`'s own
+    // the first member is a struct or union, reuses `withUnionFieldWrite`'s own
     // `writeStructCellScalarFields` idiom to seed the transient cell's
     // shared bytes from the first member's already-resolved struct value
     // (scalar leaves only, recursing through nested structs/scalar-leaf
     // arrays exactly as that helper already does) before reading the sibling
-    // back out. A union sibling uses that same reader: each supported field
-    // is independently reconstructed from the one overlapping block.
+    // back out. A nested union's boxed fields already agree on those bytes
+    // through this same default reconstruction. A union sibling uses that
+    // same reader: each supported field is independently reconstructed from
+    // the one overlapping block.
     private bool unionSiblingDefaultFieldValue(
         imported!"dmd.expression".StructLiteralExp literal,
         in size_t index,
@@ -10226,8 +10228,7 @@ private struct Walker {
 
         const firstFieldScalar = isNativeScalarType(firstField.type);
         auto firstFieldStructType = firstField.type.toBasetype.isTypeStruct;
-        const firstFieldStruct = firstFieldStructType !is null
-            && firstFieldStructType.sym.isUnionDeclaration is null;
+        const firstFieldStruct = firstFieldStructType !is null;
         const firstFieldArray = isScalarLeafStaticArray(firstField.type)
             && fieldsSoFar[0].isArray;
 
