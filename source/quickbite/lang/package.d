@@ -81,8 +81,9 @@ public struct Value {
         in string[] typeNames,
         in string[] fieldNames,
         in Value[] fields,
+        in size_t identity = 0,
     ) @safe pure {
-        return Value(ClassObject(typeName, typeNames, fieldNames, fields));
+        return Value(ClassObject(typeName, typeNames, fieldNames, fields, identity));
     }
 
     public static Value arrayValue(in Value[] elements) @safe pure {
@@ -1379,6 +1380,18 @@ public struct Value {
         );
     }
 
+    public size_t classIdentity() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) => object.identity,
+            (_) {
+                throw new Exception("Expected class object.");
+                return 0;
+            },
+        );
+    }
+
     public Value classFieldNamed(in string name) const @safe pure {
         import std.sumtype: match;
 
@@ -1453,6 +1466,7 @@ public struct Value {
                     object.typeNames,
                     object.fieldNames,
                     values,
+                    object.identity,
                 );
             },
             (_) {
@@ -1489,6 +1503,7 @@ public struct Value {
                     object.typeNames,
                     object.fieldNames,
                     values,
+                    object.identity,
                 );
             },
             (_) {
@@ -1517,6 +1532,7 @@ public struct Value {
                     object.typeNames,
                     fieldNames,
                     values,
+                    object.identity,
                 );
             },
             (_) {
@@ -2226,16 +2242,19 @@ private struct ClassObject {
     public string[] typeNames;
     public Field[] fields;
     public string[] fieldNames;
+    public size_t identity;
 
     public this(
         in string typeName,
         in string[] typeNames,
         in string[] fieldNames,
         in Value[] fields,
+        in size_t identity,
     ) @safe pure {
         this.typeName = typeName;
         this.typeNames = typeNames.dup;
         this.fieldNames = fieldNames.dup;
+        this.identity = identity;
 
         foreach (index, field; fields) {
             const name = index < fieldNames.length ? fieldNames[index] : "";

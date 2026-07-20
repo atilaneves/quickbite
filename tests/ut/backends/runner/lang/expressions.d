@@ -2343,6 +2343,36 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class object reached through a class-typed field keeps one identity when
+// copied into a local. Promoting storage through the local must therefore make
+// the write visible through the original field reference too.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.fieldObjectCopiedToLocalSharesAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                Parent parent = new Parent();
+                parent.child = new Child();
+                Child child = parent.child;
+                int* pointer = &child.x;
+                *pointer = 99;
+                assert(parent.child.x == 99);
+            }
+        });
+    }
+}
+
 // Two ref class parameters bound from the same plain variable denote the same
 // reference slot, so taking either parameter's address must produce equal
 // pointers.

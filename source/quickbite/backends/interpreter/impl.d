@@ -273,14 +273,14 @@ private struct Walker {
     // `Type.size` is a reference's pointer width, not the object body's
     // size, so the block is sized by summing this narrow slice's own
     // (offset + typeByteSize) over `layout.classFields`, not `NativeStruct.
-    // allocate`'s `TypeStruct`-only sizing. Only the address-taken field(s)
-    // of a plain (non-dataseg) class LOCAL are covered; every other field
-    // access (a second reference to the SAME object, a field reached
-    // through `this`, `new`-returned pointers, or any object not bound to
-    // its own bare local) is untouched and keeps using the existing boxed
-    // `locals` path -- this slice does not model class reference identity,
-    // only the one-local case `structCells` models for structs.
+    // allocate`'s `TypeStruct`-only sizing. This map caches the
+    // identity-owned block below for bindings that need variable reverse
+    // lookup; it does not own object storage.
     private NativeBlock[VarDeclaration] classCells;
+    // Class object bodies are owned by object identity. `classCells` is only
+    // a binding cache into this table; rebinding a variable drops that cache
+    // without destroying storage still reachable through another reference.
+    private NativeBlock[size_t] classObjectCells;
 
     // Common reverse lookup from a field pointer's allocation id to its root
     // variable and DMD field-index path. Direct scalar struct and class fields
@@ -288,9 +288,9 @@ private struct Walker {
     // changing this representation.
     private FieldPathKey[size_t] fieldPointerPaths;
     // A class-field pointer remains attached to the object after the variable
-    // used to reach it is rebound. Retain that object's cell by allocation id
-    // instead of resolving storage through the current variable binding.
-    private NativeBlock[size_t] classFieldPointerCells;
+    // used to reach it is rebound. Index its object identity by allocation id
+    // instead of retaining another storage handle.
+    private size_t[size_t] classFieldPointerObjectIds;
 
     // Set by `writeThroughClassFieldPointer` for the receiver variable it
     // wrote into, the class sibling of `structFieldPointerWritebacks`: a
@@ -381,6 +381,7 @@ private struct Walker {
     private FuncDeclaration[size_t] functionPointers;
     private size_t[FuncDeclaration] functionPointerIds;
     private size_t nextFunctionPointerId;
+    private size_t nextClassObjectId;
     private RuntimeDelegate[size_t] delegates;
     private imported!"quickbite.backends.interpreter.ffi_marshal".
         InterpreterInboundTrampolineSession* durableInboundSession;
@@ -2213,8 +2214,10 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
+        child.classObjectCells = classObjectCells.dup;
+        child.nextClassObjectId = nextClassObjectId;
         child.fieldPointerPaths = fieldPointerPaths.dup;
-        child.classFieldPointerCells = classFieldPointerCells.dup;
+        child.classFieldPointerObjectIds = classFieldPointerObjectIds.dup;
         child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
         child.nestedClassStructFieldPointerWritebacks =
             nestedClassStructFieldPointerWritebacks.dup;
@@ -2908,6 +2911,15 @@ private struct Walker {
         if (!current.isClassObject)
             return;
 
+        const identity = current.classIdentity;
+        if (identity == 0)
+            return;
+
+        if (auto existing = identity in classObjectCells) {
+            classCells[variable] = *existing;
+            return;
+        }
+
         size_t byteSize;
         foreach (field; classFields(classType.sym)) {
             const end = fieldByteOffset(field) + typeByteSize(field.type);
@@ -2917,6 +2929,7 @@ private struct Walker {
 
         auto cell = NativeBlock.allocate(byteSize, NativeBlock.Scan.conservative);
         writeClassCellScalarFields(cell, classType.sym, current);
+        classObjectCells[identity] = cell;
         classCells[variable] = cell;
     }
 
@@ -3018,8 +3031,12 @@ private struct Walker {
                 continue;
 
             promoteClassCell(sourceVariable);
-            if (auto cell = sourceVariable in classCells)
+            if (auto cell = sourceVariable in classCells) {
                 child.classCells[parameter] = *cell;
+                auto sourceValue = sourceVariable in locals;
+                if (sourceValue !is null && sourceValue.isClassObject)
+                    child.classObjectCells[sourceValue.classIdentity] = *cell;
+            }
         }
     }
 
@@ -3066,8 +3083,12 @@ private struct Walker {
                     child.structCells[parameter] = *cell;
             } else if (isClass) {
                 promoteClassCell(source);
-                if (auto cell = source in classCells)
+                if (auto cell = source in classCells) {
                     child.classCells[parameter] = *cell;
+                    auto sourceValue = source in locals;
+                    if (sourceValue !is null && sourceValue.isClassObject)
+                        child.classObjectCells[sourceValue.classIdentity] = *cell;
+                }
             }
 
             const pointerId = localPointerValue(source).localPointerId;
@@ -3262,8 +3283,12 @@ private struct Walker {
             return;
 
         promoteClassCell(sourceVariable);
-        if (auto cell = sourceVariable in classCells)
+        if (auto cell = sourceVariable in classCells) {
             child.classCells[vthis] = *cell;
+            auto sourceValue = sourceVariable in locals;
+            if (sourceValue !is null && sourceValue.isClassObject)
+                child.classObjectCells[sourceValue.classIdentity] = *cell;
+        }
     }
 
     // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
@@ -3404,7 +3429,7 @@ private struct Walker {
             return;
 
         fieldPointerPaths[id] = directFieldPathKey(variable, classFieldIndex(dot));
-        classFieldPointerCells[id] = classCells[variable];
+        classFieldPointerObjectIds[id] = locals[variable].classIdentity;
     }
 
     // Class-receiver sibling of `promoteNestedStructFieldCell` (aggregate
@@ -3776,7 +3801,7 @@ private struct Walker {
 
         foreach (id; staleFieldIds) {
             fieldPointerPaths.remove(id);
-            classFieldPointerCells.remove(id);
+            classFieldPointerObjectIds.remove(id);
         }
 
         size_t[] staleArrayFieldIds;
@@ -5645,6 +5670,7 @@ private struct Walker {
         nextLocalPointerId = child.nextLocalPointerId;
         mergeReturnedLocalPointer(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
+        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
@@ -5676,6 +5702,7 @@ private struct Walker {
         nextLocalPointerId = child.nextLocalPointerId;
         mergeReturnedLocalPointer(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
+        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
@@ -5703,6 +5730,8 @@ private struct Walker {
     }
 
     private void mergePerFrameCellsFrom(ref Walker child) {
+        foreach (identity, cell; child.classObjectCells)
+            classObjectCells[identity] = cell;
         allocationCount = child.allocationCount;
         arrayAllocationAliases = child.arrayAllocationAliases;
         mergeArrayAllocationMaps(child);
@@ -5797,8 +5826,8 @@ private struct Walker {
                     continue;
 
             fieldPointerPaths[id] = path;
-            if (auto cell = id in child.classFieldPointerCells)
-                classFieldPointerCells[id] = *cell;
+            if (auto identity = id in child.classFieldPointerObjectIds)
+                classFieldPointerObjectIds[id] = *identity;
         }
     }
 
@@ -7292,15 +7321,14 @@ private struct Walker {
         imported!"dmd.expression".Expression receiverExpression,
         in Value boxedValue,
     ) {
-        auto variable = classCellKeyVariable(receiverExpression);
-        if (variable is null)
+        if (!boxedValue.isClassObject)
             return boxedValue;
 
-        auto cell = variable in classCells;
+        auto cell = boxedValue.classIdentity in classObjectCells;
         if (cell is null)
             return boxedValue;
 
-        auto classType = variable.type.toBasetype.isTypeClass;
+        auto classType = receiverExpression.type.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             return boxedValue;
 
@@ -7337,15 +7365,14 @@ private struct Walker {
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
 
-        auto variable = classCellKeyVariable(receiverExpression);
-        if (variable is null)
+        if (!target.isClassObject)
             return false;
 
-        auto cell = variable in classCells;
+        auto cell = target.classIdentity in classObjectCells;
         if (cell is null)
             return false;
 
-        auto classType = variable.type.toBasetype.isTypeClass;
+        auto classType = receiverExpression.type.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             return false;
 
@@ -8401,7 +8428,11 @@ private struct Walker {
 
         auto variable = path.root;
 
-        auto cell = pointer.pointerAllocation in classFieldPointerCells;
+        auto identity = pointer.pointerAllocation in classFieldPointerObjectIds;
+        if (identity is null)
+            return false;
+
+        auto cell = *identity in classObjectCells;
         if (cell is null)
             return false;
 
@@ -8592,15 +8623,15 @@ private struct Walker {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
 
-        auto variable = classCellKeyVariable(receiverExpression);
-        if (variable is null)
+        const receiver = runExpression(receiverExpression);
+        if (!receiver.isClassObject)
             return;
 
-        auto cell = variable in classCells;
+        auto cell = receiver.classIdentity in classObjectCells;
         if (cell is null)
             return;
 
-        auto classType = variable.type.toBasetype.isTypeClass;
+        auto classType = receiverExpression.type.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             return;
 
@@ -10467,7 +10498,11 @@ private struct Walker {
 
         auto variable = path.root;
 
-        auto cell = pointer.pointerAllocation in classFieldPointerCells;
+        auto identity = pointer.pointerAllocation in classFieldPointerObjectIds;
+        if (identity is null)
+            return false;
+
+        auto cell = *identity in classObjectCells;
         if (cell is null)
             return false;
 
@@ -11018,7 +11053,7 @@ private struct Walker {
             foreach (argument; *new_.arguments)
                 arguments ~= runExpression(argument);
 
-        auto object = classDefaultValue(classType.sym);
+        auto object = classDefaultValue(classType.sym, ++nextClassObjectId);
         if (new_.member is null)
             return object;
 
@@ -11045,6 +11080,7 @@ private struct Walker {
         child.runStatement(new_.member.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
         nextFunctionPointerId = child.nextFunctionPointerId;
+        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
@@ -11836,6 +11872,7 @@ private imported!"quickbite.lang".Value nativeConstructorReceiver(
 
 private imported!"quickbite.lang".Value classDefaultValue(
     imported!"dmd.dclass".ClassDeclaration class_,
+    in size_t identity = 0,
 ) {
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
@@ -11853,6 +11890,7 @@ private imported!"quickbite.lang".Value classDefaultValue(
         classTypeNames(class_),
         fieldNames,
         fields,
+        identity,
     );
 }
 

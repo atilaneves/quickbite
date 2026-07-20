@@ -29,6 +29,8 @@ stand:
   fields of the same shapes plus scalar-element dynamic-array fields and
   class reference identity through
   same-frame, argument, and `this` aliasing, whole-value class reads, and
+  class objects copied from class-typed fields into locals, with promoted
+  storage owned by object identity rather than by either binding,
   scalar-field pointers that survive a reference rebind, including direct
   scalar-field `ref` locals with the same address identity; plain `ref` class
   locals with source/alias address identity and assignment through the alias;
@@ -40,10 +42,10 @@ stand:
   whole-value assignment through an alias when the source has a promoted
   nested-array cell;
   and union member overlap, including default-init reinterpretation.
-- Invalidation is detach-on-rebind: a rebind drops the variable's cell and
-  pointer-id memo; only a same-storage mutation refreshes that binding in
-  place. A scalar class-field pointer separately retains the old object cell
-  under its own allocation id.
+- Invalidation is detach-on-rebind: a rebind drops the variable's cell cache
+  and pointer-id memo; only a same-storage mutation refreshes that binding in
+  place. Class object cells remain owned by stable object identity, and a
+  scalar class-field pointer retains that identity across a reference rebind.
 - Still boxed: a local's authoritative storage itself
   (`locals[VarDeclaration]` remains `Value`-keyed; cells exist only for
   the shapes above), whole-value reads of aliased structs and arrays outside
@@ -385,10 +387,12 @@ a checked fact; do not relearn them.
   derived-typed `this` reads out of bounds (a real bug under virtual
   dispatch). Skip `this`-aliasing on any static-class mismatch; the
   override body falls back to its boxed receiver.
-- A scalar class-field pointer retains the promoted object cell under its
-  allocation id. Rebinding the variable used to obtain the pointer detaches
-  that variable from the cell but does not invalidate the pointer; only a
-  fresh binding may discard the allocation-id entry. The variable remains
+- A promoted class body is keyed by the stable identity carried by every
+  boxed reference to that object. Variable-keyed class-cell entries are only
+  binding caches; fork and merge preserve the identity-owned table, while a
+  rebind detaches only the cache. A scalar class-field pointer records the
+  object's identity under its allocation id, so rebinding the variable used
+  to obtain it does not invalidate the pointer. The variable remains
   reverse-lookup metadata, not the pointer's storage authority.
 - Only true stack locals get cells. Dataseg variables (`__gshared`,
   `static`, module-level) never do: a cell seeded from the default value
@@ -777,9 +781,9 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    - Structural gaps needing a design, not surgery: per-activation cell
      keying (all cell maps key on `VarDeclaration`, so recursive
      activations of the same function share one cell — a real
-     divergence); object-identity-scoped class cells beyond scalar-field
-     pointers (nested-struct and static-array field pointers still follow
-     the variable slot after a reference rebind); and `ref`-parameter address
+     divergence); nested-struct and static-array class-field pointers still
+     follow the variable slot after a reference rebind rather than retaining
+     object identity; and `ref`-parameter address
      identity outside repeated plain-variable `ref` aggregate arguments
      (structs, classes, and static arrays) and direct scalar aggregate fields
      reached repeatedly or through a struct source/ref alias, which share
