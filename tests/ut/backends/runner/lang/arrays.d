@@ -22,12 +22,37 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// An array allocation identity uses one allocation-base coordinate across
+// frames: a returned cast of an interior parameter must retain that interior
+// offset rather than being rebound to the caller's whole allocation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.returnedCastOfInteriorParameterPreservesOffset." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte[] view(byte[] values) {
+                return cast(ubyte[]) values;
+            }
+
+            unittest {
+                byte runtime = 1;
+                byte[] a = [runtime, cast(byte) 2];
+                ubyte[] whole = cast(ubyte[]) a;
+                byte[] s = a[1 .. 2];
+                ubyte[] b = view(s);
+                b[0] = 9;
+
+                assert(a[0] == 1);
+                assert(a[1] == 9);
+            }
+        });
+    }
+}
+
 // Reinterpreting a signed-byte slice as `ubyte[]` exposes its stored bits,
 // rather than converting each signed value.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "native-layout/value-representation frontier (ai/plans/value.md); no raw byte view of array storage"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.castSignedBytesToUbytesPreservesRawBits." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -47,6 +72,216 @@ static foreach (backend; Matrix!(
                 assert(raw[2] == cast(ubyte) 254);
                 assert(raw[3] == cast(ubyte) 5);
                 assert(raw[4] == cast(ubyte) 252);
+            }
+        });
+    }
+}
+
+// A same-width scalar array cast is a view over the source storage, so a
+// write through the cast result is visible through the source slice.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte[] signed = [1];
+                ubyte[] raw = cast(ubyte[]) signed;
+                raw[0] = 2;
+
+                assert(signed[0] == 2);
+            }
+        });
+    }
+}
+
+// Assignment of a same-width scalar array cast preserves the same storage
+// aliasing as declaration initialization.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.assignedSameWidthScalarCastPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte runtime = 1;
+                byte[] a = [runtime];
+                ubyte[] b;
+                b = cast(ubyte[]) a;
+                b[0] = 2;
+
+                assert(a[0] == 2);
+            }
+        });
+    }
+}
+
+// Rebinding the source of a same-width scalar-array view must not detach the
+// still-live view from the storage it captured before that rebind.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastSurvivesSourceRebind." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 2;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first];
+                ubyte[] b = cast(ubyte[]) a;
+                a = [cast(byte) 3];
+                mutate(b);
+
+                assert(b[0] == 2);
+                assert(a[0] == 3);
+            }
+        });
+    }
+}
+
+// Rebinding a cast-view variable gives that binding a new allocation identity;
+// a later cast of the rebound variable must not redirect surviving aliases of
+// the old allocation to the new storage.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.reboundSameWidthScalarCastDoesNotRedirectOldAliases." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 9;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first];
+                ubyte[] b = cast(ubyte[]) a;
+                ubyte[] c = b;
+                b = [cast(ubyte) 3];
+                byte[] d = cast(byte[]) b;
+                mutate(c);
+
+                assert(a[0] == 9);
+                assert(b[0] == 3);
+                assert(c[0] == 9);
+                assert(d[0] == 3);
+            }
+        });
+    }
+}
+
+// Passing an unbound same-width scalar array cast directly as a slice
+// argument preserves the source storage alias.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastArgumentPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 2;
+            }
+
+            unittest {
+                byte runtime = 1;
+                byte[] values = [runtime];
+                mutate(cast(ubyte[]) values);
+
+                assert(values[0] == 2);
+            }
+        });
+    }
+}
+
+// Passing an interior slice of a same-width scalar-array view preserves that
+// slice's offset and length instead of rebinding the callee to the whole
+// source allocation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.interiorSameWidthScalarCastSliceArgumentPreservesBounds." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void mutate(ubyte[] values) {
+                values[0] = 9;
+            }
+
+            unittest {
+                byte first = 1;
+                byte[] a = [first, cast(byte) 2];
+                ubyte[] b = cast(ubyte[]) a;
+                ubyte[] c = b[1 .. 2];
+                mutate(c);
+
+                assert(a[0] == 1);
+                assert(a[1] == 9);
+            }
+        });
+    }
+}
+
+// Returning an unbound same-width scalar array cast preserves the source
+// storage alias after the callee frame has gone away.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable module variable"),
+    Omit!(Bytecode, Because.refusal,
+        "module-level dynamic-array assignment is unsupported"),
+)) {
+    @("dynamicArray.sameWidthScalarCastReturnPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte[] a;
+
+            ubyte[] view() {
+                return cast(ubyte[]) a;
+            }
+
+            unittest {
+                byte runtime = 1;
+                a = [runtime];
+                ubyte[] b = view();
+                b[0] = 2;
+
+                assert(a[0] == 2);
+            }
+        });
+    }
+}
+
+// Assigning a returned same-width scalar-array view preserves its source
+// storage alias just as declaration initialization does.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable module variable"),
+    Omit!(Bytecode, Because.refusal,
+        "module-level dynamic-array assignment is unsupported"),
+)) {
+    @("dynamicArray.assignedReturnedSameWidthScalarCastPreservesStorageAliasing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte[] a;
+
+            ubyte[] view() {
+                return cast(ubyte[]) a;
+            }
+
+            unittest {
+                byte runtime = 1;
+                a = [runtime];
+                ubyte[] b;
+                b = view();
+                b[0] = 2;
+
+                assert(a[0] == 2);
             }
         });
     }
@@ -779,9 +1014,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.lengthAssignmentDefaultInitializesStructElements." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1759,16 +1992,14 @@ static foreach (backend; Matrix!(
 
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
 // that does not start at its backing block's base). Interpreter omitted: its
-// reserve descriptor loses the zero-length allocation's capacity before the
-// interior slice reaches `gc_expandArrayUsed`. Ctfe omitted:
+// reserve descriptor loses the zero-length allocation's capacity when the
+// descriptor is rebound into the caller. Ctfe omitted:
 // `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at all.
-// Bytecode omitted: same `.ptr`-of-array gap as above.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "gc_getArrayUsed has no D source, so Ctfe cannot intercept it at all"),
     Omit!(Interpreter, Because.unconfirmed,
         "reserve capacity is not retained when the zero-length slice descriptor is rebound"),
-    Omit!(Bytecode, Because.unconfirmed, "same `.ptr`-of-array gap as above"),
 )) {
     @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~
         backend.stringof)
@@ -2053,5 +2284,176 @@ static foreach (backend; Matrix!(
         }).shouldThrowWithMessage(
             "slice [0 .. 5] extends past source array of length 2",
         );
+    }
+}
+
+
+/++
+    Truthiness of dynamic arrays and slices.
++/
+// A dynamic array's truthiness follows `ptr !is null`, read at the pointer's
+// full width -- not a low-byte read of the length word, which happened to
+// read a 256-length array's zero low byte as false.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.truthinessIsPointerNotNullAtFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                size_t len = cast(size_t) seed(256);
+                int[] a = new int[len];
+                assert(a ? true : false);
+
+                int[] n;
+                assert(!(n ? true : false));
+            }
+        });
+    }
+}
+
+// A non-null zero-length slice (its pointer is set but length is 0) is still
+// truthy: truthiness follows the pointer, not the length.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "observed via bin/qb: `assert(s ? true : false)` for a non-null " ~
+        "zero-length slice evaluates false on Interpreter; SystemLinker " ~
+        "evaluates true"),
+)) {
+    @("dynamicArray.nonNullZeroLengthSliceIsTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                size_t len = cast(size_t) seed(256);
+                int[] a = new int[len];
+                size_t start = cast(size_t) seed(2);
+                auto s = a[start .. start];
+
+                assert(s ? true : false);
+            }
+        });
+    }
+}
+
+
+/++
+    Static arrays of strings and of dynamic arrays.
++/
+static foreach (backend; Matrix!()) {
+    @("staticArray.foreachOverStringElementsReadsElementContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                string[2] a = ["x", "yz"];
+                int total;
+
+                foreach (s; a) total += cast(int) s.length;
+
+                assert(total == 3);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.foreachOverWholeSliceOfStringArrayReadsElementContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                string[2] a = ["x", "yz"];
+                string[] s = a[];
+                int total;
+
+                foreach (e; s) total += cast(int) e.length;
+
+                assert(s.length == 2);
+                assert(total == 3);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.foreachOverArrayOfArraysReadsRowLengths." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(1);
+                int[][2] a = [[first, first + 1], [first + 2]];
+                int n;
+
+                foreach (row; a) n += cast(int) row.length;
+
+                assert(n == 3);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.partialSliceOfArrayOfArraysReadsElementContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(1);
+                int[][3] b = [
+                    [first],
+                    [first + 1, first + 2],
+                    [first + 3, first + 4, first + 5],
+                ];
+
+                auto s = b[1 .. 3];
+
+                assert(s[0][1] == first + 2);
+                assert(s[1][2] == first + 5);
+            }
+        });
+    }
+}
+
+
+/++
+    `cast(void*)` of a string reads its raw byte storage through `.ptr`,
+    same as a dynamic array.
++/
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.stringPointerReadsUtf8SecondByte." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string text() {
+                return "aβ";
+            }
+
+            unittest {
+                string s = text();
+
+                assert(s.ptr[1] == 0xCE);
+            }
+        });
     }
 }

@@ -1053,3 +1053,91 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+static foreach (backend; Matrix!()) {
+    @("evaluatesRuntimeDoubleTruthiness." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                double input = 0.5;
+                assert((input ? true : false) == true);
+
+                input = 0.0;
+                assert((input ? true : false) == false);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("evaluatesRuntimeFloatTruthiness." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                float input = 0.5f;
+                assert((input ? true : false) == true);
+
+                input = 0.0f;
+                assert((input ? true : false) == false);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("evaluatesRuntimeRealTruthiness." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                real input = 0.5L;
+                assert((input ? true : false) == true);
+
+                input = 0.0L;
+                assert((input ? true : false) == false);
+            }
+        });
+    }
+}
+
+// D truthiness is `!= 0`; NaN != 0, so a NaN operand is true.
+static foreach (backend; Matrix!()) {
+    @("doubleNaNIsTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                double n = double.nan;
+                assert(n ? true : false);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("floatNaNIsTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                float n = float.nan;
+                assert(n ? true : false);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("realNaNIsTruthy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                real n = real.nan;
+                assert(n ? true : false);
+            }
+        });
+    }
+}

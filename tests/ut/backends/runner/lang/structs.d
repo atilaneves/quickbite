@@ -187,6 +187,166 @@ static foreach (backend; Matrix!()) {
 
 
 /++
+    Static-array-of-structs element assignment.
++/
+// compileStaticArrayElementAssign (5662306d) took a struct-typed
+// static-array element assignment's copy width from the element's opcode
+// scalar type, which is void_ for aggregates, so it copied zero bytes and
+// silently discarded the write.
+static foreach (backend; Matrix!()) {
+    @("struct.staticArrayOfStructsElementAssignmentWritesFields." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int a;
+                int b;
+            }
+
+            unittest {
+                int a = 3;
+                int b = 4;
+                P[2] arr;
+
+                arr[1] = P(a, b);
+
+                assert(arr[1].a == a);
+                assert(arr[1].b == b);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("struct.staticArrayOfStructsElementAssignmentsAreIndependent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int a;
+                int b;
+            }
+
+            unittest {
+                int a0 = 1;
+                int b0 = 2;
+                int a1 = 3;
+                int b1 = 4;
+                P[2] arr;
+
+                arr[0] = P(a0, b0);
+                arr[1] = P(a1, b1);
+
+                assert(arr[0].a == a0);
+                assert(arr[0].b == b0);
+                assert(arr[1].a == a1);
+                assert(arr[1].b == b1);
+            }
+        });
+    }
+}
+
+
+/++
+    Struct literal string fields.
++/
+// compileStructLiteralInto's generic field-copy branch (203e1984) copied
+// size(scalarType(fieldType)) bytes per field, which is 0 for a string
+// field, so a literal's string descriptor was never written and read back
+// as whatever the zeroed block or leftover data-segment bytes gave.
+static foreach (backend; Matrix!()) {
+    @("struct.literalStringFieldRoundTrips." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                string s;
+            }
+
+            unittest {
+                string seed = "hi";
+                auto x = S(seed);
+
+                assert(x.s == "hi");
+                assert(x.s.length == 2);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("struct.literalStringFieldCopiedToLocalPreservesLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                string s;
+            }
+
+            unittest {
+                string seed = "hi";
+                auto x = S(seed);
+                string t = x.s;
+
+                assert(t.length == 2);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("struct.literalStringFieldReturnedFromFunctionPreservesLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                string s;
+            }
+
+            string f() {
+                string seed = "hi";
+                auto x = S(seed);
+                return x.s;
+            }
+
+            unittest {
+                assert(f().length == 2);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("struct.literalWithMixedScalarStringAndFloatingFields." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct M {
+                int i;
+                string s;
+                double d;
+            }
+
+            unittest {
+                int seed = 1;
+                string label = "ab";
+                double weight = 2.5;
+
+                auto m = M(seed, label, weight);
+
+                assert(m.i == seed && m.s == label && m.d == weight);
+            }
+        });
+    }
+}
+
+
+/++
     Passing structs by value.
 +/
 static foreach (backend; Matrix!()) {
@@ -747,6 +907,77 @@ static foreach (backend; Matrix!()) {
                 auto p = new Box(seed);
 
                 assert(p.value == seed + 2);
+            }
+        });
+    }
+}
+
+
+/++
+    Struct constructor call used as a value.
++/
+// structBaseOffsetOrMaterialise's CallExp branch (a6f0c15d) used
+// compileCall(call).offset as a struct constructor call's (`S(args)`)
+// result location. DMD types `S(args)` as the constructed struct even
+// though its `__ctor` is declared void, so compileCall's destination for
+// it was the shared void-call dummy slot (frame offset 0), not the
+// constructed value, which actually lives at the call's own receiver
+// offset. The dummy slot being a fixed offset means a naive fixture with
+// no other frame value at offset 0 reads back the constructed field
+// correctly by coincidence; each fixture below carries an extra
+// runtime parameter (`other`) so the field read is checked against a
+// distinct value the dummy slot could plausibly alias, not just `seed`
+// itself.
+static foreach (backend; Matrix!()) {
+    @("struct.constructorCallUsedAsValueReadsConstructedField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+
+                this(int v) {
+                    x = v;
+                }
+            }
+
+            bool check(int other) {
+                int seed = 42;
+                auto x = S(seed).x;
+                return x == seed && x != other;
+            }
+
+            unittest {
+                assert(check(1));
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("struct.constructorCallReassignedToExistingLocalReadsConstructedField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+
+                this(int v) {
+                    x = v;
+                }
+            }
+
+            bool check(int other) {
+                S s;
+                int seed = 7;
+                s = S(seed);
+                return s.x == seed && s.x != other;
+            }
+
+            unittest {
+                assert(check(99));
             }
         });
     }
