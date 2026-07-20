@@ -673,9 +673,8 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
    unifying the fork side uncovered three sites that silently duped a
    narrower field set than their siblings.
    - Do NOT add an eleventh family. Direct and one-level-nested struct/class
-     field allocation identity use the common `(root variable, field PATH)`
-     key; direct scalar struct/class fields and one-level-nested scalar struct
-     fields also use it for reverse lookup. Migrate the remaining reverse
+     field allocation identity and scalar-field reverse lookup use the common
+     `(root variable, field PATH)` key. Migrate the remaining reverse
      lookup/read/write/writeback families onto that key and composed native
      views. Paths such as `a[i].inner.x` must be data, not bespoke map
      families, so promote/read/write/merge/writeback/drop each ultimately
@@ -789,8 +788,8 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      remain boxed copies plus end-of-call writeback.
    - Field-path generalization: the common root-plus-path key handles
      allocation identity for direct and one-level-nested struct/class fields
-     and reverse lookup for direct scalar struct/class fields and one-level-
-     nested scalar struct fields. The other shape-specific reverse lookup/
+     and reverse lookup for direct and one-level-nested scalar struct/class
+     fields. The other shape-specific reverse lookup/
      read/write/writeback families still need migration. Nesting deeper than
      one level has no promotion, write-through, or pointer-identity support.
      Extend the common mechanism, never add another family.
