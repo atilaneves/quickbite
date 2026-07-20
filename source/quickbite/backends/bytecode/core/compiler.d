@@ -8306,6 +8306,7 @@ private struct Compiler {
         import std.bitmanip: nativeToLittleEndian;
         import std.conv: text;
 
+        resolveNonRootInitializer(declaration);
         auto initializer = declaration._init is null
             ? null
             : declaration._init.isExpInitializer;
@@ -8330,6 +8331,26 @@ private struct Compiler {
             "Unsupported module scalar initializer in bytecode core: ",
             declarationChars(declaration),
         ));
+    }
+
+    private void resolveNonRootInitializer(VarDeclaration declaration) {
+        import dmd.dsymbol: PASS;
+
+        if (declaration.semanticRun >= PASS.semantic2done)
+            return;
+
+        auto mod = declaration.getModule;
+        if (mod is null)
+            return;
+
+        import dmd.dscope: Scope;
+        import dmd.globals: global;
+        import dmd.semantic2: semantic2;
+
+        auto scope_ = Scope.createGlobal(mod, global.errorSink);
+        semantic2(declaration, scope_);
+        scope_ = scope_.pop;
+        scope_.pop;
     }
 
     private ushort allocateModuleBytes(in uint bytes, in uint alignmentArgument)
