@@ -7,12 +7,10 @@ private:
 // A leaf codec between the interpreter's boxed scalar `quickbite.lang.Value`
 // and the host's native byte layout for a D scalar type. This is the first
 // production call site for the native-layout container types
-// (`native_block.d`/`native_array.d`/`native_struct.d`): `impl.d`'s
-// `reinterpretLocalPointerLoad` allocates a
-// `NativeBlock`, `writeScalar`s the source local's bits into it, and
-// `readScalar`s the target type back out, so `*cast(T*) &local` becomes a
-// load of the same bytes at a different static type instead of a hardcoded
-// name/type-pair match.
+// (`native_block.d`/`native_array.d`/`native_struct.d`): `impl.d` promotes an
+// address-taken scalar local to a `NativeBlock`, `writeScalar`s direct writes
+// into it, and `readScalar`s pointer dereferences from it, so
+// `*cast(T*) &local` loads the same bytes at the pointee's static type.
 //
 // `real`/`TY.Tfloat80` is deliberately excluded from `isNativeScalarType`:
 // an x86 80-bit extended-precision `real` occupies a host- and

@@ -3,44 +3,29 @@
 ## Status
 
 This plan records the removal of the shared `quickbite.lang.Value` and the
-tree-walking interpreter's move to native-layout storage. Where things
-stand:
+tree-walking interpreter's move to native-layout storage. Current capabilities:
 
-- `EvalResult` carries a rendered display `string` or a `Diagnostic`;
-  `:t` cells are frontend-answered. The prelude formatter's rendering
-  surface is complete; expression-cell wiring is partial and the interim
-  `displayString`/`Value.toString` scaffolding still exists (item 1).
-  Formatter-wrapped CTFE and interpreter sessions consume the guest-produced
-  string directly; nested-context structs are formatter-wrapped and render
-  only their declared fields. Only their unformatted evaluator paths retain
-  the scaffolding.
-  CTFE and interpreter unittests execute directly without rendering; IR and
-  Bytecode still use the interim evaluation bridge (item 2).
-- The interpreter's native-layout container layer is complete:
-  `NativeBlock`/`NativeArray`/`NativeStruct` under
-  `source/quickbite/backends/interpreter/`, with a symmetric composition
-  matrix (struct -> {struct, static array, slice} fields; array ->
-  {struct, static array, slice} elements), capacity/growth through real
-  GC storage, slice headers, and `layout.d` as the sole DMD-layout
-  authority. The FFI marshaller routes every field/element walk through
-  these containers.
-- Guest-visible native cells are authoritative — read and write, across
-  frames — for: address-taken scalar locals; dynamic-array elements
-  (scalar, struct, and scalar-element static-array element types),
-  including slice and `foreach (ref ...)` aliasing; struct fields
-  (scalar, scalar-element static-array, one-level-nested struct); class
-  fields of the same shapes plus class reference identity through
-  same-frame, argument, and `this` aliasing; and union member overlap,
-  including default-init reinterpretation.
-- Invalidation is drop-on-rebind: a rebind drops the cell and its
-  pointer-id memo; only a same-storage mutation refreshes a cell in
-  place.
-- Still boxed: a local's authoritative storage itself
-  (`locals[VarDeclaration]` remains `Value`-keyed; cells exist only for
-  the shapes above), whole-value reads of aliased variables,
-  dynamic-array- and class-typed fields, nesting deeper than one level,
-  `ref`-parameter address identity, and every `interpreter.md` §9.10
-  shim.
+- `EvalResult` carries a display `string` or `Diagnostic`, and `:t` is
+  frontend-answered. CTFE and Interpreter execute formatter-wrapped expression
+  cells and unittests without rendering; range/template structs and the IR and
+  Bytecode paths still use interim `Value` display scaffolding.
+- `NativeBlock`/`NativeArray`/`NativeStruct` compose structs, static arrays,
+  slices, and their elements using DMD layout. They own real GC storage,
+  growth, slice headers, and the interpreter side of the FFI seam.
+- Promoted cells provide authoritative reads, writes, whole-value
+  reconstruction, and addresses for supported scalar, struct, class, static-
+  array, and dynamic-array storage. Views compose by DMD offsets and strides;
+  direct, nested, indexed, sliced, `ref`, and cross-frame access share the
+  underlying storage identity rather than copies.
+- Class bodies are owned by stable object identity, not a variable binding.
+  Union storage observes overlapping DMD offsets and first-member default
+  initialization for the supported recursively scalar-field shapes.
+- Rebinding detaches a binding's cell and pointer memo; same-storage mutation
+  updates the existing authority. Cast and slice carriers preserve allocation
+  identity, absolute byte offset, and native address across bindings and calls.
+- Boxed locals remain the general authority. Unsupported cases include deeper
+  aggregate paths, unpromoted element/member shapes, incomplete `ref` argument
+  identities, unequal-width array casts, and the residual gaps in item 7.
 
 ## Audit findings (June 2026)
 
@@ -253,6 +238,22 @@ a checked fact; do not relearn them.
   rules.
 - `native_scalar` deliberately excludes `real` (`Tfloat80`): its 80-bit
   padded layout is host- and ABI-specific, not a portable native scalar.
+- Integer offsetting of a native pointer preserves the native-pointer carrier
+  and applies the byte delta already scaled from the expression's static
+  pointer type. Do not route it through the boxed pointer's allocation id or
+  element snapshot.
+- Nested indexing into a native array composes offsets one level at a time:
+  the outer index uses the immediate aggregate element's stride, then the
+  scalar-leaf index uses the leaf type's stride. Do not flatten both indices
+  against the leaf size.
+- A constant-index address into a static-array local may arrive as a DMD
+  `SymOffExp`; once that local has a native cell, its DMD-provided byte offset
+  applies directly to the cell address rather than being re-derived as an
+  element index.
+- Subtracting two native pointers computes their byte-address difference;
+  DMD's surrounding element-size division converts that to D's element
+  distance. The boxed carrier instead stores element offsets and must scale
+  its difference to bytes before the same division.
 
 ### Containers (`NativeBlock`/`NativeArray`/`NativeStruct`)
 
@@ -276,12 +277,17 @@ a checked fact; do not relearn them.
   unscanned destination: a null block address (a zero-length array) and
   a genuinely non-GC source address.
 - `reserve`/`setLength` refuse every growth of a `borrowed` handle
-  (shrink stays legal and storage-free). A handle has no "am I the
-  current tail owner" bookkeeping (druntime's in-place expansion gates on
-  exactly that), so it can never soundly decide which of several live
-  views over one block may grow in place. Growth-and-rebind belongs to
-  the call site, as does `~=`: allocate a fresh owned array for the
-  result and rebind the guest variable, exactly as compiled D.
+  (shrink stays legal and storage-free). A handle has no "am I the current
+  tail owner" bookkeeping, so it cannot soundly decide which of several live
+  views over one block may grow. One narrower operation exists: when
+  druntime's real `gc_expandArrayUsed` accepts that exact view, the runtime
+  has proved it is the current tail owner and the borrowed view may widen
+  without reallocating. Failure leaves the view unchanged; ordinary growth
+  still allocates an owned array and rebinds at the call site.
+- Reconstructing a promoted scalar-element array cell as a whole value keeps
+  the cell's native address. Pointer casts, slices, and `void[]` reinterprets
+  preserve that address and express length in the destination element type;
+  dropping either fact recreates a boxed snapshot before the FFI seam.
 - `setLength`'s grow path zeroes every newly exposed byte
   unconditionally, including bytes re-exposed by shrink-then-grow.
   Compiled D gates its memset on `__traits(isZeroInit, T)` and emplaces
@@ -300,10 +306,13 @@ a checked fact; do not relearn them.
   allocation identity. One identity always names the allocation's root cell,
   never a frame-relative interior view; every slice offset, including a
   nested or zero-length slice's one-past-the-end offset, is absolute in that
-  root coordinate. Binding derives a bounds-validated subview from that
-  absolute offset and the value's length before reinterpreting its element
-  type. It does not recover from the RHS syntax or a reverse lookup of the
-  source variable. Rebinding any derived view drops that variable's alias id
+  root coordinate. The first cast upgrades its source binding to carry that
+  identity and absolute offset too, so a later slice or forwarded cast cannot
+  fall back to a root-relative boxed snapshot. Binding derives a
+  bounds-validated subview from that absolute offset and the value's length
+  before reinterpreting its element type. It does not recover from the RHS
+  syntax or a reverse lookup of the source variable. Rebinding any derived
+  view drops that variable's alias id
   before a later cast can reuse it, but retains the id-keyed carrier for other
   live values. Rebinding the source similarly invalidates that variable's maps
   but cannot invalidate an earlier derived binding's carrier. Carriers fork
@@ -330,10 +339,29 @@ a checked fact; do not relearn them.
 - Every cell family must honour three obligations — dup on frame fork,
   merge on return, drop on rebind — and a missed one is invisible until
   it corrupts. (See item 7's consolidation debt before adding a family.)
+- Field-address allocation identity is keyed by an immutable
+  `(root VarDeclaration, DMD field-index path)` value for direct and
+  one-level-nested fields. Struct and class roots occupy the same key space
+  because a declaration's static type fixes how its indices are interpreted.
+  Fork, merge, and rebind invalidation operate on that key as a whole;
+  extending a path must not introduce another allocation memo family.
 - Reads consult the cell first and never the alias tables. Therefore
   every write path that reaches storage only through an alias table
   (slice alias, array-element alias, struct-field alias, `this` alias)
   must independently refresh the ultimate target variable's cell.
+- One guest storage location has one identity across bindings, call frames,
+  repeated `ref` arguments, and source/alias pairs. A promoted aggregate alias
+  shares the caller's memoized pointer id and cell; a field alias shares the
+  root-plus-path allocation id and the corresponding native subrange. Taking
+  either address must recover that identity, and every read or write must use
+  its authority. Boxed writeback remains only for shapes without a cell.
+- Aggregate views compose from the authoritative root using DMD field offsets
+  and immediate element strides. This covers fields and scalar leaves inside
+  indexed structs, static arrays, and slice-backed dynamic arrays, including
+  class roots owned by object identity. Inline storage stays inline; slice
+  fields store a header in the root and address elements in their referenced
+  `NativeArray`. A composed view never earns a shape-specific cell, pointer
+  map, or reverse lookup.
 - Rebind vs mutation: a cross-frame writeback refreshes a cell's bytes in
   place only for a same-storage mutation and must DROP the cell on a
   rebind. An in-place refresh after a rebind writes the new binding's
@@ -351,6 +379,13 @@ a checked fact; do not relearn them.
   derived-typed `this` reads out of bounds (a real bug under virtual
   dispatch). Skip `this`-aliasing on any static-class mismatch; the
   override body falls back to its boxed receiver.
+- A promoted class body is keyed by the stable identity carried by every
+  boxed reference to that object. Variable-keyed class-cell entries are only
+  binding caches; fork and merge preserve the identity-owned table, while a
+  rebind detaches only the cache. A scalar class-field pointer records the
+  object's identity under its allocation id, so rebinding the variable used
+  to obtain it does not invalidate the pointer. The variable remains
+  reverse-lookup metadata, not the pointer's storage authority.
 - Scalar, struct, and class cells belong only to true stack locals. A
   dynamic-array dataseg variable may gain a cell only after its lazily
   materialized current value is present in `locals`; seeding it from a
@@ -384,12 +419,13 @@ a checked fact; do not relearn them.
   actually-different same-length array through the same formal parameter
   would still wrongly reconcile — closing it needs storage-identity
   tracking through parameter binding.
-- Known, deliberate boundary: a WHOLE-value read of an aliased variable
-  stays boxed-stale after a write reaches the same storage through a
-  DIFFERENT alias's cell; index reads through any alias, and reads
-  through the variable whose own write triggered the refresh, are
-  cell-fresh. Closing it means re-deriving every aliased mirror on every
-  write — unbounded; deferred knowingly.
+- Every whole read of promoted storage reconstructs all supported fields or
+  elements from the cell before the value escapes through a return, argument,
+  comparison, or display. This applies equally through a plain `ref` alias.
+  Class assignment through such an alias rebinds its source; static-array
+  assignment mutates the existing same-length storage and preserves interior
+  pointer identity. Whole-array and element addresses remain distinct views of
+  that same authority.
 
 ### Unions
 
@@ -411,8 +447,13 @@ a checked fact; do not relearn them.
   wider than the written member reads back zeros in its tail.
 - D zero-initializes a union from its FIRST declared member's default
   value: the whole block carries the first member's bits, and an
-  untouched sibling reads those bits reinterpreted. Computing each
-  member's default independently diverges from compiled D.
+  untouched sibling reads those bits reinterpreted. Scalar, plain-struct,
+  scalar-leaf-static-array, and scalar-field nested-union siblings are
+  reconstructed from scalar, plain-struct, scalar-leaf-static-array, and
+  scalar-field nested-union first members, plus static arrays of scalar-field
+  plain structs at any depth as first members and one level as siblings,
+  through one transient native block. Computing each member's default
+  independently diverges from compiled D.
 - DMD's own CTFE engine refuses reinterpretation through overlapped union
   fields (its own diagnostic, not ours), so `Ctfe` is legitimately
   omitted from union-reinterpret test matrices; that divergence is not
@@ -618,35 +659,25 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      suites once they run.
 
    **Consolidation debt** (pay this down before widening the matrix
-   further). Each new (receiver, field/element) shape was landed as its
-   own red-first slice, and each grew a parallel family: a `promote*`
-   entry point, a `*PointerVariables`/`*FieldIndices`/`*Writebacks`
-   reverse-lookup trio, a `*CellValue` reader, a `writeThrough*` writer,
-   a `merge*Maps`, a `writeBack*Targets`, and a `drop*Cell` obligation.
-   There are now ~10 such families differing only in key shape and which
-   `NativeStruct`/`NativeArray` view they compose. This duplication is
-   not cosmetic — it has already produced real bugs, because every family
-   must independently honour the three obligations (dup on frame fork,
-   merge on return, drop on rebind) and missing one is invisible until it
-   corrupts: a `drop*Cell` site was missing for exactly one family (a
-   stale nested-field pointer resolved into a later binding), and
-   unifying the fork side uncovered three sites that silently duped a
-   narrower field set than their siblings.
-   - Do NOT add an eleventh family. The next shape that needs a cell
-     should instead drive the generalization: one mechanism keyed by
-     (root variable, field PATH) — `a[i].inner.x` described as a path
-     rather than a bespoke map per shape — so promote/read/write/merge/
-     writeback/drop each exist once.
+   further). Shape-specific promotion, lookup, read, write, writeback, merge,
+   and drop families duplicate storage-identity mechanics. That is a
+   correctness risk because each family must independently fork, merge, and
+   detach cells. Replace the families with composed views and common lifecycle
+   dispatch rather than extending them.
+   - Do NOT add an eleventh family. Direct and one-level-nested struct/class
+     field allocation identity and scalar-field reverse lookup use the common
+     `(root variable, field PATH)` key. Migrate the remaining reverse
+     lookup/read/write/writeback families onto that key and composed native
+     views. Paths such as `a[i].inner.x` must be data, not bespoke map
+     families, so promote/read/write/merge/writeback/drop each ultimately
+     exist once.
    - Per-frame cell state is forked in one place
      (`Walker.forkPerFrameCellsInto`), and field-pointer registry families
-     merge through one return-side dispatch point
-     (`Walker.mergeFieldPointerState`). Fresh-binding drops shared by locals
+     merge through the common return-side cell dispatcher
+     (`Walker.mergePerFrameCellsFrom`). Fresh-binding drops shared by locals
      and parameters dispatch through `Walker.dropNonClassCells`; declarations
      dispatch all families through `Walker.dropDeclarationCells`, preserving
-     class cells only for parameter aliasing. Allocation and field-pointer
-     cell state shared by free, member, destructor, struct-constructor, and
-     class-constructor calls merges through `Walker.mergePointerCellState`.
-
+     class cells only for parameter aliasing.
    **Design sketch** (the frame for all of this work). A *native block*
    is a stable byte range laid out with DMD's own offsets, stride, and
    alignment; a *handle* is the interpreter-owned metadata for one block
@@ -688,29 +719,10 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      metadata on the handle. It is never inferred by diffing a pre-call
      boxed aggregate against a post-call one. Class-reference identity is
      not by-value writeback: one object body is shared by every reference
-     to it, which is why `writeBackByValueClassArguments` cannot be
-     retired by the array or struct phases.
-   - **Migration order.** Arrays first: the smallest surface that
-     exercises stable element addresses, slices into locals, capacity
-     hooks, `memcpy`, and array-pointer FFI without needing object
-     identity. Structs second, reusing the same block/offset machinery.
-     Class objects third — they need native object identity, vptr/monitor
-     layout, and constructor lifetime. (All three phases have landed
-     their aliasing call-site slices; see Status for the covered shapes.)
-   - **Shim deletion path**, mapping §9.10's inventory onto the phases.
-     Array-native storage retires the `gc_*` capacity hook stubs and the
-     `lastGCArrayUsedAllocation` side channel, by making druntime's
-     capacity helpers ordinary body-less FFI over real addressable
-     blocks, and reduces `runMemcpyCall` to the plain FFI or intrinsic
-     byte copy once both endpoints are native ranges. Struct-native
-     storage retires `runEmplaceRefCall`/`isEmplaceRef`, by letting the
-     real `core.internal.lifetime.emplaceRef` body write through the
-     destination address, and retires `reinterpretLocalPointerLoad`, by
-     making `*cast(T*) &local` a load of the same bytes at a different
-     static type rather than a name match. Class-object storage retires
-     `writeBackByValueClassArguments`. Each deletion lands with its §9.10
-     ratchet fixtures green through the real path.
-
+     to it. By-value class parameters share the caller's class cell when
+     their argument is a plain variable; rebinding the parameter remains
+     local to the callee and must never write a replacement reference
+     back to the caller.
    **Current frontier** — what remains, given the Status section's
    covered shapes:
 
@@ -718,55 +730,52 @@ Track B (FFI seam) work, parallel to the bridge track in `ffi.md` §6:
      `Value`-keyed. Cells exist only for the aliased/address-taken shapes
      in Status; the end state is native storage as the authority, with
      the boxed mirror gone rather than synchronized.
-   - Shim retirement: no §9.10 shim is retired yet.
-     `reinterpretLocalPointerLoad` is narrowed — same-width and narrowing
-     scalar reinterprets go through real bytes; aggregate, pointer,
-     `real`, and widening reinterprets still take the boxed/refused
-     passthrough, and a non-fitting write through a promoted cell fails
-     loudly rather than silently miswriting. Retiring
-     `writeBackByValueClassArguments` needs whole-value cell reads
-     (re-deriving an entire object from its cell in one pass, so
-     whole-boxed-value uses — passing onward, printing, equality — stop
-     depending on the diffing shim): that is the next class-phase step.
+   - Reinterpreting promoted cells remains unsupported for pointers, `real`,
+     widening loads, and aggregates that do not fit. Non-fitting writes must
+     fail rather than corrupt adjacent storage. Postblit execution remains an
+     interpreter expression-execution gap.
    - Structural gaps needing a design, not surgery: per-activation cell
      keying (all cell maps key on `VarDeclaration`, so recursive
      activations of the same function share one cell — a real
-     divergence); object-identity-scoped class cells (rebinding a class
-     reference leaves an earlier field pointer following the variable
-     slot, not the old object); and `ref` struct/class parameters, which
-     are modeled as a boxed copy plus end-of-call writeback rather than
-     live shared storage, so address identity across a `ref` boundary
-     diverges from the oracle.
-   - Field-path generalization: nesting deeper than one level has no
-     support anywhere (promotion, write-through, or pointer-identity
-     memoization). Per the consolidation debt above, the next shape must
-     drive the (root variable, field PATH) mechanism, not a new family.
-   - Widening not yet done: dynamic-array- and class-typed fields have no
-     cell support on either the read or write side (needs a slice-valued
-     field-cell primitive); nested static arrays need scalar-leaf
-     flattening for pointer arithmetic (`&m[i][j]` currently scales by
-     the immediate element type's size, not the innermost scalar's);
-     same-width native-scalar dynamic-array casts share backing storage and
-     interpret its bytes through bindings, direct slice arguments, and
-     function returns using each view's element type, but unequal-width casts
+     divergence); nested-struct and static-array class-field pointers still
+     follow the variable slot after a reference rebind rather than retaining
+     object identity; and `ref`-parameter address
+     identity outside repeated plain-variable `ref` aggregate arguments
+     (structs, classes, and static arrays) and direct scalar aggregate fields
+     reached repeatedly or through a struct source/ref alias, which share
+     mutation authority and direct parameter addresses.
+     Non-plain-variable aggregate arguments
+     remain boxed copies plus end-of-call writeback.
+   - Field-path generalization: the common root-plus-path key handles
+     allocation identity for direct and one-level-nested struct/class fields
+     and reverse lookup for direct and one-level-nested scalar struct/class
+     fields. The other shape-specific reverse lookup/
+     read/write/writeback families still need migration. Nesting deeper than
+     one level has no promotion, write-through, or pointer-identity support.
+     Extend the common mechanism, never add another family.
+   - Widening not yet done: class-typed fields and dynamic-array fields whose
+     element is neither a native scalar nor a supported non-union struct have
+     no cell support on either the read or write side; same-width
+     native-scalar dynamic-array casts share backing storage through bindings,
+     direct slice arguments, and function returns, while unequal-width casts
      still need byte-stream length and element regrouping;
      `out`-parameter initialization only recognizes the zero-memset
      `BlitExp`-with-integer shape DMD synthesizes for zero-init structs —
      the non-zero-init shapes (a real construct/call) are untried; and
-     the union residuals in Contracts (aggregate members beyond plain
-     structs, promotion for unions with non-scalar members, aggregate
-     default-init siblings).
-   - Native-pointer arithmetic: the design sketch's "pointers become real
-     addresses into that storage" is unmet for pointers that already are
-     native. Direct indexing of FFI-returned storage is supported, including
-     `malloc` storage; forming a new pointer by offsetting a native pointer by
-     an integer is refused outright. Interpreted code therefore cannot walk a
-     raw native buffer by incrementing its pointer; only the interpreter's own
-     boxed pointer variant supports that arithmetic. This blocks retiring the
-     `gc_*` array-capacity hooks:
-     their `void[]`-returning shape reaches real druntime code that does
-     native-pointer arithmetic, so the hooks cannot become ordinary
-     body-less FFI leaves until this is modelled.
+     the union residuals in Contracts (aggregate members beyond plain structs,
+     promotion for unions with non-scalar members, and default-init first
+     members or siblings outside native scalars, recursively scalar-field
+     structs/unions, scalar-leaf static arrays, and static arrays of scalar-
+     field plain structs (any depth as first members, one level as siblings),
+     including class and dynamic array members).
+   - Native-pointer arithmetic: integer offsetting and pointer difference walk
+     raw native buffers (including `GC.malloc` storage). Array pointers into a
+     promoted cell cross ordinary body-less FFI as native addresses; native
+     slice reads, casts, and slices retain that address. Interior-slice
+     `assumeSafeAppend` still loses the capacity of the zero-length descriptor
+     returned by `reserve` while rebinding it into the caller. Ordering and
+     mixed native/boxed-pointer operations remain modelled only for the boxed
+     carrier.
    - Open questions from the design sketch: lifetime contracts for blocks
      borrowed from arbitrary C owners; what a guest pointer into a grown
      array should observe, and whether that deserves a diagnostic rather

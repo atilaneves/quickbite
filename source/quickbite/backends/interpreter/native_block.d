@@ -204,6 +204,16 @@ public struct NativeBlock {
         return true;
     }
 
+    // Widens a borrowed view only after its owner has independently proved
+    // that the larger byte range is live.  NativeArray's GC-used-range
+    // operation is the sole caller: druntime validates the interior pointer,
+    // allocation bounds, and current tail ownership before this is reached.
+    package void widenBorrowedViewTo(in size_t newByteLength) pure nothrow @system {
+        assert(_ownership == Ownership.borrowed);
+        assert(newByteLength >= _bytes.length);
+        _bytes = resliceBytes(address, newByteLength);
+    }
+
     // A sub-range view over this block's own bytes -- a nested aggregate
     // field (a struct-typed or static-array-typed field) is not a separate
     // allocation, just a shorter span of this block at its own DMD offset.

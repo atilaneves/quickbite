@@ -1361,6 +1361,35 @@ static foreach (backend; Matrix!(
 // Bytecode and IR ("Unsupported (IR) expression `& d`") do not support
 // taking the address of a local.
 
+// A same-sized struct pointer cast over an address-taken scalar reads the
+// scalar's native bytes as the struct's field. SystemLinker is the oracle;
+// Ctfe and LLVMJit are omitted because address-of-local reinterpretation is
+// unsupported/unconfirmed there.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("pointer.scalarBitsThroughStructPointerAreRawBits." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            unittest {
+                int value = fortyTwo;
+                S* pointer = cast(S*) &value;
+                assert(pointer.value == 42);
+            }
+        });
+    }
+}
+
 // Reinterpret-WRITE (not read) through a same-size pointer cast: writing raw
 // bits into a `float` local via a `uint*` must be visible to a subsequent
 // direct read of the local. SystemLinker is the oracle; LLVMJit and Ctfe are
@@ -1623,7 +1652,7 @@ static foreach (backend; Matrix!(
 // required the pointee to be exactly the cell's own width, throwing for a
 // narrower native-scalar pointee (a `ubyte*` reinterpret of a `uint`)
 // instead of writing into the low bytes the way the read side
-// (`reinterpretLocalPointerLoad`) already narrows by slicing.
+// already narrows by slicing.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
@@ -2289,15 +2318,9 @@ static foreach (backend; Matrix!(
 // parameters must leave both parameters observing the SAME object, since a
 // class argument is reference-passed -- exactly as if both parameters were
 // `C c2 = c;` aliases of one another, except the aliasing happens at the
-// call boundary (parameter binding) rather than a declaration. The existing
-// `writeBackByValueClassArguments` shim only writes the mutated
-// value back into the ONE argument expression location it was invoked with
-// (`locals[b]`'s own caller-side location) after the call returns -- it has
-// no mechanism linking the SEPARATE `VarDeclaration`s `a` and `b` DURING the
-// call, so a read of `a.x` immediately after `b.x = 99` inside the callee's
-// own frame still sees the stale, independently-boxed copy bound for `a`.
-// Only Interpreter and SystemLinker (the oracle) are pinned here per the
-// omit-don't-pin convention.
+// call boundary (parameter binding) rather than a declaration. Both
+// parameters must share the caller's authoritative class cell during the
+// call; post-call value diffing cannot establish that identity.
 static foreach (backend; Matrix!()) {
     @("class.sameObjectPassedAsTwoParametersSharesIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -2315,6 +2338,639 @@ static foreach (backend; Matrix!()) {
             unittest {
                 C c = new C();
                 combine(c, c);
+            }
+        });
+    }
+}
+
+// A class object reached through a class-typed field keeps one identity when
+// copied into a local. Promoting storage through the local must therefore make
+// the write visible through the original field reference too.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.fieldObjectCopiedToLocalSharesAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                Parent parent = new Parent();
+                parent.child = new Child();
+                Child child = parent.child;
+                int* pointer = &child.x;
+                *pointer = 99;
+                assert(parent.child.x == 99);
+            }
+        });
+    }
+}
+
+// Two ref class parameters bound from the same plain variable denote the same
+// reference slot, so taking either parameter's address must produce equal
+// pointers.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated ref class-argument address identity"),
+)) {
+    @("class.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            void verify(ref C first, ref C second) {
+                assert(&first == &second);
+            }
+
+            unittest {
+                C value = new C();
+                verify(value, value);
+            }
+        });
+    }
+}
+
+// Two ref parameters bound from the same direct struct field denote one
+// storage location, so taking either parameter's address must produce equal
+// pointers even though the argument is not a plain variable.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated struct-field ref-argument identity"),
+)) {
+    @("structField.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            void verify(ref int first, ref int second) {
+                assert(&first == &second);
+                first = 99;
+                assert(second == 99);
+            }
+
+            unittest {
+                S value = S(42);
+                verify(value.value, value.value);
+                assert(value.value == 99);
+            }
+        });
+    }
+}
+
+// Direct fields reached through a source struct and its plain ref alias denote
+// one storage location when passed by ref.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve aliased struct-field ref-argument identity"),
+)) {
+    @("structField.aliasedRefArgumentsPreserveAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            void verify(ref int first, ref int second) {
+                assert(&first == &second);
+                first = 99;
+                assert(second == 99);
+            }
+
+            unittest {
+                S source = S(42);
+                ref S alias_ = source;
+                verify(source.value, alias_.value);
+                assert(source.value == 99);
+            }
+        });
+    }
+}
+
+// Two ref parameters bound from the same direct class field denote one
+// storage location, just like the corresponding direct struct-field case.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated class-field ref-argument identity"),
+)) {
+    @("classField.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            void verify(ref int first, ref int second) {
+                assert(&first == &second);
+                first = 99;
+                assert(second == 99);
+            }
+
+            unittest {
+                C value = new C();
+                value.value = 42;
+                verify(value.value, value.value);
+                assert(value.value == 99);
+            }
+        });
+    }
+}
+
+// A class cell promoted by taking a field's address is authoritative for the
+// whole object, not only for later field reads. Passing the class value onward
+// must therefore reconstruct the argument from the cell after a pointer write,
+// rather than copy the stale boxed mirror into the callee.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class field"),
+)) {
+    @("class.wholeValueArgumentReadsAuthoritativeCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            void put(int* pointer, int value) {
+                *pointer = value;
+            }
+
+            int observe(C value) {
+                return value.x;
+            }
+
+            C forward(C value) {
+                return value;
+            }
+
+            unittest {
+                C c = new C();
+                C alias_ = c;
+                int* pointer = &c.x;
+                put(pointer, 99);
+                assert(observe(forward(alias_)) == 99);
+            }
+        });
+    }
+}
+
+// A dynamic-array field is a slice value whose header belongs to the class
+// object while its elements live in separate backing storage. Taking an
+// element address and writing through it must remain visible when the whole
+// field is copied and when the whole object is passed onward.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class array field element"),
+)) {
+    @("class.dynamicArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[] values;
+            }
+
+            void put(int* pointer, int value) {
+                *pointer = value;
+            }
+
+            int observe(C value) {
+                int[] copy = value.values;
+                return copy[0];
+            }
+
+            unittest {
+                C value = new C();
+                value.values = [42, 7];
+                int* pointer = &value.values[0];
+                put(pointer, 99);
+                int[] field = value.values;
+                assert(field[0] == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
+// A class slice field whose elements are structs keeps its element storage
+// authoritative after an element field becomes addressable. Pointer and ref
+// mutations must both be visible through a whole-field copy and a whole-object
+// argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class array field element"),
+)) {
+    @("class.structSliceFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            class C {
+                S[] values;
+            }
+
+            int observe(C value) {
+                S[] copy = value.values;
+                return copy[0].x;
+            }
+
+            unittest {
+                C value = new C();
+                value.values = [S(42)];
+                int* pointer = &value.values[0].x;
+                *pointer = 77;
+                ref int alias_ = value.values[0].x;
+                alias_ = 99;
+                S[] field = value.values;
+                assert(field[0].x == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
+// A class static-array field whose elements are structs keeps its inline
+// element storage authoritative after an element field becomes addressable.
+// The mutation must remain visible through whole-field and whole-object reads.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class array field element"),
+)) {
+    @("class.structStaticArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            class C {
+                S[1] values = [S(fortyTwo())];
+            }
+
+            int observe(C value) {
+                S[1] copy = value.values;
+                return copy[0].x;
+            }
+
+            unittest {
+                C value = new C();
+                int* pointer = &value.values[0].x;
+                *pointer = 99;
+                S[1] field = value.values;
+                assert(field[0].x == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
+// A struct static-array field whose elements are structs keeps its inline
+// element storage authoritative after an element field becomes addressable.
+// The mutation must remain visible through whole-field and whole-struct reads.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a struct array field element"),
+)) {
+    @("struct.structStaticArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            struct Outer {
+                Inner[1] values = [Inner(fortyTwo())];
+            }
+
+            int observe(Outer value) {
+                Inner[1] copy = value.values;
+                return copy[0].x;
+            }
+
+            unittest {
+                Outer value;
+                int* pointer = &value.values[0].x;
+                *pointer = 99;
+                Inner[1] field = value.values;
+                assert(field[0].x == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
+// A struct slice field whose elements are structs keeps its referenced
+// element storage authoritative after an element field becomes addressable.
+// Pointer and ref mutations must remain visible through a whole-field copy
+// and a whole-struct argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a struct array field element"),
+)) {
+    @("struct.structSliceFieldReadsAuthoritativeStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int x;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            struct Outer {
+                Inner[] values = [Inner(fortyTwo())];
+            }
+
+            int observe(Outer value) {
+                Inner[] copy = value.values;
+                return copy[0].x;
+            }
+
+            unittest {
+                Outer value;
+                int* pointer = &value.values[0].x;
+                *pointer = 77;
+                ref int alias_ = value.values[0].x;
+                alias_ = 99;
+                Inner[] field = value.values;
+                assert(field[0].x == 99);
+                assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
+// A struct cell promoted through one alias is authoritative for the whole
+// value reached through another alias. SystemLinker therefore observes a
+// pointer write when the aliased struct is passed onward as a value.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a struct field"),
+)) {
+    @("struct.wholeValueAliasReadsAuthoritativeCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            void put(int* pointer, int value) {
+                *pointer = value;
+            }
+
+            int observe(S value) {
+                return value.x;
+            }
+
+            unittest {
+                S value = S(42);
+                ref S alias_ = value;
+                int* pointer = &value.x;
+                put(pointer, 99);
+                assert(observe(alias_) == 99);
+            }
+        });
+    }
+}
+
+// A plain ref struct local denotes the source's storage, including its
+// address. SystemLinker is the oracle for the shared address identity.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref struct-local address identity"),
+)) {
+    @("pointer.structRefLocalPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            unittest {
+                S source = S(42);
+                ref S alias_ = source;
+                S* pointer = &source;
+                assert(&alias_ == pointer);
+            }
+        });
+    }
+}
+
+// A plain ref static-array local denotes the source's storage, including its
+// address. SystemLinker is the oracle for the shared address identity.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "DMD CTFE refuses to compare static-array local addresses"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref static-array-local address identity"),
+)) {
+    @("pointer.staticArrayRefLocalPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[2] source = [42, 99];
+                ref int[2] alias_ = source;
+                int[2]* pointer = &source;
+                assert(&alias_ == pointer);
+            }
+        });
+    }
+}
+
+// Element assignment through a ref static-array local writes the source's
+// promoted native storage rather than an independent boxed snapshot.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref static-array-local element aliasing"),
+)) {
+    @("staticArray.refLocalElementWriteMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 42;
+            }
+
+            unittest {
+                int[2] source = [seed, 43];
+                int* pointer = &source[0];
+                ref int[2] alias_ = source;
+                alias_[0] = 99;
+                assert(*pointer == 99);
+                assert(source[0] == 99);
+            }
+        });
+    }
+}
+
+// Taking an element address through a ref static-array local reaches the
+// source's storage rather than promoting an independent alias snapshot.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref static-array-local element addresses"),
+)) {
+    @("pointer.staticArrayRefLocalElementUsesSourceStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 42;
+            }
+
+            int index() {
+                return 1;
+            }
+
+            unittest {
+                int[2] source = [seed, 43];
+                ref int[2] alias_ = source;
+                int* first = &alias_[0];
+                int* second = &alias_[index];
+                *first = 99;
+                *second = 100;
+                assert(source == [99, 100]);
+            }
+        });
+    }
+}
+
+// Whole-value assignment through a ref nested-static-array local mutates the
+// source's promoted native storage rather than rebinding it.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "DMD CTFE refuses the nested static-array element pointer cast"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref static-array-local assignment aliasing"),
+)) {
+    @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int number) {
+                return number;
+            }
+
+            unittest {
+                int[2][2] source = [[value(1), 2], [3, 4]];
+                int* pointer = &source[0][0];
+                ref int[2][2] alias_ = source;
+                alias_ = [[value(99), 100], [101, 102]];
+                assert(*pointer == 99);
+                assert(source == [[99, 100], [101, 102]]);
+            }
+        });
+    }
+}
+
+// Two ref static-array parameters bound from the same plain variable denote
+// one storage location, including shared address and mutation identity.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "DMD CTFE refuses to compare static-array parameter addresses"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated ref static-array-argument identity"),
+)) {
+    @("staticArray.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void verify(ref int[2] first, ref int[2] second) {
+                assert(&first == &second);
+                first = [99, 100];
+                assert(second == [99, 100]);
+            }
+
+            unittest {
+                int[2] value = [42, 43];
+                verify(value, value);
+                assert(value == [99, 100]);
+            }
+        });
+    }
+}
+
+// A plain ref class local denotes the source reference variable's storage,
+// including its address. SystemLinker is the oracle for the shared address
+// identity.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref class-local address identity"),
+)) {
+    @("pointer.classRefLocalPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            unittest {
+                C source = new C();
+                source.value = 42;
+                ref C alias_ = source;
+                C* pointer = &source;
+                assert(&alias_ == pointer);
+            }
+        });
+    }
+}
+
+// Assignment through a ref class local rebinds the source reference variable;
+// the alias does not acquire an independent class-reference slot.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve ref class-local assignment aliasing"),
+)) {
+    @("class.refLocalAssignmentRebindsSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            unittest {
+                C source = new C();
+                source.value = 42;
+                ref C alias_ = source;
+                C replacement = new C();
+                replacement.value = 99;
+                alias_ = replacement;
+                assert(source is replacement);
+                assert(source.value == 99);
             }
         });
     }
@@ -2387,6 +3043,52 @@ static foreach (backend; Matrix!()) {
                 auto c = a;
                 c = b;
                 assert(a.x == one());
+            }
+        });
+    }
+}
+
+// A pointer into a class object follows the object, not the variable slot used
+// to reach it. Rebinding that variable must therefore leave the pointer
+// attached to the old object while subsequent field access follows the new
+// reference.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking the address of a class field"),
+)) {
+    @("class.fieldPointerSurvivesReferenceRebind." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+
+                this(int value) {
+                    x = value;
+                }
+            }
+
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                C oldObject = new C(one());
+                C newObject = new C(two());
+                C current = oldObject;
+                int* pointer = &current.x;
+                current = newObject;
+                *pointer = ninetyNine();
+                assert(oldObject.x == ninetyNine());
+                assert(current.x == two());
             }
         });
     }
@@ -3674,6 +4376,37 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A ref local bound to a direct scalar class field denotes the same storage
+// as an earlier pointer to that field. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve class-field ref-local identity"),
+)) {
+    @("pointer.classFieldRefLocalPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int value;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                auto c = new C;
+                auto p = &c.value;
+                ref int r = c.value;
+                assert(&r == p);
+                r = ninetyNine();
+                assert(*p == 99);
+                assert(c.value == 99);
+            }
+        });
+    }
+}
+
 // Whole-struct assignment (`s = S(...)`) is a genuine in-place copy into
 // `s`'s existing storage in D -- unlike an array rebind, `s` keeps denoting
 // the SAME storage after the assignment. An earlier `int* p = &s.x` must
@@ -3907,6 +4640,40 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(f() == 1);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("pointer.borrowedSliceAppendRebindsWhenGrowthFails." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int three() {
+                return 3;
+            }
+
+            int four() {
+                return 4;
+            }
+
+            unittest {
+                int[] array = [one(), two(), three()];
+                int[] slice = array[0 .. 1];
+                int* pointer = &slice[0];
+                slice ~= four();
+                assert(slice == [1, 4]);
+                assert(array == [1, 2, 3]);
+                assert(*pointer == 1);
             }
         });
     }
@@ -4245,6 +5012,131 @@ static foreach (backend; Matrix!()) {
                 S* p = &a[0];
                 a[0] = S(ninetyNine());
                 assert((*p).x == 99);
+            }
+        });
+    }
+}
+
+// A promoted array-of-struct cell is authoritative for a whole-array read,
+// not only for an indexed element read. Passing the array onward after a
+// pointer write must therefore reconstruct its struct elements from the cell
+// instead of copying the stale boxed mirror into the callee.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support storing a whole struct through a pointer"),
+)) {
+    @("array.wholeStructArrayArgumentReadsAuthoritativeCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+            }
+
+            void put(S* pointer, int value) {
+                *pointer = S(value);
+            }
+
+            int observe(S[] values) {
+                return values[0].x;
+            }
+
+            unittest {
+                S[] values = [S(42)];
+                S* pointer = &values[0];
+                put(pointer, 99);
+                assert(observe(values) == 99);
+            }
+        });
+    }
+}
+
+// A promoted array-of-static-array cell is authoritative for a whole-array
+// read, not only for an indexed element read. Passing the array onward after
+// a pointer write must therefore reconstruct its static-array elements from
+// the cell instead of copying the stale boxed mirror into the callee.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support storing a whole static array through a pointer"),
+)) {
+    @("array.wholeStaticArrayArgumentReadsAuthoritativeCell." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void put(int[2]* pointer, int value) {
+                *pointer = [value, value];
+            }
+
+            int observe(int[2][] values) {
+                return values[0][0];
+            }
+
+            unittest {
+                int[2][] values = [[42, 42]];
+                int[2]* pointer = &values[0];
+                put(pointer, 99);
+                assert(observe(values) == 99);
+            }
+        });
+    }
+}
+
+// Nested static-array indexing scales each step by its immediate element
+// type. Taking a scalar leaf's address must therefore retain the outer row
+// stride instead of treating the outer index as a scalar-element offset.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE asserts internally while initializing the nested array"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking a nested static-array element address"),
+)) {
+    @("pointer.nestedStaticArrayElementUsesImmediateStride." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void put(int* pointer, int value) {
+                *pointer = value;
+            }
+
+            unittest {
+                int[2][] values = [[1, 2], [3, 4]];
+                int* pointer = &values[1][0];
+                put(pointer, 99);
+                assert(values[0][1] == 2);
+                assert(values[1][0] == 99);
+            }
+        });
+    }
+}
+
+// A plain nested static-array local uses one authoritative native cell once a
+// scalar leaf's address is taken. SystemLinker's pointer aliases that leaf,
+// so a later direct write to it must be visible through the earlier pointer.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE rejects the nested static-array element pointer cast"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support taking a nested static-array element address"),
+)) {
+    @("pointer.nestedStaticArrayLocalDirectWriteIsVisibleThroughEarlierPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[2][2] values;
+                values[1][0] = one;
+                int* pointer = &values[1][0];
+                values[1][0] = ninetyNine;
+                assert(*pointer == 99);
             }
         });
     }

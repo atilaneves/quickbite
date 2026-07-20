@@ -1848,7 +1848,7 @@ static foreach (backend; Matrix!()) {
 // Repeated forwarding of the same ref-foreach element must preserve its
 // identity across every ref parameter. Each mutation therefore reaches the
 // same array element instead of competing through independent snapshots.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("struct.foreachRefRepeatedArgumentPreservesAlias." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1872,6 +1872,32 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
 
                 assert(items[0].x == 1);
                 assert(items[0].y == 2);
+            }
+        });
+    }
+}
+
+// Two ref parameters bound from the same plain variable denote one storage
+// location, so taking either parameter's address must produce equal pointers.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet preserve repeated ref-argument address identity"),
+)) {
+    @("struct.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            void verify(ref S first, ref S second) {
+                assert(&first == &second);
+            }
+
+            unittest {
+                S value = S(42);
+                verify(value, value);
             }
         });
     }
@@ -2100,6 +2126,285 @@ static foreach (backend; Matrix!(
             unittest {
                 U u;
                 assert(u.i == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// An untouched plain-struct sibling reads the same first-member default bits
+// as a scalar sibling. The struct's scalar field spans the first float's NaN
+// representation, so independently defaulting the struct would incorrectly
+// produce zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped struct field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this union struct initializer"),
+)) {
+    @("union.untouchedStructSiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                int bits;
+            }
+
+            union U {
+                float value;
+                Payload payload;
+            }
+
+            unittest {
+                U value;
+                assert(value.payload.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// An untouched static array of scalar-field structs reads the same first-
+// member default bits as a plain-struct sibling. Independently defaulting the
+// array would incorrectly produce a zero-initialized struct element.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped static-array field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this union static-array-of-struct initializer"),
+)) {
+    @("union.untouchedStructArraySiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                int bits;
+            }
+
+            union U {
+                float value;
+                Payload[1] payloads;
+            }
+
+            unittest {
+                U value;
+                assert(value.payloads[0].bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// An untouched nested-union sibling reads the outer union's first-member
+// default bytes through its own scalar member. Independently defaulting the
+// nested union would incorrectly produce zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped nested-union field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this nested-union initializer"),
+)) {
+    @("union.untouchedNestedUnionSiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union Payload {
+                int bits;
+                float value;
+            }
+
+            union U {
+                float value;
+                Payload payload;
+            }
+
+            unittest {
+                U value;
+                assert(value.payload.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// A nested union in the first member initializes the outer union's shared
+// block from its own first-member default bits. Its scalar sibling therefore
+// sees the nested float's NaN representation instead of an independent zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this nested-union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromNestedUnionFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union Payload {
+                float value;
+                int bits;
+            }
+
+            union U {
+                Payload payload;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// A nested scalar-leaf static array in the first union member initializes
+// the same overlapping block as its one-level counterpart. Its first float's
+// default NaN bits are therefore visible through the untouched scalar sibling.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this nested-static-array union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromNestedArrayFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float[1][1] values;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// A static array of scalar-field structs in the first union member still
+// initializes the union's shared block from its leaves. Its first float's
+// default NaN bits are therefore visible through the scalar sibling.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this static-array-of-struct union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromStructArrayFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                float value;
+            }
+
+            union U {
+                Payload[1] payloads;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// A nested static array of scalar-field structs in the first union member
+// initializes the same shared bytes as its one-level counterpart. The first
+// struct leaf's default float bits are visible through the scalar sibling.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this nested-array-of-struct union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromNestedStructArrayFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                float value;
+            }
+
+            union U {
+                Payload[1][1] payloads;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// An untouched scalar-element static-array sibling reads the same first-
+// member default bits as scalar and plain-struct siblings. Independently
+// defaulting the array would incorrectly produce zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped static-array field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this union static-array initializer"),
+)) {
+    @("union.untouchedArraySiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float value;
+                int[1] bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits[0] == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// An untouched nested static-array sibling reads the first member's default
+// bits through its scalar leaf. Independently defaulting either array level
+// would incorrectly produce zero.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped nested static-array field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this union nested-static-array initializer"),
+)) {
+    @("union.untouchedNestedArraySiblingDefaultsFromFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float value;
+                int[1][1] bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits[0][0] == 0x7FC00000);
             }
         });
     }
@@ -2346,6 +2651,35 @@ static foreach (backend; Matrix!(
             unittest {
                 U u;
                 assert(u.i == 0x7FC00000);
+            }
+        });
+    }
+}
+
+// A scalar-element static array in the first union member initializes the
+// whole overlapping block, just as a scalar or plain-struct first member
+// does. Its first float's default NaN bits are therefore visible through the
+// untouched scalar sibling.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped scalar field"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support this static-array union initializer"),
+)) {
+    @("union.untouchedSiblingDefaultsFromArrayFirstMemberBits." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float[1] values;
+                int bits;
+            }
+
+            unittest {
+                U value;
+                assert(value.bits == 0x7FC00000);
             }
         });
     }

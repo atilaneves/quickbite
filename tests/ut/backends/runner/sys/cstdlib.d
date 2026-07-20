@@ -184,6 +184,57 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A pointer returned by the host GC remains directly addressable after the
+// interpreter applies D's statically-scaled integer pointer arithmetic.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host GC allocation"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "body-less GC.malloc is not yet available to the bytecode backend"),
+)) {
+    @("gc.malloc.nativePointerArithmetic." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                import core.memory: GC;
+
+                auto bytes = cast(ubyte*) GC.malloc(4);
+                auto second = bytes + 1;
+                *second = 42;
+                auto first = second - 1;
+                *first = 41;
+
+                assert(bytes[0] == 41);
+                assert(bytes[1] == 42);
+                GC.free(bytes);
+            }
+        });
+    }
+}
+
+// Pointers into one host GC allocation subtract using their native addresses.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host GC allocation"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "body-less GC.malloc is not yet available to the bytecode backend"),
+)) {
+    @("gc.malloc.nativePointerDifference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                import core.memory: GC;
+
+                auto values = cast(int*) GC.malloc(4 * int.sizeof);
+                auto tail = values + 3;
+
+                assert(tail - values == 3);
+                GC.free(values);
+            }
+        });
+    }
+}
+
 
 // Design-driving expected-failure tests for a future host FFI bridge.
 //
@@ -385,6 +436,30 @@ static foreach (backend; Matrix!(
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(reallocGrowSource);
+    }
+}
+
+
+enum memcpyPartialScalarSource = q{
+    unittest {
+        import core.stdc.string: memcpy;
+
+        uint source = 0xffff_ffff;
+        uint destination;
+
+        memcpy(&destination, &source, 1);
+
+        assert(destination != 0);
+    }
+};
+
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
+)) {
+    @("memcpy.partialScalarCopiesByteCount." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(memcpyPartialScalarSource);
     }
 }
 

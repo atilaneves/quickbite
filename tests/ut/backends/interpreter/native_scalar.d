@@ -88,8 +88,9 @@ unittest {
 // one of them (write-reversed then read-reversed cancels out). This instead
 // pins `writeScalar`'s OUTPUT bytes directly against the host compiler's own
 // in-memory layout for a multi-byte value, catching that class of bug.
-// `impl.d`'s `reinterpretLocalPointerLoad` reads `block.bytes[0 ..
-// targetSize]`, so byte position -- not just round-trip value -- matters.
+// `impl.d`'s differently-typed scalar-cell dereference reads the leading
+// target-width bytes, so byte position -- not just round-trip value --
+// matters.
 @("writeScalar.producesTheHostCompilersOwnByteLayoutNotJustARoundTrip")
 unittest {
     uint u = 0x1122_3344;
@@ -180,8 +181,8 @@ unittest {
 }
 
 
-// Same oracle, for `double`/`ulong` -- the other pair `impl.d`'s
-// `reinterpretLocalPointerLoad` used to hardcode by name.
+// Same oracle, for `double`/`ulong` -- the other pair the pointer-dereference
+// path once hardcoded by name.
 @("writeScalar.doubleBytesReadBackAsUlongMatchTheHostCompilersOwnReinterpretCast")
 unittest {
     double d = 1.5;
@@ -194,12 +195,11 @@ unittest {
 }
 
 
-// `impl.d`'s `reinterpretLocalPointerLoad` takes a STRICT-NARROWING path
-// (target strictly narrower than source) through the source's leading
-// bytes; that branch was exercised by zero tests before this one. Pin it
+// `impl.d`'s scalar-cell dereference takes a STRICT-NARROWING path (target
+// strictly narrower than source) through the source's leading bytes. Pin it
 // at the codec level: write a wider scalar, read a narrower type back from
-// its leading bytes, and match the host compiler's own narrowing
-// reinterpret cast.
+// its leading bytes, and match the host compiler's own narrowing reinterpret
+// cast.
 @("writeScalar.thenReadScalar.narrowerTargetReadsLeadingBytesMatchingHostCompilersReinterpretCast")
 unittest {
     uint i = 0x1234_5678;

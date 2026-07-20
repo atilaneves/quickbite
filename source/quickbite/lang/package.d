@@ -81,8 +81,9 @@ public struct Value {
         in string[] typeNames,
         in string[] fieldNames,
         in Value[] fields,
+        in size_t identity = 0,
     ) @safe pure {
-        return Value(ClassObject(typeName, typeNames, fieldNames, fields));
+        return Value(ClassObject(typeName, typeNames, fieldNames, fields, identity));
     }
 
     public static Value arrayValue(in Value[] elements) @safe pure {
@@ -102,6 +103,22 @@ public struct Value {
             allocationOffset,
             allocationId,
         ));
+    }
+
+    public static Value nativeArrayValue(
+        in Value[] elements,
+        const(void)* address,
+    ) @safe pure {
+        return Value(Array(elements, ArrayDisplay.normal, address));
+    }
+
+    public static Value nativeArrayValueWithLength(
+        in size_t length,
+        const(void)* address,
+    ) @safe pure {
+        Value[] elements;
+        elements.length = length;
+        return nativeArrayValue(elements, address);
     }
 
     public static Value stringValue(in char[] elements) @safe pure {
@@ -1102,6 +1119,9 @@ public struct Value {
                 pointer.allocation,
                 pointer.offset + delta,
             )),
+            (const(NativePointer) pointer) => Value(NativePointer(
+                cast(void*) (cast(size_t) pointer.pointer + delta),
+            )),
             (_) {
                 throw new Exception("Expected pointer.");
                 return Value.void_;
@@ -1115,6 +1135,20 @@ public struct Value {
     }
 
     public long pointerOffsetDifference(in Value other) const @safe pure {
+        if (isNativePointer && other.isNativePointer) {
+            import std.sumtype: match;
+
+            return data.match!(
+                (const(NativePointer) left) => other.data.match!(
+                    (const(NativePointer) right) =>
+                        cast(long) cast(size_t) left.pointer -
+                            cast(long) cast(size_t) right.pointer,
+                    (_) => assert(false),
+                ),
+                (_) => assert(false),
+            );
+        }
+
         if (!pointerSameAllocation(other))
             throw new Exception("Expected pointers into the same allocation.");
 
@@ -1231,7 +1265,30 @@ public struct Value {
         );
     }
 
-    public Value arraySlice(in size_t lower, in size_t upper) const @safe pure {
+    public Value withArrayLength(in size_t length) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => Value(Array(
+                array.elements[0 .. length],
+                array.display,
+                array.allocation,
+                array.allocationOffset,
+                array.allocationId,
+                array.nativeAddress,
+            )),
+            (_) {
+                throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value arraySlice(
+        in size_t lower,
+        in size_t upper,
+        const(void)* nativeAddress = null,
+    ) const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -1241,6 +1298,7 @@ public struct Value {
                 array.allocation,
                 array.allocationOffset + lower,
                 array.allocationId,
+                nativeAddress,
             )),
             (_) {
                 throw new Exception("Expected array.");
@@ -1286,6 +1344,18 @@ public struct Value {
         );
     }
 
+    public const(void)* arrayNativeAddress() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.nativeAddress,
+            (_) {
+                throw new Exception("Expected array.");
+                return null;
+            },
+        );
+    }
+
     public Value structFieldAt(in size_t index) const @safe pure {
         import std.sumtype: match;
 
@@ -1306,6 +1376,18 @@ public struct Value {
             (_) {
                 throw new Exception("Expected class object.");
                 return Value.void_;
+            },
+        );
+    }
+
+    public size_t classIdentity() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) => object.identity,
+            (_) {
+                throw new Exception("Expected class object.");
+                return 0;
             },
         );
     }
@@ -1384,6 +1466,7 @@ public struct Value {
                     object.typeNames,
                     object.fieldNames,
                     values,
+                    object.identity,
                 );
             },
             (_) {
@@ -1420,6 +1503,7 @@ public struct Value {
                     object.typeNames,
                     object.fieldNames,
                     values,
+                    object.identity,
                 );
             },
             (_) {
@@ -1448,6 +1532,7 @@ public struct Value {
                     object.typeNames,
                     fieldNames,
                     values,
+                    object.identity,
                 );
             },
             (_) {
@@ -1875,6 +1960,7 @@ private struct Array {
     public size_t allocationOffset;
     public size_t allocationId;
     public ArrayDisplay display;
+    public const(void)* nativeAddress;
 
     public this(
         in Value[] elements,
@@ -1885,6 +1971,16 @@ private struct Array {
         this.allocationOffset = 0;
         this.allocationId = 0;
         this.display = display;
+        this.nativeAddress = null;
+    }
+
+    public this(
+        in Value[] elements,
+        in ArrayDisplay display,
+        const(void)* nativeAddress,
+    ) @safe pure {
+        this(elements, display);
+        this.nativeAddress = nativeAddress;
     }
 
     public this(
@@ -1893,12 +1989,14 @@ private struct Array {
         in Value[] allocation,
         in size_t allocationOffset = 0,
         in size_t allocationId = 0,
+        const(void)* nativeAddress = null,
     ) @safe pure {
         this.elements = elements.dup;
         this.allocation = allocation.dup;
         this.allocationOffset = allocationOffset;
         this.allocationId = allocationId;
         this.display = display;
+        this.nativeAddress = nativeAddress;
     }
 
     public bool opEquals(in Array other) const @safe pure {
@@ -2144,16 +2242,19 @@ private struct ClassObject {
     public string[] typeNames;
     public Field[] fields;
     public string[] fieldNames;
+    public size_t identity;
 
     public this(
         in string typeName,
         in string[] typeNames,
         in string[] fieldNames,
         in Value[] fields,
+        in size_t identity,
     ) @safe pure {
         this.typeName = typeName;
         this.typeNames = typeNames.dup;
         this.fieldNames = fieldNames.dup;
+        this.identity = identity;
 
         foreach (index, field; fields) {
             const name = index < fieldNames.length ? fieldNames[index] : "";

@@ -117,6 +117,15 @@ private struct ArrayElementAlias {
 private struct StructFieldAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t index;
+    public bool isClass;
+}
+
+// Stable identity for storage reached from one root variable by a sequence of
+// DMD field indices.  The path is owned and immutable because keys stored in
+// an associative array must not change after insertion.
+private struct FieldPathKey {
+    public imported!"dmd.declaration".VarDeclaration root;
+    public immutable(size_t)[] indices;
 }
 
 private class InterpretedException: Exception {
@@ -225,14 +234,6 @@ private struct Walker {
     // existing boxed `locals` path.
     private NativeStruct[VarDeclaration] structCells;
 
-    // Reverse lookup from a promoted `&s.field` pointer's allocation id
-    // (`fieldAddressAllocations`'s own id, reused rather than duplicated)
-    // back to which struct variable and field index (declaration order)
-    // share the SAME `structCells` entry's bytes -- the struct-field
-    // counterpart of `arrayAllocationVariables`' reverse lookup for `&a[i]`.
-    private VarDeclaration[size_t] structFieldPointerVariables;
-    private size_t[size_t] structFieldPointerFieldIndices;
-
     // Set by `writeThroughStructFieldPointer` for the receiver variable it
     // wrote into, mirroring `arrayPointerWritebacks` above: a cross-frame
     // write (the receiver is the CALLER's own local, absent from the
@@ -246,16 +247,16 @@ private struct Walker {
     // Reverse lookup from a promoted `&s.arr[i]` pointer's allocation id back
     // to which struct variable and (static-array) field index share the SAME
     // `structCells` entry's bytes -- the array-typed-field counterpart of
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices` above,
+    // the common direct-field reverse lookup,
     // needed because a static-array field's pointer carries an element
     // offset (`Value.pointerElementOffset`) and its cell view is a
     // `NativeArray` (`NativeStruct.arrayField`), not the single scalar byte
-    // range `structFieldPointerVariables` resolves to. Populated by
+    // range the direct-field reverse lookup resolves to. Populated by
     // `promoteStructArrayFieldCell`, called from `arrayPointer`'s
     // `DotVarExp` branch (mirroring `promoteStructFieldCell`'s role for a
     // scalar field). Cross-frame follow-up (2026-07-15): now duplicated into
     // child-frame walkers and merged back exactly like
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`
+    // the common direct-field reverse lookup
     // (`mergeStructArrayFieldPointerVariableMaps`), so a `&s.arr[i]` pointer
     // does survive being passed into another function; see
     // `structArrayFieldPointerWritebacks` below for the write-through side.
@@ -272,33 +273,9 @@ private struct Walker {
     // that actually owns `variable`.
     private bool[VarDeclaration] structArrayFieldPointerWritebacks;
 
-    // Reverse lookup from a promoted `&s.inner.x` pointer's allocation id back
-    // to which struct variable and (outer, inner) field-index pair share the
-    // SAME `structCells` entry's bytes -- the nested-struct-field
-    // counterpart of the struct-static-array-field case above, one level
-    // of struct-field nesting only: `inner` must itself be a (non-union) struct field of a
-    // plain struct local, and `x` a scalar field of `inner`. The cell view
-    // is `NativeStruct.structField(outerIndex).field(innerIndex)` -- a
-    // nested `NativeStruct` sharing the parent's block -- rather than the
-    // single top-level field range `structFieldPointerVariables` resolves
-    // to. Populated by `promoteNestedStructFieldCell`, called from
-    // `addressOfExpression`'s `DotVarExp` branch alongside
-    // `promoteStructFieldCell` (mirroring how `arrayPointer`'s `DotVarExp`
-    // branch already combines `promoteStructArrayFieldCell` with the same
-    // memoized id). Like `structFieldPointerVariables`, the id is memoized --
-    // here per (root variable, outer field index, inner field index) via
-    // `nestedFieldAddressAllocations` -- so repeated `&s.inner.x` evaluations
-    // share one identity, matching real addresses. Duplicated into
-    // child-frame walkers and merged back exactly like
-    // `structArrayFieldPointerVariables`/
-    // `FieldIndices` (`mergeNestedStructFieldPointerVariableMaps`), so a
-    // `&s.inner.x` pointer does survive being passed into another function;
-    // see `nestedStructFieldPointerWritebacks` below for the write-through
-    // side.
-    private VarDeclaration[size_t] nestedStructFieldPointerVariables;
-    private size_t[size_t] nestedStructFieldPointerOuterFieldIndices;
-    private size_t[size_t] nestedStructFieldPointerInnerFieldIndices;
-
+    // Cross-frame writes through a common two-index `fieldPointerPaths`
+    // entry still need the owning frame's boxed mirror refreshed after the
+    // shared `structCells` bytes change.
     // Set by `writeThroughNestedStructFieldPointer` for the receiver variable
     // it wrote into, the nested-field sibling of
     // `structArrayFieldPointerWritebacks`: a cross-frame write (the receiver
@@ -309,20 +286,20 @@ private struct Walker {
     // the frame that actually owns `variable`.
     private bool[VarDeclaration] nestedStructFieldPointerWritebacks;
 
-    // Array-element sibling of `nestedStructFieldPointerVariables` above:
+    // Array-element sibling of the common nested-field reverse lookup:
     // `&a[i].inner.x` where `a` is a dynamic array of a (non-union) struct
     // whose `inner` field is itself a (non-union) struct, and `x` is a
     // scalar field of `inner`. The cell view is `NativeArray.
     // structElement(elementIndex).structField(outerIndex).field(innerIndex)`
     // -- composing the array-of-struct cell's own per-element
     // `NativeStruct` view (`promoteArrayCell`'s struct-element branch) with
-    // the same nested-`NativeStruct` view `nestedStructFieldPointerVariables`
-    // already resolves through, both pre-existing composition accessors.
+    // the same nested-`NativeStruct` view the common field path resolves
+    // through, both pre-existing composition accessors.
     // Populated by `promoteArrayNestedStructFieldCell`, called from
     // `addressOfExpression`'s `DotVarExp` branch alongside the existing
     // struct/nested-struct/class promotion calls. Narrower than
-    // `nestedStructFieldPointerVariables` in the same way that map is
-    // narrower than `structFieldPointerVariables`: the id is never memoized
+    // the common nested-field reverse lookup in the same way that family is
+    // narrower than the direct-field reverse lookup: the id is never memoized
     // (this receiver shape already takes `fieldSnapshotAllocationId`'s
     // fresh-id fallback, same as the non-array nested-field case), and this
     // is same-frame only -- no cross-frame duping/merge/writeback, left as a
@@ -347,26 +324,24 @@ private struct Walker {
     // `Type.size` is a reference's pointer width, not the object body's
     // size, so the block is sized by summing this narrow slice's own
     // (offset + typeByteSize) over `layout.classFields`, not `NativeStruct.
-    // allocate`'s `TypeStruct`-only sizing. Only the address-taken field(s)
-    // of a plain (non-dataseg) class LOCAL are covered; every other field
-    // access (a second reference to the SAME object, a field reached
-    // through `this`, `new`-returned pointers, or any object not bound to
-    // its own bare local) is untouched and keeps using the existing boxed
-    // `locals` path -- this slice does not model class reference identity,
-    // only the one-local case `structCells` models for structs.
+    // allocate`'s `TypeStruct`-only sizing. This map caches the
+    // identity-owned block below for bindings that need variable reverse
+    // lookup; it does not own object storage.
     private NativeBlock[VarDeclaration] classCells;
+    // Class object bodies are owned by object identity. `classCells` is only
+    // a binding cache into this table; rebinding a variable drops that cache
+    // without destroying storage still reachable through another reference.
+    private NativeBlock[size_t] classObjectCells;
 
-    // Reverse lookup from a promoted `&c.field` pointer's allocation id back
-    // to which class variable and field index (declaration order) share the
-    // SAME `classCells` entry's bytes -- the class-field counterpart of
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`.
-    // Cross-frame follow-up (2026-07-15): now duplicated into child-frame
-    // walkers and merged back exactly like `structFieldPointerVariables`/
-    // `FieldIndices` (`mergeClassFieldPointerVariableMaps`), so a `&c.field`
-    // pointer does survive being passed into another function; see
-    // `classFieldPointerWritebacks` below for the write-through side.
-    private VarDeclaration[size_t] classFieldPointerVariables;
-    private size_t[size_t] classFieldPointerFieldIndices;
+    // Common reverse lookup from a field pointer's allocation id to its root
+    // variable and DMD field-index path. Direct scalar struct and class fields
+    // are migrated; the remaining shape-specific maps move here without
+    // changing this representation.
+    private FieldPathKey[size_t] fieldPointerPaths;
+    // A class-field pointer remains attached to the object after the variable
+    // used to reach it is rebound. Index its object identity by allocation id
+    // instead of retaining another storage handle.
+    private size_t[size_t] classFieldPointerObjectIds;
 
     // Set by `writeThroughClassFieldPointer` for the receiver variable it
     // wrote into, the class sibling of `structFieldPointerWritebacks`: a
@@ -378,11 +353,11 @@ private struct Walker {
     // that actually owns `variable`.
     private bool[VarDeclaration] classFieldPointerWritebacks;
 
-    // Reverse lookup from a promoted `&c.inner.x` pointer's allocation id
-    // back to which class variable and (outer, inner) field-index pair share
-    // the SAME `classCells` entry's bytes -- the class-receiver sibling of
-    // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
-    // `...InnerFieldIndices` above, one level of struct-field nesting only:
+    // A promoted `&c.inner.x` pointer uses the common two-index
+    // `fieldPointerPaths` reverse lookup to reach the class variable and
+    // (outer, inner) field-index pair sharing the SAME `classCells` entry's
+    // bytes. This is the class-receiver sibling of the nested struct field
+    // path above, one level of struct-field nesting only:
     // `inner` must itself be a (non-union) struct field of a plain class
     // local, and `x` a scalar field of `inner`. The cell view is a
     // `NativeStruct` adopted over `classCells[variable].subRange(outerOffset,
@@ -398,20 +373,11 @@ private struct Walker {
     // through-pointer support (`*p = v`) landed in a follow-up slice --
     // `writeThroughNestedClassStructFieldPointer`, wired into
     // `writeLocation`'s `PtrExp` arm and `writePointerTarget` alongside its
-    // struct/class-field siblings. Cross-frame follow-up (2026-07-15): now
-    // duplicated into child-frame walkers and merged back exactly like
-    // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
-    // `...InnerFieldIndices` (`mergeNestedClassStructFieldPointerVariableMaps`
-    // -- a plain union merge, unmemoized through `fieldAddressAllocations`
-    // for the same reason the struct-receiver sibling's own id is: the
-    // receiver's `dot.e1` is itself a `DotVarExp`, so `fieldSnapshotAllocationId`
-    // always takes its non-`VarExp`-receiver fresh-id fallback), so a
-    // `&c.inner.x` pointer does survive being passed into another function;
-    // see `nestedClassStructFieldPointerWritebacks` below for the
-    // write-through side.
-    private VarDeclaration[size_t] nestedClassStructFieldPointerVariables;
-    private size_t[size_t] nestedClassStructFieldPointerOuterFieldIndices;
-    private size_t[size_t] nestedClassStructFieldPointerInnerFieldIndices;
+    // struct/class-field siblings. The common reverse lookup is duplicated
+    // into child walkers and merged back with the owning frame's field-path
+    // allocation memo winning, so the pointer survives a function call; see
+    // `nestedClassStructFieldPointerWritebacks` below for the write-through
+    // side.
 
     // Set by `writeThroughNestedClassStructFieldPointer` for the receiver
     // variable it wrote into, the class-receiver sibling of
@@ -466,6 +432,7 @@ private struct Walker {
     private FuncDeclaration[size_t] functionPointers;
     private size_t[FuncDeclaration] functionPointerIds;
     private size_t nextFunctionPointerId;
+    private size_t nextClassObjectId;
     private RuntimeDelegate[size_t] delegates;
     private imported!"quickbite.backends.interpreter.ffi_marshal".
         InterpreterInboundTrampolineSession* durableInboundSession;
@@ -489,32 +456,16 @@ private struct Walker {
     // old id remains live.
     private NativeArray[size_t] arrayAllocationCarriers;
     private bool[VarDeclaration] arrayPointerWritebacks;
-    // Per-(receiver variable, field index) memo for `&s.field` allocation
-    // ids (Rung 7): repeated address-of evaluations of the same field must
-    // return the same identity. Every id minted through that path (memoized
-    // or not) is also recorded in `fieldSnapshotAllocationIds` so
-    // `writeLocation`'s `PtrExp` path can refuse writing through it.
-    private size_t[size_t][VarDeclaration] fieldAddressAllocations;
-    // Per-(root variable, outer field index, inner field index) memo for
-    // `&s.inner.x`/`&c.inner.x` allocation ids -- the one-level-nested
-    // sibling of `fieldAddressAllocations` above: repeated address-of
-    // evaluations of the same nested field return the same identity.
-    // Cross-frame follow-up (2026-07-16): now duplicated into every
-    // child-frame `Walker` and merged back (`mergeNestedFieldAddressAllocations`)
-    // exactly like `fieldAddressAllocations`, closing the gap this comment
-    // used to name -- a nested function closing over a shared enclosing
-    // struct/class local now sees (and, if it mints one first, hands back)
-    // the SAME memoized id for `&s.inner.x`/`&c.inner.x` as the enclosing
-    // frame, matching real D's shared stack storage. `dropStructCell`/
-    // `dropClassCell` still clear this map's per-variable entry on a fresh
-    // rebind (unchanged), so a loop or recursion re-declaring the same
-    // struct/class local still mints a genuinely fresh id after the rebind
-    // rather than reusing the stale one -- see the recursion-rebind fixtures
-    // this reasoning mirrors for `fieldAddressAllocations` itself.
-    private size_t[size_t][size_t][VarDeclaration] nestedFieldAddressAllocations;
+    // Allocation-id memo keyed by the storage root and its field path.
+    // Direct and one-level-nested struct and class fields share this
+    // representation; extending a supported receiver shape adds indices to
+    // the path rather than another parallel map family. Every id minted
+    // through this path is also recorded
+    // in `fieldSnapshotAllocationIds` so `writeLocation`'s `PtrExp` path can
+    // refuse writing through it.
+    private size_t[FieldPathKey] fieldPathAddressAllocations;
     private bool[size_t] fieldSnapshotAllocationIds;
     private size_t allocationCount;
-    private size_t lastGCArrayUsedAllocation;
     private Value result;
     private bool runningCalledFunction;
     private bool inUnitTest;
@@ -1700,6 +1651,8 @@ private struct Walker {
             if (variable is null)
                 return runSymbolDeclarationVarExpression(var);
 
+            variable = refLocalStorageVariable(variable);
+
             // the magic __ctfe variable is true under AST interpretation,
             // matching dmd's own interpreter; the language requires both
             // __ctfe branches to be observably equivalent
@@ -1730,6 +1683,30 @@ private struct Walker {
 
                 return readScalar(variable.type, cell.bytes);
             }
+
+            if (auto cell = variable in arrayCells)
+                if (auto current = variable in locals)
+                    if (current.isArray)
+                        return arrayValueFromCell(*current, *cell);
+
+            // A class cell is likewise authoritative for a whole-value read,
+            // not only for field access and pointer writeback. Reconstructing
+            // here ensures return values and onward arguments cannot carry a
+            // stale boxed snapshot after an aliased field mutation.
+            if (auto cell = variable in classCells) {
+                auto current = variable in locals;
+                auto classType = variable.type.toBasetype.isTypeClass;
+                if (
+                    current !is null && current.isClassObject &&
+                    classType !is null && classType.sym !is null
+                )
+                    return classValueFromCell(*current, *cell, classType.sym);
+            }
+
+            if (auto cell = variable in structCells)
+                if (auto current = variable in locals)
+                    if (current.isStruct)
+                        return structValueFromCell(*current, *cell);
 
             if (auto current = variable in locals)
                 return *current;
@@ -1914,15 +1891,23 @@ private struct Walker {
         const left = runExpression(add.e1);
         const right = runExpression(add.e2);
 
-        if (left.isPointer)
+        if (left.isPointer) {
+            const offset = left.isNativePointer
+                ? right.asLong
+                : pointerElementOffset(add.type, right.asLong);
             return left.pointerOffsetBy(
-                pointerElementOffset(add.type, right.asLong),
+                offset,
             );
+        }
 
-        if (right.isPointer)
+        if (right.isPointer) {
+            const offset = right.isNativePointer
+                ? left.asLong
+                : pointerElementOffset(add.type, left.asLong);
             return right.pointerOffsetBy(
-                pointerElementOffset(add.type, left.asLong),
+                offset,
             );
+        }
 
         return left + right;
     }
@@ -1933,16 +1918,23 @@ private struct Walker {
 
         // DMD lowers `p - q` to `(p - q) / elementSize`; return the byte
         // difference so the lowered division yields the element difference
-        if (left.isPointer && right.isPointer)
+        if (left.isPointer && right.isPointer) {
+            const scale = left.isNativePointer && right.isNativePointer
+                ? 1
+                : pointerElementSize(sub.e1.type);
             return Value(
-                left.pointerOffsetDifference(right) *
-                pointerElementSize(sub.e1.type),
+                left.pointerOffsetDifference(right) * scale,
             );
+        }
 
-        if (left.isPointer)
+        if (left.isPointer) {
+            const offset = left.isNativePointer
+                ? right.asLong
+                : pointerElementOffset(sub.type, right.asLong);
             return left.pointerOffsetBy(
-                -pointerElementOffset(sub.type, right.asLong),
+                -offset,
             );
+        }
 
         return left - right;
     }
@@ -2040,6 +2032,19 @@ private struct Walker {
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
 
+            if (auto index = dot.e1.isIndexExp) {
+                import quickbite.backends.interpreter.layout: fieldByteOffset;
+
+                if (auto field = dot.var.isVarDeclaration) {
+                    const elementIndex = runExpression(index.e2).asLong;
+                    const elementPointer = arrayPointer(index.e1, elementIndex, op);
+                    if (elementPointer.isNativePointer)
+                        return elementPointer.pointerOffsetBy(
+                            cast(long) fieldByteOffset(field),
+                        );
+                }
+            }
+
             // Any other field type: a pointer snapshotting the field's
             // current value, mirroring runNewScalarPointerExpression's
             // single-value allocation. The id is memoized per (receiver
@@ -2117,9 +2122,7 @@ private struct Walker {
     // field index) when the receiver resolves to a plain `VarExp`. A
     // one-level-nested receiver (`&s.inner.x`/`&c.inner.x`, `dot.e1` itself a
     // `DotVarExp` whose own `e1` resolves to a plain `VarExp`) is memoized
-    // too, per (root variable, outer field index, inner field index) via
-    // `nestedFieldAddressAllocations` (cross-frame since 2026-07-16 -- see
-    // that field's own comment). Any other receiver shape
+    // too, with a two-index `FieldPathKey`. Any other receiver shape
     // (e.g. `&call().field`, or two or more levels of nesting) gets a fresh
     // id every time. Either way the id is recorded as a field snapshot so
     // writeLocation's PtrExp path can refuse writing through it.
@@ -2131,23 +2134,24 @@ private struct Walker {
     // any class-cell machinery could even run. `variable`'s static type
     // never changes, so dispatching once here on the receiver's own type is
     // safe -- the two field-index spaces never collide in
-    // `fieldAddressAllocations[variable]`, which is keyed per-variable (and,
-    // for the nested case, `nestedFieldAddressAllocations[rootVariable]`).
+    // `fieldPathAddressAllocations`, whose root is that variable.
     private size_t fieldSnapshotAllocationId(
         imported!"dmd.expression".DotVarExp dot,
     ) {
         auto var = dot.e1.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable !is null) {
+            // Mutable because DMD declarations do not expose a const API.
+            auto storageVariable = refLocalStorageVariable(variable);
             const fieldIndex = receiverClassType(dot.e1) !is null
                 ? classFieldIndex(dot)
                 : structFieldIndex(dot);
-            if (auto forReceiver = variable in fieldAddressAllocations)
-                if (auto id = fieldIndex in *forReceiver)
-                    return *id;
+            auto key = directFieldPathKey(storageVariable, fieldIndex);
+            if (auto id = key in fieldPathAddressAllocations)
+                return *id;
 
             const id = ++allocationCount;
-            fieldAddressAllocations[variable][fieldIndex] = id;
+            fieldPathAddressAllocations[key] = id;
             fieldSnapshotAllocationIds[id] = true;
             return id;
         }
@@ -2155,13 +2159,10 @@ private struct Walker {
         // One-level-nested receiver (`&s.inner.x`/`&c.inner.x`): `dot.e1` is
         // itself a `DotVarExp` (`s.inner`/`c.inner`) whose own `e1` resolves
         // to a plain local. Memoized per (root variable, outer field index,
-        // inner field index) via `nestedFieldAddressAllocations` -- the
-        // nested-field sibling of `fieldAddressAllocations` above, closing
-        // the "full field-PATH generalization" gap those maps' own doc
-        // comments named: repeated `&s.inner.x` evaluations now return the
-        // same identity, matching real addresses, exactly as the direct-field
-        // case already does. Shared between a struct and a class root
-        // variable the same way `fieldAddressAllocations` is (a variable's
+        // inner field index) in the common field-path map: repeated
+        // `&s.inner.x` evaluations return the same identity, matching real
+        // addresses, exactly as the direct-field case already does. Shared
+        // between a struct and a class root variable (a variable's
         // static type never changes, so the two outer-field-index spaces
         // never collide).
         if (auto innerDot = dot.e1.isDotVarExp) {
@@ -2173,13 +2174,12 @@ private struct Walker {
                     : structFieldIndex(innerDot);
                 const innerIndex = structFieldIndex(dot);
 
-                if (auto forOuter = rootVariable in nestedFieldAddressAllocations)
-                    if (auto forInner = outerIndex in *forOuter)
-                        if (auto id = innerIndex in *forInner)
-                            return *id;
+                auto key = fieldPathKey(rootVariable, [outerIndex, innerIndex]);
+                if (auto id = key in fieldPathAddressAllocations)
+                    return *id;
 
                 const id = ++allocationCount;
-                nestedFieldAddressAllocations[rootVariable][outerIndex][innerIndex] = id;
+                fieldPathAddressAllocations[key] = id;
                 fieldSnapshotAllocationIds[id] = true;
                 return id;
             }
@@ -2188,6 +2188,20 @@ private struct Walker {
         const id = ++allocationCount;
         fieldSnapshotAllocationIds[id] = true;
         return id;
+    }
+
+    private FieldPathKey directFieldPathKey(
+        VarDeclaration root,
+        in size_t fieldIndex,
+    ) {
+        return fieldPathKey(root, [fieldIndex]);
+    }
+
+    private FieldPathKey fieldPathKey(
+        VarDeclaration root,
+        immutable(size_t)[] indices,
+    ) {
+        return FieldPathKey(root, indices);
     }
 
     // The address of a ref return's lvalue, evaluated in the returning
@@ -2272,15 +2286,11 @@ private struct Walker {
         child.arrayCells = arrayCells.dup;
         child.structCells = structCells.dup;
         child.classCells = classCells.dup;
-        child.classFieldPointerVariables = classFieldPointerVariables.dup;
-        child.classFieldPointerFieldIndices = classFieldPointerFieldIndices.dup;
+        child.classObjectCells = classObjectCells.dup;
+        child.nextClassObjectId = nextClassObjectId;
+        child.fieldPointerPaths = fieldPointerPaths.dup;
+        child.classFieldPointerObjectIds = classFieldPointerObjectIds.dup;
         child.classFieldPointerWritebacks = classFieldPointerWritebacks.dup;
-        child.nestedClassStructFieldPointerVariables =
-            nestedClassStructFieldPointerVariables.dup;
-        child.nestedClassStructFieldPointerOuterFieldIndices =
-            nestedClassStructFieldPointerOuterFieldIndices.dup;
-        child.nestedClassStructFieldPointerInnerFieldIndices =
-            nestedClassStructFieldPointerInnerFieldIndices.dup;
         child.nestedClassStructFieldPointerWritebacks =
             nestedClassStructFieldPointerWritebacks.dup;
         child.classArrayFieldPointerVariables = classArrayFieldPointerVariables.dup;
@@ -2299,21 +2309,13 @@ private struct Walker {
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.arrayAllocationCarriers = arrayAllocationCarriers.dup;
-        child.structFieldPointerVariables = structFieldPointerVariables.dup;
-        child.structFieldPointerFieldIndices = structFieldPointerFieldIndices.dup;
         child.structFieldPointerWritebacks = structFieldPointerWritebacks.dup;
         child.structArrayFieldPointerVariables = structArrayFieldPointerVariables.dup;
         child.structArrayFieldPointerFieldIndices =
             structArrayFieldPointerFieldIndices.dup;
         child.structArrayFieldPointerWritebacks = structArrayFieldPointerWritebacks.dup;
-        child.nestedStructFieldPointerVariables = nestedStructFieldPointerVariables.dup;
-        child.nestedStructFieldPointerOuterFieldIndices =
-            nestedStructFieldPointerOuterFieldIndices.dup;
-        child.nestedStructFieldPointerInnerFieldIndices =
-            nestedStructFieldPointerInnerFieldIndices.dup;
         child.nestedStructFieldPointerWritebacks = nestedStructFieldPointerWritebacks.dup;
-        child.fieldAddressAllocations = fieldAddressAllocations.dup;
-        child.nestedFieldAddressAllocations = nestedFieldAddressAllocations.dup;
+        child.fieldPathAddressAllocations = fieldPathAddressAllocations.dup;
         child.fieldSnapshotAllocationIds = fieldSnapshotAllocationIds.dup;
         child.arrayPointerWritebacks = arrayPointerWritebacks.dup;
         child.allocationCount = allocationCount;
@@ -2365,7 +2367,109 @@ private struct Walker {
 
         auto var = array.isVarExp;
         if (var is null) {
+            if (auto index = array.isIndexExp) {
+                import quickbite.backends.interpreter.layout: typeByteSize;
+
+                const outerOffset = runExpression(index.e2).asLong;
+                const pointer = arrayPointer(index.e1, outerOffset, op);
+                if (pointer.isNativePointer)
+                    return pointer.pointerOffsetBy(
+                        offset * cast(long) typeByteSize(
+                            array.type.toBasetype.nextOf,
+                        ),
+                    );
+            }
+
             if (auto dot = array.isDotVarExp) {
+                import quickbite.backends.interpreter.layout:
+                    classFields, fieldByteOffset, typeByteSize;
+                import quickbite.frontend.dmd.types:
+                    isDynamicArrayType, isStaticArrayType;
+
+                if (isDynamicArrayType(dot.type)) {
+                    auto receiver = dot.e1.isVarExp;
+                    auto structVariable = receiver is null
+                        ? null
+                        : receiver.var.isVarDeclaration;
+                    if (
+                        structVariable !is null &&
+                        structVariable.type.toBasetype.isTypeStruct !is null
+                    ) {
+                        structVariable = refLocalStorageVariable(structVariable);
+                        promoteStructCell(structVariable);
+                        if (auto cell = structVariable in structCells) {
+                            auto fieldCell = cell.sliceField(
+                                structFieldIndex(dot),
+                            );
+                            return Value.nativePointerValue(
+                                fieldCell.block.address + offset *
+                                    typeByteSize(dot.type.toBasetype.nextOf),
+                            );
+                        }
+                    }
+
+                    auto variable = classCellKeyVariable(dot.e1);
+                    if (variable !is null) {
+                        promoteClassCell(variable);
+                        if (auto cell = variable in classCells) {
+                            const fieldIndex = classFieldIndex(dot);
+                            auto fieldCell = classSliceField(
+                                *cell,
+                                variable.type.toBasetype.isTypeClass.sym,
+                                fieldIndex,
+                            );
+                            return Value.nativePointerValue(
+                                fieldCell.block.address + offset *
+                                    typeByteSize(dot.type.toBasetype.nextOf),
+                            );
+                        }
+                    }
+                }
+
+                auto elementType = dot.type.toBasetype.nextOf.toBasetype;
+                auto structType = elementType.isTypeStruct;
+                if (
+                    isStaticArrayType(dot.type) &&
+                    structType !is null &&
+                    structType.sym.isUnionDeclaration is null
+                ) {
+                    auto receiver = dot.e1.isVarExp;
+                    auto structVariable = receiver is null
+                        ? null
+                        : receiver.var.isVarDeclaration;
+                    if (
+                        structVariable !is null &&
+                        structVariable.type.toBasetype.isTypeStruct !is null
+                    ) {
+                        structVariable = refLocalStorageVariable(structVariable);
+                        promoteStructCell(structVariable);
+                        if (auto cell = structVariable in structCells) {
+                            auto fieldCell = cell.arrayField(
+                                structFieldIndex(dot),
+                            );
+                            return Value.nativePointerValue(
+                                fieldCell.block.address + offset *
+                                    typeByteSize(elementType),
+                            );
+                        }
+                    }
+
+                    auto variable = classCellKeyVariable(dot.e1);
+                    if (variable !is null) {
+                        promoteClassCell(variable);
+                        if (auto cell = variable in classCells) {
+                            // DMD declaration helpers require a mutable node.
+                            auto field = classFields(
+                                variable.type.toBasetype.isTypeClass.sym,
+                            )[classFieldIndex(dot)];
+                            return Value.nativePointerValue(
+                                cell.address + fieldByteOffset(field) + offset *
+                                    typeByteSize(elementType),
+                            );
+                        }
+                    }
+                }
+
                 // For the struct-static-array-field case,
                 // `&s.arr[i]` where `arr` is a static-array field of a plain
                 // struct local. Reusing `fieldSnapshotAllocationId` gives the
@@ -2402,6 +2506,8 @@ private struct Walker {
         if (variable is null)
             throw new Exception(text("Unsupported eval expression: ", op));
 
+        variable = refLocalStorageVariable(variable);
+
         auto current = variable in locals;
         if (current is null)
             throw new Exception(text("Unsupported eval expression: ", op));
@@ -2418,6 +2524,16 @@ private struct Walker {
         // `arrayAllocationVariables`) and this cell agree on which variable
         // owns the shared bytes.
         promoteArrayCell(source);
+
+        if (auto cell = source in arrayCells) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            const elementOffset = arrayPointerOffset(*current, offset);
+            return Value.nativePointerValue(
+                cell.block.address + elementOffset *
+                    typeByteSize(array.type.toBasetype.nextOf),
+            );
+        }
 
         const id = variable in arrayAllocationAliases;
         return Value.arrayPointerValue(
@@ -2437,7 +2553,16 @@ private struct Walker {
     ) {
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
+        variable = refLocalStorageVariable(variable);
+
         if (isStaticArrayType(variable.type)) {
+            // `&array` points at the static-array local itself, unlike
+            // `&array[index]`, which points into its elements. Keep the
+            // former on the local-pointer identity path so a plain `ref`
+            // static-array local can reuse that exact storage identity.
+            if (isStaticArrayType(symbol.type.toBasetype.nextOf))
+                return localPointerValue(variable);
+
             // Taking the address of a still-void static array materialises
             // its storage (as aggregate reads do) so writes through the
             // pointer have somewhere to land.
@@ -2446,6 +2571,11 @@ private struct Walker {
 
             if (auto current = variable in locals) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
+
+                promoteArrayCell(variable);
+                if (auto cell = variable in arrayCells)
+                    return Value.nativePointerValue(cell.block.address)
+                        .pointerOffsetBy(cast(long) symbol.offset);
 
                 auto elementType = variable.type.toBasetype.nextOf.toBasetype;
                 const elementSize = typeByteSize(elementType);
@@ -2469,6 +2599,15 @@ private struct Walker {
     }
 
     private Value localPointerValue(VarDeclaration variable) {
+        if (auto alias_ = variable in structFieldAliases)
+            if (auto id = directFieldPathKey(alias_.source, alias_.index)
+                    in fieldPathAddressAllocations)
+                return Value.arrayPointerValue(
+                    [readCelledLocal(variable)],
+                    *id,
+                    0,
+                );
+
         promoteScalarCell(variable);
 
         if (auto id = variable in localPointerIds)
@@ -2478,6 +2617,22 @@ private struct Walker {
         localPointerIds[variable] = id;
         localPointers[id] = variable;
         return Value.localPointerValue(id);
+    }
+
+    // A plain aggregate `ref` binding reuses its source's local-pointer id.
+    // Resolve that existing identity back to the declaration which owns the
+    // storage so reads and assignments through the ref local or parameter do
+    // not acquire an independent boxed slot.
+    private VarDeclaration refLocalStorageVariable(VarDeclaration variable) {
+        if (!isRefVariable(variable))
+            return variable;
+
+        auto id = variable in localPointerIds;
+        if (id is null)
+            return variable;
+
+        auto source = *id in localPointers;
+        return source is null ? variable : *source;
     }
 
     // Eagerly gives an address-taken native-scalar local an authoritative
@@ -2523,7 +2678,7 @@ private struct Walker {
         scalarCells[variable] = cell;
     }
 
-    // Eagerly gives an address-taken dynamic-array local a `NativeArray`
+    // Eagerly gives an address-taken array local a `NativeArray`
     // cell the first time `&a[i]` is taken (`arrayCells`'s own promotion,
     // mirroring `promoteScalarCell` above), seeded from the array's current boxed
     // elements. A dynamic array whose element type is `native_scalar.
@@ -2531,7 +2686,7 @@ private struct Walker {
     // element type is a (non-union) struct gets a cell too, seeded field by
     // field through `NativeArray.structElement`/`writeStructCellScalarFields`
     // -- the array-of-struct counterpart of `promoteStructCell` above,
-    // reusing the same composition accessor. A dynamic array whose element
+    // reusing the same composition accessor. An array whose element
     // type is itself a scalar-element static array (`int[3][] a`) gets a
     // cell too, seeded element by element through `NativeArray.arrayElement`/
     // `writeStaticArrayCellScalarElements` -- the array-of-array counterpart
@@ -2548,13 +2703,8 @@ private struct Walker {
     private void promoteArrayCell(VarDeclaration variable) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
-        import quickbite.frontend.dmd.types: isDynamicArrayType;
-
-        if (variable in arrayCells)
-            return;
-
-        if (!isDynamicArrayType(variable.type))
-            return;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         // Dataseg storage has no trustworthy default-value seed: until its
         // current value has been materialized in `locals`, its initializer or
@@ -2563,6 +2713,11 @@ private struct Walker {
             return;
 
         auto elementType = variable.type.toBasetype.nextOf.toBasetype;
+        if (!isDynamicArrayType(variable.type) && !(
+            isStaticArrayType(variable.type) &&
+            isStaticArrayType(elementType)
+        ))
+            return;
 
         auto current = defaultValue(variable);
         if (auto existing = variable in locals)
@@ -2571,7 +2726,25 @@ private struct Walker {
         if (!current.isArray)
             return;
 
+        if (auto existing = variable in arrayCells) {
+            if (
+                current.arrayNativeAddress is null ||
+                existing.block.address is current.arrayNativeAddress
+            )
+                return;
+            dropArrayCell(variable);
+        }
+
         if (isNativeScalarType(elementType)) {
+            if (current.arrayNativeAddress !is null) {
+                arrayCells[variable] = NativeArray.borrow(
+                    elementType,
+                    cast(void*) current.arrayNativeAddress,
+                    current.length,
+                );
+                return;
+            }
+
             auto cell = NativeArray.allocate(elementType, current.length);
             foreach (index; 0 .. current.length)
                 writeScalar(elementType, cell.element(index), current[index]);
@@ -2778,9 +2951,9 @@ private struct Walker {
     // same seed/refresh treatment, applied recursively (the recursion itself
     // is not depth-limited, even though the address-of/pointer-deref
     // machinery that reads it back currently only resolves one level of
-    // nesting -- see the `nestedStructFieldPointerVariables` field
-    // declaration comment). Every other non-scalar field (dynamic
-    // array/slice, class, or a union at any level) is left untouched,
+    // nesting -- see the common field-path comment). Every other non-scalar
+    // field (class, an unsupported dynamic-array element shape, or a union
+    // at any level) is left untouched,
     // matching this narrow slice's scope -- only an address-taken scalar
     // field, scalar-element static-array field, or (one level deep) nested
     // scalar field is ever read back through a `structCells` entry, so
@@ -2792,9 +2965,11 @@ private struct Walker {
     // later deref-read (`structArrayFieldPointerCellValue`/
     // `nestedStructFieldPointerCellValue`).
     private void writeStructCellScalarFields(ref NativeStruct cell, in Value structValue) {
+        import quickbite.backends.interpreter.layout: fieldByteOffset;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         foreach (index; 0 .. cell.fieldCount) {
             auto fieldType = cell.fieldDeclaration(index).type;
@@ -2806,7 +2981,11 @@ private struct Walker {
 
             if (isStaticArrayType(fieldType)) {
                 auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 const fieldValue = structValue.structFieldAt(index);
@@ -2815,7 +2994,45 @@ private struct Walker {
 
                 auto arrayCell = cell.arrayField(index);
                 foreach (elementIndex; 0 .. fieldValue.length)
-                    writeScalar(elementType, arrayCell.element(elementIndex), fieldValue[elementIndex]);
+                    writeArrayCellElement(
+                        arrayCell,
+                        elementIndex,
+                        fieldValue[elementIndex],
+                    );
+                continue;
+            }
+
+            if (isDynamicArrayType(fieldType)) {
+                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
+                    continue;
+
+                const fieldValue = structValue.structFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = fieldValue.arrayNativeAddress is null
+                    ? NativeArray.allocate(elementType, fieldValue.length)
+                    : NativeArray.borrow(
+                        elementType,
+                        cast(void*) fieldValue.arrayNativeAddress,
+                        fieldValue.length,
+                    );
+                if (fieldValue.arrayNativeAddress is null)
+                    foreach (elementIndex; 0 .. fieldValue.length)
+                        writeArrayCellElement(
+                            arrayCell,
+                            elementIndex,
+                            fieldValue[elementIndex],
+                        );
+                arrayCell.writeSliceHeader(
+                    cell.block,
+                    fieldByteOffset(cell.fieldDeclaration(index)),
+                );
                 continue;
             }
 
@@ -2839,7 +3056,7 @@ private struct Walker {
     // role in `arrayPointer`) and records `id` -- the SAME allocation id
     // `addressOfExpression`'s caller already memoized via
     // `fieldSnapshotAllocationId` -- in the reverse lookup
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices`, so a
+    // common `fieldPointerPaths` reverse lookup, so a
     // later deref-read through this id's pointer
     // (`structFieldPointerCellValue`) can find the same cell and field. A
     // no-op (no cell, no reverse-lookup entry) for a non-`VarExp` receiver
@@ -2864,8 +3081,7 @@ private struct Walker {
         if ((variable in structCells) is null)
             return;
 
-        structFieldPointerVariables[id] = variable;
-        structFieldPointerFieldIndices[id] = structFieldIndex(dot);
+        fieldPointerPaths[id] = directFieldPathKey(variable, structFieldIndex(dot));
     }
 
     // Eagerly gives an address-taken class local a `classCells` cell the
@@ -2901,6 +3117,15 @@ private struct Walker {
         if (!current.isClassObject)
             return;
 
+        const identity = current.classIdentity;
+        if (identity == 0)
+            return;
+
+        if (auto existing = identity in classObjectCells) {
+            classCells[variable] = *existing;
+            return;
+        }
+
         size_t byteSize;
         foreach (field; classFields(classType.sym)) {
             const end = fieldByteOffset(field) + typeByteSize(field.type);
@@ -2910,6 +3135,7 @@ private struct Walker {
 
         auto cell = NativeBlock.allocate(byteSize, NativeBlock.Scan.conservative);
         writeClassCellScalarFields(cell, classType.sym, current);
+        classObjectCells[identity] = cell;
         classCells[variable] = cell;
     }
 
@@ -2920,7 +3146,7 @@ private struct Walker {
     // points `target` at the SAME `NativeBlock` -- `NativeBlock` is a value
     // struct whose `bytes` is a slice, so copying it (`classCells[target] =
     // *cell`) shares the one underlying byte range, exactly like two
-    // `structFieldPointerVariables` entries sharing a `structCells` block.
+    // direct-field reverse-lookup entries sharing a `structCells` block.
     // A no-op when `source` is not a bare `VarExp` (e.g. `c2 = f();`), or
     // `target` is not class-typed, or `promoteClassCell` itself is a no-op
     // (a dataseg variable, or a receiver whose boxed value is not a class
@@ -2933,6 +3159,8 @@ private struct Walker {
     ) {
         if (target.type.toBasetype.isTypeClass is null)
             return;
+
+        target = refLocalStorageVariable(target);
 
         auto sourceVar = source.isVarExp;
         if (sourceVar is null)
@@ -2974,8 +3202,8 @@ private struct Walker {
     // argument (e.g. `mutate(makeC())`), or a receiver whose
     // `promoteClassCell` is itself a no-op (dataseg source, or a boxed value
     // that is not a class object, e.g. still `null`) -- every one of those
-    // leaves the parameter using the existing boxed
-    // `writeBackByValueClassArguments` shim unchanged.
+    // leaves the parameter using its ordinary boxed value; no caller
+    // writeback is correct for a by-value parameter.
     private void registerClassArgumentAliases(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
@@ -3009,8 +3237,182 @@ private struct Walker {
                 continue;
 
             promoteClassCell(sourceVariable);
-            if (auto cell = sourceVariable in classCells)
+            if (auto cell = sourceVariable in classCells) {
                 child.classCells[parameter] = *cell;
+                auto sourceValue = sourceVariable in locals;
+                if (sourceValue !is null && sourceValue.isClassObject)
+                    child.classObjectCells[sourceValue.classIdentity] = *cell;
+            }
+        }
+    }
+
+    // A ref aggregate parameter denotes the caller's storage. Point the
+    // parameter at the caller's existing aggregate cell and local-pointer id
+    // so repeated arguments (`f(value, value)`) share one authority and one
+    // address instead of competing through independent boxed snapshots.
+    private void registerRefAggregateArgumentAliases(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (!parameter.isReference)
+                continue;
+
+            const baseType = parameter.type.toBasetype;
+            const isStruct = baseType.isTypeStruct !is null;
+            const isClass = baseType.isTypeClass !is null;
+            const isStaticArray = baseType.isTypeSArray !is null;
+            if (!isStruct && !isClass && !isStaticArray)
+                continue;
+
+            if (isStruct)
+                child.structCells.remove(parameter);
+            else if (isClass)
+                child.classCells.remove(parameter);
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            auto var = argument is null ? null : argument.isVarExp;
+            auto source = var is null ? null : var.var.isVarDeclaration;
+            if (source is null)
+                continue;
+
+            if (isStruct) {
+                promoteStructCell(source);
+                if (auto cell = source in structCells)
+                    child.structCells[parameter] = *cell;
+            } else if (isClass) {
+                promoteClassCell(source);
+                if (auto cell = source in classCells) {
+                    child.classCells[parameter] = *cell;
+                    auto sourceValue = source in locals;
+                    if (sourceValue !is null && sourceValue.isClassObject)
+                        child.classObjectCells[sourceValue.classIdentity] = *cell;
+                }
+            }
+
+            const pointerId = localPointerValue(source).localPointerId;
+            child.localPointerIds[parameter] = pointerId;
+            child.localPointers[pointerId] = parameter;
+            child.nextLocalPointerId = nextLocalPointerId;
+        }
+    }
+
+    // A direct scalar aggregate field passed by ref already has all the
+    // storage machinery needed for a real alias: field promotion gives the
+    // caller an authoritative aggregate cell and memoized field address.
+    // Share that field subrange with the parameter's scalar cell and retain
+    // the existing aggregate-field alias so direct parameter reads, writes,
+    // and address-taking all denote the caller's one location.
+    private void registerDirectAggregateFieldRefArgumentAliases(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        import quickbite.backends.interpreter.layout:
+            classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (!parameter.isReference || !isNativeScalarType(parameter.type))
+                continue;
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            auto dot = argument is null ? null : argument.isDotVarExp;
+            auto var = dot is null ? null : dot.e1.isVarExp;
+            auto source = var is null ? null : var.var.isVarDeclaration;
+            if (source is null)
+                continue;
+            // Mutable because DMD declarations do not expose a const API.
+            auto storageSource = child.refLocalStorageVariable(source);
+
+            const isClass = storageSource.type.toBasetype.isTypeClass !is null;
+            if (isClass) {
+                auto cell = storageSource in child.classCells;
+                if (cell is null)
+                    continue;
+
+                const fieldIndex = classFieldIndex(dot);
+                // Mutable because layout.fieldByteOffset follows DMD's
+                // mutable VarDeclaration API.
+                auto field = classFields(
+                    storageSource.type.toBasetype.isTypeClass.sym,
+                )[fieldIndex];
+                child.structFieldAliases[parameter] = StructFieldAlias(
+                    storageSource,
+                    fieldIndex,
+                    true,
+                );
+                child.scalarCells[parameter] = cell.subRange(
+                    fieldByteOffset(field),
+                    typeByteSize(parameter.type),
+                );
+                continue;
+            }
+
+            auto cell = storageSource in child.structCells;
+            if (cell is null)
+                continue;
+
+            const fieldIndex = structFieldIndex(dot);
+            child.structFieldAliases[parameter] = StructFieldAlias(
+                storageSource,
+                fieldIndex,
+            );
+            child.scalarCells[parameter] = cell.block.subRange(
+                cell.fieldByteOffset(fieldIndex),
+                typeByteSize(parameter.type),
+            );
+        }
+    }
+
+    private void prepareDirectAggregateFieldRefArgumentAliases(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (!parameter.isReference || !isNativeScalarType(parameter.type))
+                continue;
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            auto dot = argument is null ? null : argument.isDotVarExp;
+            auto var = dot is null ? null : dot.e1.isVarExp;
+            auto source = var is null ? null : var.var.isVarDeclaration;
+            if (source is null)
+                continue;
+            // Mutable because DMD declarations do not expose a const API.
+            auto storageSource = refLocalStorageVariable(source);
+            if (
+                storageSource.type.toBasetype.isTypeStruct is null &&
+                storageSource.type.toBasetype.isTypeClass is null
+            )
+                continue;
+
+            const id = fieldSnapshotAllocationId(dot);
+            if (storageSource.type.toBasetype.isTypeClass !is null)
+                promoteClassFieldCell(dot, id);
+            else
+                promoteStructFieldCell(dot, id);
         }
     }
 
@@ -3087,8 +3489,12 @@ private struct Walker {
             return;
 
         promoteClassCell(sourceVariable);
-        if (auto cell = sourceVariable in classCells)
+        if (auto cell = sourceVariable in classCells) {
             child.classCells[vthis] = *cell;
+            auto sourceValue = sourceVariable in locals;
+            if (sourceValue !is null && sourceValue.isClassObject)
+                child.classObjectCells[sourceValue.classIdentity] = *cell;
+        }
     }
 
     // Refreshes every `native_scalar.isNativeScalarType` field's bytes in
@@ -3101,12 +3507,10 @@ private struct Walker {
     // widening, built directly here since a `classCells` entry has no
     // `NativeStruct` wrapper of its own -- see `classCells`'s own field
     // comment), and recurses one level into every (non-union) struct-typed
-    // field. Every other non-scalar field (a dynamic array/slice, another
-    // class reference, or a union at any level) is left untouched, matching
-    // this narrow slice's scope -- only an address-taken scalar field,
-    // scalar-element static-array field, or (one level deep) nested scalar
-    // field is ever read back through a `classCells` entry, so leaving
-    // another field's bytes stale here is harmless.
+    // field, and writes scalar- or struct-element dynamic-array headers whose
+    // backing storage is itself a `NativeArray`. Every other non-scalar field
+    // (another class reference, an unsupported dynamic-array element shape,
+    // or a union at any level) is left untouched.
     private void writeClassCellScalarFields(
         ref NativeBlock cell,
         imported!"dmd.dclass".ClassDeclaration class_,
@@ -3116,7 +3520,8 @@ private struct Walker {
             classFields, fieldByteOffset, staticArrayLength, typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         foreach (index, field; classFields(class_)) {
             if (isNativeScalarType(field.type)) {
@@ -3128,7 +3533,11 @@ private struct Walker {
 
             if (isStaticArrayType(field.type)) {
                 auto elementType = field.type.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 const fieldValue = classValue.classFieldAt(index);
@@ -3140,7 +3549,42 @@ private struct Walker {
                 const length = staticArrayLength(field.type.toBasetype.isTypeSArray);
                 auto arrayCell = NativeArray.adopt(cell.subRange(offset, size), elementType, length);
                 foreach (elementIndex; 0 .. fieldValue.length)
-                    writeScalar(elementType, arrayCell.element(elementIndex), fieldValue[elementIndex]);
+                    writeArrayCellElement(
+                        arrayCell,
+                        elementIndex,
+                        fieldValue[elementIndex],
+                    );
+                continue;
+            }
+
+            if (isDynamicArrayType(field.type)) {
+                auto elementType = field.type.toBasetype.nextOf.toBasetype;
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
+                    continue;
+
+                const fieldValue = classValue.classFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = fieldValue.arrayNativeAddress is null
+                    ? NativeArray.allocate(elementType, fieldValue.length)
+                    : NativeArray.borrow(
+                        elementType,
+                        cast(void*) fieldValue.arrayNativeAddress,
+                        fieldValue.length,
+                    );
+                if (fieldValue.arrayNativeAddress is null)
+                    foreach (elementIndex; 0 .. fieldValue.length)
+                        writeArrayCellElement(
+                            arrayCell,
+                            elementIndex,
+                            fieldValue[elementIndex],
+                        );
+                arrayCell.writeSliceHeader(cell, fieldByteOffset(field));
                 continue;
             }
 
@@ -3175,7 +3619,7 @@ private struct Walker {
     // itself is `native_scalar.isNativeScalarType`, gives the receiver a
     // `classCells` entry (`promoteClassCell`, the class sibling of
     // `promoteStructFieldCell`) and records `id` in the reverse lookup
-    // `classFieldPointerVariables`/`classFieldPointerFieldIndices`, so a
+    // common `fieldPointerPaths` reverse lookup, so a
     // later deref-read through this id's pointer
     // (`classFieldPointerCellValue`) can find the same cell and field. A
     // no-op (no cell, no reverse-lookup entry) for a non-`VarExp` receiver
@@ -3202,8 +3646,8 @@ private struct Walker {
         if ((variable in classCells) is null)
             return;
 
-        classFieldPointerVariables[id] = variable;
-        classFieldPointerFieldIndices[id] = classFieldIndex(dot);
+        fieldPointerPaths[id] = directFieldPathKey(variable, classFieldIndex(dot));
+        classFieldPointerObjectIds[id] = locals[variable].classIdentity;
     }
 
     // Class-receiver sibling of `promoteNestedStructFieldCell` (aggregate
@@ -3216,8 +3660,7 @@ private struct Walker {
     // (`promoteClassCell`, same as `promoteClassFieldCell`) and records `id`
     // -- the SAME id `addressOfExpression`'s caller already minted via
     // `fieldSnapshotAllocationId` -- in the
-    // `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
-    // `...InnerFieldIndices` reverse lookup, so a later deref-read through
+    // common `fieldPointerPaths` reverse lookup, so a later deref-read through
     // this id's pointer (`nestedClassStructFieldPointerCellValue`) can find
     // the same cell and field path. A no-op (no cell, no reverse-lookup
     // entry) for anything outside this narrow shape: `dot.e1` not itself a
@@ -3256,9 +3699,10 @@ private struct Walker {
         if ((variable in classCells) is null)
             return;
 
-        nestedClassStructFieldPointerVariables[id] = variable;
-        nestedClassStructFieldPointerOuterFieldIndices[id] = classFieldIndex(innerDot);
-        nestedClassStructFieldPointerInnerFieldIndices[id] = structFieldIndex(dot);
+        fieldPointerPaths[id] = fieldPathKey(
+            variable,
+            [classFieldIndex(innerDot), structFieldIndex(dot)],
+        );
     }
 
     // Array-typed-field sibling of `promoteStructFieldCell` above: when `dot`'s
@@ -3359,8 +3803,7 @@ private struct Walker {
     // declarations' own comment above). Gives the receiver a `structCells`
     // entry (`promoteStructCell`, same as `promoteStructFieldCell`/
     // `promoteStructArrayFieldCell`) and records `id` in the
-    // `nestedStructFieldPointerVariables`/`...OuterFieldIndices`/
-    // `...InnerFieldIndices` reverse lookup, so a later deref-read/write-
+    // common `fieldPointerPaths` reverse lookup, so a later deref-read/write-
     // through this id's pointer (`nestedStructFieldPointerCellValue`/
     // `writeThroughNestedStructFieldPointer`) can find the same cell and
     // field path. A no-op (no cell, no reverse-lookup entry) for anything
@@ -3396,9 +3839,10 @@ private struct Walker {
         if ((variable in structCells) is null)
             return;
 
-        nestedStructFieldPointerVariables[id] = variable;
-        nestedStructFieldPointerOuterFieldIndices[id] = structFieldIndex(innerDot);
-        nestedStructFieldPointerInnerFieldIndices[id] = structFieldIndex(dot);
+        fieldPointerPaths[id] = fieldPathKey(
+            variable,
+            [structFieldIndex(innerDot), structFieldIndex(dot)],
+        );
     }
 
     // Array-element sibling of `promoteNestedStructFieldCell` above: `&a[i].
@@ -3488,8 +3932,8 @@ private struct Walker {
     }
 
     // Drops `variable`'s `structCells` entry (if any) together with every
-    // `structFieldPointerVariables`/`structFieldPointerFieldIndices` reverse-
-    // lookup entry that pointed at it: dropping only the forward `structCells`
+    // direct-struct `fieldPointerPaths` reverse-lookup entry that pointed at
+    // it: dropping only the forward `structCells`
     // entry would leave
     // a stale `&s.field` pointer's allocation id mapped to `variable`, so a
     // later dereference through that stale id could resolve into whatever
@@ -3497,9 +3941,9 @@ private struct Walker {
     // promotes next instead of correctly finding no cell at all. Called from
     // every fresh-binding site alongside `scalarCells.remove`/
     // `arrayCells.remove`. Collects matching ids before removing rather than
-    // mutating `structFieldPointerVariables` while iterating it.
+    // mutating `fieldPointerPaths` while iterating it.
     //
-    // Also drops `variable`'s `fieldAddressAllocations` entry: that forward
+    // Also drops field-path memo entries rooted at `variable`: that forward
     // memo -- `fieldSnapshotAllocationId`'s own
     // per-(receiver, field index) cache -- was never cleared by the reverse-
     // lookup cleanup above, so a fresh `&s.field` taken after THIS fresh
@@ -3509,24 +3953,18 @@ private struct Walker {
     // the new binding retook the field's address. Without a fresh id, a
     // stale pointer minted under the OLD binding (e.g. held across a
     // recursive call that re-declares `variable`) still resolves -- via
-    // `structFieldPointerVariables`, re-populated under the SAME id -- into
+    // `fieldPointerPaths`, re-populated under the SAME id -- into
     // whatever cell THIS binding promotes, instead of correctly declining.
-    // Also drops `variable`'s `nestedFieldAddressAllocations` entry (the
-    // pointer-identity memoization follow-up), the nested-field
-    // sibling of the `fieldAddressAllocations` drop above, for the identical
-    // reason.
     private void dropStructCell(VarDeclaration variable) {
         structCells.remove(variable);
 
         size_t[] staleIds;
-        foreach (id, pointedVariable; structFieldPointerVariables)
-            if (pointedVariable is variable)
+        foreach (id, path; fieldPointerPaths)
+            if (path.root is variable)
                 staleIds ~= id;
 
-        foreach (id; staleIds) {
-            structFieldPointerVariables.remove(id);
-            structFieldPointerFieldIndices.remove(id);
-        }
+        foreach (id; staleIds)
+            fieldPointerPaths.remove(id);
 
         // Same stale-id cleanup for the array-typed-field reverse lookup -- a
         // `&s.arr[i]` id left behind here would let a pointer minted BEFORE
@@ -3543,26 +3981,12 @@ private struct Walker {
             structArrayFieldPointerFieldIndices.remove(id);
         }
 
-        // Same stale-id cleanup for the nested-struct-field reverse lookup,
-        // for the same reason as the two cleanups above.
-        size_t[] staleNestedFieldIds;
-        foreach (id, pointedVariable; nestedStructFieldPointerVariables)
-            if (pointedVariable is variable)
-                staleNestedFieldIds ~= id;
-
-        foreach (id; staleNestedFieldIds) {
-            nestedStructFieldPointerVariables.remove(id);
-            nestedStructFieldPointerOuterFieldIndices.remove(id);
-            nestedStructFieldPointerInnerFieldIndices.remove(id);
-        }
-
-        fieldAddressAllocations.remove(variable);
-        nestedFieldAddressAllocations.remove(variable);
+        removeFieldPathAddressAllocations(variable);
     }
 
     // Class sibling of `dropStructCell` above: drops `variable`'s `classCells`
-    // entry (if any) together with every `classFieldPointerVariables`/
-    // `nestedClassStructFieldPointerVariables`/`classArrayFieldPointerVariables`
+    // entry (if any) together with every class `fieldPointerPaths`/
+    // `classArrayFieldPointerVariables`
     // reverse-lookup entry (and their field-index siblings) that pointed at
     // it, for the exact same reason `dropStructCell` exists: leaving a stale
     // forward entry behind would let a fresh re-declaration of the same
@@ -3577,37 +4001,25 @@ private struct Walker {
     // removing rather than mutating the reverse-lookup maps while iterating
     // them, mirroring `dropStructCell`'s own discipline.
     //
-    // Also drops `variable`'s `fieldAddressAllocations` entry, same as
+    // Also drops field-path entries rooted at `variable`, same as
     // `dropStructCell`: that forward memo is shared between the struct and
     // class phases (`fieldSnapshotAllocationId` keys it per-`VarDeclaration`
     // regardless of receiver kind), so every current call site already
     // clears it via the accompanying `dropStructCell` call -- removing it
     // again here is a harmless no-op today, kept for parity so this function
     // stays correct on its own if a future call site ever calls it without
-    // `dropStructCell`. Same reasoning for the `nestedFieldAddressAllocations`
-    // drop below.
+    // `dropStructCell`; nested field paths share the same root-keyed map.
     private void dropClassCell(VarDeclaration variable) {
         classCells.remove(variable);
 
         size_t[] staleFieldIds;
-        foreach (id, pointedVariable; classFieldPointerVariables)
-            if (pointedVariable is variable)
+        foreach (id, path; fieldPointerPaths)
+            if (path.root is variable)
                 staleFieldIds ~= id;
 
         foreach (id; staleFieldIds) {
-            classFieldPointerVariables.remove(id);
-            classFieldPointerFieldIndices.remove(id);
-        }
-
-        size_t[] staleNestedFieldIds;
-        foreach (id, pointedVariable; nestedClassStructFieldPointerVariables)
-            if (pointedVariable is variable)
-                staleNestedFieldIds ~= id;
-
-        foreach (id; staleNestedFieldIds) {
-            nestedClassStructFieldPointerVariables.remove(id);
-            nestedClassStructFieldPointerOuterFieldIndices.remove(id);
-            nestedClassStructFieldPointerInnerFieldIndices.remove(id);
+            fieldPointerPaths.remove(id);
+            classFieldPointerObjectIds.remove(id);
         }
 
         size_t[] staleArrayFieldIds;
@@ -3620,8 +4032,26 @@ private struct Walker {
             classArrayFieldPointerFieldIndices.remove(id);
         }
 
-        fieldAddressAllocations.remove(variable);
-        nestedFieldAddressAllocations.remove(variable);
+        removeFieldPathAddressAllocations(variable);
+    }
+
+    // A reference rebind detaches the variable from its former object but
+    // does not invalidate pointers already taken into that object. Forget the
+    // variable-keyed address memo so a later address-of gets a fresh id;
+    // allocation-id-keyed pointer cells continue owning the old storage.
+    private void detachClassCell(VarDeclaration variable) {
+        classCells.remove(variable);
+        removeFieldPathAddressAllocations(variable);
+    }
+
+    private void removeFieldPathAddressAllocations(VarDeclaration root) {
+        FieldPathKey[] staleKeys;
+        foreach (key, _; fieldPathAddressAllocations)
+            if (key.root is root)
+                staleKeys ~= key;
+
+        foreach (key; staleKeys)
+            fieldPathAddressAllocations.remove(key);
     }
 
     // Array sibling of `dropStructCell` above: drops `variable`'s `arrayCells`
@@ -3643,15 +4073,15 @@ private struct Walker {
     // `...InnerFieldIndices` siblings) that pointed at `variable`
     // (2026-07-16): `promoteArrayNestedStructFieldCell` (`&a[i].
     // inner.x`) populates these four maps but, unlike every other pointer
-    // family's own reverse lookup (`structFieldPointerVariables`/
-    // `nestedStructFieldPointerVariables`/etc., all cleaned by
+    // family's own reverse lookup (`fieldPointerPaths` and the remaining
+    // shape-specific maps, all cleaned by
     // `dropStructCell`), nothing here ever cleaned them -- a fresh binding
     // of the same `VarDeclaration` (a loop body re-executing the same
     // `DeclarationExp`) left an EARLIER pointer's id still mapped to
     // `variable`, so dereferencing it after the fresh binding resolved into
     // THIS binding's freshly-promoted cell instead of correctly declining to
     // the earlier binding's own frozen snapshot. No separate memo to clear
-    // here (unlike `fieldAddressAllocations`/`nestedFieldAddressAllocations`
+    // here (unlike the aggregate field-path memo maps
     // above): this shape's receiver is never a plain `VarExp`, so
     // `fieldSnapshotAllocationId` always takes its fresh-id fallback for it
     // and there is nothing memoized per-variable to invalidate. Collects
@@ -3709,6 +4139,10 @@ private struct Walker {
 
         if (auto cell = variable in scalarCells)
             return readScalar(variable.type, cell.bytes);
+
+        if (auto cell = variable in arrayCells)
+            if (auto current = variable in locals)
+                return arrayValueFromCell(*current, *cell);
 
         if (auto current = variable in locals)
             return *current;
@@ -3785,6 +4219,7 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.native_scalar:
             readScalar, writeScalar;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
 
         if (auto cell = variable in scalarCells) {
             writeScalar(variable.type, cell.bytes, value);
@@ -3794,18 +4229,21 @@ private struct Walker {
         }
 
         if (auto cell = variable in arrayCells) {
-            // A same-length value written back from a `ref` array
-            // parameter's callee-side mutation is the in-place case this
-            // branch exists for -- refresh every element's bytes so the
-            // cell agrees with the mirror. Every other write here is a
-            // REBIND (a plain `s = b;`, or a ref-writeback whose length
-            // genuinely changed): the cell can no longer faithfully
-            // represent whatever new storage `variable` now denotes, so
-            // drop it rather than let a stale cell keep answering reads --
-            // the same decline-rather-than-corrupt choice
-            // `promoteSliceArrayCell` already makes for a drifted source
-            // length.
-            if (arrayIsRefWriteback && value.isArray && value.length == cell.length) {
+            // A static-array assignment always mutates its fixed storage;
+            // likewise, a same-length value written back from a `ref`
+            // dynamic-array parameter's callee-side mutation is in-place.
+            // Refresh every element's bytes in either case so the cell agrees
+            // with the mirror. Other dynamic-array writes here are REBINDS
+            // (a plain `s = b;`, or a ref-writeback whose length genuinely
+            // changed): the cell can no longer faithfully represent whatever
+            // new storage `variable` now denotes, so drop it rather than let
+            // a stale cell keep answering reads -- the same
+            // decline-rather-than-corrupt choice `promoteSliceArrayCell`
+            // already makes for a drifted source length.
+            if (
+                (arrayIsRefWriteback || isStaticArrayType(variable.type)) &&
+                value.isArray && value.length == cell.length
+            ) {
                 foreach (index; 0 .. value.length)
                     writeArrayCellElement(*cell, index, value[index]);
             } else {
@@ -3897,7 +4335,7 @@ private struct Walker {
             if (classFieldRefresh && value.isClassObject) {
                 writeClassCellScalarFields(*cell, variable.type.toBasetype.isTypeClass.sym, value);
             } else {
-                dropClassCell(variable);
+                detachClassCell(variable);
                 classRebinds[variable] = true;
             }
         } else if (!classFieldRefresh && variable.type.toBasetype.isTypeClass !is null) {
@@ -3992,7 +4430,7 @@ private struct Walker {
             return value;
 
         if (isStaticArrayType(pointer.type))
-            return staticArrayPointerView(value, pointer.type);
+            return staticArrayPointerView(value, pointer.e1.type, pointer.type);
 
         if (value.isNativePointer)
             return loadNativePointerElement(pointer.e1.type, value, 0);
@@ -4091,70 +4529,45 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter pointer target.");
 
-        // Byte-level authority: once `&variable` has
-        // promoted a cell, its bytes -- not the boxed `locals` mirror below
-        // -- are the true value, shared by reference across every walker
-        // that dup'd `scalarCells`. A deref-read that instead consulted the
-        // mirror could observe a stale value once cross-frame writeback for
-        // celled locals stopped copying the mirror back (see
-        // `writeBackLocalPointerTargets`). `readCelledLocal` is exactly the
-        // cell-then-mirror-then-default priority this needs.
-        return reinterpretLocalPointerLoad(
-            readCelledLocal(*variable),
-            (*variable).type,
-            pointer.e1.type,
-        );
-    }
+        if (auto cell = *variable in scalarCells) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType, readScalar;
+            import quickbite.backends.interpreter.native_struct: NativeStruct;
+            import quickbite.frontend.dmd.values: defaultValue;
 
-    // `*cast(T*) &local`: a load of the same bytes at a different static
-    // type, not a hardcoded name/type-pair match. Only taken when both
-    // `source` and `target` are
-    // `native_scalar.isNativeScalarType` AND `target` is no wider than
-    // `source`: reading a wider target than the source local owns would
-    // read bytes the local never had, which stays on the passthrough path
-    // below untouched (a pre-existing gap, not this call site's to fix).
-    // For every other pair -- an aggregate, a pointer, `real`, or a
-    // widening read -- this returns `value` unchanged exactly as before.
-    private Value reinterpretLocalPointerLoad(
-        in Value value,
-        imported!"dmd.mtype".Type sourceType,
-        imported!"dmd.mtype".Type pointerType,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, readScalar, writeScalar;
+            auto target = pointer.e1.type.toBasetype.nextOf.toBasetype;
+            const targetSize = typeByteSize(target);
+            if (targetSize <= cell.bytes.length) {
+                if (isNativeScalarType(target))
+                    return readScalar(target, cell.bytes[0 .. targetSize]);
 
-        auto source = sourceType is null ? null : sourceType.toBasetype;
-        auto pointer = pointerType is null ? null : pointerType.toBasetype;
-        auto target = pointer is null || pointer.nextOf is null
-            ? null
-            : pointer.nextOf.toBasetype;
-        if (source is null || target is null)
-            return value;
+                if (auto structType = target.isTypeStruct)
+                    if (structType.sym.isUnionDeclaration is null) {
+                        auto view = NativeStruct.adopt(
+                            cell.subRange(0, targetSize),
+                            structType,
+                        );
+                        return structValueFromCell(defaultValue(target), view);
+                    }
+            }
+        }
 
-        if (!isNativeScalarType(source) || !isNativeScalarType(target))
-            return value;
-
-        const sourceSize = typeByteSize(source);
-        const targetSize = typeByteSize(target);
-        if (targetSize > sourceSize)
-            return value;
-
-        auto block = NativeBlock.allocate(sourceSize, NativeBlock.Scan.no);
-        writeScalar(source, block.bytes, value);
-        return readScalar(target, block.bytes[0 .. targetSize]);
+        return readCelledLocal(*variable);
     }
 
     private Value staticArrayPointerView(
         in Value pointer,
+        imported!"dmd.mtype".Type pointerType,
         imported!"dmd.mtype".Type staticArrayType,
     ) {
         import quickbite.backends.interpreter.layout: staticArrayLength;
 
         auto staticArray = staticArrayType.toBasetype.isTypeSArray;
         const length = staticArrayLength(staticArray);
-        const target = pointerTargetValue(pointer);
+        const target = pointer.isNativePointer
+            ? loadNativePointerElement(pointerType, pointer, 0)
+            : pointerTargetValue(pointer);
         if (target.isArray)
             return target;
 
@@ -4254,10 +4667,18 @@ private struct Walker {
         // two otherwise-identical structs falsely disagrees whenever one
         // side's enum field took a different path to the same value. Other
         // `is` comparisons (pointers, class references, floats) keep their
-        // existing raw-value identity semantics.
-        const same = left.isStruct && right.isStruct
-            ? equalValues(left, right)
-            : left == right;
+        // existing raw-value identity semantics. Array-pointer snapshots can
+        // contain different element copies while still naming the same
+        // allocation and offset; those two fields are their identity.
+        const same = left.isPointer && right.isPointer &&
+                !left.isLocalPointer && !right.isLocalPointer &&
+                !left.isNativePointer && !right.isNativePointer &&
+                left.pointerAllocation != 0 && right.pointerAllocation != 0
+            ? left.pointerAllocation == right.pointerAllocation &&
+                left.pointerElementOffset == right.pointerElementOffset
+            : left.isStruct && right.isStruct
+                ? equalValues(left, right)
+                : left == right;
         if (identity.op == EXP.notIdentity)
             return Value(!same);
 
@@ -4317,36 +4738,6 @@ private struct Walker {
 
             enforceInterceptionPolicy(call.f, "isDruntimeArrayOpAddAssign");
             return runArrayOpAddAssignCall(call);
-        }
-
-        if (call.f !is null && functionName(call.f) == "memcpy") {
-            import quickbite.backends.interpreter.interception_guard:
-                enforceInterceptionPolicy;
-
-            enforceInterceptionPolicy(call.f, "memcpy");
-            return runMemcpyCall(call);
-        }
-
-        if (call.f !is null && isEmplaceRef(call.f)) {
-            import quickbite.backends.interpreter.interception_guard:
-                enforceInterceptionPolicy;
-
-            enforceInterceptionPolicy(call.f, "isEmplaceRef");
-            return runEmplaceRefCall(call);
-        }
-
-        if (call.f !is null) {
-            import quickbite.backends.interpreter.builtins:
-                GCArrayHook, tryGCArrayHook;
-
-            GCArrayHook gcArrayHook;
-            if (tryGCArrayHook(call.f, gcArrayHook)) {
-                import quickbite.backends.interpreter.interception_guard:
-                    enforceInterceptionPolicy;
-
-                enforceInterceptionPolicy(call.f, "tryGCArrayHook");
-                return runGCArrayHookCall(call, gcArrayHook);
-            }
         }
 
         if (call.f !is null) {
@@ -4593,7 +4984,10 @@ private struct Walker {
                         !call.f.needThis &&
                         tryCallNative(
                             call.f,
-                            arguments,
+                            nativeCellPointerArguments(
+                                arguments,
+                                nativeArgumentTypes(argumentExpressions),
+                            ),
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
                             nativeOutParameterInputValues(argumentExpressions),
@@ -4691,6 +5085,47 @@ private struct Walker {
         throw new Exception("Unsupported eval call.");
     }
 
+    // A local pointer whose target has native authoritative storage can cross
+    // the FFI seam as that storage's real address. Other local-pointer shapes
+    // remain boxed and retain the existing unsupported diagnostic.
+    private Value[] nativeCellPointerArguments(
+        in Value[] arguments,
+        imported!"dmd.mtype".Type[] argumentTypes,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        auto result = arguments.dup; // Replaces eligible pointer values below.
+        foreach (index, ref argument; result) {
+            if (argument.isPointer && !argument.isNativePointer) {
+                if (auto variable = arrayPointerVariable(argument)) {
+                    if (auto cell = *variable in arrayCells) {
+                        const offset = cast(size_t) argument.pointerElementOffset *
+                            typeByteSize(argumentTypes[index].nextOf);
+                        argument = Value.nativePointerValue(
+                            cell.block.address + offset,
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            if (!argument.isLocalPointer)
+                continue;
+
+            // Mutable lookup preserves the declaration's class qualifier for
+            // use as an associative-array key below.
+            auto variable = argument.localPointerId in localPointers;
+            if (variable is null)
+                continue;
+
+            // Mutable because the native callee may write through this address.
+            auto cell = *variable in scalarCells;
+            if (cell !is null)
+                argument = Value.nativePointerValue(cell.address);
+        }
+        return result;
+    }
+
     // A `ref` argument aliases the caller's storage; compiled D binds the
     // address without reading through it. Evaluating it like an ordinary
     // rvalue throws when the caller's local is still `= void` (cerealed's
@@ -4707,105 +5142,6 @@ private struct Walker {
             return Value.void_;
 
         return runExpression(argument);
-    }
-
-    private Value runEmplaceRefCall(imported!"dmd.expression".CallExp call) {
-        if (call.arguments is null || call.arguments.length != 2)
-            throw new Exception("Unsupported eval call.");
-
-        const value = runExpression((*call.arguments)[1]);
-        writeLocation((*call.arguments)[0], value);
-        return Value.void_;
-    }
-
-    private Value runMemcpyCall(imported!"dmd.expression".CallExp call) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-
-        if (call.arguments is null || call.arguments.length < 2)
-            throw new Exception("Unsupported eval call.");
-
-        auto destinationExpression = (*call.arguments)[0];
-        auto sourceExpression = (*call.arguments)[1];
-        const destination = runExpression(destinationExpression);
-        const sourcePointer = runExpression(sourceExpression);
-        auto sourcePointerType = memcpyElementPointerType(sourceExpression);
-        const elementSize = typeByteSize(
-            sourcePointerType.toBasetype.nextOf.toBasetype,
-        );
-        const count = call.arguments.length < 3
-            ? sourcePointer.pointerLength
-            : cast(size_t) runExpression((*call.arguments)[2]).asLong / elementSize;
-
-        if (destination.isNativePointer) {
-            foreach (index; 0 .. count) {
-                const source = readPointerElement(
-                    sourcePointerType,
-                    sourcePointer,
-                    index,
-                );
-                storeNativePointerElement(
-                    sourcePointerType,
-                    destination,
-                    index,
-                    source,
-                );
-            }
-            return destination;
-        }
-
-        Value[] source;
-        foreach (index; 0 .. count)
-            source ~= readPointerElement(sourcePointerType, sourcePointer, index);
-
-        if (source.length != 0 && source[0].isStruct) {
-            writePointerElements(destinationExpression, destination, source);
-            return destination;
-        }
-
-        return destination;
-    }
-
-    private Value runGCArrayHookCall(
-        imported!"dmd.expression".CallExp call,
-        in imported!"quickbite.backends.interpreter.builtins".GCArrayHook hook,
-    ) {
-        import quickbite.backends.interpreter.builtins: GCArrayHook;
-
-        if (call.arguments is null)
-            throw new Exception("Unsupported eval call.");
-
-        with (GCArrayHook) final switch (hook) {
-            case getUsed:
-                requireArgumentCount(call, 2);
-                return gcArrayUsed(runExpression((*call.arguments)[0]));
-
-            case reserveCapacity:
-                requireArgumentCount(call, 3);
-                const slice = runExpression((*call.arguments)[0]);
-                const request =
-                    cast(size_t) runExpression((*call.arguments)[1]).asLong;
-                runExpression((*call.arguments)[2]);
-                return Value(request == 0 ? slice.length : request);
-
-            case shrinkUsed:
-                requireArgumentCount(call, 3);
-                runExpression((*call.arguments)[0]);
-                runExpression((*call.arguments)[1]);
-                runExpression((*call.arguments)[2]);
-                return Value(true);
-        }
-    }
-
-    private Value gcArrayUsed(in Value pointer) {
-        lastGCArrayUsedAllocation = 0;
-        if (pointer == Value.null_ || pointer.isNativePointer)
-            return Value.null_;
-
-        if (!pointer.isPointer)
-            throw new Exception("Expected pointer.");
-
-        lastGCArrayUsedAllocation = pointer.pointerAllocation;
-        return Value.arrayValue(pointerArrayElements(pointer));
     }
 
     private Value[] pointerArrayElements(in Value pointer) {
@@ -4830,22 +5166,6 @@ private struct Walker {
         }
 
         return pointer.pointerIndex(index);
-    }
-
-    private imported!"dmd.mtype".Type memcpyElementPointerType(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        auto type = expression.type;
-        auto pointed = type.toBasetype.nextOf;
-        if (pointed is null || pointed.toBasetype.ty != TY.Tvoid)
-            return type;
-
-        if (auto cast_ = expression.isCastExp)
-            return memcpyElementPointerType(cast_.e1);
-
-        return type;
     }
 
     // Run an interpreted delegate that native code called back into through the
@@ -5455,6 +5775,11 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         in bool captureLocals = false,
     ) {
+        prepareDirectAggregateFieldRefArgumentAliases(
+            function_,
+            argumentExpressions,
+        );
+
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
@@ -5466,6 +5791,12 @@ private struct Walker {
         seedPointerTargetLocals(child);
         registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
+        registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
+        registerDirectAggregateFieldRefArgumentAliases(
+            function_,
+            argumentExpressions,
+            child,
+        );
 
         try {
             child.runStatement(function_.fbody);
@@ -5496,6 +5827,11 @@ private struct Walker {
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
     ) {
+        prepareDirectAggregateFieldRefArgumentAliases(
+            function_,
+            argumentExpressions,
+        );
+
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
@@ -5530,6 +5866,12 @@ private struct Walker {
         registerClassArgumentAliases(function_, argumentExpressions, child);
         registerClassThisAlias(function_, receiverExpression, child);
         child.bindFunctionParameters(function_, arguments, argumentExpressions, locals);
+        registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
+        registerDirectAggregateFieldRefArgumentAliases(
+            function_,
+            argumentExpressions,
+            child,
+        );
 
         try {
             child.runStatement(function_.fbody);
@@ -5568,13 +5910,13 @@ private struct Walker {
         nextLocalPointerId = child.nextLocalPointerId;
         mergeReturnedLocalPointer(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
+        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
-        allocationCount = child.allocationCount;
-        mergePointerCellState(child);
+        mergePerFrameCellsFrom(child);
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -5586,7 +5928,6 @@ private struct Walker {
         writeBackNestedClassStructFieldPointerTargets(child);
         writeBackClassArrayFieldPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child, arguments);
-        writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
     }
 
@@ -5601,13 +5942,13 @@ private struct Walker {
         nextLocalPointerId = child.nextLocalPointerId;
         mergeReturnedLocalPointer(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
+        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
-        allocationCount = child.allocationCount;
-        mergePointerCellState(child);
+        mergePerFrameCellsFrom(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackArrayPointerTargets(child);
@@ -5618,26 +5959,9 @@ private struct Walker {
         writeBackNestedClassStructFieldPointerTargets(child);
         writeBackClassArrayFieldPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child, arguments);
-        writeBackByValueClassArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
-    }
-
-    // Merges the allocation and field-pointer maps whose entries describe
-    // native cells reachable across a call boundary. Free-function and member
-    // returns share this dispatcher so a new map cannot be propagated through
-    // only one call shape.
-    private void mergePointerCellState(ref Walker child) {
-        arrayAllocationAliases = child.arrayAllocationAliases;
-        mergeArrayAllocationMaps(child);
-        mergeArrayAllocationCarriers(child);
-        mergeReturnedArrayCell(child);
-        mergeFieldAddressAllocations(child);
-        mergeNestedFieldAddressAllocations(child);
-        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
-        arrayPointerWritebacks = child.arrayPointerWritebacks;
-        mergeFieldPointerState(child);
     }
 
     // A returned array carrier may be the first value that makes a source
@@ -5668,30 +5992,32 @@ private struct Walker {
             arrayCells[*sourceVariable] = *cell;
     }
 
-    // Merges every field-pointer reverse lookup and adopts its corresponding
-    // cross-frame writeback set. This is the return-side counterpart of
-    // `forkPerFrameCellsInto`: call-return paths dispatch the complete family
-    // here so adding or removing a field shape cannot silently update only
-    // one kind of call.
-    private void mergeFieldPointerState(ref Walker child) {
-        mergeStructFieldPointerVariableMaps(child);
+    private void mergeNativeThrowableRoots(ref Walker child) {
+        foreach (pointer, throwable; child.nativeThrowableRoots)
+            nativeThrowableRoots[pointer] = throwable;
+    }
+
+    private void mergePerFrameCellsFrom(ref Walker child) {
+        foreach (identity, cell; child.classObjectCells)
+            classObjectCells[identity] = cell;
+        allocationCount = child.allocationCount;
+        arrayAllocationAliases = child.arrayAllocationAliases;
+        mergeArrayAllocationMaps(child);
+        mergeArrayAllocationCarriers(child);
+        mergeReturnedArrayCell(child);
+        mergeFieldPathAddressAllocations(child);
+        fieldSnapshotAllocationIds = child.fieldSnapshotAllocationIds;
+        arrayPointerWritebacks = child.arrayPointerWritebacks;
         structFieldPointerWritebacks = child.structFieldPointerWritebacks;
         mergeStructArrayFieldPointerVariableMaps(child);
         structArrayFieldPointerWritebacks = child.structArrayFieldPointerWritebacks;
-        mergeNestedStructFieldPointerVariableMaps(child);
         nestedStructFieldPointerWritebacks = child.nestedStructFieldPointerWritebacks;
-        mergeClassFieldPointerVariableMaps(child);
+        mergeFieldPointerPaths(child);
         classFieldPointerWritebacks = child.classFieldPointerWritebacks;
-        mergeNestedClassStructFieldPointerVariableMaps(child);
         nestedClassStructFieldPointerWritebacks =
             child.nestedClassStructFieldPointerWritebacks;
         mergeClassArrayFieldPointerVariableMaps(child);
         classArrayFieldPointerWritebacks = child.classArrayFieldPointerWritebacks;
-    }
-
-    private void mergeNativeThrowableRoots(ref Walker child) {
-        foreach (pointer, throwable; child.nativeThrowableRoots)
-            nativeThrowableRoots[pointer] = throwable;
     }
 
     // Non-destructive merge for `arrayAllocations`/`arrayAllocationVariables`
@@ -5748,53 +6074,22 @@ private struct Walker {
                 arrayAllocationCarriers[id] = carrier;
     }
 
-    // Struct sibling of the merge above -- `structFieldPointerVariables`/
-    // `FieldIndices` merge the identical, conflict-free way: ids are globally
-    // unique, so a
-    // key present in both this frame's and the callee's copy always names
-    // the same variable/field index.
-    //
-    // Symmetric guard (2026-07-14): applied here too,
-    // keyed on (variable, field index) rather than just variable, since a
-    // struct can have several independently-addressed fields -- a child
-    // entry is skipped only when this frame's OWN `fieldAddressAllocations`
-    // forward map already binds the SAME (variable, field index) pair to a
-    // DIFFERENT id. Escaping a pointer to a local struct field upward is UB
-    // in real D (unlike a dynamic array element, a struct field is not
-    // GC-allocated), so no fixture exercises this guard directly; it is
-    // symmetric hardening only, applied because it did not regress the
-    // existing cross-frame struct fixtures.
-    private void mergeStructFieldPointerVariableMaps(ref Walker child) {
-        foreach (id, variable; child.structFieldPointerVariables) {
-            auto fieldIndex = id in child.structFieldPointerFieldIndices;
-            if (fieldIndex !is null)
-                if (auto ownFieldIds = variable in fieldAddressAllocations)
-                    if (auto ownId = *fieldIndex in *ownFieldIds)
-                        if (*ownId != id)
-                            continue;
-
-            structFieldPointerVariables[id] = variable;
-            if (fieldIndex !is null)
-                structFieldPointerFieldIndices[id] = *fieldIndex;
-        }
-    }
-
-    // Array-typed-field sibling of `mergeStructFieldPointerVariableMaps`
-    // above (struct-static-array-field cross-frame follow-up, 2026-07-15):
+    // Array-typed-field sibling of the common direct-field reverse lookup
+    // (struct-static-array-field cross-frame follow-up, 2026-07-15):
     // `structArrayFieldPointerVariables`/
     // `FieldIndices` merge the identical, conflict-free way -- the id space
     // is shared with the scalar-field maps (both mint through the same
     // `fieldSnapshotAllocationId` memo), so the same
-    // `fieldAddressAllocations` forward map is the right conflict check
+    // the field-path forward map is the right conflict check
     // here too.
     private void mergeStructArrayFieldPointerVariableMaps(ref Walker child) {
         foreach (id, variable; child.structArrayFieldPointerVariables) {
             auto fieldIndex = id in child.structArrayFieldPointerFieldIndices;
             if (fieldIndex !is null)
-                if (auto ownFieldIds = variable in fieldAddressAllocations)
-                    if (auto ownId = *fieldIndex in *ownFieldIds)
-                        if (*ownId != id)
-                            continue;
+                if (auto ownId = directFieldPathKey(variable, *fieldIndex)
+                        in fieldPathAddressAllocations)
+                    if (*ownId != id)
+                        continue;
 
             structArrayFieldPointerVariables[id] = variable;
             if (fieldIndex !is null)
@@ -5802,94 +6097,26 @@ private struct Walker {
         }
     }
 
-    // Nested-struct-field sibling of `mergeStructArrayFieldPointerVariableMaps`
-    // above (nested-struct-field cross-frame follow-up, 2026-07-15).
-    // Follow-up (2026-07-16, cross-frame nested-field pointer-identity): an
-    // id in this map IS now memoized, through
-    // `nestedFieldAddressAllocations` -- once that map started getting duped
-    // into every child `Walker` (mirroring `fieldAddressAllocations`), a
-    // (root variable, outer field index, inner field index) triple can
-    // collide the same way a (variable, field index) pair can for the
-    // sibling merges, so this merge needs the identical symmetric guard:
-    // skipped only when this frame's OWN `nestedFieldAddressAllocations`
-    // forward map already binds the SAME triple to a DIFFERENT id.
-    private void mergeNestedStructFieldPointerVariableMaps(ref Walker child) {
-        foreach (id, variable; child.nestedStructFieldPointerVariables) {
-            auto outerFieldIndex = id in child.nestedStructFieldPointerOuterFieldIndices;
-            auto innerFieldIndex = id in child.nestedStructFieldPointerInnerFieldIndices;
-            if (outerFieldIndex !is null && innerFieldIndex !is null)
-                if (auto forOuter = variable in nestedFieldAddressAllocations)
-                    if (auto forInner = *outerFieldIndex in *forOuter)
-                        if (auto ownId = *innerFieldIndex in *forInner)
-                            if (*ownId != id)
-                                continue;
+    // Common reverse-map merge. The owning frame's forward memo wins when
+    // the same path names a different activation's allocation id.
+    private void mergeFieldPointerPaths(ref Walker child) {
+        foreach (id, path; child.fieldPointerPaths) {
+            if (auto ownId = path in fieldPathAddressAllocations)
+                if (*ownId != id)
+                    continue;
 
-            nestedStructFieldPointerVariables[id] = variable;
-            if (outerFieldIndex !is null)
-                nestedStructFieldPointerOuterFieldIndices[id] = *outerFieldIndex;
-            if (innerFieldIndex !is null)
-                nestedStructFieldPointerInnerFieldIndices[id] = *innerFieldIndex;
+            fieldPointerPaths[id] = path;
+            if (auto identity = id in child.classFieldPointerObjectIds)
+                classFieldPointerObjectIds[id] = *identity;
         }
     }
 
-    // Class sibling of `mergeStructFieldPointerVariableMaps` above
-    // (cross-frame write-through-pointer follow-up):
-    // `classFieldPointerVariables`/`FieldIndices` merge the identical,
-    // conflict-free way -- a class-field id is memoized through the SAME
-    // `fieldAddressAllocations[variable]` map `fieldSnapshotAllocationId`
-    // uses for a struct field (it only dispatches the field-INDEX
-    // computation on receiver kind, not the id memo itself), so the same
-    // forward map is the right conflict check here too.
-    private void mergeClassFieldPointerVariableMaps(ref Walker child) {
-        foreach (id, variable; child.classFieldPointerVariables) {
-            auto fieldIndex = id in child.classFieldPointerFieldIndices;
-            if (fieldIndex !is null)
-                if (auto ownFieldIds = variable in fieldAddressAllocations)
-                    if (auto ownId = *fieldIndex in *ownFieldIds)
-                        if (*ownId != id)
-                            continue;
-
-            classFieldPointerVariables[id] = variable;
-            if (fieldIndex !is null)
-                classFieldPointerFieldIndices[id] = *fieldIndex;
-        }
-    }
-
-    // Nested-class-struct-field sibling of `mergeNestedStructFieldPointerVariableMaps`
-    // above (remaining aggregate-composition cross-frame follow-up,
-    // 2026-07-15). Follow-up (2026-07-16, cross-frame
-    // nested-field pointer-identity): `&c.inner.x` shares the SAME
-    // `nestedFieldAddressAllocations` memo the struct-receiver sibling's own
-    // comment now describes -- the map is shared between a struct and a
-    // class root variable (`fieldSnapshotAllocationId`'s own dispatch), so
-    // this merge needs the identical symmetric guard, keyed the same way.
-    private void mergeNestedClassStructFieldPointerVariableMaps(ref Walker child) {
-        foreach (id, variable; child.nestedClassStructFieldPointerVariables) {
-            auto outerFieldIndex =
-                id in child.nestedClassStructFieldPointerOuterFieldIndices;
-            auto innerFieldIndex =
-                id in child.nestedClassStructFieldPointerInnerFieldIndices;
-            if (outerFieldIndex !is null && innerFieldIndex !is null)
-                if (auto forOuter = variable in nestedFieldAddressAllocations)
-                    if (auto forInner = *outerFieldIndex in *forOuter)
-                        if (auto ownId = *innerFieldIndex in *forInner)
-                            if (*ownId != id)
-                                continue;
-
-            nestedClassStructFieldPointerVariables[id] = variable;
-            if (outerFieldIndex !is null)
-                nestedClassStructFieldPointerOuterFieldIndices[id] = *outerFieldIndex;
-            if (innerFieldIndex !is null)
-                nestedClassStructFieldPointerInnerFieldIndices[id] = *innerFieldIndex;
-        }
-    }
-
-    // Array-typed-field sibling of `mergeClassFieldPointerVariableMaps` above
+    // Array-typed-field sibling of `mergeFieldPointerPaths` above
     // (class static-array-field cross-frame follow-up):
     // `classArrayFieldPointerVariables`/
     // `FieldIndices` merge the identical, conflict-free way -- a
     // class-array-field id is memoized through the same
-    // `fieldAddressAllocations[variable]` map a class scalar field's id is
+    // field-path map a class scalar field's id is
     // (`arrayPointer`'s `DotVarExp` branch mints it via the same
     // `fieldSnapshotAllocationId`), so the same forward map is the right
     // conflict check here too, mirroring `mergeStructArrayFieldPointerVariableMaps`'s
@@ -5898,10 +6125,10 @@ private struct Walker {
         foreach (id, variable; child.classArrayFieldPointerVariables) {
             auto fieldIndex = id in child.classArrayFieldPointerFieldIndices;
             if (fieldIndex !is null)
-                if (auto ownFieldIds = variable in fieldAddressAllocations)
-                    if (auto ownId = *fieldIndex in *ownFieldIds)
-                        if (*ownId != id)
-                            continue;
+                if (auto ownId = directFieldPathKey(variable, *fieldIndex)
+                        in fieldPathAddressAllocations)
+                    if (*ownId != id)
+                        continue;
 
             classArrayFieldPointerVariables[id] = variable;
             if (fieldIndex !is null)
@@ -5909,49 +6136,14 @@ private struct Walker {
         }
     }
 
-    // `fieldAddressAllocations`' own forward-map merge, matching
+    // `fieldPathAddressAllocations`' own forward-map merge, matching
     // `mergeArrayAllocationMaps`' "this frame's own entry wins" rule: a
-    // (variable, field index) pair this frame already has an id for keeps
-    // it; only a pair this frame has never seen adopts the callee's.
-    private void mergeFieldAddressAllocations(ref Walker child) {
-        foreach (variable, fieldIds; child.fieldAddressAllocations)
-            foreach (fieldIndex, id; fieldIds) {
-                auto existing = variable in fieldAddressAllocations;
-                if (existing !is null && (fieldIndex in *existing) !is null)
-                    continue;
-
-                fieldAddressAllocations[variable][fieldIndex] = id;
-            }
-    }
-
-    // `nestedFieldAddressAllocations`' own forward-map merge (the cross-frame
-    // nested-field pointer-identity follow-up), the
-    // one-level-nested sibling of `mergeFieldAddressAllocations` above with
-    // the identical "this frame's own entry wins" rule, one key level
-    // deeper: a (root variable, outer field index, inner field index) triple
-    // this frame already has an id for keeps it; only a triple this frame
-    // has never seen adopts the callee's. Needed now that
-    // `nestedFieldAddressAllocations` is duped into every child `Walker`
-    // (by `forkPerFrameCellsInto`, with the rest of the per-frame cell
-    // state), so a nested
-    // function that FIRST takes `&s.inner.x` (this frame never having seen
-    // that triple before) hands its freshly-minted id back up to the
-    // enclosing frame, exactly mirroring how a nested function first taking
-    // a shared enclosing local's direct-field address already works via
-    // `mergeFieldAddressAllocations`.
-    private void mergeNestedFieldAddressAllocations(ref Walker child) {
-        foreach (rootVariable, outerIds; child.nestedFieldAddressAllocations)
-            foreach (outerIndex, innerIds; outerIds)
-                foreach (innerIndex, id; innerIds) {
-                    auto existingOuter = rootVariable in nestedFieldAddressAllocations;
-                    if (existingOuter !is null) {
-                        auto existingInner = outerIndex in *existingOuter;
-                        if (existingInner !is null && (innerIndex in *existingInner) !is null)
-                            continue;
-                    }
-
-                    nestedFieldAddressAllocations[rootVariable][outerIndex][innerIndex] = id;
-                }
+    // field path this frame already has an id for keeps it; only a path this
+    // frame has never seen adopts the callee's.
+    private void mergeFieldPathAddressAllocations(ref Walker child) {
+        foreach (key, id; child.fieldPathAddressAllocations)
+            if (key !in fieldPathAddressAllocations)
+                fieldPathAddressAllocations[key] = id;
     }
 
     // Cross-frame writeback discriminator: whether `childVariable`'s final
@@ -6156,7 +6348,8 @@ private struct Walker {
     // returns to it, or `s.field` would still read the pre-call value even
     // though `*p` already sees the write.
     private void writeBackStructFieldPointerTargets(ref Walker child) {
-        foreach (_, variable; child.structFieldPointerVariables) {
+        foreach (_, path; child.fieldPointerPaths) {
+            auto variable = path.root;
             if ((variable in child.structFieldPointerWritebacks) is null)
                 continue;
 
@@ -6203,7 +6396,11 @@ private struct Walker {
     // `*pointer` deref does, so the owning frame's boxed `locals` mirror
     // must be refreshed here too.
     private void writeBackNestedStructFieldPointerTargets(ref Walker child) {
-        foreach (_, variable; child.nestedStructFieldPointerVariables) {
+        foreach (_, path; child.fieldPointerPaths) {
+            if (path.indices.length != 2)
+                continue;
+
+            auto variable = path.root;
             if ((variable in child.nestedStructFieldPointerWritebacks) is null)
                 continue;
 
@@ -6227,7 +6424,8 @@ private struct Walker {
     // must be refreshed here from the (already-updated) cell once control
     // returns to it.
     private void writeBackClassFieldPointerTargets(ref Walker child) {
-        foreach (_, variable; child.classFieldPointerVariables) {
+        foreach (_, path; child.fieldPointerPaths) {
+            auto variable = path.root;
             if ((variable in child.classFieldPointerWritebacks) is null)
                 continue;
 
@@ -6259,7 +6457,11 @@ private struct Walker {
     // a (non-union) struct-typed field's own nested scalar fields -- so this
     // writeback needs no field-specific derivation of its own.
     private void writeBackNestedClassStructFieldPointerTargets(ref Walker child) {
-        foreach (_, variable; child.nestedClassStructFieldPointerVariables) {
+        foreach (_, path; child.fieldPointerPaths) {
+            if (path.indices.length != 2)
+                continue;
+
+            auto variable = path.root;
             if ((variable in child.nestedClassStructFieldPointerWritebacks) is null)
                 continue;
 
@@ -6332,7 +6534,9 @@ private struct Walker {
     // non-scalar, non-scalar-element-array, non-(non-union)-struct field is
     // left exactly as `current` already had it, matching
     // `writeClassCellScalarFields`'s own bounded reach for this phase's
-    // scope.
+    // scope. Scalar- and struct-element dynamic-array fields reconstruct
+    // through the slice header stored in the class cell and the referenced
+    // element block.
     private Value classValueFromCell(
         in Value current,
         ref NativeBlock cell,
@@ -6342,7 +6546,8 @@ private struct Walker {
             classFields, fieldByteOffset, staticArrayLength, typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         Value value = current;
         foreach (index, field; classFields(class_)) {
@@ -6358,7 +6563,11 @@ private struct Walker {
 
             if (isStaticArrayType(field.type)) {
                 auto elementType = field.type.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 auto fieldValue = value.classFieldAt(index);
@@ -6370,12 +6579,46 @@ private struct Walker {
                 const length = staticArrayLength(field.type.toBasetype.isTypeSArray);
                 auto arrayCell =
                     NativeArray.adopt(cell.subRange(offset, size), elementType, length);
-                foreach (elementIndex; 0 .. fieldValue.length)
+                foreach (elementIndex; 0 .. fieldValue.length) {
+                    Value elementValue;
+                    if (structType !is null) {
+                        auto elementCell = arrayCell.structElement(elementIndex);
+                        elementValue = structValueFromCell(
+                            fieldValue[elementIndex],
+                            elementCell,
+                        );
+                    } else
+                        elementValue = readScalar(
+                            elementType,
+                            arrayCell.element(elementIndex),
+                        );
                     fieldValue = fieldValue.withArrayElement(
                         elementIndex,
-                        readScalar(elementType, arrayCell.element(elementIndex)),
+                        elementValue,
                     );
+                }
                 value = value.withClassField(index, fieldValue);
+                continue;
+            }
+
+            if (isDynamicArrayType(field.type)) {
+                auto elementType = field.type.toBasetype.nextOf.toBasetype;
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
+                    continue;
+
+                const fieldValue = value.classFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = classSliceField(cell, class_, index);
+                value = value.withClassField(
+                    index,
+                    arrayValueFromCell(fieldValue, arrayCell),
+                );
                 continue;
             }
 
@@ -6419,7 +6662,8 @@ private struct Walker {
     private Value structValueFromCell(in Value current, ref NativeStruct cell) {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
         Value value = current;
         foreach (index; 0 .. cell.fieldCount) {
@@ -6432,7 +6676,11 @@ private struct Walker {
 
             if (isStaticArrayType(fieldType)) {
                 auto elementType = fieldType.toBasetype.nextOf.toBasetype;
-                if (!isNativeScalarType(elementType))
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
                     continue;
 
                 auto fieldValue = value.structFieldAt(index);
@@ -6440,12 +6688,46 @@ private struct Walker {
                     continue;
 
                 auto arrayCell = cell.arrayField(index);
-                foreach (elementIndex; 0 .. fieldValue.length)
+                foreach (elementIndex; 0 .. fieldValue.length) {
+                    Value elementValue;
+                    if (structType !is null) {
+                        auto elementCell = arrayCell.structElement(elementIndex);
+                        elementValue = structValueFromCell(
+                            fieldValue[elementIndex],
+                            elementCell,
+                        );
+                    } else
+                        elementValue = readScalar(
+                            elementType,
+                            arrayCell.element(elementIndex),
+                        );
                     fieldValue = fieldValue.withArrayElement(
                         elementIndex,
-                        readScalar(elementType, arrayCell.element(elementIndex)),
+                        elementValue,
                     );
+                }
                 value = value.withStructField(index, fieldValue);
+                continue;
+            }
+
+            if (isDynamicArrayType(fieldType)) {
+                auto elementType = fieldType.toBasetype.nextOf.toBasetype;
+                auto structType = elementType.isTypeStruct;
+                if (!isNativeScalarType(elementType) && (
+                    structType is null ||
+                    structType.sym.isUnionDeclaration !is null
+                ))
+                    continue;
+
+                const fieldValue = value.structFieldAt(index);
+                if (!fieldValue.isArray)
+                    continue;
+
+                auto arrayCell = cell.sliceField(index);
+                value = value.withStructField(
+                    index,
+                    arrayValueFromCell(fieldValue, arrayCell),
+                );
                 continue;
             }
 
@@ -6519,7 +6801,7 @@ private struct Walker {
         child.runStatement(function_.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
         allocationCount = child.allocationCount;
-        mergePointerCellState(child);
+        mergePerFrameCellsFrom(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
     }
@@ -6619,9 +6901,9 @@ private struct Walker {
             }
 
             // A fresh call binds a new stack slot for `parameter`; drop any
-            // inherited/stale `scalarCells`/`arrayCells`/`structCells` entry
-            // the same way a fresh `DeclarationExp` does -- recursion reuses
-            // the same
+            // inherited/stale `scalarCells`/`arrayCells`/`structCells`/
+            // `classCells` entry the same way a fresh `DeclarationExp` does --
+            // recursion reuses the same
             // `VarDeclaration` for a parameter at every call depth.
             dropNonClassCells(parameter);
             locals[parameter] = arguments[index];
@@ -6933,6 +7215,16 @@ private struct Walker {
                     continue;
                 }
 
+                if (value.isArray && value.arrayNativeAddress !is null)
+                    if (auto var = argument.isVarExp)
+                        if (auto variable = var.var.isVarDeclaration) {
+                            dropArrayCell(variable);
+                            locals[variable] = *value;
+                            uninitializedLocals.remove(variable);
+                            promoteArrayCell(variable);
+                            continue;
+                        }
+
                 // A `ref` argument spelled `*pointer` (core.atomic's shared
                 // overloads forward `*cast(T*)&val`): write back through the
                 // pointer's target.
@@ -6973,49 +7265,6 @@ private struct Walker {
             return left.asReal is right.asReal;
 
         return left == right;
-    }
-
-    private void writeBackByValueClassArguments(
-        imported!"dmd.func".FuncDeclaration function_,
-        imported!"dmd.expression".Expression[] argumentExpressions,
-        ref Walker child,
-    ) {
-        import dmd.astenums: TY;
-
-        if (function_.parameters is null)
-            return;
-
-        foreach (index, parameter; *function_.parameters) {
-            if (parameter.isReference)
-                continue;
-
-            if (
-                parameter.type is null ||
-                parameter.type.toBasetype.ty != TY.Tclass
-            )
-                continue;
-
-            if (index >= argumentExpressions.length)
-                continue;
-
-            auto argument = argumentExpressions[index];
-            if (argument is null || !isWritableLocation(argument))
-                continue;
-
-            auto finalParam = parameter in child.locals;
-            if (finalParam is null || !finalParam.isClassObject)
-                continue;
-
-            const original = runExpression(argument);
-            if (!original.isClassObject)
-                continue;
-
-            if (finalParam.classTypeName != original.classTypeName)
-                continue;
-
-            if (*finalParam != original)
-                writeLocation(argument, *finalParam);
-        }
     }
 
     // D slices passed inside a by-value struct share their backing array with
@@ -7468,15 +7717,14 @@ private struct Walker {
         imported!"dmd.expression".Expression receiverExpression,
         in Value boxedValue,
     ) {
-        auto variable = classCellKeyVariable(receiverExpression);
-        if (variable is null)
+        if (!boxedValue.isClassObject)
             return boxedValue;
 
-        auto cell = variable in classCells;
+        auto cell = boxedValue.classIdentity in classObjectCells;
         if (cell is null)
             return boxedValue;
 
-        auto classType = variable.type.toBasetype.isTypeClass;
+        auto classType = receiverExpression.type.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             return boxedValue;
 
@@ -7488,9 +7736,8 @@ private struct Walker {
     // serves pointer DEREF reads): `receiverExpression` must resolve to a
     // `classCells` key via `classCellKeyVariable` above (a bare `VarExp`, or
     // a bare `ThisExp` resolving to `currentFunction.vthis`), and
-    // `fieldIndex` must be either a `native_scalar.isNativeScalarType` field
-    // or (aggregate-composition follow-up) a scalar-element static-array
-    // field, or this returns
+    // `fieldIndex` must be a supported scalar or aggregate-composition field,
+    // or this returns
     // `false` and leaves `value` untouched -- every one of those keeps the
     // caller's existing boxed fallback unchanged. `target` is the caller's
     // already-computed boxed receiver value (`runDotVarExpression`'s own
@@ -7510,17 +7757,17 @@ private struct Walker {
             classFields, fieldByteOffset, staticArrayLength, typeByteSize;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
-        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isStaticArrayType;
 
-        auto variable = classCellKeyVariable(receiverExpression);
-        if (variable is null)
+        if (!target.isClassObject)
             return false;
 
-        auto cell = variable in classCells;
+        auto cell = target.classIdentity in classObjectCells;
         if (cell is null)
             return false;
 
-        auto classType = variable.type.toBasetype.isTypeClass;
+        auto classType = receiverExpression.type.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             return false;
 
@@ -7539,7 +7786,11 @@ private struct Walker {
 
         if (isStaticArrayType(field.type)) {
             auto elementType = field.type.toBasetype.nextOf.toBasetype;
-            if (!isNativeScalarType(elementType))
+            auto structType = elementType.isTypeStruct;
+            if (!isNativeScalarType(elementType) && (
+                structType is null ||
+                structType.sym.isUnionDeclaration !is null
+            ))
                 return false;
 
             const fieldValue = target.classFieldAt(fieldIndex);
@@ -7554,12 +7805,43 @@ private struct Walker {
                 staticArrayLength(field.type.toBasetype.isTypeSArray),
             );
             Value result = fieldValue;
-            foreach (elementIndex; 0 .. fieldValue.length)
+            foreach (elementIndex; 0 .. fieldValue.length) {
+                Value elementValue;
+                if (structType !is null) {
+                    auto elementCell = arrayCell.structElement(elementIndex);
+                    elementValue = structValueFromCell(
+                        fieldValue[elementIndex],
+                        elementCell,
+                    );
+                } else
+                    elementValue = readScalar(
+                        elementType,
+                        arrayCell.element(elementIndex),
+                    );
                 result = result.withArrayElement(
                     elementIndex,
-                    readScalar(elementType, arrayCell.element(elementIndex)),
+                    elementValue,
                 );
+            }
             value = result;
+            return true;
+        }
+
+        if (isDynamicArrayType(field.type)) {
+            auto elementType = field.type.toBasetype.nextOf.toBasetype;
+            auto structType = elementType.isTypeStruct;
+            if (!isNativeScalarType(elementType) && (
+                structType is null ||
+                structType.sym.isUnionDeclaration !is null
+            ))
+                return false;
+
+            const fieldValue = target.classFieldAt(fieldIndex);
+            if (!fieldValue.isArray)
+                return false;
+
+            auto arrayCell = classSliceField(*cell, classType.sym, fieldIndex);
+            value = arrayValueFromCell(fieldValue, arrayCell);
             return true;
         }
 
@@ -7587,6 +7869,25 @@ private struct Walker {
         }
 
         return false;
+    }
+
+    private NativeArray classSliceField(
+        ref NativeBlock cell,
+        imported!"dmd.dclass".ClassDeclaration class_,
+        in size_t fieldIndex,
+    ) {
+        import quickbite.backends.interpreter.layout:
+            classFields, fieldByteOffset;
+        import quickbite.backends.interpreter.native_array:
+            readSliceHeaderBytes;
+
+        auto field = classFields(class_)[fieldIndex];
+        auto arrayType = field.type.toBasetype.isTypeDArray;
+        const offset = fieldByteOffset(field);
+        auto header = readSliceHeaderBytes(
+            cell.bytes[offset .. offset + NativeArray.sliceHeaderByteLength],
+        );
+        return NativeArray.borrow(arrayType.next, header.ptr, header.length);
     }
 
     private Value runClassInfoExpression(
@@ -7803,6 +8104,8 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported interpreter assignment target.");
 
+            variable = refLocalStorageVariable(variable);
+
             // A native extern __gshared global's memory is the single source of
             // truth (ffi.md §35.2): write through to the resolved symbol and do
             // NOT cache in `locals`, or a later native mutation would be
@@ -7895,6 +8198,19 @@ private struct Walker {
                 return;
             }
 
+            // A dynamic-array header can be reinterpreted as a two-field
+            // struct through a pointer.  DMD's own __ArrayCast does this to
+            // change the header length while retaining the data pointer.
+            // The expression carrier remains an array because those are the
+            // bytes' actual guest meaning; update its descriptor rather than
+            // requiring a recursively-boxed struct snapshot.
+            if (receiver.isArray && declarationName(dot.var) == "length") {
+                writeLocation(dot.e1, receiver.withArrayLength(
+                    cast(size_t) value.asLong,
+                ));
+                return;
+            }
+
             const fieldIndex = structFieldIndex(dot);
             auto unionType = receiverStructType(dot.e1);
             const updated = unionType !is null && unionType.sym.isUnionDeclaration !is null
@@ -7941,8 +8257,8 @@ private struct Walker {
                 // native-scalar pointee (e.g. a `ubyte*` reinterpret of a
                 // `uint`) writes only into the cell's low
                 // `typeByteSize(pointeeType)` bytes -- mirroring
-                // `reinterpretLocalPointerLoad`'s read-side narrowing by
-                // slicing -- instead of `writeScalar` throwing on a
+                // the read side's narrowing by slicing -- instead of
+                // `writeScalar` throwing on a
                 // length mismatch. A non-native-scalar pointee (or a wider
                 // one, a pre-existing gap not this call site's to fix)
                 // falls through to the boxed write below instead of
@@ -7975,6 +8291,10 @@ private struct Walker {
                     throw new Exception("Unsupported interpreter assignment target.");
                 }
 
+                if (value.isArray) {
+                    dropArrayCell(*variable);
+                    arrayRebinds[*variable] = true;
+                }
                 locals[*variable] = value;
                 uninitializedLocals.remove(*variable);
                 return;
@@ -8357,7 +8677,7 @@ private struct Walker {
     // `current` (the receiver's own boxed value) can be absent here even on
     // a genuine hit: a CROSS-FRAME write (`variable` is the CALLER's own
     // local, `id` recorded before the call and shared into this callee's
-    // frame only via the duped `structFieldPointerVariables`/`structCells`)
+    // frame only via the duped `fieldPointerPaths`/`structCells`)
     // finds `variable` in neither this frame's parameters nor its `locals`
     // at all -- it was never bound here. The write still lands in the
     // shared cell either way; `structFieldPointerWritebacks` flags
@@ -8368,33 +8688,33 @@ private struct Walker {
     // `current`, when present, still declines a rebind (no longer a
     // struct) exactly as before.
     private bool writeThroughStructFieldPointer(in Value pointer, in Value value) {
-        auto variable = pointer.pointerAllocation in structFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 1)
             return false;
 
-        auto cell = *variable in structCells;
+        auto variable = path.root;
+
+        auto cell = variable in structCells;
         if (cell is null)
             return false;
 
-        auto fieldIndex = pointer.pointerAllocation in structFieldPointerFieldIndices;
-        if (fieldIndex is null)
-            return false;
+        const fieldIndex = path.indices[0];
 
-        auto current = *variable in locals;
+        auto current = variable in locals;
         if (current !is null && !current.isStruct)
             return false;
 
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
         writeScalar(
-            cell.fieldDeclaration(*fieldIndex).type,
-            cell.field(*fieldIndex),
+            cell.fieldDeclaration(fieldIndex).type,
+            cell.field(fieldIndex),
             value,
         );
         if (current !is null)
-            locals[*variable] = current.withStructField(*fieldIndex, value);
-        structFieldPointerWritebacks[*variable] = true;
-        uninitializedLocals.remove(*variable);
+            locals[variable] = current.withStructField(fieldIndex, value);
+        structFieldPointerWritebacks[variable] = true;
+        uninitializedLocals.remove(variable);
         return true;
     }
 
@@ -8463,7 +8783,7 @@ private struct Walker {
     // `writeThroughStructArrayFieldPointer` -- a CROSS-FRAME write
     // (`variable` is the CALLER's own local, `id` recorded before the call
     // and shared into this callee's frame only via the duped
-    // `nestedStructFieldPointerVariables`/`structCells`) finds `variable` in
+    // `fieldPointerPaths`/`structCells`) finds `variable` in
     // neither this frame's parameters nor its `locals` at all. The write
     // still lands in the shared cell either way; `nestedStructFieldPointerWritebacks`
     // flags `variable` so `writeBackNestedStructFieldPointerTargets` can
@@ -8471,39 +8791,35 @@ private struct Walker {
     // `current`, when present, still declines a rebind (no longer a struct)
     // exactly as before.
     private bool writeThroughNestedStructFieldPointer(in Value pointer, in Value value) {
-        auto variable = pointer.pointerAllocation in nestedStructFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 2)
             return false;
 
-        auto cell = *variable in structCells;
+        auto variable = path.root;
+        auto cell = variable in structCells;
         if (cell is null)
             return false;
 
-        auto outerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerOuterFieldIndices;
-        if (outerFieldIndex is null)
-            return false;
+        const outerFieldIndex = path.indices[0];
+        const innerFieldIndex = path.indices[1];
 
-        auto innerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerInnerFieldIndices;
-        if (innerFieldIndex is null)
-            return false;
-
-        auto current = *variable in locals;
+        auto current = variable in locals;
         if (current !is null && !current.isStruct)
             return false;
 
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        auto nestedCell = cell.structField(*outerFieldIndex);
-        writeScalar(nestedCell.fieldDeclaration(*innerFieldIndex).type,
-            nestedCell.field(*innerFieldIndex), value);
+        auto nestedCell = cell.structField(outerFieldIndex);
+        writeScalar(nestedCell.fieldDeclaration(innerFieldIndex).type,
+            nestedCell.field(innerFieldIndex), value);
 
         if (current !is null) {
-            const updatedInner = current.structFieldAt(*outerFieldIndex)
-                .withStructField(*innerFieldIndex, value);
-            locals[*variable] = current.withStructField(*outerFieldIndex, updatedInner);
+            const updatedInner = current.structFieldAt(outerFieldIndex)
+                .withStructField(innerFieldIndex, value);
+            locals[variable] = current.withStructField(outerFieldIndex, updatedInner);
         }
-        nestedStructFieldPointerWritebacks[*variable] = true;
-        uninitializedLocals.remove(*variable);
+        nestedStructFieldPointerWritebacks[variable] = true;
+        uninitializedLocals.remove(variable);
         return true;
     }
 
@@ -8519,7 +8835,7 @@ private struct Walker {
     // exactly as in `writeThroughStructFieldPointer` -- a CROSS-FRAME write
     // (`variable` is the CALLER's own local, `id` recorded before the call
     // and shared into this callee's frame only via the duped
-    // `classFieldPointerVariables`/`classCells`) finds `variable` in neither
+    // `fieldPointerPaths`/`classCells`) finds `variable` in neither
     // this frame's parameters nor its `locals` at all. The write still lands
     // in the shared cell either way; `classFieldPointerWritebacks` flags
     // `variable` so `writeBackClassFieldPointerTargets` can re-derive the
@@ -8531,35 +8847,41 @@ private struct Walker {
     // class object -- leaving `writeLocation`'s `PtrExp` arm to keep
     // refusing those exactly as before.
     private bool writeThroughClassFieldPointer(in Value pointer, in Value value) {
-        auto variable = pointer.pointerAllocation in classFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 1)
             return false;
 
-        auto cell = *variable in classCells;
+        auto variable = path.root;
+
+        auto identity = pointer.pointerAllocation in classFieldPointerObjectIds;
+        if (identity is null)
+            return false;
+
+        auto cell = *identity in classObjectCells;
         if (cell is null)
             return false;
 
-        auto fieldIndex = pointer.pointerAllocation in classFieldPointerFieldIndices;
-        if (fieldIndex is null)
-            return false;
+        const fieldIndex = path.indices[0];
 
-        auto current = *variable in locals;
-        if (current !is null && !current.isClassObject)
-            return false;
+        auto current = variable in locals;
 
         import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        auto classType = (*variable).type.toBasetype.isTypeClass;
-        auto field = classFields(classType.sym)[*fieldIndex];
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType is null)
+            return false;
+        auto field = classFields(classType.sym)[fieldIndex];
         const offset = fieldByteOffset(field);
         const size = typeByteSize(field.type);
         writeScalar(field.type, cell.bytes[offset .. offset + size], value);
 
         if (current !is null)
-            locals[*variable] = current.withClassField(*fieldIndex, value);
-        classFieldPointerWritebacks[*variable] = true;
-        uninitializedLocals.remove(*variable);
+            if (auto currentCell = variable in classCells)
+                if (currentCell.bytes.ptr is cell.bytes.ptr)
+                    locals[variable] = current.withClassField(fieldIndex, value);
+        classFieldPointerWritebacks[variable] = true;
+        uninitializedLocals.remove(variable);
         return true;
     }
 
@@ -8579,7 +8901,7 @@ private struct Walker {
     // exactly as in `writeThroughClassArrayFieldPointer` -- a CROSS-FRAME
     // write (`variable` is the CALLER's own local, `id` recorded before the
     // call and shared into this callee's frame only via the duped
-    // `nestedClassStructFieldPointerVariables`/`classCells`) finds `variable`
+    // `fieldPointerPaths`/`classCells`) finds `variable`
     // in neither this frame's parameters nor its `locals` at all. The write
     // still lands in the shared cell either way; `nestedClassStructFieldPointerWritebacks`
     // flags `variable` so `writeBackNestedClassStructFieldPointerTargets` can
@@ -8590,31 +8912,27 @@ private struct Walker {
     // boxed value is no longer a class object -- leaving `writeLocation`'s
     // `PtrExp` arm to keep refusing those exactly as before.
     private bool writeThroughNestedClassStructFieldPointer(in Value pointer, in Value value) {
-        auto variable = pointer.pointerAllocation in nestedClassStructFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 2)
             return false;
 
-        auto cell = *variable in classCells;
+        auto variable = path.root;
+        auto cell = variable in classCells;
         if (cell is null)
             return false;
 
-        auto outerFieldIndex = pointer.pointerAllocation in nestedClassStructFieldPointerOuterFieldIndices;
-        if (outerFieldIndex is null)
-            return false;
+        const outerFieldIndex = path.indices[0];
+        const innerFieldIndex = path.indices[1];
 
-        auto innerFieldIndex = pointer.pointerAllocation in nestedClassStructFieldPointerInnerFieldIndices;
-        if (innerFieldIndex is null)
-            return false;
-
-        auto current = *variable in locals;
+        auto current = variable in locals;
         if (current !is null && !current.isClassObject)
             return false;
 
         import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        auto classType = (*variable).type.toBasetype.isTypeClass;
-        auto outerField = classFields(classType.sym)[*outerFieldIndex];
+        auto classType = variable.type.toBasetype.isTypeClass;
+        auto outerField = classFields(classType.sym)[outerFieldIndex];
         auto structType = outerField.type.toBasetype.isTypeStruct;
         if (structType is null)
             return false;
@@ -8622,16 +8940,16 @@ private struct Walker {
         const offset = fieldByteOffset(outerField);
         const size = typeByteSize(outerField.type);
         auto nestedCell = NativeStruct.adopt(cell.subRange(offset, size), structType);
-        writeScalar(nestedCell.fieldDeclaration(*innerFieldIndex).type,
-            nestedCell.field(*innerFieldIndex), value);
+        writeScalar(nestedCell.fieldDeclaration(innerFieldIndex).type,
+            nestedCell.field(innerFieldIndex), value);
 
         if (current !is null) {
-            const updatedInner = current.classFieldAt(*outerFieldIndex)
-                .withStructField(*innerFieldIndex, value);
-            locals[*variable] = current.withClassField(*outerFieldIndex, updatedInner);
+            const updatedInner = current.classFieldAt(outerFieldIndex)
+                .withStructField(innerFieldIndex, value);
+            locals[variable] = current.withClassField(outerFieldIndex, updatedInner);
         }
-        nestedClassStructFieldPointerWritebacks[*variable] = true;
-        uninitializedLocals.remove(*variable);
+        nestedClassStructFieldPointerWritebacks[variable] = true;
+        uninitializedLocals.remove(variable);
         return true;
     }
 
@@ -8730,15 +9048,15 @@ private struct Walker {
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, writeScalar;
 
-        auto variable = classCellKeyVariable(receiverExpression);
-        if (variable is null)
+        const receiver = runExpression(receiverExpression);
+        if (!receiver.isClassObject)
             return;
 
-        auto cell = variable in classCells;
+        auto cell = receiver.classIdentity in classObjectCells;
         if (cell is null)
             return;
 
-        auto classType = variable.type.toBasetype.isTypeClass;
+        auto classType = receiverExpression.type.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             return;
 
@@ -9133,6 +9451,8 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter assignment target.");
 
+        variable = refLocalStorageVariable(variable);
+
         auto current = variable in locals;
         if (current is null)
             throw new Exception("Unsupported interpreter assignment target.");
@@ -9198,18 +9518,16 @@ private struct Walker {
         writeScalar(cell.elementType, cell.element(index), value);
     }
 
-    // Writes boxed `arrayValue`'s scalar elements into `cell`'s bytes (the
+    // Writes boxed `arrayValue`'s scalar leaves into `cell`'s bytes (the
     // static-array-element counterpart of `writeStructCellScalarFields`):
     // shared by
     // `promoteArrayCell`'s static-array-element branch (the cell-creation
     // seed) and `writeArrayCellElement`'s own branch above (a direct
     // element write, `a[i] = [...]`, after the cell already exists).
-    // `cell.elementType` is always `native_scalar.isNativeScalarType` by
-    // construction here -- `promoteArrayCell` only ever creates this cell
-    // shape under that same guard -- so there is no nested non-scalar case
-    // to fall back to, unlike `writeStructCellScalarFields`'s own
-    // static-array-field branch. A no-op for a boxed value that isn't
-    // actually an array (defensive, mirroring that same branch's guard).
+    // Nested static-array elements recurse through `NativeArray.arrayElement`;
+    // scalar elements terminate in the shared scalar codec. A no-op for a
+    // boxed value that isn't actually an array (defensive, mirroring
+    // `writeStructCellScalarFields`'s static-array-field branch).
     private void writeStaticArrayCellScalarElements(
         ref NativeArray cell,
         in Value arrayValue,
@@ -9219,9 +9537,25 @@ private struct Walker {
         if (!arrayValue.isArray)
             return;
 
-        foreach (index; 0 .. cell.length)
-            if (index < arrayValue.length)
-                writeScalar(cell.elementType, cell.element(index), arrayValue[index]);
+        foreach (index; 0 .. cell.length) {
+            if (index >= arrayValue.length)
+                continue;
+
+            if (cell.elementType.isTypeSArray) {
+                // Mutable because recursive write takes the view by ref.
+                auto elementCell = cell.arrayElement(index);
+                writeStaticArrayCellScalarElements(
+                    elementCell,
+                    arrayValue[index],
+                );
+            } else {
+                writeScalar(
+                    cell.elementType,
+                    cell.element(index),
+                    arrayValue[index],
+                );
+            }
+        }
     }
 
     // Reads `cell`'s element `index` back into a boxed `Value` (the
@@ -9265,30 +9599,109 @@ private struct Walker {
         return readScalar(cell.elementType, cell.element(index));
     }
 
-    // Re-derives a static-array `Value` from `cell`'s scalar-element bytes
+    // Re-derives a static-array `Value` from `cell`'s scalar-leaf bytes
     // (the static-array-element counterpart of `structValueFromCell`, used
     // by `readArrayCellElement`'s branch above): every element is read back
     // from the cell -- authoritative once a write-through-pointer or a
     // direct element write touched it. Unlike `structValueFromCell`'s
     // per-field overlay onto a `current` base value, there is no non-scalar
     // sub-element here to preserve -- `promoteArrayCell` only ever creates
-    // this cell shape when every element is `native_scalar.
-    // isNativeScalarType` -- so this builds a fresh element array outright
-    // rather than taking a base `Value` to overlay onto.
-    private Value arrayValueFromCell(
-        ref NativeArray cell,
-        in size_t allocationId = 0,
-    ) {
+    // this cell shape when every leaf is `native_scalar.isNativeScalarType`.
+    // Nested static-array elements recurse through `NativeArray.arrayElement`;
+    // scalar elements terminate in the shared scalar codec.
+    private Value arrayValueFromCell(ref NativeArray cell) {
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
         Value[] elements;
         elements.length = cell.length;
-        foreach (index; 0 .. cell.length)
-            elements[index] = readScalar(cell.elementType, cell.element(index));
+        foreach (index; 0 .. cell.length) {
+            if (cell.elementType.isTypeSArray) {
+                auto elementCell = cell.arrayElement(index);
+                elements[index] = arrayValueFromCell(elementCell);
+            } else {
+                elements[index] = readScalar(
+                    cell.elementType,
+                    cell.element(index),
+                );
+            }
+        }
 
-        return allocationId == 0
-            ? Value.arrayValue(elements)
-            : Value.arraySliceValue(elements, elements, 0, allocationId);
+        return Value.arrayValue(elements);
+    }
+
+    // Whole-value read-back for a promoted dynamic array. Struct elements
+    // overlay their authoritative scalar fields onto the current boxed
+    // element so unsupported fields retain their value. Scalars use the
+    // complete cell-only reconstruction above; scalar-element static arrays
+    // use the same complete reconstruction for each inline element.
+    private Value arrayValueFromCell(
+        in Value current,
+        ref NativeArray cell,
+    ) {
+        // Allocation-carrying cast views retain their allocation-base
+        // coordinate, but their elements must be decoded afresh from the
+        // authoritative carrier bytes. Returning `current` here would retain
+        // the right identity while exposing its stale boxed snapshot.
+        if (current.arrayAllocationId != 0) {
+            const id = current.arrayAllocationId;
+            auto carrier = id in arrayAllocationCarriers;
+            if (carrier is null)
+                throw new Exception("Array allocation carrier is missing.");
+
+            auto typedCarrier = carrier.reinterpretElements(
+                cell.elementType,
+            );
+            const offset = current.arrayAllocationOffset;
+            if (
+                offset > typedCarrier.length ||
+                current.length > typedCarrier.length - offset
+            )
+                throw new Exception(
+                    "Array cell view exceeds its allocation carrier.",
+                );
+
+            auto view = typedCarrier.slice(
+                offset,
+                offset + current.length,
+            );
+            return arrayValueFromCarrier(view, typedCarrier, id, offset);
+        }
+
+        if (cell.elementType.isTypeSArray) {
+            Value[] elements;
+            elements.length = cell.length;
+            foreach (index; 0 .. cell.length) {
+                auto elementCell = cell.arrayElement(index);
+                elements[index] = arrayValueFromCell(elementCell);
+            }
+            return arrayCellValue(elements, cell.block.address);
+        }
+
+        if (cell.elementType.isTypeStruct is null)
+        {
+            const elements = arrayElements(arrayValueFromCell(cell));
+            return arrayCellValue(elements, cell.block.address);
+        }
+
+        Value[] elements;
+        elements.length = cell.length;
+        foreach (index; 0 .. cell.length) {
+            const element = index < current.length
+                ? current[index]
+                : defaultValue(cell.elementType);
+            // Mutable because structValueFromCell takes the view by ref.
+            auto elementCell = cell.structElement(index);
+            elements[index] = structValueFromCell(element, elementCell);
+        }
+
+        return arrayCellValue(elements, cell.block.address);
+    }
+
+    private Value arrayCellValue(
+        in Value[] elements,
+        const(void)* address,
+    ) {
+        return Value.nativeArrayValue(elements, address);
     }
 
     private Value arrayValueFromCarrier(
@@ -9392,6 +9805,8 @@ private struct Walker {
             outerIndex,
             (*current)[outerIndex].withArrayElement(innerIndex, value),
         );
+        const updatedOuter = locals[variable][outerIndex];
+        writeThroughArrayCell(variable, outerIndex, updatedOuter);
         uninitializedLocals.remove(variable);
         return value;
     }
@@ -9751,6 +10166,41 @@ private struct Walker {
             throw new Exception("Unsupported interpreter array append target.");
 
         const value = runExpression(assign.e2);
+        if (current.arrayNativeAddress !is null)
+            promoteArrayCell(variable);
+        if (auto cell = variable in arrayCells) {
+            const newLength = cell.length + 1;
+            bool rebound;
+            if (!cell.tryExpandUsedTo(newLength)) {
+                if (
+                    cell.ownership == NativeBlock.Ownership.borrowed &&
+                    variable in sliceAliases
+                ) {
+                    auto replacement = NativeArray.allocate(
+                        cell.elementType,
+                        newLength,
+                    );
+                    replacement.block.bytes[0 .. cell.block.byteLength] =
+                        cell.block.bytes;
+                    dropArrayCell(variable);
+                    arrayCells[variable] = replacement;
+                    cell = variable in arrayCells;
+                    rebound = true;
+                } else {
+                    cell.reserve(newLength);
+                    cell.setLength(newLength);
+                }
+            }
+            writeArrayCellElement(*cell, newLength - 1, value);
+            const boxedCurrent = rebound
+                ? Value.arrayValue(arrayElements(*current))
+                : *current;
+            locals[variable] = arrayValueFromCell(boxedCurrent, *cell);
+            uninitializedLocals.remove(variable);
+            sliceAliases.remove(variable);
+            return locals[variable];
+        }
+
         locals[variable] = current.withAppendedArrayElement(value);
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
@@ -9859,6 +10309,23 @@ private struct Walker {
                 return value;
         }
 
+        if (
+            type.ty == TY.Tarray &&
+            type.nextOf.toBasetype.ty == TY.Tvoid
+        ) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            const value = runExpression(cast_.e1);
+            if (value.isArray && value.arrayNativeAddress !is null)
+                return Value.nativeArrayValueWithLength(
+                    value.length * typeByteSize(
+                        cast_.e1.type.toBasetype.nextOf,
+                    ),
+                    value.arrayNativeAddress,
+                );
+            return value;
+        }
+
         if (isTransparentArrayCastTarget(type)) {
             Value reinterpreted;
             if (reinterpretScalarArrayCast(cast_, reinterpreted))
@@ -9950,6 +10417,8 @@ private struct Walker {
                     if (allocation !in arrayAllocationCarriers)
                         arrayAllocationCarriers[allocation] = targetView;
                     auto carrier = allocation in arrayAllocationCarriers;
+                    auto sourceCarrier =
+                        carrier.reinterpretElements(sourceType);
                     auto targetCarrier =
                         carrier.reinterpretElements(targetType);
                     const offset = source.arrayAllocationOffset;
@@ -9972,6 +10441,16 @@ private struct Walker {
                     targetView = targetCarrier.slice(
                         offset,
                         offset + source.length,
+                    );
+                    auto sourceView = sourceCarrier.slice(
+                        offset,
+                        offset + source.length,
+                    );
+                    locals[sourceVariable] = arrayValueFromCarrier(
+                        sourceView,
+                        sourceCarrier,
+                        allocation,
+                        offset,
                     );
                     result = arrayValueFromCarrier(
                         targetView,
@@ -10128,20 +10607,25 @@ private struct Walker {
         return defaultValue(field);
     }
 
-    // Scalar sibling only, matching `withUnionFieldWrite`'s identical scope
-    // for a WRITTEN struct field: returns `false` (leaving `value`
-    // untouched) for index 0 itself, a non-union literal, a sibling that
-    // isn't `native_scalar.isNativeScalarType`, or a first member that is
-    // neither `isNativeScalarType` nor a plain (non-union) struct -- so the
-    // caller's existing independent-`defaultValue` fallback applies
-    // unchanged in every other case, including the still-open gap
-    // for a static-array or class first member/sibling. When the
-    // first member is a struct, reuses `withUnionFieldWrite`'s own
+    // Scalar, struct/union, scalar-leaf-static-array, or one-level static-
+    // array-of-plain-struct sibling: returns
+    // `false` (leaving `value` untouched) for index 0 itself, a non-union
+    // literal, a sibling that
+    // is none of those supported shapes, or a first member that is neither
+    // `isNativeScalarType`, a struct/union, a scalar-leaf static array, nor a
+    // possibly-nested static array of plain structs -- so the caller's
+    // existing independent-`defaultValue` fallback applies unchanged in every
+    // other case,
+    // including the still-open gap for a class first member/sibling. When
+    // the first member is a struct or union, reuses `withUnionFieldWrite`'s own
     // `writeStructCellScalarFields` idiom to seed the transient cell's
     // shared bytes from the first member's already-resolved struct value
-    // (scalar leaves only, recursing through nested structs/scalar-element
-    // arrays exactly as that helper already does) before reading the
-    // sibling back out.
+    // (scalar leaves only, recursing through nested structs/scalar-leaf
+    // arrays exactly as that helper already does) before reading the sibling
+    // back out. A nested union's boxed fields already agree on those bytes
+    // through this same default reconstruction. A union sibling uses that
+    // same reader: each supported field is independently reconstructed from
+    // the one overlapping block.
     private bool unionSiblingDefaultFieldValue(
         imported!"dmd.expression".StructLiteralExp literal,
         in size_t index,
@@ -10149,8 +10633,8 @@ private struct Walker {
         in Value[] fieldsSoFar,
         out Value value,
     ) {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, readScalar, writeScalar;
-
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, readScalar, writeScalar;
         if (index == 0 || fieldsSoFar.length == 0 || literal.sd is null)
             return false;
 
@@ -10161,7 +10645,22 @@ private struct Walker {
         if (unionType is null)
             return false;
 
-        if (!isNativeScalarType(field.type))
+        const siblingScalar = isNativeScalarType(field.type);
+        auto siblingStructType = field.type.toBasetype.isTypeStruct;
+        const siblingStruct = siblingStructType !is null;
+        const siblingArray = isScalarLeafStaticArray(field.type);
+        auto siblingArrayType = field.type.toBasetype.isTypeSArray;
+        auto siblingArrayStructType = siblingArrayType is null
+            ? null
+            : siblingArrayType.next.toBasetype.isTypeStruct;
+        const siblingStructArray = siblingArrayStructType !is null
+            && siblingArrayStructType.sym.isUnionDeclaration is null;
+        if (
+            !siblingScalar &&
+            !siblingStruct &&
+            !siblingArray &&
+            !siblingStructArray
+        )
             return false;
 
         auto firstField = structLiteralField(literal, 0);
@@ -10170,22 +10669,118 @@ private struct Walker {
 
         const firstFieldScalar = isNativeScalarType(firstField.type);
         auto firstFieldStructType = firstField.type.toBasetype.isTypeStruct;
-        const firstFieldStruct = firstFieldStructType !is null
-            && firstFieldStructType.sym.isUnionDeclaration is null;
+        const firstFieldStruct = firstFieldStructType !is null;
+        const firstFieldArray = isScalarLeafStaticArray(firstField.type)
+            && fieldsSoFar[0].isArray;
+        const firstFieldStructArray = isStaticArrayOfPlainStructs(firstField.type)
+            && fieldsSoFar[0].isArray;
 
-        if (!firstFieldScalar && !firstFieldStruct)
+        if (
+            !firstFieldScalar &&
+            !firstFieldStruct &&
+            !firstFieldArray &&
+            !firstFieldStructArray
+        )
             return false;
 
         auto cell = NativeStruct.allocate(unionType);
         if (firstFieldStruct) {
             auto firstCell = cell.structField(0);
             writeStructCellScalarFields(firstCell, fieldsSoFar[0]);
+        } else if (firstFieldArray) {
+            auto firstCell = cell.arrayField(0);
+            writeStaticArrayCellScalarElements(firstCell, fieldsSoFar[0]);
+        } else if (firstFieldStructArray) {
+            auto firstCell = cell.arrayField(0);
+            writeStaticArrayCellStructElements(firstCell, fieldsSoFar[0]);
         } else {
             writeScalar(firstField.type, cell.field(0), fieldsSoFar[0]);
         }
 
-        value = readScalar(field.type, cell.field(index));
+        if (siblingScalar) {
+            value = readScalar(field.type, cell.field(index));
+        } else if (siblingStruct) {
+            auto current = defaultValue(field);
+            if (!current.isStruct)
+                return false;
+
+            auto siblingCell = cell.structField(index);
+            value = structValueFromCell(current, siblingCell);
+        } else if (siblingStructArray) {
+            value = defaultValue(field);
+            if (!value.isArray)
+                return false;
+
+            auto siblingCell = cell.arrayField(index);
+            foreach (elementIndex; 0 .. siblingCell.length) {
+                auto elementCell = siblingCell.structElement(elementIndex);
+                value = value.withArrayElement(
+                    elementIndex,
+                    structValueFromCell(value[elementIndex], elementCell),
+                );
+            }
+        } else {
+            auto siblingCell = cell.arrayField(index);
+            value = arrayValueFromCell(siblingCell);
+        }
         return true;
+    }
+
+    // Struct-leaf counterpart of `writeStaticArrayCellScalarElements`:
+    // nested arrays compose `NativeArray` views until the existing
+    // `NativeStruct` field writer can seed each plain-struct leaf.
+    private void writeStaticArrayCellStructElements(
+        ref NativeArray cell,
+        in Value arrayValue,
+    ) {
+        if (!arrayValue.isArray)
+            return;
+
+        foreach (index; 0 .. cell.length) {
+            if (index >= arrayValue.length)
+                continue;
+
+            if (cell.elementType.isTypeSArray) {
+                // Mutable because recursive write takes the view by ref.
+                auto elementCell = cell.arrayElement(index);
+                writeStaticArrayCellStructElements(
+                    elementCell,
+                    arrayValue[index],
+                );
+            } else {
+                auto elementCell = cell.structElement(index);
+                writeStructCellScalarFields(elementCell, arrayValue[index]);
+            }
+        }
+    }
+
+    private bool isScalarLeafStaticArray(imported!"dmd.mtype".Type type) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+
+        if (!isStaticArrayType(type))
+            return false;
+
+        auto elementType = type.toBasetype.nextOf.toBasetype;
+        while (isStaticArrayType(elementType))
+            elementType = elementType.nextOf.toBasetype;
+        return isNativeScalarType(elementType);
+    }
+
+    private bool isStaticArrayOfPlainStructs(
+        imported!"dmd.mtype".Type type,
+    ) {
+        auto elementType = type.toBasetype;
+        do {
+            auto arrayType = elementType.isTypeSArray;
+            if (arrayType is null)
+                return false;
+            elementType = arrayType.next.toBasetype;
+        } while (elementType.isTypeSArray !is null);
+
+        auto structType = elementType.isTypeStruct;
+        return structType !is null &&
+            structType.sym.isUnionDeclaration is null;
     }
 
     private Value structLiteralFieldValue(
@@ -10258,6 +10853,8 @@ private struct Walker {
             // Slicing native memory (`ptr[0 .. n]` over a C allocation, as
             // std.file.read does): reify the elements into an array Value.
             if (source.isNativePointer) {
+                import quickbite.backends.interpreter.layout: typeByteSize;
+
                 Value[] elements;
                 foreach (index; lower .. upper)
                     elements ~= loadNativePointerElement(
@@ -10265,7 +10862,11 @@ private struct Walker {
                         source,
                         index,
                     );
-                return Value.arrayValue(elements);
+                return Value.nativeArrayValue(
+                    elements,
+                    cast(const(ubyte)*) source.asNativePointer + lower *
+                        typeByteSize(slice.e1.type.toBasetype.nextOf),
+                );
             }
 
             if (source.isLocalPointer)
@@ -10281,7 +10882,41 @@ private struct Walker {
         if (source.isArray && (lower > upper || upper > source.length))
             throwRangeError("Range violation");
 
-        return source.arraySlice(lower, upper);
+        auto nativeAddress = source.arrayNativeAddress;
+        if (nativeAddress is null)
+            if (auto var = slice.e1.isVarExp)
+                if (auto variable = var.var.isVarDeclaration) {
+                    auto sourceVariable = variable;
+                    size_t sourceLower;
+                    if (auto alias_ = variable in sliceAliases) {
+                        sourceVariable = alias_.source;
+                        sourceLower = alias_.lower;
+                    }
+                    if (auto cell = sourceVariable in arrayCells)
+                        nativeAddress = cast(const(ubyte)*) cell.block.address +
+                            sourceLower * cell.stride;
+                }
+        if (nativeAddress !is null) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            nativeAddress = cast(const(ubyte)*) nativeAddress + lower *
+                typeByteSize(slice.e1.type.toBasetype.nextOf);
+        }
+
+        import dmd.astenums: TY;
+        if (
+            nativeAddress !is null &&
+            slice.type.toBasetype.nextOf.toBasetype.ty == TY.Tvoid
+        ) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            return Value.nativeArrayValueWithLength(
+                (upper - lower) *
+                    typeByteSize(slice.e1.type.toBasetype.nextOf),
+                nativeAddress,
+            );
+        }
+        return source.arraySlice(lower, upper, nativeAddress);
     }
 
     private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {
@@ -10613,21 +11248,19 @@ private struct Walker {
         if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
             return false;
 
-        auto variable = pointer.pointerAllocation in structFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 1)
             return false;
 
-        auto cell = *variable in structCells;
+        auto cell = path.root in structCells;
         if (cell is null)
             return false;
 
-        auto fieldIndex = pointer.pointerAllocation in structFieldPointerFieldIndices;
-        if (fieldIndex is null)
-            return false;
+        const fieldIndex = path.indices[0];
 
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        value = readScalar(cell.fieldDeclaration(*fieldIndex).type, cell.field(*fieldIndex));
+        value = readScalar(cell.fieldDeclaration(fieldIndex).type, cell.field(fieldIndex));
         return true;
     }
 
@@ -10643,23 +11276,29 @@ private struct Walker {
         if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
             return false;
 
-        auto variable = pointer.pointerAllocation in classFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 1)
             return false;
 
-        auto cell = *variable in classCells;
+        auto variable = path.root;
+
+        auto identity = pointer.pointerAllocation in classFieldPointerObjectIds;
+        if (identity is null)
+            return false;
+
+        auto cell = *identity in classObjectCells;
         if (cell is null)
             return false;
 
-        auto fieldIndex = pointer.pointerAllocation in classFieldPointerFieldIndices;
-        if (fieldIndex is null)
-            return false;
+        const fieldIndex = path.indices[0];
 
         import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        auto classType = (*variable).type.toBasetype.isTypeClass;
-        auto field = classFields(classType.sym)[*fieldIndex];
+        auto classType = variable.type.toBasetype.isTypeClass;
+        if (classType is null)
+            return false;
+        auto field = classFields(classType.sym)[fieldIndex];
         const offset = fieldByteOffset(field);
         const size = typeByteSize(field.type);
         value = readScalar(field.type, cell.bytes[offset .. offset + size]);
@@ -10762,28 +11401,23 @@ private struct Walker {
         if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
             return false;
 
-        auto variable = pointer.pointerAllocation in nestedStructFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 2)
             return false;
 
-        auto cell = *variable in structCells;
+        auto cell = path.root in structCells;
         if (cell is null)
             return false;
 
-        auto outerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerOuterFieldIndices;
-        if (outerFieldIndex is null)
-            return false;
-
-        auto innerFieldIndex = pointer.pointerAllocation in nestedStructFieldPointerInnerFieldIndices;
-        if (innerFieldIndex is null)
-            return false;
+        const outerFieldIndex = path.indices[0];
+        const innerFieldIndex = path.indices[1];
 
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        auto nestedCell = cell.structField(*outerFieldIndex);
+        auto nestedCell = cell.structField(outerFieldIndex);
         value = readScalar(
-            nestedCell.fieldDeclaration(*innerFieldIndex).type,
-            nestedCell.field(*innerFieldIndex),
+            nestedCell.fieldDeclaration(innerFieldIndex).type,
+            nestedCell.field(innerFieldIndex),
         );
         return true;
     }
@@ -10848,27 +11482,23 @@ private struct Walker {
         if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
             return false;
 
-        auto variable = pointer.pointerAllocation in nestedClassStructFieldPointerVariables;
-        if (variable is null)
+        auto path = pointer.pointerAllocation in fieldPointerPaths;
+        if (path is null || path.indices.length != 2)
             return false;
 
-        auto cell = *variable in classCells;
+        auto variable = path.root;
+        auto cell = variable in classCells;
         if (cell is null)
             return false;
 
-        auto outerFieldIndex = pointer.pointerAllocation in nestedClassStructFieldPointerOuterFieldIndices;
-        if (outerFieldIndex is null)
-            return false;
-
-        auto innerFieldIndex = pointer.pointerAllocation in nestedClassStructFieldPointerInnerFieldIndices;
-        if (innerFieldIndex is null)
-            return false;
+        const outerFieldIndex = path.indices[0];
+        const innerFieldIndex = path.indices[1];
 
         import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
-        auto classType = (*variable).type.toBasetype.isTypeClass;
-        auto outerField = classFields(classType.sym)[*outerFieldIndex];
+        auto classType = variable.type.toBasetype.isTypeClass;
+        auto outerField = classFields(classType.sym)[outerFieldIndex];
         auto structType = outerField.type.toBasetype.isTypeStruct;
         if (structType is null)
             return false;
@@ -10877,8 +11507,8 @@ private struct Walker {
         const size = typeByteSize(outerField.type);
         auto nestedCell = NativeStruct.adopt(cell.subRange(offset, size), structType);
         value = readScalar(
-            nestedCell.fieldDeclaration(*innerFieldIndex).type,
-            nestedCell.field(*innerFieldIndex),
+            nestedCell.fieldDeclaration(innerFieldIndex).type,
+            nestedCell.field(innerFieldIndex),
         );
         return true;
     }
@@ -11122,8 +11752,7 @@ private struct Walker {
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
-            allocationCount = child.allocationCount;
-            mergePointerCellState(child);
+            mergePerFrameCellsFrom(child);
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             import quickbite.backends.interpreter.layout: structFields;
@@ -11208,7 +11837,7 @@ private struct Walker {
             foreach (argument; *new_.arguments)
                 arguments ~= runExpression(argument);
 
-        auto object = classDefaultValue(classType.sym);
+        auto object = classDefaultValue(classType.sym, ++nextClassObjectId);
         if (new_.member is null)
             return object;
 
@@ -11235,13 +11864,13 @@ private struct Walker {
         child.runStatement(new_.member.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
         nextFunctionPointerId = child.nextFunctionPointerId;
+        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
-        allocationCount = child.allocationCount;
-        mergePointerCellState(child);
+        mergePerFrameCellsFrom(child);
         return child.thisValue;
     }
 
@@ -11606,10 +12235,39 @@ private struct Walker {
         const isStructFieldAlias = isRefVariable(variable) &&
             dotInitializer !is null;
         size_t arrayElementAliasIndex;
+        Value nativeFieldAliasValue;
+        bool hasNativeFieldAlias;
+        if (
+            isRefVariable(variable) &&
+            dotInitializer !is null &&
+            dotInitializer.e1.isIndexExp !is null
+        ) {
+            import dmd.tokens: EXP;
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType, readScalar;
+
+            if (isNativeScalarType(variable.type)) {
+                const pointer = addressOfExpression(dotInitializer, EXP.address);
+                if (pointer.isNativePointer) {
+                    // Mutable because both the scalar reader and the map
+                    // retain the borrowed byte-range view by mutable value.
+                    auto cell = NativeBlock.borrow(
+                        pointer.asNativePointer,
+                        typeByteSize(variable.type),
+                    );
+                    nativeFieldAliasValue = readScalar(variable.type, cell.bytes);
+                    scalarCells[variable] = cell;
+                    hasNativeFieldAlias = true;
+                }
+            }
+        }
         auto literal = initializer.isFuncExp;
         auto value = storageValue(
             variable.type,
-            literal !is null
+            hasNativeFieldAlias
+                ? nativeFieldAliasValue
+                : literal !is null
                 ? runFunctionLiteralDeclaration(literal)
                 : isArrayElementAlias
                 ? runIndexExpression(indexInitializer, arrayElementAliasIndex)
@@ -11618,7 +12276,31 @@ private struct Walker {
         locals[variable] = value;
         bindScalarArrayCastView(variable, initializer);
         registerClassAliasIfPlainVar(variable, initializer);
-        recordGCArrayUsedAlias(variable, initializer);
+        // A plain `ref` aggregate local denotes `source`'s storage, so share
+        // the existing aggregate-cell and local-pointer mechanisms rather
+        // than retain a boxed snapshot and distinct address under the alias
+        // declaration's AST node.
+        if (isRefVariable(variable)) {
+            auto sourceVar = initializer.isVarExp;
+            auto source = sourceVar is null
+                ? null
+                : sourceVar.var.isVarDeclaration;
+            if (source !is null) {
+                const baseType = variable.type.toBasetype;
+                if (baseType.isTypeStruct !is null) {
+                    promoteStructCell(source);
+                    if (auto cell = source in structCells)
+                        structCells[variable] = *cell;
+                }
+                if (
+                    baseType.isTypeStruct !is null ||
+                    baseType.isTypeClass !is null ||
+                    baseType.isTypeSArray !is null
+                )
+                    localPointerIds[variable] =
+                        localPointerValue(source).localPointerId;
+            }
+        }
         bindArrayValueCell(variable, value);
         uninitializedLocals.remove(variable);
         if (isArrayElementAlias)
@@ -11679,42 +12361,6 @@ private struct Walker {
             return;
 
         arrayCells[variable] = sourceCell.reinterpretElements(targetType);
-    }
-
-    private void recordGCArrayUsedAlias(
-        VarDeclaration variable,
-        imported!"dmd.expression".Expression initializer,
-    ) {
-        import quickbite.backends.interpreter.builtins:
-            GCArrayHook, tryGCArrayHook;
-
-        auto call = gcArrayUsedCall(initializer);
-        if (call is null || call.f is null) {
-            arrayAllocationAliases.remove(variable);
-            return;
-        }
-
-        GCArrayHook hook;
-        if (!tryGCArrayHook(call.f, hook) || hook != GCArrayHook.getUsed) {
-            arrayAllocationAliases.remove(variable);
-            return;
-        }
-
-        if (lastGCArrayUsedAllocation == 0) {
-            arrayAllocationAliases.remove(variable);
-            return;
-        }
-
-        arrayAllocationAliases[variable] = lastGCArrayUsedAllocation;
-    }
-
-    private imported!"dmd.expression".CallExp gcArrayUsedCall(
-        imported!"dmd.expression".Expression initializer,
-    ) {
-        if (auto cast_ = initializer.isCastExp)
-            return gcArrayUsedCall(cast_.e1);
-
-        return initializer.isCallExp;
     }
 
     private Value defaultLocalValue(VarDeclaration variable) {
@@ -11830,9 +12476,11 @@ private struct Walker {
             return;
         }
 
+        const isClass = receiverClassType(dot.e1) !is null;
         structFieldAliases[variable] = StructFieldAlias(
             source,
-            structFieldIndex(dot),
+            isClass ? classFieldIndex(dot) : structFieldIndex(dot),
+            isClass,
         );
     }
 
@@ -11845,18 +12493,23 @@ private struct Walker {
             return;
 
         auto source = alias_.source in locals;
-        if (source is null)
+        auto structCell = alias_.source in structCells;
+        auto classCell = alias_.source in classCells;
+        if (source is null && structCell is null && classCell is null)
             throw new Exception(
-                "Unsupported interpreter struct field alias target.",
+                "Unsupported interpreter aggregate field alias target.",
             );
 
-        locals[alias_.source] = source.withStructField(alias_.index, value);
-        // A `ref` local bound directly to a
-        // struct field (`ref int r = s.x;`, recorded via
+        if (source !is null)
+            locals[alias_.source] = alias_.isClass
+                ? source.withClassField(alias_.index, value)
+                : source.withStructField(alias_.index, value);
+        // A `ref` local bound directly to an
+        // aggregate field (`ref int r = s.x;`, recorded via
         // `recordStructFieldAlias`) must also refresh `alias_.source`'s
-        // promoted `structCells` entry, if one exists (an earlier `&s.x`),
+        // promoted aggregate cell, if one exists (an earlier `&s.x`),
         // or a later read through that pointer
-        // (`pointerTargetValue`/`structFieldPointerCellValue`, authoritative
+        // (`pointerTargetValue` and its field-cell readers, authoritative
         // over the boxed mirror just re-derived above) keeps answering with
         // stale bytes. Mirrors `writeThroughArrayCell`'s treatment of the
         // array sibling. A no-op when no cell was ever promoted for
@@ -11870,13 +12523,32 @@ private struct Walker {
         // reaches `writeScalar` with a type it cannot represent and throws;
         // the boxed mirror write just above already handles a non-scalar
         // field correctly on its own.
-        if (auto cell = alias_.source in structCells) {
+        if (structCell !is null) {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType, writeScalar;
 
-            auto fieldType = cell.fieldDeclaration(alias_.index).type;
+            auto fieldType = structCell.fieldDeclaration(alias_.index).type;
             if (isNativeScalarType(fieldType))
-                writeScalar(fieldType, cell.field(alias_.index), value);
+                writeScalar(fieldType, structCell.field(alias_.index), value);
+        } else if (classCell !is null) {
+            import quickbite.backends.interpreter.layout:
+                classFields, fieldByteOffset, typeByteSize;
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType, writeScalar;
+
+            auto classType = alias_.source.type.toBasetype.isTypeClass;
+            if (classType !is null && classType.sym !is null) {
+                auto field = classFields(classType.sym)[alias_.index];
+                if (isNativeScalarType(field.type)) {
+                    const offset = fieldByteOffset(field);
+                    const size = typeByteSize(field.type);
+                    writeScalar(
+                        field.type,
+                        classCell.bytes[offset .. offset + size],
+                        value,
+                    );
+                }
+            }
         }
         uninitializedLocals.remove(alias_.source);
     }
@@ -12061,6 +12733,7 @@ private imported!"quickbite.lang".Value nativeConstructorReceiver(
 
 private imported!"quickbite.lang".Value classDefaultValue(
     imported!"dmd.dclass".ClassDeclaration class_,
+    in size_t identity = 0,
 ) {
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
@@ -12078,6 +12751,7 @@ private imported!"quickbite.lang".Value classDefaultValue(
         classTypeNames(class_),
         fieldNames,
         fields,
+        identity,
     );
 }
 
@@ -12412,15 +13086,6 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
 
     return function_.toChars.fromStringz.idup;
 }
-
-private bool isEmplaceRef(imported!"dmd.func".FuncDeclaration function_) {
-    import std.conv: text;
-    import std.string: startsWith;
-
-    return text(function_.toPrettyChars)
-        .startsWith("core.internal.lifetime.emplaceRef!(");
-}
-
 
 private struct SliceAlias {
     public imported!"dmd.declaration".VarDeclaration source;

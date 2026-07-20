@@ -1428,10 +1428,8 @@ static foreach (backend; Matrix!()) {
 
 // The owed §9.10 fixture: a class reference passed by value to a function
 // that mutates a field must leave the mutation visible to the caller, since
-// a class is a reference type. Shim-backed by `writeBackByValueClassArguments`
-// (§9.10 deletion inventory) — this fixture pins the observable behaviour,
-// not the shim's mechanism, and must stay green once the native-layout
-// object model replaces it.
+// a class is a reference type. The callee and caller reach the same
+// authoritative object cell; no by-value parameter writeback is involved.
 static foreach (backend; Matrix!()) {
     @("classReferencePassedByValueMutatesObject." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1449,6 +1447,36 @@ static foreach (backend; Matrix!()) {
                 auto box = new Box;
 
                 fill(box);
+
+                assert(box.value == 42);
+            }
+        });
+    }
+}
+
+// The §9.10 shim-deletion ratchet: a class parameter shares the referenced
+// object's identity with its argument, but the parameter variable itself is
+// passed by value. Rebinding that variable must therefore leave the caller's
+// variable pointing at the original object. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("classReferencePassedByValueDoesNotRebindCaller." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Box {
+                int value;
+            }
+
+            void replace(Box box) {
+                box = new Box;
+                box.value = 99;
+            }
+
+            unittest {
+                auto box = new Box;
+                box.value = 42;
+
+                replace(box);
 
                 assert(box.value == 42);
             }
@@ -1527,16 +1555,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The owed §9.10 ratchet fixture: `emplaceRef` on a *scalar* array element is
-// exactly the case §9.10 says the `runEmplaceRefCall`/`isEmplaceRef` shim
-// (impl.d) is provably equivalent to the real semantics — a plain value
-// write is the whole of `emplaceRef`'s job for a scalar, so there is no
-// construction side effect to skip. Red-first proof: applied alone at
-// `bce523cc^` (the parent of fix commit `bce523cc`, "interpreter: handle
-// emplaceRef writes"), `Interpreter` fails with `cannot read uninitialized
-// variable `.trustedMoveImpl.result` in ctfe` and `SystemLinker` is green.
-// Bytecode now runs this assertion after its mixed mutable-character-array/
-// string-literal comparison support landed.
+// `emplaceRef` must write through a scalar array-element reference. This also
+// ratchets the interpreter's real `core.internal.lifetime.emplaceRef` body;
+// no name-based interception is permitted.
 static foreach (backend; Matrix!()) {
     @("emplaceRefWritesArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1557,17 +1578,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// The owed §9.10 gap fixture: `emplaceRef` on a struct element with a
-// postblit must run it exactly once, matching real construction semantics.
-// The `runEmplaceRefCall`/`isEmplaceRef` shim (impl.d) writes the field via
-// a raw `runExpression` + `writeLocation`, skipping the postblit entirely —
-// this is one of the two documented shim defects.
-// Interpreter omitted per §8: the omission is the documentation of this
-// construction-side-effect gap. Verbatim red: `assert(counters[0].value ==
-// 42)` passes (the shim moves the correct bits) but
-// `assert(counters[0].postblitCount == 1)` fails with `0 != 1` — the
-// postblit body never runs. Retire the omission when the interpreter
-// moves to native layout and the shim is deleted (§9.10).
+// `emplaceRef` on a struct element with a postblit must run it exactly once,
+// matching compiled construction semantics. Interpreter reaches the real
+// body and writes the value, but still skips the postblit (`0 != 1`).
 // Bytecode must preserve this one postblit while its `emplaceRef` wrapper
 // writes the indexed destination.
 static foreach (backend; Matrix!(
@@ -1604,18 +1617,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The owed §9.10 gap fixture: `emplaceRef`'s 0-arg (default-init) form must
-// overwrite the destination with `T.init`. The `runEmplaceRefCall` shim
-// (impl.d) throws `Unsupported eval call.` whenever the call has other than
-// exactly 2 arguments, so the 1-argument `emplaceRef(chunk)` overload never
-// reaches its 2-arg path — this is the first half of the shim's documented
-// refusal.
-// Interpreter omitted per §8: the omission is the documentation of this
-// refusal. Verbatim red: `Unsupported eval call.`
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.refusal, "Unsupported eval call."),
-)) {
-    @("emplaceRefRefusesZeroArgDefaultInit." ~ backend.stringof)
+// `emplaceRef`'s 0-arg form overwrites the destination with `T.init` through
+// the real druntime body.
+static foreach (backend; Matrix!()) {
+    @("emplaceRefDefaultInitializesArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1637,9 +1642,7 @@ static foreach (backend; Matrix!(
 // `wchar.init` is `0xFFFF`, unlike the all-zero default initialization of
 // most scalar elements. This keeps the zero-argument `emplaceRef` path honest
 // about materialising the element type's real `.init` value.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.refusal, "Unsupported eval call. (same 1-arg emplaceRef shim refusal as the zero-arg fixture above)"),
-)) {
+static foreach (backend; Matrix!()) {
     @("emplaceRefDefaultInitializesWcharArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1659,18 +1662,11 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The owed §9.10 gap fixture: `emplaceRef`'s multi-arg (constructor) form
-// must forward its arguments to the destination's constructor. Same shim
-// refusal as above, other direction: 3 call arguments (chunk, 1, 2) also
-// fails `runEmplaceRefCall`'s `!= 2` check — the second half of the shim's
-// documented refusal.
-// Interpreter omitted per §8: the omission is the documentation of this
-// refusal. Verbatim red: `Unsupported eval call.`
+// `emplaceRef`'s multi-arg form forwards its arguments to the destination's
+// constructor through the real druntime body.
 // Bytecode covers its narrow indexed-array struct-constructor path here.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.refusal, "Unsupported eval call."),
-)) {
-    @("emplaceRefRefusesMultiArgConstructor." ~ backend.stringof)
+static foreach (backend; Matrix!()) {
+    @("emplaceRefForwardsConstructorArguments." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -467,7 +467,10 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         // A mutable scalar slice is marshalled through its own element buffer
         // and tracked for writeback; everything else (and immutable/nested
         // slices) marshals copy-only (ffi.md §34.10).
-        if (isMutableScalarSlice(type)) {
+        if (
+            isMutableScalarSlice(type) &&
+            _arguments[index].arrayNativeAddress is null
+        ) {
             auto bytes = marshalSliceArgument(
                 buffer,
                 type,
@@ -915,7 +918,19 @@ private ubyte[] marshalSliceArgument(
     // to build the handle and to dispatch the recursive marshal.
     import quickbite.backends.interpreter.native_array: NativeArray;
 
+    if (value.arrayNativeAddress !is null) {
+        *cast(size_t*) buffer.ptr = value.length;
+        *cast(const(void)**) (buffer.ptr + size_t.sizeof) =
+            value.arrayNativeAddress;
+        return null;
+    }
+
+    import dmd.astenums: TY;
+    import dmd.mtype: Type;
+
     auto elementType = type.nextOf.toBasetype;
+    if (elementType.ty == TY.Tvoid)
+        elementType = Type.tuns8;
     auto na = NativeArray.allocate(elementType, value.length);
     const(char)*[] keepAlive;
     foreach (index; 0 .. value.length) {
@@ -1071,7 +1086,8 @@ private bool canMarshalToNative(imported!"dmd.mtype".Type type) {
     import dmd.mtype: TypeStruct;
 
     switch (type.ty) with (TY) {
-        case Tbool, Tchar, Twchar, Tdchar,
+        case Tvoid,
+             Tbool, Tchar, Twchar, Tdchar,
              Tint8, Tuns8, Tint16, Tuns16,
              Tint32, Tuns32, Tint64, Tuns64,
              Tfloat32, Tfloat64, Tfloat80,
@@ -1182,8 +1198,21 @@ private imported!"quickbite.lang".Value unmarshalSlice(
 
     const length = *cast(const size_t*) buffer.ptr;
     const data = *cast(const void**) (buffer.ptr + size_t.sizeof);
-    if (length == 0)
+    if (length == 0) {
+        if (data !is null) {
+            auto elementType = type.nextOf.toBasetype;
+            switch (elementType.ty) with (TY) {
+                case Tchar:
+                case Twchar:
+                case Tdchar:
+                    break;
+
+                default:
+                    return Value.nativeArrayValueWithLength(0, data);
+            }
+        }
         return emptySliceValue(type);
+    }
     if (data is null)
         throw new Exception("Native slice return has null data.");
 
@@ -1225,7 +1254,7 @@ private imported!"quickbite.lang".Value unmarshalSlice(
             Value[] elements;
             foreach (index; 0 .. length)
                 elements ~= unmarshalValue(elementType, na.element(index));
-            return Value.arrayValue(elements);
+            return Value.nativeArrayValue(elements, data);
     }
 }
 

@@ -681,6 +681,26 @@ public struct NativeArray {
         growBlockTo(byteLength(n, _stride));
     }
 
+    // An interior slice cannot reallocate its owner's block, but druntime can
+    // authorize that exact slice as the allocation's current tail owner (as
+    // `assumeSafeAppend` does through `gc_shrinkArrayUsed`).  On success the
+    // GC guarantees the widened range is live and within the same allocation,
+    // which makes the following borrowed-view reslice safe.  On failure the
+    // handle is untouched and the caller must take the ordinary rebind path.
+    public bool tryExpandUsedTo(in size_t n) @trusted {
+        if (_block.ownership != NativeBlock.Ownership.borrowed || n <= _length)
+            return false;
+
+        const newByteLength = byteLength(n, _stride);
+        if (!gc_expandArrayUsed(_block.bytes, newByteLength,
+            _block.scan == NativeBlock.Scan.no))
+            return false;
+
+        _block.widenBorrowedViewTo(newByteLength);
+        _length = n;
+        return true;
+    }
+
     // The shared tail of `reserve`'s and `setLength`'s own grow paths:
     // grows this array's block to span at least `requiredBytes`, trying
     // `NativeBlock.tryExtendTo` first (extend in place, address unchanged),
@@ -855,6 +875,12 @@ public struct NativeArray {
         _length = n;
     }
 }
+
+private extern(C) bool gc_expandArrayUsed(
+    void[] slice,
+    size_t newUsed,
+    bool atomic,
+) pure nothrow;
 
 // `length * stride` computed with overflow checking: an overflowing
 // product would otherwise wrap to a small byte count, and `NativeBlock.

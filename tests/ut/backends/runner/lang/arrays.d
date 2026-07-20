@@ -96,6 +96,26 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A whole-value read through the source binding sees writes made through a
+// same-width scalar cast view, not the boxed descriptor's stale elements.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sameWidthScalarCastUpdatesWholeSourceValue." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                byte runtime = 1;
+                byte[] signed = [runtime];
+                ubyte[] raw = cast(ubyte[]) signed;
+                raw[0] = 2;
+
+                assert(signed == [cast(byte) 2]);
+            }
+        });
+    }
+}
+
 // Assignment of a same-width scalar array cast preserves the same storage
 // aliasing as declaration initialization.
 static foreach (backend; Matrix!()) {
@@ -1963,18 +1983,12 @@ static foreach (backend; Matrix!()) {
 }
 
 // Owed §9.10 gap fixture (ai/plans/interpreter.md): the oracle's real
-// `reserve` contract, not the gc_reserveArrayCapacity shim's echoed return
-// value. Interpreter omitted: the shim fabricates a capacity number without
-// growing the value model's backing allocation, so `arr.ptr` before and
-// after filling to the reserved capacity compares unequal (representation
-// debt, retires with value.md's native-layout track). Ctfe omitted:
+// `reserve` contract. Ctfe omitted:
 // pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE
 // refuses at compile time.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "gc_reserveArrayCapacity shim doesn't grow the backing allocation; representation debt, retires with value.md's native-layout track"),
 )) {
     @("dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate." ~
         backend.stringof)
@@ -1997,16 +2011,15 @@ static foreach (backend; Matrix!(
 }
 
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
-// that does not start at its backing block's base). Interpreter omitted:
-// `gc_getArrayUsed` rebuilds its walk from the incoming pointer's offset but
-// loops the full backing-block length, so it overruns and throws for any
-// interior pointer (a representation gap in the shim). Ctfe omitted:
+// that does not start at its backing block's base). Interpreter omitted: its
+// reserve descriptor loses the zero-length allocation's capacity when the
+// descriptor is rebound into the caller. Ctfe omitted:
 // `gc_getArrayUsed` has no D source, so Ctfe cannot intercept it at all.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "gc_getArrayUsed has no D source, so Ctfe cannot intercept it at all"),
     Omit!(Interpreter, Because.unconfirmed,
-        "gc_getArrayUsed overruns for interior pointers; representation debt, retires with value.md's native-layout track"),
+        "reserve capacity is not retained when the zero-length slice descriptor is rebound"),
 )) {
     @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~
         backend.stringof)
