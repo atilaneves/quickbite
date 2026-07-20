@@ -427,8 +427,9 @@ row reaches them:
 - Scalar slice fill is limited to 4-byte basic elements; other widths,
   aggregate elements, and static-array slice fills still need general
   semantics.
-- Dynamic-array sub-slices reject an upper bound beyond the source length;
-  pointer-slice bounds and lower-bound diagnostics remain incomplete.
+- Dynamic-array and string sub-slices reject an upper bound beyond the source
+  length and a lower bound greater than the upper bound; pointer-slice bounds
+  remain unchecked.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
 - Struct aliases and whole-local assignment do not yet cover all heap fields,

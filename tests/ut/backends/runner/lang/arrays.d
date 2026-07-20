@@ -2844,6 +2844,141 @@ static foreach (backend; Matrix!()) {
 }
 
 
+// An inverted sub-slice (`a[lo .. hi]` with `lo > hi`) must throw before a
+// length is formed: computing `hi - lo` as an unsigned length silently wraps
+// to a huge value instead of raising the bounds error compiled D raises.
+// `Ctfe` and `Interpreter` are pinned separately below with their own
+// divergent wording (confirmed via `bin/qb`, not guessed).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe's own compile-time bounds check reports " ~
+        "\"slice `[4..2]` exceeds array bounds `[0..6]`\"; see sibling pin below"),
+    Omit!(Interpreter, Because.diverges,
+        "Interpreter's sub-slice construction path raises druntime's plain " ~
+        "\"Range violation\"; see sibling pin below"),
+)) {
+    @("dynamicArray.stringSubSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string a = "abcdef";
+                string b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage(
+            "slice [4 .. 2] has a larger lower index than upper index",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("dynamicArray.stringSubSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string a = "abcdef";
+                string b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage(
+            "slice `[4..2]` exceeds array bounds `[0..6]`",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("dynamicArray.stringSubSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                string a = "abcdef";
+                string b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage("Range violation");
+    }
+}
+
+// Same inverted-bounds invariant, exercised through the general dynamic-array
+// sub-slice path (`subSlice4`/`validateSubSlice`) rather than the compact
+// string descriptor path (`stringSubSlice`/`validateCompactSubSlice`) above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe's own compile-time bounds check reports " ~
+        "\"slice `[4..2]` exceeds array bounds `[0..6]`\"; see sibling pin below"),
+    Omit!(Interpreter, Because.diverges,
+        "Interpreter's sub-slice construction path raises druntime's plain " ~
+        "\"Range violation\"; see sibling pin below"),
+)) {
+    @("dynamicArray.subSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[] a = [1, 2, 3, 4, 5, 6];
+                int[] b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage(
+            "slice [4 .. 2] has a larger lower index than upper index",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("dynamicArray.subSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[] a = [1, 2, 3, 4, 5, 6];
+                int[] b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage(
+            "slice `[4..2]` exceeds array bounds `[0..6]`",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("dynamicArray.subSliceWithInvertedRuntimeBoundsThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[] a = [1, 2, 3, 4, 5, 6];
+                int[] b = a[seed(4) .. seed(2)];
+            }
+        }).shouldThrowWithMessage("Range violation");
+    }
+}
+
+
 /++
     Plain reassignment of an already-declared `string` local from another
     `string` local (`b = a;`) must copy the full slice descriptor. A `string`

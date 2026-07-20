@@ -2330,6 +2330,12 @@ private void validateSubSlice(
 ) @safe {
     import std.conv: text;
 
+    if (lo > hi)
+        throw new Exception(text(
+            "slice [", lo, " .. ", hi,
+            "] has a larger lower index than upper index",
+        ));
+
     const length = scalarValue!size_t(
         stack,
         sourceOffset + size_t.sizeof,
@@ -2349,6 +2355,12 @@ private void validateCompactSubSlice(
     in size_t hi,
 ) @safe {
     import std.conv: text;
+
+    if (lo > hi)
+        throw new Exception(text(
+            "slice [", lo, " .. ", hi,
+            "] has a larger lower index than upper index",
+        ));
 
     if (hi > length)
         throw new Exception(text(
