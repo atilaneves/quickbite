@@ -11513,13 +11513,14 @@ private struct Compiler {
         if (isAssertFailCall(assert_.msg))
             return false;
 
-        auto message = messageSlice(assert_.msg);
-        if (message is null)
-            return false;
-
         auto integer = assert_.e1.isIntegerExp;
         if (integer !is null && integer.toInteger == 0) {
-            const slice = *message;
+            if (!isStringType(assert_.msg.type))
+                return false;
+            auto message = messageSlice(assert_.msg);
+            const slice = message is null
+                ? compileExpression(assert_.msg)
+                : *message;
             _code ~= Instruction(
                 Op.throwString,
                 slice.offset,
@@ -11528,6 +11529,10 @@ private struct Compiler {
             );
             return true;
         }
+
+        auto message = messageSlice(assert_.msg);
+        if (message is null)
+            return false;
 
         const condition = compileExpression(assert_.e1);
         const skipJump = emitJumpIfTrue(condition);
@@ -13665,9 +13670,11 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
     if (element is null)
         return false;
 
-    // Only an immutable char element is a `string`/`wstring`/`dstring`; a
-    // mutable `char[]` is an ordinary dynamic array with heap-backed storage.
-    if (!element.isImmutable)
+    // A read-only char array uses the compact string representation. DMD may
+    // add `const` to a `string` result when calling a `const` method, as in
+    // `EntropyResult.toString`; a mutable `char[]` remains an ordinary dynamic
+    // array with heap-backed storage.
+    if (!element.isImmutable && !element.isConst)
         return false;
 
     switch (element.toBasetype.ty) with (TY) {

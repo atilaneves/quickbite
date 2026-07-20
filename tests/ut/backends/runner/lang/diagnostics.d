@@ -53,6 +53,29 @@ static foreach (backend; Matrix!(Plus!(IR))) {
     }
 }
 
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "CTFE reports the generic assertion message"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "does not materialize imported EntropyResult struct literals"),
+)) {
+    @("computedAssertMessageMatchesDmd." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                import std.internal.entropy: EntropyResult, EntropySource,
+                    EntropyStatus;
+
+                auto value = EntropyResult(
+                    EntropyStatus.unknownError,
+                    EntropySource.none,
+                );
+                assert(false, value.toString());
+            }
+        }).shouldThrowWithMessage("getEntropy(): An unknown error occurred.");
+    }
+}
+
 static foreach (backend; Matrix!(Plus!(IR))) {
     @("intLessThanOops." ~ backend.stringof)
     @Tags(backend.stringof)

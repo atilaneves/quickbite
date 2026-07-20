@@ -439,8 +439,7 @@ changed:
 4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
 5. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: the
-   host-entropy path; its current failure is the computed-message
-   `assert(false, value.toString())` error path.
+   host-entropy path.
 6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
