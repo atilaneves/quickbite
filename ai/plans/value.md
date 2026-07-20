@@ -865,7 +865,9 @@ in parallel and never blocks it.
      per-activation frame blocks (one GC block per activation, DMD's
      own closure model, with slot offsets assigned by
      `frame_layout.computeFrameLayout` from DMD's own per-type size and
-     alignment), lvalue evaluation yielding places (address +
+     alignment, and the block itself allocated by `frame_block.FrameBlock`
+     with a scan policy chosen from `layout.typeHasPointers` over each
+     slotted local's type), lvalue evaluation yielding places (address +
      static type), loads/stores routed through places, module-table
      storage for module-level guest state per the existing extern-data
      rules. A dynamic-array local holds a real `{length, ptr}` slice
