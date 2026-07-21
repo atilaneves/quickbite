@@ -99,7 +99,11 @@ unittest {
 }
 
 
-@("FrameBlock.hasSlot.trueForSlottedParamFalseForRefParamAndUnrelatedVariable")
+// `hasSlot` answers `true` for EITHER slot kind -- an owning param and a
+// reference param alike -- since both have a real slot in this frame;
+// `hasOwningSlot`/`hasReferenceSlot` are the kind-specific predicates
+// `impl.d`'s verified mirror and reference-slot binding actually gate on.
+@("FrameBlock.hasSlot.trueForOwningAndReferenceParamsFalseForUnrelatedVariable")
 unittest {
     auto function_ = parseFunction(
         q{ void quickbiteFrameBlockHasSlot(int a, ref int b) {} },
@@ -118,15 +122,64 @@ unittest {
     auto c = (*other.parameters)[0];
 
     frame.hasSlot(a).should == true;
-    frame.hasSlot(b).should == false;
+    frame.hasSlot(b).should == true;
     frame.hasSlot(c).should == false;
+}
+
+
+@("FrameBlock.hasOwningSlot.hasReferenceSlot.distinguishTheTwoSlotKinds")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbiteFrameBlockSlotKinds(int a, ref int b) {} },
+        "quickbiteFrameBlockSlotKinds",
+    );
+    auto layout = computeFrameLayout(function_);
+    auto frame = FrameBlock.allocate(layout);
+
+    auto a = (*function_.parameters)[0];
+    auto b = (*function_.parameters)[1];
+
+    auto other = parseFunction(
+        q{ void quickbiteFrameBlockSlotKindsUnrelated(int c) {} },
+        "quickbiteFrameBlockSlotKindsUnrelated",
+    );
+    auto c = (*other.parameters)[0];
+
+    frame.hasOwningSlot(a).should == true;
+    frame.hasReferenceSlot(a).should == false;
+
+    frame.hasOwningSlot(b).should == false;
+    frame.hasReferenceSlot(b).should == true;
+
+    frame.hasOwningSlot(c).should == false;
+    frame.hasReferenceSlot(c).should == false;
+}
+
+
+// `referenceSlotValue`/`setReferenceSlot` round-trip an arbitrary address
+// through a `ref` parameter's own reference slot -- the raw pointer
+// read/write `impl.d`'s `bindReferenceSlot`/`callerReferenceBase` build on.
+@("FrameBlock.setReferenceSlot.referenceSlotValue.roundTripsAnArbitraryAddress")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbiteFrameBlockRefRoundTrip(ref int a) {} },
+        "quickbiteFrameBlockRefRoundTrip",
+    );
+    auto layout = computeFrameLayout(function_);
+    auto frame = FrameBlock.allocate(layout);
+    auto a = (*function_.parameters)[0];
+
+    int target = 42;
+    frame.setReferenceSlot(a, &target);
+
+    frame.referenceSlotValue(a).should == &target;
 }
 
 
 @("FrameBlock.allocate.zeroSlotFunctionYieldsZeroByteLengthBlock")
 unittest {
     auto function_ = parseFunction(
-        q{ void quickbiteFrameBlockZeroSlots(ref int a) {} },
+        q{ void quickbiteFrameBlockZeroSlots(lazy int a) {} },
         "quickbiteFrameBlockZeroSlots",
     );
     auto layout = computeFrameLayout(function_);
@@ -135,4 +188,20 @@ unittest {
     frame.byteLength.should == 0;
     frame.block.byteLength.should == 0;
     frame.block.scan.should == NativeBlock.Scan.no;
+}
+
+
+// A `ref` parameter's slot holds an address regardless of its OWN
+// declared type's pointer-ness -- `ref int` carries no pointer in its own
+// type, but the SLOT does, so the frame must still scan conservatively.
+@("FrameBlock.allocate.refParameterGetsConservativeScanPolicyRegardlessOfItsOwnDeclaredType")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbiteFrameBlockRefScan(ref int a) {} },
+        "quickbiteFrameBlockRefScan",
+    );
+    auto layout = computeFrameLayout(function_);
+    auto frame = FrameBlock.allocate(layout);
+
+    frame.block.scan.should == NativeBlock.Scan.conservative;
 }

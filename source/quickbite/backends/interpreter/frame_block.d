@@ -60,11 +60,52 @@ public struct FrameBlock {
         return _layout[variable].offset;
     }
 
-    // Whether this activation owns a frame slot for `variable`, so a
-    // caller can guard `slotAddress` (and anything built on it) instead of
-    // hitting its `in` contract for an aliasing local.
+    // Whether this activation owns a frame slot for `variable` (of EITHER
+    // kind), so a caller can guard `slotAddress` (and anything built on
+    // it) instead of hitting its `in` contract for an aliasing local.
     public bool hasSlot(VarDeclaration variable) const @safe {
         return _layout.has(variable);
+    }
+
+    // Whether `variable` owns an OWNING slot specifically: inline storage
+    // of its own declared type, as opposed to a REFERENCE slot holding a
+    // caller-supplied address (`hasReferenceSlot` below) or no slot at
+    // all. The verified frame mirror (`impl.d`'s `mirrorToFrame`/
+    // `assertFrameMirror`) gates on this, never on `hasSlot` alone: a
+    // reference slot's bytes are an address, not a `place_value`
+    // composition of `variable`'s own declared type, so mirroring it the
+    // same way would write the wrong bytes into the wrong-sized slot.
+    public bool hasOwningSlot(VarDeclaration variable) const @safe {
+        return _layout.has(variable)
+            && _layout[variable].kind == FrameLayout.Slot.Kind.owning;
+    }
+
+    // The REFERENCE-slot sibling of `hasOwningSlot` above: whether
+    // `variable` is a `ref`/`out` parameter with a pointer-width slot
+    // holding the caller-supplied address it binds to.
+    public bool hasReferenceSlot(VarDeclaration variable) const @safe {
+        return _layout.has(variable)
+            && _layout[variable].kind == FrameLayout.Slot.Kind.reference;
+    }
+
+    // The address `variable`'s own reference slot currently holds --
+    // `slotAddress`'s raw pointer READ, for a caller that already knows
+    // (via `hasReferenceSlot`) this is a reference slot rather than
+    // owning storage. Not `@safe`: reinterpreting the slot's raw bytes as
+    // a stored `void*` cannot be verified by the compiler, the same
+    // boundary `place.d`'s own `readStoredPointer` crosses for an
+    // identically-shaped read.
+    public void* referenceSlotValue(VarDeclaration variable) @trusted
+    in (hasReferenceSlot(variable), "variable has no reference slot") {
+        return *cast(void**) slotAddress(variable);
+    }
+
+    // The write side of `referenceSlotValue` above: stores `address` as
+    // the caller-supplied address `variable`'s own reference slot binds
+    // to. Same `@trusted` boundary and precondition.
+    public void setReferenceSlot(VarDeclaration variable, void* address) @trusted
+    in (hasReferenceSlot(variable), "variable has no reference slot") {
+        *cast(void**) slotAddress(variable) = address;
     }
 
     public size_t byteLength() const pure nothrow @nogc @safe {
@@ -77,15 +118,22 @@ public struct FrameBlock {
 }
 
 
-// Whether any of `layout`'s slotted locals has a pointer-carrying type.
+// Whether any of `layout`'s slots needs the GC to scan for a pointer: a
+// REFERENCE slot always does -- what it holds IS an address, regardless of
+// the parameter's own declared type -- and an OWNING slot does exactly
+// when its own declared type does (unchanged).
 private bool frameHasPointers(
     imported!"quickbite.backends.interpreter.frame_layout".FrameLayout layout,
 ) @safe {
+    import quickbite.backends.interpreter.frame_layout: FrameLayout;
     import quickbite.backends.interpreter.layout: typeHasPointers, declaredType;
 
-    foreach (variable, slot; layout.slots)
+    foreach (variable, slot; layout.slots) {
+        if (slot.kind == FrameLayout.Slot.Kind.reference)
+            return true;
         if (typeHasPointers(declaredType(variable)))
             return true;
+    }
 
     return false;
 }

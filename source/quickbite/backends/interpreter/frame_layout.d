@@ -4,16 +4,28 @@ module quickbite.backends.interpreter.frame_layout;
 private:
 
 
-// A per-activation frame slot assigned to each local that owns its own
-// storage: value parameters and body-declared variables. A local that
-// aliases another frame's storage instead of owning one (`ref`/`out`/
-// `lazy` parameters, `ref` body locals) never appears here.
+// A per-activation frame slot: either an OWNING slot -- inline storage for
+// a local that owns its own storage (a value parameter or a body-declared
+// variable), sized/aligned to that local's own declared type -- or a
+// pointer-width REFERENCE slot for a `ref`/`out` parameter, holding the
+// caller-supplied address it binds to rather than a rendition of the
+// parameter's own declared type. The two kinds are deliberately
+// distinguishable (`Slot.kind`) so nothing composing a `Place` from a
+// slot's raw bytes at the local's own declared type could mistake a
+// reference slot's stored ADDRESS for inline storage of that type. A
+// `lazy` parameter and a `ref` body local still get no slot of either
+// kind: a `lazy` parameter is a delegate over the caller's own live frame,
+// not an address of its own, and a `ref` body local's binding machinery is
+// unchanged by this slice -- neither ever appears here.
 public struct FrameLayout {
     import dmd.declaration: VarDeclaration;
 
     public static struct Slot {
+        public enum Kind { owning, reference }
+
         public size_t offset;
         public size_t size;
+        public Kind kind = Kind.owning;
     }
 
     private Slot[VarDeclaration] _slots;
@@ -40,13 +52,22 @@ public struct FrameLayout {
 }
 
 
-// Assigns one frame slot to each owning local of `function_`'s activation:
-// its value parameters, then every variable declared in its body, in
-// encounter order. Sizing and alignment come only from `layout.
-// typeByteSize`/`typeAlignment` -- DMD's own numbers, never recomputed
-// here. Each slot's offset is packed at the current cursor aligned up to
-// that slot's own alignment; `FrameLayout.byteLength` is the final cursor
-// aligned up to the largest alignment any slot used.
+// Assigns one frame slot to `function_`'s activation, in encounter order:
+// each of its parameters (an OWNING slot for a plain value parameter,
+// sized/aligned from DMD's own `layout.typeByteSize`/`typeAlignment`; a
+// pointer-width REFERENCE slot for a `ref`/`out` parameter -- sized/
+// aligned from the host pointer's own `(void*).sizeof`/`(void*).alignof`,
+// since what it holds is an address, never a rendition of the
+// parameter's own declared type; nothing at all for a `lazy` parameter,
+// which aliases the caller's live frame through a delegate instead of an
+// address of its own), then every OWNING variable declared in the body
+// (`isAliasingLocal` below still excludes a `ref` body local, a
+// `static`/`__gshared` variable, and an `enum` manifest constant -- this
+// slice only gives `ref`/`out` PARAMETERS a slot of their own; a `ref`
+// body local remains untouched). Each slot's offset is packed at the
+// current cursor aligned up to that slot's own alignment; `FrameLayout.
+// byteLength` is the final cursor aligned up to the largest alignment any
+// slot used.
 public FrameLayout computeFrameLayout(
     imported!"dmd.func".FuncDeclaration function_,
 ) @safe {
@@ -57,18 +78,46 @@ public FrameLayout computeFrameLayout(
     size_t cursor;
     size_t maxAlignment = 1;
 
-    foreach (variable; owningLocals(function_)) {
+    void place(
+        VarDeclaration variable,
+        in size_t size,
+        in size_t alignment,
+        FrameLayout.Slot.Kind kind,
+    ) {
+        cursor = alignedUp(cursor, alignment);
+        slots[variable] = FrameLayout.Slot(cursor, size, kind);
+        cursor += size;
+        if (alignment > maxAlignment)
+            maxAlignment = alignment;
+    }
+
+    foreach (parameter; activationParameters(function_)) {
+        if (parameterIsReference(parameter)) {
+            place(
+                parameter,
+                (void*).sizeof,
+                (void*).alignof,
+                FrameLayout.Slot.Kind.reference,
+            );
+            continue;
+        }
+
+        auto type = declaredType(parameter);
+        if (!typeIsSized(type))
+            continue;
+
+        place(parameter, typeByteSize(type), typeAlignment(type), FrameLayout.Slot.Kind.owning);
+    }
+
+    foreach (variable; bodyLocals(function_.fbody)) {
+        if (isAliasingLocal(variable))
+            continue;
+
         auto type = declaredType(variable);
         if (!typeIsSized(type))
             continue;
 
-        const alignment = typeAlignment(type);
-        const size = typeByteSize(type);
-        cursor = alignedUp(cursor, alignment);
-        slots[variable] = FrameLayout.Slot(cursor, size);
-        cursor += size;
-        if (alignment > maxAlignment)
-            maxAlignment = alignment;
+        place(variable, typeByteSize(type), typeAlignment(type), FrameLayout.Slot.Kind.owning);
     }
 
     return FrameLayout(slots, alignedUp(cursor, maxAlignment));
@@ -76,7 +125,8 @@ public FrameLayout computeFrameLayout(
 
 
 // Rounds `value` up to the next multiple of `alignment`. `alignment` is
-// always a DMD-reported type alignment (>= 1), never zero.
+// always a DMD-reported type alignment or the host pointer's own
+// (>= 1), never zero.
 private size_t alignedUp(in size_t value, in size_t alignment) pure nothrow @nogc @safe {
     return (value + alignment - 1) / alignment * alignment;
 }
@@ -107,38 +157,49 @@ public FrameLayout cachedFrameLayout(
 }
 
 
-// Every owning local of `function_`'s activation, in encounter order:
-// its value parameters (skipping `ref`/`out`/`lazy`, which alias the
-// caller's storage instead of owning a slot), then every variable
-// declared in its body (skipping `ref` locals, which alias another
-// frame's storage). Walks DMD's own parameter array and statement tree
-// via DMD's own dynamic-cast accessors and `storage_class` flags -- read-
-// only traversal of already-computed DMD state, no arithmetic of our own,
-// so this is the `@trusted` boundary the way `layout.classFieldsImpl`
-// trusts its own base-to-derived class walk.
-private imported!"dmd.declaration".VarDeclaration[] owningLocals(
+// `function_`'s own parameters, in encounter order, minus a `lazy`
+// parameter: `lazy` is the one parameter storage class that gets no frame
+// slot of either kind (a `lazy` argument is a delegate over the caller's
+// own live frame, not an address `computeFrameLayout` could pack anywhere
+// -- see `bindLazyFunctionParameter`/`runLazyArgument` in `impl.d`). A
+// `ref`/`out` parameter IS included here (`parameterIsReference` below
+// routes it to a reference slot instead of skipping it), unlike
+// `isAliasingLocal`'s treatment of the same storage classes for a BODY
+// local. Walks DMD's own parameter array via DMD's own dynamic-cast
+// accessors and `storage_class` flags -- read-only traversal of
+// already-computed DMD state, no arithmetic of our own, so this is the
+// `@trusted` boundary the way `layout.classFieldsImpl` trusts its own
+// base-to-derived class walk.
+private imported!"dmd.declaration".VarDeclaration[] activationParameters(
     imported!"dmd.func".FuncDeclaration function_,
 ) @trusted {
     import dmd.declaration: VarDeclaration;
+    import dmd.astenums: STC;
 
-    VarDeclaration[] locals;
-
+    VarDeclaration[] parameters;
     if (function_.parameters !is null)
         foreach (parameter; *function_.parameters)
-            if (!isAliasingLocal(parameter))
-                locals ~= parameter;
+            if ((parameter.storage_class & STC.lazy_) == STC.none)
+                parameters ~= parameter;
 
-    foreach (variable; bodyLocals(function_.fbody))
-        if (!isAliasingLocal(variable))
-            locals ~= variable;
-
-    return locals;
+    return parameters;
 }
 
 
-// Whether `variable` has no per-activation frame slot to own: either it
-// aliases another frame's storage instead of owning its own (a `ref`/
-// `out`/`lazy` parameter, or a `ref` body local), or it never owns
+// Whether `parameter` is a `ref`/`out` parameter -- DMD's own
+// `VarDeclaration.isReference` (`(storage_class & (STC.ref_ | STC.out_))
+// != 0`), already `@safe` in DMD itself, so no `@trusted` boundary is
+// needed here.
+private bool parameterIsReference(imported!"dmd.declaration".VarDeclaration parameter) @safe {
+    return parameter.isReference;
+}
+
+
+// Whether `variable` (a BODY local; a parameter never reaches this --
+// `computeFrameLayout` classifies every parameter itself, via
+// `activationParameters`/`parameterIsReference` above) has no per-
+// activation frame slot to own: either it aliases another frame's storage
+// instead of owning its own (a `ref` body local), or it never owns
 // per-activation storage in the first place -- a `static`/`__gshared`/
 // module-level local (`VarDeclaration.isDataseg`), which lives in the
 // module table instead of any one activation's frame, or an `enum`

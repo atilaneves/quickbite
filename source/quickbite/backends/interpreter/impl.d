@@ -953,16 +953,24 @@ private struct Walker {
     }
 
     // Whether `variable` has mirror storage to write/verify at all: this
-    // activation's own frame slot for a true stack local
-    // (`FrameBlock.hasSlot`), or -- unconditionally -- a `moduleTable`
-    // block for a dataseg variable, since `ModuleTable.storageFor`
-    // allocates one lazily on first use rather than requiring one to
-    // already exist. An aliasing local (`ref`/`out`/`lazy`/manifest --
-    // `frame_layout.isAliasingLocal`'s other case) has neither and answers
-    // `false`, matching `_activationFrame.hasSlot`'s own verdict for it
-    // today.
+    // activation's own OWNING frame slot for a true stack local
+    // (`FrameBlock.hasOwningSlot`), or -- unconditionally -- a
+    // `moduleTable` block for a dataseg variable, since `ModuleTable.
+    // storageFor` allocates one lazily on first use rather than requiring
+    // one to already exist. An aliasing local (`ref`/`out`/`lazy`/
+    // manifest -- `frame_layout.isAliasingLocal`'s other case) has neither
+    // and answers `false`, matching `_activationFrame.hasOwningSlot`'s own
+    // verdict for it today. Gated on `hasOwningSlot`, not `hasSlot`: a
+    // `ref`/`out` parameter now owns a REFERENCE slot (`frame_layout`'s
+    // `FrameLayout.Slot.Kind.reference`) holding the caller-supplied
+    // address it binds to, not a `place_value` composition of its own
+    // declared type -- the verified mirror below must never treat that
+    // slot's raw bytes as if they were inline storage of that type. A
+    // `ref`/`out` parameter's own bind-time verification is
+    // `bindReferenceSlot`/`assertReferenceBind` below instead, which never
+    // calls this function.
     private bool hasMirrorSlot(VarDeclaration variable) {
-        return variable.isDataseg || _activationFrame.hasSlot(variable);
+        return variable.isDataseg || _activationFrame.hasOwningSlot(variable);
     }
 
     // The mirror storage address for `variable`: this activation's own
@@ -7640,6 +7648,18 @@ private struct Walker {
             dropNonClassCells(parameter);
             setLocal(parameter, arguments[index]);
 
+            // Fills `parameter`'s own reference slot (see `frame_layout`'s
+            // `FrameLayout.Slot.Kind.reference`) with the caller-side
+            // address of its own argument lvalue, when there is one to
+            // compose from -- `bindReferenceSlot` below declines silently
+            // rather than guessing whenever it cannot. Boxed authority
+            // above (`setLocal`, just called) is completely unaffected
+            // either way.
+            if (parameter.isReference && index < argumentExpressions.length)
+                bindReferenceSlot(
+                    parameter, argumentExpressions[index], callerFrame, arguments[index],
+                );
+
             // `runRefArgumentExpression` seeds a `ref` argument still bound to
             // an uninitialized caller local with a bare `Value.void_`
             // placeholder rather than reading through it. Mirror that
@@ -7664,6 +7684,256 @@ private struct Walker {
             );
             bindArrayValueCell(parameter, arguments[index]);
         }
+    }
+
+    // Fills `parameter`'s own reference slot -- this activation's own
+    // `_activationFrame`, given one unconditionally by `frame_layout.
+    // computeFrameLayout` for every `ref`/`out` parameter -- with the
+    // caller-side address `argumentExpression`'s lvalue resolves to,
+    // composed via `lvalue_place.placeOfLvalue`: the first real consumer
+    // of that function in the walker. `resolveBase` is
+    // `callerReferenceBase` below, resolving strictly against
+    // `callerFrame` -- the CALLER's own activation, threaded down through
+    // `bindFunctionParameters`'s own `callerFrame` parameter -- and the
+    // shared `moduleTable`; never this activation's own `_activationFrame`,
+    // which belongs to the callee that has not even started running yet
+    // (`this` here IS the callee: `bindFunctionParameters` always runs as
+    // `child.bindFunctionParameters(...)`).
+    //
+    // `placeOfLvalue` refuses an unsupported lvalue shape by throwing --
+    // its own documented contract ("every other lvalue shape refuses
+    // rather than guesses") -- and `callerReferenceBase`/`constantIndex`
+    // below do the same for a variable with no mirrored caller-side
+    // storage, or a non-constant index (see `constantIndex`'s own
+    // header for why). This `catch` is the integration seam translating
+    // that throw-to-refuse contract into this function's own
+    // decline-silently one: it is not ordinary control flow, since
+    // nothing downstream branches on which arm ran, and boxed authority
+    // (`parameter`'s own cell in `locals`, already filled by
+    // `bindFunctionParameters` immediately before this call, and the
+    // existing parameter writeback at return) is unconditionally correct
+    // either way -- this slot has no consumer of its own yet, so
+    // declining to fill it changes nothing user-visible.
+    private void bindReferenceSlot(
+        VarDeclaration parameter,
+        Expression argumentExpression,
+        FrameBlock callerFrame,
+        in Value argumentValue,
+    ) {
+        import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
+
+        if (argumentExpression is null)
+            return;
+
+        // Set by `callerReferenceBase` when it resolves the root variable
+        // THROUGH another reference slot (forwarding a `ref` parameter into
+        // this call) rather than directly (an owning slot or a dataseg
+        // variable). See the `if (!resolvedThroughReference)` guard below
+        // for why that distinction gates verification.
+        bool resolvedThroughReference;
+
+        void* address;
+        try {
+            address = placeOfLvalue(
+                argumentExpression,
+                (variable) => callerReferenceBase(
+                    variable, callerFrame, resolvedThroughReference,
+                ),
+                &constantIndex,
+            ).address;
+        } catch (Exception) {
+            return;
+        }
+
+        // A composed address of `null` is never a legitimate storage
+        // location -- no real `NativeBlock`/`FrameBlock`/`ModuleTable`
+        // allocation this codebase ever makes sits at address zero -- so
+        // this can only mean the composition, while it didn't THROW,
+        // still failed to find real storage: e.g. a `PtrExp` base
+        // (`*chunk`) whose own pointer variable's mirrored bytes read back
+        // `null` at a point in a druntime-internal call (an `interpreter.
+        // md` §9.10-shimmed helper such as `emplace`, called with
+        // synthesized rather than a real call site's own argument
+        // expressions) where that address is not actually meaningful.
+        // Decline exactly like any other composition failure rather than
+        // storing or verifying against a null address -- `assertReferenceBind`
+        // would otherwise dereference it directly and crash.
+        if (address is null)
+            return;
+
+        _activationFrame.setReferenceSlot(parameter, address);
+
+        // A root variable resolved THROUGH another reference slot points at
+        // storage several activations up whose bytes are, by the boxed
+        // COPY-plus-writeback design (`value.md`'s Cell coherence
+        // "Parameter writeback" contract), allowed to lag behind the
+        // FORWARDING activation's own already-mutated boxed copy until
+        // THAT activation's own writeback runs at its return -- e.g.
+        // recursion passing its own `ref` parameter into the next call
+        // after having already mutated it. Comparing there would be a
+        // false positive on a perfectly correct program: exactly the
+        // mid-call divergence `assertReferenceBind`'s own header warns
+        // about, one level removed. Only a DIRECTLY resolved bind (an
+        // owning slot or a dataseg variable, both kept synchronously in
+        // sync by the verified mirror) is safe to verify.
+        if (!resolvedThroughReference)
+            assertReferenceBind(parameter, address, argumentValue);
+    }
+
+    // The `resolveBase` `bindReferenceSlot` above supplies to
+    // `placeOfLvalue`: the CALLER's own mirror address for `variable` --
+    // this activation's caller, i.e. `callerFrame` (never `this.
+    // _activationFrame`, the CALLEE's own) -- covering every shape
+    // `hasMirrorSlot`/`mirrorAddress` cover for a same-frame read, plus
+    // one more: `variable` may itself be a `ref`/`out` parameter of the
+    // CALLER (`callerFrame.hasReferenceSlot`), in which case its own
+    // reference slot already holds the address ITS binding resolved to
+    // (by this exact same function, one call frame up) -- reading that
+    // through rather than the slot's own address is what lets a `ref`
+    // argument forward correctly across several activations (recursion
+    // passing its own `ref` parameter down again, or one function
+    // forwarding a `ref` parameter into another). That branch also sets
+    // `resolvedThroughReference` for `bindReferenceSlot`'s own bind-time
+    // verification to see, since a FORWARDED root's storage is allowed to
+    // legitimately lag behind the boxed copy that forwarded it (see that
+    // function's own comment). Throws for anything else -- no owning
+    // slot, no reference slot, and not dataseg (a `lazy` parameter, a
+    // `ref` body local, or any local `frame_layout` gives no slot to) --
+    // so `bindReferenceSlot`'s own `catch` turns that into a silent
+    // decline rather than a guess.
+    private void* callerReferenceBase(
+        VarDeclaration variable,
+        FrameBlock callerFrame,
+        ref bool resolvedThroughReference,
+    ) @trusted {
+        if (variable.isDataseg)
+            return moduleTable.storageFor(variable);
+
+        if (callerFrame.hasOwningSlot(variable))
+            return callerFrame.slotAddress(variable);
+
+        if (callerFrame.hasReferenceSlot(variable)) {
+            // `hasReferenceSlot` only says `variable` is ELIGIBLE for a
+            // reference slot per `frame_layout` -- not that `bindReferenceSlot`
+            // ever actually filled it. A `ref`/`out` parameter reaches a
+            // call with no argument-expression to compose from at all (a
+            // synthesized call, e.g. `invokeNativeCallback`'s placeholder
+            // `Expression[]`, or an intercepted druntime hook's own
+            // internal call whose `argumentExpressions` this function's
+            // own `index < argumentExpressions.length` guard cannot
+            // cover) leaves its slot at `NativeBlock.allocate`'s own
+            // zero-initialised default -- `null`, never a real address
+            // this codebase ever composes deliberately. Reading THAT back
+            // as if it were resolved would hand a caller `0x0` to
+            // dereference; decline exactly like "no slot at all" instead.
+            auto forwarded = callerFrame.referenceSlotValue(variable);
+            if (forwarded !is null) {
+                resolvedThroughReference = true;
+                return forwarded;
+            }
+        }
+
+        throw new Exception(
+            "quickbite.backends.interpreter.impl.Walker.callerReferenceBase: "
+            ~ "variable has no mirrored caller-side storage",
+        );
+    }
+
+    // The `evalIndex` `bindReferenceSlot` above supplies to
+    // `placeOfLvalue`: DMD's own already-folded integer constant
+    // (`IntegerExp`) for an `IndexExp`'s index subexpression, and nothing
+    // else. Deliberately never runs the walker's own expression evaluator
+    // on a runtime index: the boxed argument snapshot `arguments[index]`
+    // in `bindFunctionParameters` (via `runRefArgumentExpression` in
+    // `runCallExpression`) has ALREADY evaluated the WHOLE argument
+    // expression once, including any index subexpression a `ref arr[i]`
+    // argument contains. Re-evaluating a non-constant index here, for the
+    // sole purpose of composing an address for a slot nothing yet reads,
+    // would evaluate that subexpression a SECOND time -- firing a real,
+    // user-visible side effect twice for a side-effecting index (e.g.
+    // `arr[f()]`), a genuine shipping-behaviour change this slice must
+    // never cause. A compile-time constant needs no evaluation at all
+    // (DMD has already folded it), so reading it directly carries no such
+    // risk; anything else simply declines the whole composition rather
+    // than risk it.
+    private size_t constantIndex(Expression expr) @trusted {
+        auto integer = expr.isIntegerExp;
+        if (integer is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.Walker.constantIndex: "
+                ~ "non-constant index",
+            );
+
+        return cast(size_t) integer.getInteger;
+    }
+
+    // Bind-time-only verification for a `ref`/`out` parameter's freshly
+    // filled reference slot: the composed caller-side `address`'s own
+    // bytes, at `parameter`'s own declared type, must equal `value` -- the
+    // SAME boxed argument `bindFunctionParameters` just gave `parameter`'s
+    // own cell -- written through the identical `place_value.writeValue`
+    // composition `assertFrameMirror` itself uses, into a scratch block,
+    // rather than a second, hand-rolled encoding.
+    //
+    // Deliberately BIND-TIME ONLY, unlike every other verified-mirror
+    // check in this file: a `ref` parameter's boxed authority
+    // (`locals[parameter]`) is a COPY the callee body goes on to mutate
+    // directly, reconciled with the caller's own storage only by the
+    // EXISTING parameter writeback at return (`value.md`'s Cell coherence
+    // "Parameter writeback" contract) -- so the caller's bytes at
+    // `address` and the callee's boxed copy legitimately DIVERGE for the
+    // rest of the call, from the moment the callee's first mutating
+    // statement runs. Checking this on every read, the way
+    // `assertFrameMirror` does for an owning local, would fire on
+    // perfectly correct programs; checking it exactly once, immediately
+    // after binding and before the callee's body has had any chance to
+    // diverge the two, is the only point in the call where the equality
+    // this asserts is actually guaranteed to hold. This is a real,
+    // deliberate weakening of the mirror's usual contract, accepted here
+    // because the boxed COPY-plus-writeback machinery it is checking is
+    // itself slated for deletion once the authority switch lands
+    // (`value.md`'s Remaining work item 5) -- no long-term promise is
+    // being watered down, only a short-lived one. A cheap, provably
+    // order-independent RETURN-time check was not found: the writeback's
+    // own named residuals (rebind-vs-mutation heuristics, the recursive-
+    // parameter residual) mean a return-time equality is not guaranteed
+    // to hold even on already-correct paths, so asserting it there would
+    // risk turning an existing, silent quirk into a crash -- a real
+    // shipping-behaviour change this slice must not introduce.
+    //
+    // Declines the same way `assertFrameMirror`'s own composable arm does:
+    // silently, for a `value` that is not (yet) `isPlaceComposable`'s
+    // shape for `parameter.type`, or does not itself match that shape
+    // (`placeShapeMatches`) -- e.g. a still-`void` argument, or a slice-
+    // or class-typed `ref` parameter (neither is `isPlaceComposable`, so
+    // this never asserts on either; `bindReferenceSlot` above still fills
+    // the reference slot for one, just without this verification).
+    private void assertReferenceBind(
+        VarDeclaration parameter,
+        void* address,
+        in Value value,
+    ) {
+        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
+        import quickbite.backends.interpreter.place: placeAt;
+        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+
+        if (!isPlaceComposable(parameter.type))
+            return;
+
+        if (!placeShapeMatches(parameter.type, value))
+            return;
+
+        const length = typeByteSize(parameter.type);
+        const scan = typeHasPointers(parameter.type)
+            ? NativeBlock.Scan.conservative : NativeBlock.Scan.no;
+        auto scratch = NativeBlock.allocate(length, scan);
+        writeValue(placeAt(scratch, parameter.type), value);
+
+        assert(
+            frameBytesAt(address, length) == scratch.bytes,
+            "reference slot bind diverged from boxed argument",
+        );
     }
 
     // A dynamic-array expression result can carry the allocation identity of

@@ -3,7 +3,7 @@ module ut.backends.interpreter.frame_layout;
 
 import ut;
 import ut.backends.interpreter: parseFunction;
-import quickbite.backends.interpreter.frame_layout: computeFrameLayout, cachedFrameLayout;
+import quickbite.backends.interpreter.frame_layout: FrameLayout, computeFrameLayout, cachedFrameLayout;
 
 private:
 
@@ -23,10 +23,12 @@ unittest {
     layout.has(a).should == true;
     layout[a].offset.should == 0;
     layout[a].size.should == 4;
+    layout[a].kind.should == FrameLayout.Slot.Kind.owning;
 
     layout.has(b).should == true;
     layout[b].offset.should == 8;
     layout[b].size.should == 8;
+    layout[b].kind.should == FrameLayout.Slot.Kind.owning;
 
     layout.byteLength.should == 16;
 }
@@ -53,6 +55,7 @@ unittest {
     size_t yOffset;
     size_t ySize;
     foreach (variable, slot; layout.slots) {
+        slot.kind.should == FrameLayout.Slot.Kind.owning;
         if (variable.ident.toString == "x") {
             xOffset = slot.offset;
             xSize = slot.size;
@@ -69,7 +72,7 @@ unittest {
 }
 
 
-@("computeFrameLayout.refParameterHasNoSlot")
+@("computeFrameLayout.refParameterGetsAPointerWidthReferenceSlot")
 unittest {
     auto function_ = parseFunction(
         q{ void quickbiteFrameRefParam(ref int a) {} },
@@ -79,12 +82,16 @@ unittest {
     auto layout = computeFrameLayout(function_);
     auto a = (*function_.parameters)[0];
 
-    layout.has(a).should == false;
-    layout.byteLength.should == 0;
+    layout.has(a).should == true;
+    layout[a].offset.should == 0;
+    layout[a].size.should == (void*).sizeof;
+    layout[a].kind.should == FrameLayout.Slot.Kind.reference;
+
+    layout.byteLength.should == (void*).sizeof;
 }
 
 
-@("computeFrameLayout.outParameterHasNoSlot")
+@("computeFrameLayout.outParameterGetsAPointerWidthReferenceSlot")
 unittest {
     auto function_ = parseFunction(
         q{ void quickbiteFrameOutParam(out int a) {} },
@@ -94,8 +101,35 @@ unittest {
     auto layout = computeFrameLayout(function_);
     auto a = (*function_.parameters)[0];
 
-    layout.has(a).should == false;
-    layout.byteLength.should == 0;
+    layout.has(a).should == true;
+    layout[a].offset.should == 0;
+    layout[a].size.should == (void*).sizeof;
+    layout[a].kind.should == FrameLayout.Slot.Kind.reference;
+
+    layout.byteLength.should == (void*).sizeof;
+}
+
+
+// A `ref`/`out` parameter's reference slot is pointer-width regardless of
+// its own declared type's size: a `ref` struct larger than a pointer still
+// gets exactly one pointer-width slot, holding the caller-supplied
+// address, never the struct's own bytes inline.
+@("computeFrameLayout.refParameterReferenceSlotIsPointerWidthRegardlessOfItsOwnDeclaredTypeSize")
+unittest {
+    auto function_ = parseFunction(
+        q{
+            struct QuickbiteFrameLargeStruct { long a; long b; long c; }
+            void quickbiteFrameRefStructParam(ref QuickbiteFrameLargeStruct s) {}
+        },
+        "quickbiteFrameRefStructParam",
+    );
+
+    auto layout = computeFrameLayout(function_);
+    auto s = (*function_.parameters)[0];
+
+    layout[s].size.should == (void*).sizeof;
+    layout[s].kind.should == FrameLayout.Slot.Kind.reference;
+    layout.byteLength.should == (void*).sizeof;
 }
 
 
@@ -114,11 +148,16 @@ unittest {
 }
 
 
+// A `ref` parameter's own reference slot is packed into the SAME
+// encounter-order cursor as every owning slot around it -- not appended
+// separately after them -- so a reader can still predict every offset by
+// walking parameters then body locals in declaration order, exactly as
+// before this slice.
 @("computeFrameLayout.mixedParametersAndBodyLocalsInEncounterOrder")
 unittest {
     auto function_ = parseFunction(
         q{
-            void quickbiteFrameMixed(int a, ref int skipped, long b) {
+            void quickbiteFrameMixed(int a, ref int refParam, long b) {
                 int x;
             }
         },
@@ -127,24 +166,34 @@ unittest {
 
     auto layout = computeFrameLayout(function_);
     auto a = (*function_.parameters)[0];
-    auto skipped = (*function_.parameters)[1];
+    auto refParam = (*function_.parameters)[1];
     auto b = (*function_.parameters)[2];
 
     layout.has(a).should == true;
     layout[a].offset.should == 0;
+    layout[a].kind.should == FrameLayout.Slot.Kind.owning;
 
-    layout.has(skipped).should == false;
+    // `a` is 4 bytes at offset 0; `refParam`'s pointer-width (8-byte),
+    // 8-byte-aligned reference slot packs at the next 8-byte-aligned
+    // cursor, i.e. offset 8.
+    layout.has(refParam).should == true;
+    layout[refParam].offset.should == 8;
+    layout[refParam].size.should == (void*).sizeof;
+    layout[refParam].kind.should == FrameLayout.Slot.Kind.reference;
 
+    // `b` (a `long`, 8-byte-aligned) packs right after `refParam`'s own
+    // 8-byte slot, already 8-byte-aligned, at offset 16.
     layout.has(b).should == true;
-    layout[b].offset.should == 8;
+    layout[b].offset.should == 16;
+    layout[b].kind.should == FrameLayout.Slot.Kind.owning;
 
     size_t xOffset;
     foreach (variable, slot; layout.slots)
         if (variable.ident.toString == "x")
             xOffset = slot.offset;
 
-    xOffset.should == 16;
-    layout.byteLength.should == 24;
+    xOffset.should == 24;
+    layout.byteLength.should == 32;
 }
 
 

@@ -935,6 +935,58 @@ in parallel and never blocks it.
        pointee its own type names a pointer to). Still refuses anything
        else — e.g. `SliceExp` as an assignment target, or a `SymOffExp`
        naming a function rather than a variable.
+     - `ref`/`out` parameter reference slots: `frame_layout.
+       computeFrameLayout` gives every `ref`/`out` PARAMETER (not yet a
+       `ref` body local — out of this slice's scope) a pointer-width
+       REFERENCE slot (`FrameLayout.Slot.Kind.reference`, sized/aligned
+       from the host pointer rather than the parameter's own declared
+       type), packed into the same encounter-order cursor as every
+       owning slot around it and scanned conservatively regardless of
+       the parameter's own type — distinguishable from an owning slot
+       (`FrameBlock.hasOwningSlot`/`hasReferenceSlot`/`referenceSlotValue`/
+       `setReferenceSlot`) so the verified mirror above (gated on
+       `hasOwningSlot`, not `hasSlot`) never treats a stored address as
+       inline storage of the parameter's own type. At a call,
+       `impl.d`'s `bindReferenceSlot` composes the caller-side `Place`
+       of each `ref`/`out` argument via `placeOfLvalue` — its first
+       real wiring into the walker — using `callerReferenceBase` as
+       `resolveBase` (the caller's own owning slot, the shared
+       `moduleTable` for a dataseg variable, or — reading THROUGH an
+       already-filled reference slot — the caller's own forwarded `ref`
+       parameter, so forwarding survives several activations including
+       recursion) and `constantIndex` as `evalIndex` (DMD's own already-
+       folded integer constant only, never a runtime evaluation: the
+       boxed argument snapshot has already evaluated the argument
+       expression, including any index, exactly once, and evaluating a
+       runtime index again risks firing a side-effecting index a second
+       time). Declines silently rather than guessing — never throws past
+       this boundary — whenever the shape does not compose, the base is
+       not mirrored, an eligible-but-never-filled reference slot (its
+       zero-initialised default) is read through, or the composed
+       address is itself `null` (an `interpreter.md` §9.10-shimmed
+       call's own synthesized, non-source-derived argument expressions
+       can compose a spurious, non-throwing address). Verified only at
+       BIND time (`assertReferenceBind`): the composed address's bytes
+       must equal the just-bound boxed value's bytes, for a
+       `place_value.isPlaceComposable` parameter type only, and skipped
+       entirely when the base resolved THROUGH another reference slot —
+       that storage is allowed to legitimately lag the forwarding
+       activation's own boxed mutation until its OWN writeback runs at
+       return (recursion mutating its `ref` parameter before recursing
+       is the simplest case), so comparing there would false-positive on
+       a correct program. This is a deliberate, one-time weakening of
+       the mirror's usual "verified on every read" contract: a `ref`
+       parameter's boxed authority is a COPY the callee mutates for the
+       rest of the call with reconciliation deferred to the existing
+       parameter writeback at return (see Cell coherence's own
+       "Parameter writeback" bullet below), so caller and callee bytes
+       legitimately diverge from the first mutating statement onward —
+       checking on every read would fail correct programs, and no cheap,
+       provably order-independent RETURN-time check exists either, since
+       the writeback's own named residuals (rebind-vs-mutation
+       heuristics, the recursive-parameter residual) do not guarantee a
+       return-time equality even on already-correct paths. Authority
+       stays boxed throughout: nothing reads this slot yet.
      - Loads/stores routed through places: whole-aggregate read/write
        composed over places down to scalar leaves by
        `place_value.readValue`/`writeValue` (native scalar leaves via

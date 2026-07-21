@@ -1869,6 +1869,203 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `frame_layout`'s reference slot for a `ref`/`out` parameter (`value.md`'s
+// Remaining work item 5) composes the caller-side address of a `ref`
+// argument's own lvalue at bind time and stores it in the callee's frame,
+// purely as an internal, bind-time-verified shadow -- authority stays
+// boxed, so every fixture below only re-confirms `SystemLinker`-oracle
+// behaviour that already worked, now exercised through the new wiring.
+static foreach (backend; Matrix!()) {
+    @("refArgument.scalarParameterMutatedByCallee." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void increment(ref int x) {
+                x = x + 1;
+            }
+
+            unittest {
+                int value = 41;
+                increment(value);
+                assert(value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("refArgument.structParameterMutatedByCallee." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            void moveBy(ref Point p, int dx, int dy) {
+                p.x = p.x + dx;
+                p.y = p.y + dy;
+            }
+
+            unittest {
+                Point p = Point(1, 2);
+                moveBy(p, 10, 20);
+                assert(p.x == 11);
+                assert(p.y == 22);
+            }
+        });
+    }
+}
+
+// The caller-side base resolver (`impl.d`'s `callerReferenceBase`) must
+// resolve a `ref` argument's dataseg (`__gshared`) root variable through
+// the shared `moduleTable`, not the caller's own `_activationFrame` (a
+// dataseg variable owns no frame slot at all -- `frame_layout.
+// isAliasingLocal`). `Ctfe` cannot read or write dataseg storage at all
+// (compile-time execution has no such storage to access, the same
+// pre-existing limitation `dataseg.moduleScalarAndStructMirroredAcrossWrites`
+// in expressions.d already pins); `Bytecode` does not yet support a
+// dataseg variable as a `ref` argument at all (confirmed pre-existing --
+// reproduces unchanged on this branch before this slice's own commit).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support a dataseg variable as a ref argument"),
+)) {
+    @("refArgument.datasegVariableArgument." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int counter;
+
+            void bump(ref int x) {
+                x = x + 1;
+            }
+
+            unittest {
+                counter = 5;
+                bump(counter);
+                assert(counter == 6);
+            }
+        });
+    }
+}
+
+// An indexed element (`IndexExp` over a constant index -- `impl.d`'s
+// `constantIndex` only accepts DMD's own already-folded integer constant,
+// never a runtime-evaluated one, to avoid evaluating a side-effecting
+// index a second time) composes through `lvalue_place.placeOfLvalue`'s
+// existing `IndexExp` shape. `Bytecode` does not yet support an indexed
+// element as a `ref` argument at all (confirmed pre-existing --
+// reproduces unchanged on this branch before this slice's own commit).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support an indexed element as a ref argument"),
+)) {
+    @("refArgument.indexedElementArgumentComposesReferenceSlot." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int[3] arr = [1, 2, 3];
+                setTo(arr[1], 99);
+                assert(arr[0] == 1);
+                assert(arr[1] == 99);
+                assert(arr[2] == 3);
+            }
+        });
+    }
+}
+
+// A struct field (`DotVarExp`) composes through `lvalue_place.
+// placeOfLvalue`'s existing field shape.
+static foreach (backend; Matrix!()) {
+    @("refArgument.fieldArgumentComposesReferenceSlot." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { int value; }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                Holder h;
+                setTo(h.value, 77);
+                assert(h.value == 77);
+            }
+        });
+    }
+}
+
+// A ternary/conditional expression (`CondExp`) is a legal `ref` argument
+// in D (its lvalue-ness follows whichever branch is taken), but an lvalue
+// shape `lvalue_place.placeOfLvalue` does not compose (it throws, by its
+// own documented contract -- "every other lvalue shape refuses rather
+// than guesses"); `impl.d`'s `bindReferenceSlot` must decline silently --
+// leaving the reference slot unfilled -- rather than propagate that
+// throw, and boxed authority (unaffected either way) must still produce
+// the correct, oracle-matching result. `Bytecode` does not yet support a
+// `CondExp` as a `ref` argument at all (confirmed pre-existing --
+// reproduces unchanged on this branch before this slice's own commit).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support a CondExp as a ref argument"),
+)) {
+    @("refArgument.nonComposingShapeArgumentDeclinesSilently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int a = 1;
+                int b = 2;
+                bool cond = true;
+                setTo(cond ? a : b, 55);
+                assert(a == 55);
+                assert(b == 2);
+            }
+        });
+    }
+}
+
+// Recursion forwards the SAME `ref` parameter into the next activation's
+// own `ref` argument: `impl.d`'s `callerReferenceBase` must resolve a
+// `VarExp` that is itself the caller's own `ref` parameter by reading
+// THROUGH its already-filled reference slot (`FrameBlock.
+// hasReferenceSlot`/`referenceSlotValue`), not by treating the slot's own
+// address as the target -- otherwise every recursive level would bind to
+// the slot one level up instead of the original root storage.
+static foreach (backend; Matrix!()) {
+    @("refArgument.recursionForwardsRefParameterAcrossActivations." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void incAndRecurse(ref int x, int depth) {
+                x = x + 1;
+                if (depth > 0)
+                    incAndRecurse(x, depth - 1);
+            }
+
+            unittest {
+                int value = 0;
+                incAndRecurse(value, 3);
+                assert(value == 4);
+            }
+        });
+    }
+}
+
 // cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
 // units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
 // element's fields through a hidden temporary dmd's foreach-to-for lowering
