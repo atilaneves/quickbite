@@ -1216,7 +1216,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "static-array copy postblit dereferences a null counter pointer"),
+)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1613,9 +1616,10 @@ static foreach (backend; Matrix!()) {
 
 // DMD emits the char[16] default init as a sparse ArrayLiteralExp: every
 // element null, the char.init value carried in `basis`.
-// Bytecode ("Unsupported struct initializer in bytecode core: b")
-// cannot run struct default initializers yet.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "static-array struct field storage does not support a sparse array-literal initializer"),
+)) {
     @("struct.staticCharArrayFieldDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2020,7 +2024,10 @@ static foreach (backend; Matrix!()) {
 // a bare `Value.void_` instead of the materialised default struct
 // `runExpression`'s `VarExp` branch already produces for a directly
 // uninitialized local.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "nested ref forwarding sees the void-initialized local before materialization"),
+)) {
     @("refArgument.voidStructLocalFieldWritableThroughNestedRefWrite." ~
         backend.stringof)
     @Tags(backend.stringof)

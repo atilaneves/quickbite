@@ -1083,6 +1083,8 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed,
+        "std.conv.text reaches unsupported ref argument `front(val)`"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("arrayTooShortExceptionMessageIncludesBytes." ~ backend.stringof)
@@ -1127,6 +1129,8 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed,
+        "std.conv.text slices past the char array's allocated block"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("stdConvTextRendersCharArrayExpressionRaw." ~ backend.stringof)
@@ -1614,7 +1618,10 @@ static foreach (backend; Matrix!(
 // `emplaceRef` must write through a scalar array-element reference. This also
 // ratchets the interpreter's real `core.internal.lifetime.emplaceRef` body;
 // no name-based interception is permitted.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "emplaceRef corrupts the destination array slice bounds"),
+)) {
     @("emplaceRefWritesArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

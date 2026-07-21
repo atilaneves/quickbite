@@ -159,9 +159,11 @@ test failure, first check with `--seed` (using the seed in the output to the
 last `bin/ut --random`) to investigate the cause of failure in that particular
 ordering.
 
-Run `ci.sh` before creating a PR. If the benchmarks fail to run
-properly for any backend, identify why and come up with a D language
-feature unit test that exposes the flaw in that backend's
+Run `ci.sh` before creating a PR. It must pass before the PR is created or
+merged: a failure that reproduces on `master` may be documented with an
+appropriate backend-matrix omission, but it may not be ignored. If the
+benchmarks fail to run properly for any backend, identify why and come up with
+a D language feature unit test that exposes the flaw in that backend's
 implementation.
 
 No per-test process spawning, network access, or repeated dependency

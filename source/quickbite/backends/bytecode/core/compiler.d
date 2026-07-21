@@ -3890,7 +3890,8 @@ private struct Compiler {
     }
 
     // Fill a static-array field `T[N]` from a struct-literal element: DMD passes
-    // either a scalar to broadcast to every element or an array literal.
+    // a string literal, a scalar to broadcast to every element, or an array
+    // literal.
     private void storeStaticArrayField(
         in ushort fieldOffset,
         Type fieldType,
@@ -3902,6 +3903,15 @@ private struct Compiler {
         const elementScalar = scalarType(fieldType.toBasetype.nextOf);
         const elementSize = size(elementScalar);
         const count = cast(uint) staticArraySize(fieldType) / elementSize;
+
+        if (auto string_ = element.isStringExp) {
+            loadStaticString(
+                fieldOffset,
+                cast(uint) staticArraySize(fieldType),
+                string_,
+            );
+            return;
+        }
 
         // `S(seed)` broadcasts a scalar into all elements of the field.
         if (element.type.toBasetype.ty != TY.Tsarray) {
