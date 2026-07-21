@@ -905,10 +905,17 @@ in parallel and never blocks it.
        via `Place.field`/`index`; `readValue` also reconstructs a slice
        from its native `{length, ptr}` header and elements — read side
        only, `writeValue`'s slice case is still deferred pending
-       backing-storage allocation). A dynamic-array local holds a real
-       `{length, ptr}` slice header; a class variable holds a reference
-       (address) to an object block owned by object identity; a union
-       is overlapping bytes.
+       backing-storage allocation). An enum leaf reads back tagged per
+       the Display format spec rather than as the plain integral value
+       `native_scalar.readScalar` alone gives it: `readValue` resolves
+       the qualified member name (or the non-member `cast(E)N` form)
+       from DMD's own member declarations via
+       `layout.enumMemberQualifiedName`; `writeValue` already stores an
+       enum's bits correctly through the same scalar path, since
+       `Value.asLong` already unwraps an `EnumValue`. A dynamic-array
+       local holds a real `{length, ptr}` slice header; a class
+       variable holds a reference (address) to an object block owned
+       by object identity; a union is overlapping bytes.
    - The authority switch: native storage becomes the sole authority
      for all bindings. Merge gate: no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/

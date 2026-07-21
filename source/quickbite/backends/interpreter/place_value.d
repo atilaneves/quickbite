@@ -23,10 +23,32 @@ public imported!"quickbite.lang".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.layout: structFields, staticArrayLength;
+    import quickbite.backends.interpreter.layout:
+        structFields, staticArrayLength, enumMemberQualifiedName;
     import quickbite.lang: Value;
 
     auto type = place.type;
+
+    // An enum-typed place must come back tagged (`Value.enumValue`), not as
+    // the plain integral `Value` `native_scalar.readScalar` returns for it
+    // (it dispatches on the resolved base type, so an enum's own tagging is
+    // invisible to that codec) -- checked before the `isNativeScalarType`
+    // arm below, which would otherwise catch every enum type first since an
+    // enum's base type is itself a native scalar. `place.loadScalar` reads
+    // the underlying bits through that same codec; `layout.
+    // enumMemberQualifiedName` is DMD's own answer for which member (if
+    // any) owns those bits, qualified per `value.md`'s Display format spec
+    // rule 5 ("E.b"); a value matching no member renders that same spec's
+    // non-member form (`cast(E)N`) instead.
+    auto enumType = type.isTypeEnum;
+    if (enumType !is null) {
+        const bits = place.loadScalar.asLong;
+        const qualifiedName = enumMemberQualifiedName(enumType, bits);
+        return Value.enumValue(
+            qualifiedName.length != 0 ? qualifiedName : nonMemberEnumName(enumType, bits),
+            bits,
+        );
+    }
 
     if (isNativeScalarType(type))
         return place.loadScalar;
@@ -181,4 +203,38 @@ private string structTypeNameImpl(
     imported!"dmd.mtype".TypeStruct structType,
 ) @trusted {
     return structType.sym.ident is null ? "" : structType.sym.ident.toString.idup;
+}
+
+
+// The non-member enum rendering `value.md`'s Display format spec rule 5
+// gives for a `value` that matches no member of `enumType`: `cast(E)N`.
+// `readValue`'s enum arm falls back to this once `layout.
+// enumMemberQualifiedName` answers empty.
+private string nonMemberEnumName(
+    imported!"dmd.mtype".TypeEnum enumType,
+    in long value,
+) @safe {
+    import std.conv: text;
+
+    return text("cast(", enumTypeName(enumType), ")", value);
+}
+
+
+// `enumType`'s own bare name (`EnumDeclaration.ident`), verbatim -- the
+// same derivation `structTypeName` above uses for a struct's own name,
+// needed here only to build the `cast(E)N` non-member form (the member
+// case gets its own "E" prefix from `layout.enumMemberQualifiedName`).
+private string enumTypeName(
+    imported!"dmd.mtype".TypeEnum enumType,
+) @safe {
+    return enumTypeNameImpl(enumType);
+}
+
+// `EnumDeclaration.ident` is a plain field read, but `EnumDeclaration` (an
+// `extern (C++)` class) is not itself `@safe`-annotated; this is the
+// `@trusted` boundary for reading it, mirroring `structTypeNameImpl` above.
+private string enumTypeNameImpl(
+    imported!"dmd.mtype".TypeEnum enumType,
+) @trusted {
+    return enumType.sym.ident is null ? "" : enumType.sym.ident.toString.idup;
 }

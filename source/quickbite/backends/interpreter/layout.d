@@ -211,3 +211,48 @@ private imported!"dmd.declaration".VarDeclaration[] classFieldsImpl(
 
     return fields;
 }
+
+
+// The qualified name (`"E.b"`) DMD gives the member of enum `type` whose
+// value equals `value`, or `null` when no member carries it -- the same
+// qualification `value.md`'s Display format spec rule 5 requires ("E.b",
+// never a bare "b"). Reads `TypeEnum.sym.members`/`EnumMember` directly,
+// DMD's own enum member declarations, rather than re-deriving membership
+// from anything else; a caller that gets `null` back renders the
+// non-member `cast(E)N` form instead (this function does not, since that
+// is a display decision, not a DMD fact).
+public string enumMemberQualifiedName(
+    imported!"dmd.mtype".TypeEnum type,
+    in long value,
+) @safe {
+    return enumMemberQualifiedNameImpl(type, value);
+}
+
+// `EnumDeclaration.members` and `EnumMember.value`/`.ident` are not
+// @safe/pure/nothrow -- an extern (C++) class's fields and methods, the
+// same caveat `declaredTypeImpl` above gives for `VarDeclaration.type`;
+// this is the @trusted boundary. It only walks DMD's own already-populated
+// member list and reads each member's own already-computed constant value
+// and identifier -- no arithmetic of our own, the same "read DMD's own
+// state, no arithmetic of our own" trust `place_value.d`'s
+// `structTypeNameImpl` gives for reading a struct's own name.
+private string enumMemberQualifiedNameImpl(
+    imported!"dmd.mtype".TypeEnum type,
+    in long value,
+) @trusted {
+    import std.conv: text;
+
+    if (type.sym is null || type.sym.members is null)
+        return null;
+
+    foreach (symbol; *type.sym.members) {
+        auto member = symbol.isEnumMember;
+        if (member is null)
+            continue;
+
+        if (cast(long) member.value.toInteger == value)
+            return text(type.sym.ident.toString, ".", member.ident.toString);
+    }
+
+    return null;
+}

@@ -2,9 +2,10 @@ module ut.backends.interpreter.layout;
 
 
 import ut;
-import ut.backends.interpreter: structTypeOf;
+import ut.backends.interpreter: structTypeOf, enumTypeOf;
 import quickbite.backends.interpreter.layout:
-    typeByteSize, typeHasPointers, structFields, fieldByteOffset;
+    typeByteSize, typeHasPointers, structFields, fieldByteOffset,
+    enumMemberQualifiedName;
 import dmd.mtype: Type;
 
 private:
@@ -105,4 +106,34 @@ unittest {
 
     // D gives an empty struct `.sizeof == 1`.
     typeByteSize(type).should == E.sizeof;
+}
+
+
+@("enumMemberQualifiedName.returnsTheQualifiedNameOfTheMatchingMember")
+unittest {
+    auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
+
+    enumMemberQualifiedName(type, 1).should == "Colour.green";
+}
+
+
+// The first-declared member wins when a value has no unique owner -- DMD
+// itself allows an explicit duplicate value (`blue = 1` here reuses
+// `green`'s value), and this function must pick one deterministically
+// rather than depend on undefined behaviour if iteration order ever
+// changed.
+@("enumMemberQualifiedName.picksTheFirstDeclaredMemberWhenValuesAreDuplicated")
+unittest {
+    auto type = enumTypeOf(
+        q{ enum Colour : int { red, green, blue = 1 } }, "Colour");
+
+    enumMemberQualifiedName(type, 1).should == "Colour.green";
+}
+
+
+@("enumMemberQualifiedName.returnsNullForAValueNoMemberHas")
+unittest {
+    auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
+
+    enumMemberQualifiedName(type, 5).length.should == 0;
 }

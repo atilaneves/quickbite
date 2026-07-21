@@ -2,7 +2,7 @@ module ut.backends.interpreter.place_value;
 
 
 import ut;
-import ut.backends.interpreter: structTypeOf, classTypeOf;
+import ut.backends.interpreter: structTypeOf, classTypeOf, enumTypeOf;
 import quickbite.backends.interpreter.place_value: readValue, writeValue, isPlaceComposable;
 import quickbite.backends.interpreter.place: Place, placeAt;
 import quickbite.backends.interpreter.layout: fieldByteOffset, structFields, typeByteSize;
@@ -90,6 +90,79 @@ unittest {
         "H",
         [Value.arrayValue([Value(first), Value(second), Value(third)])],
     );
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// An enum-typed place must read back as a `Value.enumValue` qualified with
+// the member's own name (`Colour.green`), not the plain integral `Value`
+// `native_scalar.readScalar` alone would give -- the enum-tagging gap this
+// slice closes (`ai/plans/value.md` "Remaining work" item 5).
+@("place_value.readValue.enumMemberValueReadsBackTaggedWithItsQualifiedName")
+unittest {
+    auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    writeScalar(type, block.bytes, Value(1));
+
+    readValue(root).should == Value.enumValue("Colour.green", 1);
+}
+
+
+// A value with no owning member reads back in the non-member `cast(E)N`
+// form `value.md`'s Display format spec rule 5 gives, rather than a
+// qualified member name that doesn't exist.
+@("place_value.readValue.nonMemberEnumValueReadsBackInCastForm")
+unittest {
+    auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    writeScalar(type, block.bytes, Value(5));
+
+    readValue(root).should == Value.enumValue("cast(Colour)5", 5);
+}
+
+
+// `writeValue` already stores an enum's underlying bits correctly (its
+// `isNativeScalarType` arm goes through `native_scalar.writeScalar` ->
+// `scalarLong` -> `Value.asLong`'s `EnumValue` arm); this pins the full
+// round trip through the now enum-aware `readValue`.
+@("place_value.writeValue.readValue.enumValueRoundTrips")
+unittest {
+    auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    auto written = Value.enumValue("Colour.blue", 2);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// An enum-typed struct field must compose the same way a scalar field
+// does, tagged correctly on the read side rather than losing its enum
+// name inside the recursion.
+@("place_value.writeValue.readValue.structRoundTripsEnumField")
+unittest {
+    auto type = structTypeOf(q{
+        enum Colour : int { red, green, blue }
+        struct S { Colour colour; int x; }
+    }, "S");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    int writtenX = 3;
+    writtenX = writtenX * 4 + 1;
+
+    auto written = Value.structValue(
+        "S", [Value.enumValue("Colour.blue", 2), Value(writtenX)]);
 
     writeValue(root, written);
 
