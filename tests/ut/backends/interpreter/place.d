@@ -13,10 +13,17 @@ import quickbite.lang: Value;
 private:
 
 
-struct P {
-    int x;
-    long y;
-}
+// One source for both sides of the oracle check below: the host compiler
+// compiles this same declaration (via the `mixin`) that `structTypeOf`
+// parses, so the host's `.offsetof` numbers and the parsed snippet's DMD
+// numbers can never drift apart by testing two different shapes.
+enum pSource = q{
+    struct P {
+        int x;
+        long y;
+    }
+};
+mixin(pSource);
 
 
 // The centrepiece for `field`: `P.y` follows `P.x` with the host compiler's
@@ -27,7 +34,7 @@ struct P {
 // perturb `x`'s bytes.
 @("Place.field.addressesMatchLayoutOffsetsAndScalarStoreLoadRoundTripsIndependently")
 unittest {
-    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    auto type = structTypeOf(pSource, "P");
     auto fields = structFields(type);
     auto xField = fields[0];
     auto yField = fields[1];
@@ -63,11 +70,6 @@ unittest {
 }
 
 
-struct ArrayHolder {
-    int[4] xs;
-}
-
-
 // The centrepiece for `index`: element 0 sits at the array's own base
 // address, and element 2 follows at `2 * int.sizeof` -- the same stride
 // `NativeArray.element` computes, applied here to a bare `Place` address.
@@ -90,11 +92,6 @@ unittest {
 
     // Element 2's write must not perturb element 0.
     root.index(0).loadScalar.asLong.should == 0;
-}
-
-
-struct PointerHolder {
-    int* p;
 }
 
 
@@ -155,10 +152,16 @@ unittest {
 }
 
 
-class C {
-    int x;
-    long y;
-}
+// Same single-source arrangement as `pSource` above, for the class-typed
+// oracle checks: the host compiles the identical declaration `classTypeOf`
+// parses.
+enum cSource = q{
+    class C {
+        int x;
+        long y;
+    }
+};
+mixin(cSource);
 
 
 // The centrepiece for `deref` on a CLASS place: a class variable's own
@@ -175,7 +178,7 @@ class C {
 // `typeByteSize` numbers are DMD's own, not a guess this test made up.
 @("Place.deref.classPlaceFollowsTheStoredReferenceToTheObjectBodyAndFieldsComposeAtDmdOffsets")
 unittest {
-    auto classType = classTypeOf(q{ class C { int x; long y; } }, "C");
+    auto classType = classTypeOf(cSource, "C");
     auto fields = classFields(classType.sym);
     auto xField = fields[0];
     auto yField = fields[1];
@@ -220,7 +223,7 @@ unittest {
 
 @("Place.deref.nonPointerNonClassPlaceThrows")
 unittest {
-    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    auto type = structTypeOf(pSource, "P");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
@@ -228,11 +231,6 @@ unittest {
         "quickbite.backends.interpreter.place.Place.deref: only a "
         ~ "pointer or class place can be dereferenced",
     );
-}
-
-
-struct SliceHolder {
-    int[] s;
 }
 
 
@@ -278,7 +276,7 @@ unittest {
 
 @("Place.loadScalar.nonScalarPlaceThrows")
 unittest {
-    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    auto type = structTypeOf(pSource, "P");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
@@ -291,7 +289,7 @@ unittest {
 
 @("Place.storeScalar.nonScalarPlaceThrows")
 unittest {
-    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
+    auto type = structTypeOf(pSource, "P");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 

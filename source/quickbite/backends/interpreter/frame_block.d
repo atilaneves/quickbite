@@ -38,27 +38,31 @@ public struct FrameBlock {
     // field` indexes into its block at a DMD-derived field offset. Calling
     // this on a local with no slot (an aliasing `ref`/`out`/`lazy` parameter
     // or `ref` body local, never assigned one by `computeFrameLayout`) is a
-    // programming error -- asserted directly rather than silently returning
-    // an address that belongs to some other slot.
-    public void* slotAddress(VarDeclaration variable) @safe {
-        assert(_layout.has(variable), "variable has no frame slot");
-        return slotAddressImpl(_block.address, _layout[variable].offset);
+    // programming error, refused by the `in` contract rather than silently
+    // returning an address that belongs to some other slot. `@trusted` for
+    // the pointer arithmetic on the raw block address: the offset is one of
+    // the layout's own packed slot offsets, so `base + offset` stays within
+    // the block `base` was allocated with -- the same guarantee
+    // `NativeStruct.field`'s block indexing relies on for its own
+    // DMD-derived offsets.
+    public void* slotAddress(VarDeclaration variable) @trusted
+    in (_layout.has(variable), "variable has no frame slot") {
+        return _block.address + _layout[variable].offset;
     }
 
     // `variable`'s slot offset from this block's own base address, i.e.
     // `slotAddress(variable) - block.address` without the pointer
     // subtraction: the layout's own packed offset for that slot, the same
     // number `slotAddress` already adds to the block's base. Same
-    // precondition as `slotAddress`: calling this on a local with no slot
-    // is a programming error, asserted the same way.
-    public size_t slotOffset(VarDeclaration variable) const @safe {
-        assert(_layout.has(variable), "variable has no frame slot");
+    // precondition as `slotAddress`, enforced by the same `in` contract.
+    public size_t slotOffset(VarDeclaration variable) const @safe
+    in (_layout.has(variable), "variable has no frame slot") {
         return _layout[variable].offset;
     }
 
     // Whether this activation owns a frame slot for `variable`, so a
     // caller can guard `slotAddress` (and anything built on it) instead of
-    // hitting its assert for an aliasing local.
+    // hitting its `in` contract for an aliasing local.
     public bool hasSlot(VarDeclaration variable) const @safe {
         return _layout.has(variable);
     }
@@ -70,16 +74,6 @@ public struct FrameBlock {
     public inout(NativeBlock) block() inout pure nothrow @nogc @safe {
         return _block;
     }
-}
-
-
-// Pointer arithmetic on a raw block address is not `@safe`; this is the
-// `@trusted` boundary. `offset` is always one of `layout`'s own packed slot
-// offsets, so `base + offset` stays within the block `base` was allocated
-// with -- the same guarantee `NativeStruct.field`'s block indexing relies
-// on for its own DMD-derived offsets.
-private void* slotAddressImpl(void* base, in size_t offset) pure nothrow @trusted {
-    return base + offset;
 }
 
 

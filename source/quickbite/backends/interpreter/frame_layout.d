@@ -11,7 +11,7 @@ private:
 public struct FrameLayout {
     import dmd.declaration: VarDeclaration;
 
-    public struct Slot {
+    public static struct Slot {
         public size_t offset;
         public size_t size;
     }

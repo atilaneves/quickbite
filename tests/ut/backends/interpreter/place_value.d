@@ -15,12 +15,6 @@ import dmd.typesem: sarrayOf, pointerTo;
 private:
 
 
-struct P {
-    int x;
-    long y;
-}
-
-
 // `P.y` follows `P.x` with the host compiler's own alignment padding, so a
 // round trip through `writeValue`/`readValue` must land `y` at its own
 // offset independently of `x` -- the same padding trap `Place.field`'s own
@@ -43,12 +37,6 @@ unittest {
     writeValue(root, written);
 
     readValue(root).should == written;
-}
-
-
-struct Q {
-    P p;
-    int z;
 }
 
 
@@ -79,11 +67,6 @@ unittest {
     writeValue(root, written);
 
     readValue(root).should == written;
-}
-
-
-struct H {
-    int[3] xs;
 }
 
 
