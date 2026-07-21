@@ -2346,6 +2346,40 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class object passed unchanged through recursive calls keeps one
+// identity across every activation: a recursive function's own class
+// parameter gets its OWN frame slot at each recursion depth, but every
+// depth's slot must still resolve to the SAME object body. Mutating a
+// field at the deepest call and reading it back, unmutated, through every
+// ancestor frame's own parameter on the way back out proves the shared
+// identity rather than merely a shared final value.
+static foreach (backend; Matrix!()) {
+    @("class.recursiveCallSharesObjectIdentityAcrossActivations." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            int rec(C c, int depth) {
+                if (depth == 0) {
+                    c.x = 42;
+                    return c.x;
+                }
+                const inner = rec(c, depth - 1);
+                return c.x + inner;
+            }
+
+            unittest {
+                auto c = new C();
+                assert(rec(c, 3) == 168);
+            }
+        });
+    }
+}
+
 // A class object reached through a class-typed field keeps one identity when
 // copied into a local. Promoting storage through the local must therefore make
 // the write visible through the original field reference too.

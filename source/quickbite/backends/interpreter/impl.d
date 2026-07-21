@@ -13,6 +13,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         displayString;
     import quickbite.backends.interpreter.frame_block: FrameBlock;
     import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
+    import quickbite.backends.interpreter.object_table: ObjectTable;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
@@ -36,6 +37,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         try {
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
+            walker.classObjectTable = new ObjectTable;
             walker.inUnitTest = function_.isUnitTestDeclaration !is null;
             auto layout = cachedFrameLayout(function_);
             if (layout.byteLength > 0)
@@ -57,6 +59,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         try {
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
+            walker.classObjectTable = new ObjectTable;
             walker.inUnitTest = true;
             auto layout = cachedFrameLayout(unitTest);
             if (layout.byteLength > 0)
@@ -76,6 +79,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         try {
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
+            walker.classObjectTable = new ObjectTable;
             auto layout = cachedFrameLayout(function_);
             if (layout.byteLength > 0)
                 walker._activationFrame = FrameBlock.allocate(layout);
@@ -163,6 +167,7 @@ private struct Walker {
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.native_struct: NativeStruct;
+    import quickbite.backends.interpreter.object_table: ObjectTable;
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
 
@@ -491,6 +496,42 @@ private struct Walker {
     // Per-activation native storage block; authority still lives in
     // `locals`/cells until reads route through it.
     private FrameBlock _activationFrame;
+
+    // The object-lifetime storage backing the verified frame mirror for
+    // class locals (`mirrorToFrame`'s class arm, `mirrorClassToFrame`,
+    // below): one `object_table.ObjectTable`, allocated once by whichever
+    // entry point (`Interpreter.eval`/`executeUnitTest`/
+    // `evalFormattedDisplay`) constructs the ROOT `Walker` for one call
+    // into this backend, and shared -- by pointer, not by value -- into
+    // every forked child (`forkPerFrameCellsInto`) for that call's whole
+    // execution.
+    //
+    // Deliberately NOT `classObjectCells`'s own dup-then-merge shape.
+    // `classObjectCells` is also identity-keyed, and a `NativeBlock[
+    // size_t]` dup is a safe way to fork it (dup copies each `NativeBlock`
+    // handle, which stays the same stable address -- `NativeBlock`'s own
+    // contract), but a dup still needs the accompanying merge-back loop
+    // (`mergePerFrameCellsFrom`) for a body a CHILD allocates to become
+    // visible to the PARENT and any later sibling fork; two sibling
+    // frames forked from the same parent before a merge would otherwise
+    // each allocate their OWN body for the same identity. A single shared
+    // pointer needs neither the dup nor the merge: there is only ever one
+    // `ObjectTable` instance for the whole execution, so a body any frame
+    // allocates is immediately visible through every other frame's copy
+    // of this same pointer, with no copy-then-reconcile window where a
+    // frame that has not yet merged back could see a stale (or a second,
+    // divergent) answer.
+    //
+    // This only works because the field is allocated exactly ONCE, at
+    // root-`Walker` construction, and never lazily on first use: forking
+    // a still-null field and letting each side allocate its own instance
+    // the first time it is needed would silently reintroduce the very
+    // hazard sharing-by-pointer avoids, one level up -- two sibling
+    // frames, each minting their own table before either one has
+    // allocated anything, would stop agreeing on a shared identity's body
+    // address the moment either one allocates first.
+    private ObjectTable* classObjectTable;
+
     private Value thisValue;
     private bool hasThis;
     private Value pendingFinallyBodyException;
@@ -842,6 +883,11 @@ private struct Walker {
             return;
         }
 
+        if (variable.type.toBasetype.isTypeClass !is null) {
+            mirrorClassToFrame(variable, value);
+            return;
+        }
+
         if (!isPlaceComposable(variable.type))
             return;
 
@@ -901,6 +947,71 @@ private struct Walker {
             arrayType.next, cast(void*) nativeAddress, value.length);
 
         array.writeSliceHeader(_activationFrame.block, _activationFrame.slotOffset(variable));
+    }
+
+    // The class sibling of `mirrorSliceToFrame`'s header write above: a
+    // class local's frame slot holds a real reference (address) into an
+    // object body owned by `classObjectTable`, whose fields mirror the
+    // boxed class value field-by-field the same way a struct's frame slot
+    // mirrors a struct's own fields -- decision 15's "a class variable
+    // holds a reference to an object body owned by object identity"
+    // (`ai/plans/value.md`) made concrete for the frame. Authority stays
+    // with `locals`, exactly as every other `mirrorToFrame` arm: this
+    // never writes a reference (or a body) it cannot vouch for, it simply
+    // skips --
+    //
+    // - a boxed value that is not (yet) `isClassObject`, and not `Value.
+    //   null_` either (still `void`) -- the same "not yet this shape" gap
+    //   `placeShapeMatches` guards for the composable shapes above.
+    // - a `classIdentity` of 0: `place_value.readValue`'s own class arm
+    //   never mints one for a null reference (it reads back `Value.
+    //   null_` instead, handled separately below), so an `isClassObject`
+    //   value with identity 0 has no `ObjectTable` key to resolve.
+    // - a class whose own fields are not `place_value.
+    //   isClassBodyComposable` (a reference/pointer/nested-class field,
+    //   ... -- see its own header): `writeClassBody` would throw
+    //   recursing into that field, so this declines up front rather than
+    //   letting the write raise mid-composition.
+    //
+    // `Value.null_` DOES mirror, unlike the declines above: a null
+    // reference is cheap and verifiable -- a plain `null` pointer written
+    // into the slot, no `ObjectTable` lookup and nothing to compose --
+    // exactly the "no live object" case `readValue`'s own class arm
+    // already special-cases the identical way.
+    //
+    // Never throws otherwise: a class-typed slot's frame always scans
+    // conservatively (`frame_block.frameHasPointers` via `layout.
+    // typeHasPointers`, true for any `Type.isTypeClass`, the same fact
+    // `mirrorSliceToFrame`'s own header comment leans on for its slice
+    // slot), so the reference this writes always lands in a destination
+    // the GC can see.
+    private void mirrorClassToFrame(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            isClassBodyComposable, writeClassBody;
+
+        auto classType = variable.type.toBasetype.isTypeClass;
+
+        if (value == Value.null_) {
+            Place(_activationFrame.slotAddress(variable), classType).storeReference(null);
+            return;
+        }
+
+        if (!value.isClassObject)
+            return;
+
+        const identity = value.classIdentity;
+        if (identity == 0)
+            return;
+
+        if (!isClassBodyComposable(classType.sym))
+            return;
+
+        // Not `const`: `Place`'s constructor and `storeReference` both
+        // take a mutable `void*`.
+        auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
+        writeClassBody(Place(bodyAddress, classType), value);
+        Place(_activationFrame.slotAddress(variable), classType).storeReference(bodyAddress);
     }
 
     // Whether `value`'s shape matches what `place_value.readValue`/
@@ -965,14 +1076,15 @@ private struct Walker {
     // mirror `setLocal` maintains and the boxed authority show up
     // deterministically instead of silently drifting. Skips a local whose
     // cell (not the frame) is authoritative for this shape -- a scalar
-    // promoted to `scalarCells`, a struct to `structCells`, or an array to
-    // `arrayCells` -- one with no frame slot, a type `place_value` does not
-    // compose, or a boxed value that does not itself match that type's own
-    // shape, matching `mirrorToFrame`'s own guards exactly so this never
-    // asserts on a local the mirror never covered. Compares raw bytes rather
-    // than `Value == Value`: the mirror's contract is byte equality, not
-    // boxed-representation equality, and the two diverge for values `Value`'s
-    // own `==` does not treat as equal to themselves or to an equivalent
+    // promoted to `scalarCells`, a struct to `structCells`, an array to
+    // `arrayCells`, or a class to `classCells` -- one with no frame slot, a
+    // type `place_value` does not compose, or a boxed value that does not
+    // itself match that type's own shape, matching `mirrorToFrame`'s own
+    // guards exactly so this never asserts on a local the mirror never
+    // covered. Compares raw bytes rather than `Value == Value`: the
+    // mirror's contract is byte equality, not boxed-representation
+    // equality, and the two diverge for values `Value`'s own `==` does
+    // not treat as equal to themselves or to an equivalent
     // reading -- IEEE NaN, and an enum's `EnumValue` boxing against the plain
     // integral `readScalar` returns for its base type.
     private void assertFrameMirror(VarDeclaration variable, in Value value) {
@@ -981,7 +1093,10 @@ private struct Walker {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.native_block: NativeBlock;
 
-        if (variable in scalarCells || variable in structCells || variable in arrayCells)
+        if (
+            variable in scalarCells || variable in structCells
+                || variable in arrayCells || variable in classCells
+        )
             return;
 
         if (!_activationFrame.hasSlot(variable))
@@ -989,6 +1104,11 @@ private struct Walker {
 
         if (variable.type.toBasetype.isTypeDArray !is null) {
             assertFrameSliceMirror(variable, value);
+            return;
+        }
+
+        if (variable.type.toBasetype.isTypeClass !is null) {
+            assertClassFrameMirror(variable, value);
             return;
         }
 
@@ -1055,6 +1175,89 @@ private struct Walker {
             frameBytesAt(_activationFrame.slotAddress(variable), NativeArray.sliceHeaderByteLength)
                 == scratch.bytes,
             "frame slice mirror diverged from boxed local",
+        );
+    }
+
+    // The class sibling of `assertFrameSliceMirror`'s comparison above,
+    // matching `mirrorClassToFrame`'s own guards exactly so this never
+    // asserts on a local the mirror never covered -- the caller
+    // (`assertFrameMirror`) has already excluded a local promoted to
+    // `classCells`. A class local's mirror has two independently
+    // verifiable parts, so both are checked: the frame slot's own stored
+    // reference (`assertClassReferenceMirror`, the same raw-byte
+    // comparison `assertFrameSliceMirror` performs for a slice header),
+    // and -- only once that reference resolves to a real object, not
+    // `Value.null_` -- the object body's own fields at that reference,
+    // compared against a fresh `place_value.writeClassBody` composition,
+    // the class counterpart of `assertFrameMirror`'s own scratch
+    // comparison for a composable local.
+    private void assertClassFrameMirror(VarDeclaration variable, in Value value) {
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            isClassBodyComposable, writeClassBody;
+        import quickbite.backends.interpreter.layout: classInstanceByteSize;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+
+        auto classType = variable.type.toBasetype.isTypeClass;
+
+        if (value == Value.null_) {
+            assertClassReferenceMirror(variable, classType, null);
+            return;
+        }
+
+        if (!value.isClassObject)
+            return;
+
+        const identity = value.classIdentity;
+        if (identity == 0)
+            return;
+
+        if (!isClassBodyComposable(classType.sym))
+            return;
+
+        // Not `const`: `ObjectTable.storageFor`, `Place`'s constructor,
+        // and `assertClassReferenceMirror` all take a mutable `void*`.
+        auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
+        assertClassReferenceMirror(variable, classType, bodyAddress);
+
+        // The expected body bytes: `value` written through the identical
+        // `place_value.writeClassBody` composition into a scratch block
+        // sized from DMD's own instance size (`layout.
+        // classInstanceByteSize`, the same size `object_table.
+        // ObjectTable` itself allocates a fresh body with) -- the class
+        // counterpart of `assertFrameMirror`'s own `writeValue`-into-
+        // scratch comparison. `classObjectTable[identity]` (not the frame)
+        // is the actual body -- `(*classObjectTable)` because the shared
+        // table is reached through a pointer (see its own field comment).
+        const length = classInstanceByteSize(classType.sym);
+        auto scratch = NativeBlock.allocate(length, NativeBlock.Scan.no);
+        writeClassBody(Place(scratch.address, classType), value);
+
+        assert(
+            (*classObjectTable)[identity].bytes == scratch.bytes,
+            "class body mirror diverged from boxed local",
+        );
+    }
+
+    // The frame-slot reference comparison both `assertClassFrameMirror`
+    // arms above share: `expected` (a body's own address, or `null`)
+    // written through the identical `place.Place.storeReference`
+    // `mirrorClassToFrame` itself writes with, into a pointer-width
+    // scratch block, rather than a second, hand-rolled encoding.
+    private void assertClassReferenceMirror(
+        VarDeclaration variable,
+        imported!"dmd.mtype".TypeClass classType,
+        void* expected,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+
+        auto scratch = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.no);
+        Place(scratch.address, classType).storeReference(expected);
+
+        assert(
+            frameBytesAt(_activationFrame.slotAddress(variable), (void*).sizeof) == scratch.bytes,
+            "frame class reference mirror diverged from boxed local",
         );
     }
 
@@ -2564,6 +2767,10 @@ private struct Walker {
     // its own logic (dataseg-only for a non-nested free function, a full dup
     // for a nested function/member call/destructor, ...).
     private void forkPerFrameCellsInto(ref Walker child) {
+        // Shared, not duped: see `classObjectTable`'s own field comment
+        // for why an identity-keyed table needs a shared pointer here,
+        // not a per-frame copy.
+        child.classObjectTable = classObjectTable;
         child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;

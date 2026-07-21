@@ -141,6 +141,29 @@ public struct Place {
         );
     }
 
+    // The write side of `deref`'s class case: stores `reference` -- a
+    // class object body's own address, or `null` -- as the reference this
+    // class place's own address holds, for a caller that already knows
+    // the address to store (an `object_table.ObjectTable` lookup) rather
+    // than one following it FROM somewhere else. A stored class reference
+    // is itself just a pointer-width bit pattern, the same width `deref`'s
+    // class case already reads back out via `readStoredPointer` -- this is
+    // that read's exact inverse. Only a class place is legal here; a
+    // pointer place's own stored value has no call site yet that needs to
+    // construct it this way (every existing pointer write routes through
+    // `index`/`field` composition into whatever the pointer already
+    // points at, never into the pointer's own slot), so that case stays
+    // refused until one does.
+    public void storeReference(void* reference) @safe {
+        if (_type.isTypeClass is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.storeReference: "
+                ~ "only a class place can store a reference",
+            );
+
+        writeStoredPointer(_address, reference);
+    }
+
     // Reads the scalar at this place's address, at this place's own
     // static type, via `native_scalar.readScalar` -- this primitive never
     // grows a second scalar<->bytes codec. Only a native scalar type
@@ -231,4 +254,13 @@ private ubyte[] placeBytes(void* address, in size_t length) pure nothrow @truste
 // `placeAdd` already performs on any other address.
 private void* readStoredPointer(void* address) pure nothrow @trusted {
     return *cast(void**) address;
+}
+
+
+// The write side of `readStoredPointer`: writing a pointer value through a
+// `void**` reinterpret is not `@safe` either. This is `Place.
+// storeReference`'s `@trusted` boundary, mirroring `readStoredPointer`
+// above exactly.
+private void writeStoredPointer(void* address, void* reference) pure nothrow @trusted {
+    *cast(void**) address = reference;
 }

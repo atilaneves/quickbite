@@ -877,7 +877,21 @@ in parallel and never blocks it.
        slot kept as a verified shadow, mirrored by `setLocal` and
        checked against the boxed value on every read; a slice local's
        slot instead holds a `{length, ptr}` header mirror (from the
-       boxed value's stable native backing) verified the same way.
+       boxed value's stable native backing) verified the same way. A
+       class local's slot holds a real reference (address) into an
+       object body owned by `object_table.ObjectTable`, keyed by
+       object identity rather than any one variable binding so two
+       bindings to the same object resolve to one body
+       (`mirrorToFrame`'s `mirrorClassToFrame`/`assertFrameMirror`'s
+       `assertClassFrameMirror`, verifying both the stored reference
+       and the body's own fields); the table is allocated once per
+       root `Walker` and shared — by pointer, not by value — into
+       every forked child (`forkPerFrameCellsInto`), since an
+       identity-keyed table needs no per-frame divergence the way a
+       variable-keyed cell does. `Value.null_` mirrors as a plain
+       `null` reference; a `classIdentity` of 0 or a class whose
+       fields are not `place_value.isClassBodyComposable` is left
+       unmirrored, matching every other decline case above.
      - Lvalue evaluation yielding places: a `place.Place` is an address
        plus its static type; `field`/`index` compose another place by
        DMD offsets/strides — `index` on a pointer or slice place follows
@@ -931,8 +945,11 @@ in parallel and never blocks it.
        lookup), recursing `writeValue` per field; `writeValue` itself
        still refuses a class-typed place; it would have to store a
        reference, and the address for a given identity is only known
-       to whoever owns the `ObjectTable` (`impl.d`, in a later wiring
-       slice), so that arm stays deferred rather than guessed at.
+       to whoever owns the `ObjectTable` (`impl.d`'s
+       `classObjectTable`, wired into the verified frame mirror above
+       but not into this generic per-place dispatch, which has no
+       such table to consult), so that arm stays deferred until the
+       authority switch itself supplies one.
        `place_value.isClassBodyComposable` answers whether a class's
        own fields round-trip this way, recursing the identical
        `isPlaceComposable` check `writeClassBody`'s own field writes
