@@ -375,11 +375,14 @@ unittest {
 }
 
 
-// A slice-typed field cannot round trip: `writeClassBody` would call
-// `writeValue` on it, which refuses a slice-typed place (needs backing-
-// storage allocation, out of `writeValue`'s scope) -- the predicate must
-// say so up front rather than let a caller find out via a thrown
-// exception.
+// A slice-typed field still answers `false`, even though `writeValue` can
+// now compose a slice on its own: `isClassBodyComposable` (like `
+// isPlaceComposable`, which it recurses through per field) is the
+// eligibility gate for the verified FRAME mirror, not a claim about what
+// `writeValue` itself can do -- a slice local's frame slot mirrors only
+// its native header (`impl.d`'s `mirrorSliceToFrame`), never the full
+// place composition this predicate gates, so a slice-bearing class body
+// stays off that path regardless.
 @("place_value.isClassBodyComposable.falseForClassWithSliceField")
 unittest {
     auto classType = classTypeOf(q{ class C { int[] xs; } }, "C");
@@ -406,20 +409,199 @@ unittest {
 }
 
 
-// `writeValue`'s own slice case stays unsupported -- slice write needs
-// backing-storage allocation, out of scope for `writeValue` (see its header
-// comment); `readValue`'s own slice case is exercised separately below, now
-// that it reconstructs a slice from its native header + elements rather than
-// throwing.
-@("place_value.writeValue.sliceTypeThrows")
+// The round trip `writeValue`'s slice arm exists for: allocates new backing
+// storage sized to `value.length`, writes every element into it, then
+// writes the `{ length, ptr }` header into `place` -- `readValue` must then
+// see back exactly what was written, through its own independent header +
+// element read (`ai/plans/value.md` "Remaining work" item 5).
+@("place_value.writeValue.readValue.sliceRoundTripsElementsAndLength")
 unittest {
     auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
     auto sliceType = structFields(holderType)[0].type;
-    auto place = Place(null, sliceType);
+    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
+    auto place = placeAt(block, sliceType);
 
-    writeValue(place, Value.void_).shouldThrowWithMessage(
+    int first = 2;
+    first = first * 5 + 1;
+    int second = 3;
+    second = second * 5 + 2;
+    int third = 4;
+    third = third * 5 + 3;
+
+    auto written = Value.arrayValue([Value(first), Value(second), Value(third)]);
+
+    writeValue(place, written);
+
+    readValue(place).should == written;
+}
+
+
+// A zero-length array is the legal exception `writeSliceHeader` carves out
+// for an unscanned destination (`native_array.d`'s own contract): its block
+// address is `null` (`NativeArray.allocate`'s own `GC.calloc(0, ...)`), so
+// writing a null pointer loses nothing. Pinned directly on the written
+// header's own bytes, not only on the round trip, since a wrong non-null
+// `ptr` alongside a correct `length` of 0 would still read back equal.
+@("place_value.writeValue.readValue.sliceRoundTripsZeroLengthArray")
+unittest {
+    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
+
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
+    auto place = placeAt(block, sliceType);
+
+    writeValue(place, Value.arrayValue([]));
+
+    auto header = readSliceHeaderBytes(block.bytes);
+    header.length.should == 0;
+    (header.ptr is null).should == true;
+
+    readValue(place).should == Value.arrayValue([]);
+}
+
+
+// A slice element type that is itself a non-union struct must compose
+// through `writeValue`'s own struct arm during the element write, exactly
+// as `readValue`'s slice arm already does when reading elements back --
+// the write-side counterpart of `place_value.readValue.
+// sliceOfStructsRoundTripsNativeElements`, but through `writeValue`'s own
+// allocation this time rather than a hand-built fixture.
+@("place_value.writeValue.readValue.sliceOfStructsRoundTrips")
+unittest {
+    auto holderType = structTypeOf(q{
+        struct SlicePoint { int x; int y; }
+        struct SlicePointsHolder { SlicePoint[] s; }
+    }, "SlicePointsHolder");
+    auto sliceType = structFields(holderType)[0].type;
+    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
+    auto place = placeAt(block, sliceType);
+
+    int firstX = 1;
+    firstX = firstX * 3 + 1;
+    int firstY = 2;
+    firstY = firstY * 3 + 2;
+    int secondX = 3;
+    secondX = secondX * 3 + 3;
+    int secondY = 4;
+    secondY = secondY * 3 + 4;
+
+    auto written = Value.arrayValue([
+        Value.structValue("SlicePoint", [Value(firstX), Value(firstY)]),
+        Value.structValue("SlicePoint", [Value(secondX), Value(secondY)]),
+    ]);
+
+    writeValue(place, written);
+
+    readValue(place).should == written;
+}
+
+
+// Writing a SHORTER array over a place that already holds a longer one
+// must leave a header describing the NEW length, not the old one --
+// `writeSliceValue` always allocates fresh backing storage sized to the
+// incoming value rather than growing/shrinking whatever was there before
+// (a written header is a snapshot, per `value.md`'s Containers contract),
+// so the old, now-unreferenced array is simply left for the GC.
+@("place_value.writeValue.readValue.sliceRewriteWithShorterArrayReplacesHeader")
+unittest {
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
+    auto place = placeAt(block, sliceType);
+
+    writeValue(place, Value.arrayValue([Value(1), Value(2), Value(3), Value(4), Value(5)]));
+
+    auto written = Value.arrayValue([Value(9), Value(8)]);
+    writeValue(place, written);
+
+    readValue(place).should == written;
+}
+
+
+// An element type `writeValue` cannot compose (a class element, here --
+// see `writeValue`'s own header comment for why class-typed places always
+// refuse) must refuse the WHOLE slice write, not silently leave part of
+// the array written -- `place`'s own header is the LAST thing
+// `writeSliceValue` writes, so a throw partway through the element loop
+// must leave `place` exactly as it was beforehand, still describing
+// whatever array was there first.
+@("place_value.writeValue.sliceWithNonComposableElementTypeRefusesWholeWrite")
+unittest {
+    auto holderType = structTypeOf(q{
+        class SliceElementClass { int x; }
+        struct SliceHolder { SliceElementClass[] cs; }
+    }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
+    auto place = placeAt(block, sliceType);
+
+    auto original = Value.arrayValue([]);
+    writeValue(place, original);
+
+    writeValue(place, Value.arrayValue([Value.null_])).shouldThrowWithMessage(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+
+    readValue(place).should == original;
+}
+
+
+// The newly allocated backing storage's own scan attribute must match
+// `layout.typeHasPointers` over the ELEMENT type, chosen once at
+// allocation by `NativeArray.allocate` itself -- asserted directly on the
+// real GC attribute (`value.md`'s Containers contract: "do not write
+// `GC.collect`-survival tests for scan policy... assert the scan attribute
+// directly"), not inferred from whether a collection happens to survive.
+// `int` elements carry no pointers, so the array's block must be `NO_SCAN`.
+@("place_value.writeValue.sliceElementBlockIsNoScanForPointerFreeElements")
+unittest {
+    import core.memory: GC;
+    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
+
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
+    auto place = placeAt(block, sliceType);
+
+    writeValue(place, Value.arrayValue([Value(1), Value(2)]));
+
+    auto header = readSliceHeaderBytes(block.bytes);
+    (GC.addrOf(header.ptr) is null).should == false;
+    const attr = GC.getAttr(GC.addrOf(header.ptr));
+    (attr & GC.BlkAttr.NO_SCAN).should == GC.BlkAttr.NO_SCAN;
+}
+
+
+// The pointer-bearing counterpart of the test above: a slice-of-slices
+// element type (`int[]`) itself carries a pointer (its own `{ length, ptr }`
+// header), so the outer array's block must be conservatively scanned or
+// the inner arrays' own blocks become invisible to the collector. Also
+// exercises `writeSliceValue` recursing into its own element write for a
+// nested slice element, through the same generic `writeValue` dispatch
+// every other element type already goes through.
+@("place_value.writeValue.readValue.sliceElementBlockIsConservativeForPointerBearingElements")
+unittest {
+    import core.memory: GC;
+    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
+
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[][] xss; } }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
+    auto place = placeAt(block, sliceType);
+
+    auto written = Value.arrayValue([
+        Value.arrayValue([Value(1), Value(2)]),
+        Value.arrayValue([Value(3)]),
+    ]);
+
+    writeValue(place, written);
+
+    auto header = readSliceHeaderBytes(block.bytes);
+    const attr = GC.getAttr(GC.addrOf(header.ptr));
+    (attr & GC.BlkAttr.NO_SCAN).should == 0;
+
+    readValue(place).should == written;
 }
 
 

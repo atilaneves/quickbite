@@ -918,10 +918,31 @@ in parallel and never blocks it.
        `place_value.readValue`/`writeValue` (native scalar leaves via
        `Place.loadScalar`/`storeScalar`, non-union struct and
        static-array shapes recursed field-by-field/element-by-element
-       via `Place.field`/`index`; `readValue` also reconstructs a slice
-       from its native `{length, ptr}` header and elements — read side
-       only, `writeValue`'s slice case is still deferred pending
-       backing-storage allocation). An enum leaf reads back tagged per
+       via `Place.field`/`index`; a slice composes symmetrically now:
+       `readValue` reconstructs one from its native `{length, ptr}`
+       header and elements, and `writeValue` (`place_value.
+       writeSliceValue`) allocates NEW backing storage sized to the
+       value's own length (`native_array.NativeArray.allocate`, whose
+       scan policy is `layout.typeHasPointers` over the element type
+       alone, chosen once and never defaulted, per the Containers
+       contract below), writes every element into it through the same
+       `Place.index` composition the read side follows, and writes the
+       `{length, ptr}` header into the destination place LAST — so an
+       element type `writeValue` cannot compose refuses the whole write
+       before the destination is ever touched, never leaving a
+       partially written array visible there. The allocated storage
+       stays reachable only via that header, which is why the write
+       throws rather than silently under-protecting it when the
+       destination itself is not GC-scanned (the same
+       `writeSliceHeader` check a `NativeBlock`-holding caller gets,
+       reached here through a raw-address overload since a `Place` is
+       only an address, with no `NativeBlock` handle of its own to pass
+       — see `native_array.d`'s own header comment on that overload).
+       This does not change `isPlaceComposable`'s own verdict for a
+       slice (still `false`): that predicate gates the verified FRAME
+       mirror, which still mirrors a slice local by header alone
+       (`impl.d`'s `mirrorSliceToFrame`), not by this full place
+       composition. An enum leaf reads back tagged per
        the Display format spec rather than as the plain integral value
        `native_scalar.readScalar` alone gives it: `readValue` resolves
        the qualified member name (or the non-member `cast(E)N` form)

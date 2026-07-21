@@ -170,18 +170,22 @@ private imported!"quickbite.lang".Value structValueAt(
 
 // The inverse of `readValue`: writes `value`'s scalar leaves into `place`
 // through the identical field-by-field/element-by-element composition --
-// scalar leaves via `Place.storeScalar`, everything else unsupported for
-// exactly the reasons `readValue`'s own comment gives, with one addition: a
-// class-typed place stays refused here too, even though `readValue` now
-// composes one. Reading a class only needs the reference this place already
-// stores (`Place.deref` follows it); writing one would need to STORE a
-// reference, and the only legal reference for a given object identity is
-// the address `object_table.ObjectTable` handed out for it when the object
-// was created -- knowledge this module has no access to, and should not
-// guess at. That wiring (minting/looking up an identity's body address and
-// storing it here) belongs to whichever later slice connects class locals
-// to `impl.d`'s frame mirror, not to this place-composition layer. Writing
-// an already-allocated body's OWN fields (once its address is known) is
+// scalar leaves via `Place.storeScalar`, a slice-typed place through
+// `writeSliceValue` below (new backing storage, elements written, then the
+// `{ length, ptr }` header written into `place` last -- see its own header
+// comment for the ordering argument and the storage's lifetime), and
+// everything else unsupported for exactly the reasons `readValue`'s own
+// comment gives, with one addition: a class-typed place stays refused here
+// too, even though `readValue` now composes one. Reading a class only needs
+// the reference this place already stores (`Place.deref` follows it);
+// writing one would need to STORE a reference, and the only legal
+// reference for a given object identity is the address `object_table.
+// ObjectTable` handed out for it when the object was created -- knowledge
+// this module has no access to, and should not guess at. That wiring
+// (minting/looking up an identity's body address and storing it here)
+// belongs to whichever later slice connects class locals to `impl.d`'s
+// frame mirror, not to this place-composition layer. Writing an
+// already-allocated body's OWN fields (once its address is known) is
 // `writeClassBody` below, the write-side counterpart of `readValue`'s class
 // arm. A union-typed place writes ONE member's bytes rather than recursing
 // every field the way a non-union struct does -- see `writeUnionValue`'s
@@ -220,9 +224,82 @@ public void writeValue(
         return;
     }
 
+    auto sliceType = type.isTypeDArray;
+    if (sliceType !is null) {
+        writeSliceValue(place, sliceType, value);
+        return;
+    }
+
     throw new Exception(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+// The inverse of `readValue`'s slice arm: allocates NEW backing storage
+// (`native_array.NativeArray.allocate`, sized to `value.length`) for the
+// elements rather than reusing whatever `place`'s own header already
+// pointed at -- a written slice header is always a snapshot (`value.md`'s
+// Containers contract), so there is no existing backing storage here to
+// grow or reuse even when a shorter or longer array already lived at
+// `place`. `NativeArray.allocate` itself picks the new block's scan policy
+// from `layout.typeHasPointers` over `elementType` alone -- chosen once,
+// at allocation, never defaulted, exactly the Containers contract's own
+// rule; this function makes no separate scan decision of its own.
+//
+// Elements are written through the identical composition `readValue`'s
+// slice arm reads them back through -- `Place.index`, not hand-rolled
+// stride arithmetic over `array`'s block a second time. Since `array`'s
+// own header does not exist anywhere yet (it is not `place`'s header:
+// writing that is this function's LAST step, below), a throwaway scratch
+// header block gives a `Place` for `.index` to follow: `array.
+// writeSliceHeader(scratchHeader, 0)` writes `array`'s `{ length, ptr }`
+// into it, then `elements.index(i)` reads that SAME header back out
+// exactly as any other slice place's `.index` would, landing on element
+// `i`'s real address inside `array`'s own block. The scratch header itself
+// is never read again once this function returns; only `array`'s block
+// survives, addressed from `place`'s own header instead.
+//
+// The header write into `place` itself comes LAST, after every element
+// has already been written successfully into `array` -- storage nothing
+// else can yet see, since no guest-visible location points at it until
+// then. An element type `writeValue` cannot compose (a class, pointer, or
+// `real` element, or a nested aggregate containing one) throws from deep
+// in that recursion, before `place`'s own header is ever touched -- so a
+// non-composable element type refuses the WHOLE write, leaving `place`
+// exactly as it was, never a partially written array visible through it.
+//
+// Lifetime: once this function returns, the only thing keeping `array`'s
+// block reachable from a GC root is `place`'s own header, just written --
+// which only actually keeps it alive if `place` itself lives inside a
+// block the collector scans. The final `array.writeSliceHeader(place.
+// address)` call enforces exactly that: it refuses to write a live GC
+// pointer into a destination the GC does not scan (see its own header
+// comment in `native_array.d`), the one case this function deliberately
+// does NOT paper over -- a genuinely unscanned destination is a caller
+// bug (every real caller's destination is scanned already, per that
+// comment's own argument), not a case for this function to route around.
+private void writeSliceValue(
+    imported!"quickbite.backends.interpreter.place".Place place,
+    imported!"dmd.mtype".TypeDArray sliceType,
+    in imported!"quickbite.lang".Value value,
+) @safe {
+    import quickbite.backends.interpreter.native_array: NativeArray;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.place: Place;
+
+    auto elementType = sliceType.next;
+    auto array = NativeArray.allocate(elementType, value.length);
+
+    auto scratchHeader = NativeBlock.allocate(
+        NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
+    array.writeSliceHeader(scratchHeader, 0);
+    auto elements = Place(scratchHeader.address, sliceType);
+
+    foreach (i; 0 .. value.length)
+        writeValue(elements.index(i), value[i]);
+
+    array.writeSliceHeader(place.address);
 }
 
 
