@@ -2,10 +2,10 @@ module ut.backends.interpreter.layout;
 
 
 import ut;
-import ut.backends.interpreter: structTypeOf, enumTypeOf;
+import ut.backends.interpreter: structTypeOf, enumTypeOf, classTypeOf;
 import quickbite.backends.interpreter.layout:
     typeByteSize, typeHasPointers, structFields, fieldByteOffset,
-    enumMemberQualifiedName;
+    enumMemberQualifiedName, classInstanceByteSize;
 import dmd.mtype: Type;
 
 private:
@@ -136,4 +136,47 @@ unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
 
     enumMemberQualifiedName(type, 5).length.should == 0;
+}
+
+
+// Oracle: `C`'s instance size, including the vtable pointer/monitor header
+// DMD lays down at the front of every class object, comes from the host
+// compiler's own `__traits(classInstanceSize, ...)` for the identical
+// class declared below -- a naive "sum the field ends" implementation
+// would under-count by omitting that header.
+class C {
+    int x;
+}
+
+
+@("classInstanceByteSize.matchesHostCompilerClassInstanceSizeIncludingVtableAndMonitor")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; } }, "C");
+
+    classInstanceByteSize(classType.sym).should == __traits(classInstanceSize, C);
+}
+
+
+// Oracle: `Derived`'s instance size folds in its base class `Base`'s own
+// field plus the shared vtable/monitor header, not just the fields
+// `Derived` itself newly declares.
+class Base {
+    int baseField;
+}
+class Derived: Base {
+    long derivedField;
+}
+
+
+@("classInstanceByteSize.includesInheritedFields")
+unittest {
+    auto classType = classTypeOf(
+        q{
+            class Base { int baseField; }
+            class Derived: Base { long derivedField; }
+        },
+        "Derived",
+    );
+
+    classInstanceByteSize(classType.sym).should == __traits(classInstanceSize, Derived);
 }

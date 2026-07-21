@@ -213,6 +213,34 @@ private imported!"dmd.declaration".VarDeclaration[] classFieldsImpl(
 }
 
 
+// The byte size DMD assigns to `class_`'s own object layout
+// (`AggregateDeclaration.structsize`, which `ClassDeclaration` inherits) --
+// the field IS the instance size, verbatim, the same "DMD's own number, no
+// arithmetic of our own" contract `typeByteSize` applies to `Type.size`.
+// Unlike summing `fieldByteOffset(field) + typeByteSize(field.type)` over
+// `classFields`, this already includes the vtable pointer (and monitor)
+// DMD lays down at the front of every class object -- a field-end sum
+// omits that header and under-sizes the object. No layout needs forcing
+// here either: `structsize`, like `classFields` above, is finalized by
+// the same semantic-analysis pass (`dsymbolsem.d`) before the interpreter
+// ever runs, so there is no `sizeok`-gated state to force.
+public size_t classInstanceByteSize(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @safe pure nothrow {
+    return classInstanceByteSizeImpl(class_);
+}
+
+// `AggregateDeclaration.structsize` is a plain field read, but
+// `ClassDeclaration` (an `extern (C++)` class) is not itself
+// `@safe`-annotated; this is the `@trusted` boundary, mirroring
+// `declaredTypeImpl`'s identical reasoning for `VarDeclaration.type`.
+private size_t classInstanceByteSizeImpl(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @trusted pure nothrow {
+    return class_.structsize;
+}
+
+
 // The qualified name (`"E.b"`) DMD gives the member of enum `type` whose
 // value equals `value`, or `null` when no member carries it -- the same
 // qualification `value.md`'s Display format spec rule 5 requires ("E.b",

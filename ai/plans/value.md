@@ -914,8 +914,10 @@ in parallel and never blocks it.
        enum's bits correctly through the same scalar path, since
        `Value.asLong` already unwraps an `EnumValue`. A dynamic-array
        local holds a real `{length, ptr}` slice header; a class
-       variable holds a reference (address) to an object block owned
-       by object identity; a union is overlapping bytes.
+       variable holds a reference (address) to an object body owned by
+       object identity and stored in `object_table.ObjectTable`, keyed
+       on that identity rather than any one variable binding; a union
+       is overlapping bytes.
    - The authority switch: native storage becomes the sole authority
      for all bindings. Merge gate: no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/
