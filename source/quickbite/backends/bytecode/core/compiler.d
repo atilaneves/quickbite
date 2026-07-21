@@ -196,6 +196,12 @@ private struct Compiler {
         ushort valueSize;
     }
 
+    private static struct MethodReceiver {
+        ushort offset;
+        ushort writeBackFrameIndex;
+        ushort writeBackSize;
+    }
+
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
         // compiled callee is an ordinary function.
@@ -296,6 +302,7 @@ private struct Compiler {
                     _structLocals[parameter] = StructLocal(
                         offset, structDeclarationOf(parameter.type),
                     );
+                    _capturedOffsets[parameter] = offset;
                     continue;
                 }
 
@@ -1986,6 +1993,14 @@ private struct Compiler {
                 "Unsupported compound assignment in bytecode core: ",
             );
 
+        if (auto xorAssign = expression.isXorAssignExp)
+            return compileLocalIntegerCompoundAssign(
+                xorAssign,
+                Op.bitXorInt4,
+                Op.bitXorInt4,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
         if (auto divideAssign = expression.isDivAssignExp)
             return compileDivOrModCompoundAssign(
                 divideAssign,
@@ -3622,6 +3637,7 @@ private struct Compiler {
         const offset = allocateStructBlock(variable.type);
         auto declaration = structDeclarationOf(variable.type);
         _structLocals[variable] = StructLocal(offset, declaration);
+        _capturedOffsets[variable] = offset;
 
         zeroFrameBlock(offset, cast(uint) staticArraySize(variable.type));
 
@@ -3676,13 +3692,11 @@ private struct Compiler {
             return;
         }
 
-        // A bare `U u;` for a union defaults from the FIRST declared member's
-        // own default value, reinterpreted as every other member's overlapping
-        // bytes, not from each field's independent default the way a struct's
-        // disjoint fields do. DMD's own `defaultInitLiteral` already encodes
-        // this rule (it nulls out every field beyond the first member's byte
-        // extent), so reuse its literal instead of re-deriving the rule here.
-        if (source.isVarExp !is null && declaration.isUnionDeclaration !is null) {
+        // DMD lowers `S value;` through the struct's init-symbol VarExp. Its
+        // `defaultInitLiteral` describes the actual default bytes, including
+        // enum fields and non-zero defaults; use it rather than treating an
+        // init-symbol read as a value stored in the frame.
+        if (source.isVarExp !is null) {
             import dmd.typesem: defaultInitLiteral;
 
             auto literal = variable.type.toBasetype.isTypeStruct
@@ -4065,6 +4079,33 @@ private struct Compiler {
         ));
     }
 
+    // A captured struct local belongs to the caller frame, whereas a struct
+    // method's hidden `this` is an inline block in this frame. Materialise the
+    // captured block for the call, then preserve the caller-visible mutation by
+    // writing the whole block back once the callee returns.
+    private MethodReceiver methodReceiver(CallExp call) {
+        import dmd.astenums: TY;
+
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto variable = dot.e1.isVarExp)
+                if (auto declaration = variable.var.isVarDeclaration)
+                    if (_hasNestedContext &&
+                        declaration.type.toBasetype.ty == TY.Tstruct &&
+                        declaration !in _structLocals)
+                        if (auto captured = declaration in _capturedOffsets) {
+                            const offset = allocateStructBlock(declaration.type);
+                            const frameIndex = capturedFrameIndex(*captured);
+                            const blockSize = cast(ushort)
+                                staticArraySize(declaration.type);
+                            _code ~= Instruction(
+                                Op.frameLoad, offset, frameIndex, blockSize,
+                            );
+                            return MethodReceiver(offset, frameIndex, blockSize);
+                        }
+
+        return MethodReceiver(methodReceiverOffset(call), 0, 0);
+    }
+
     // A struct receiver returned by `ref`, or through `&`, from one of the
     // receiver call's own `ref` parameters aliases that caller lvalue. Resolve
     // nested forwarding calls from the inside out, passing each recovered
@@ -4279,9 +4320,9 @@ private struct Compiler {
                 // so the receiver is not evaluated a second time.
                 auto function_ = callFunction(call);
                 if (function_ !is null && function_.isCtorDeclaration !is null) {
-                    const receiver = methodReceiverOffset(call);
+                    const receiver = MethodReceiver(methodReceiverOffset(call));
                     compileCall(call, &receiver);
-                    return receiver;
+                    return receiver.offset;
                 }
 
                 return compileCall(call).offset;
@@ -6601,7 +6642,8 @@ private struct Compiler {
 
     // Integer multiplication. Pointer arithmetic scales its integer operand
     // through an 8-byte `cast(long)n * elementSize`, so the 8-byte form is the
-    // one that matters here; the 4-byte form mirrors `addInt4`.
+    // one that matters here; the 4-byte form operates on raw bits like
+    // `addInt4`, so signed and unsigned operands share it.
     private Operand compileMultiplyExpression(MulExp multiply) {
         import std.conv: text;
 
@@ -6611,12 +6653,12 @@ private struct Compiler {
             isEightByteInteger(rhs.type))
             return emitBinary(Op.mulInt8, lhs, rhs, lhs.type);
 
-        return compileIntBinaryResult(
+        return compileInt4BinaryResult(
             multiply,
             lhs,
             rhs,
             Op.mulInt4,
-            ScalarType.int_,
+            scalarType(multiply.type),
             "Unsupported multiplication in bytecode core: ",
         );
     }
@@ -7939,7 +7981,10 @@ private struct Compiler {
         if (destination is null)
             return null;
 
-        compileCall(call, evaluatedReceiver);
+        const receiver = evaluatedReceiver is null
+            ? null
+            : new MethodReceiver(*evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
         const value = compileExpression(rhs);
         const scalar = memberReturnScalar(returned);
         if (value.type != scalar)
@@ -8015,7 +8060,10 @@ private struct Compiler {
         if (destination is null)
             return null;
 
-        compileCall(call, evaluatedReceiver);
+        const receiver = evaluatedReceiver is null
+            ? null
+            : new MethodReceiver(*evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
         const value = compileExpression(rhs);
         const scalar = memberReturnScalar(selected);
         if (value.type != scalar)
@@ -8306,6 +8354,7 @@ private struct Compiler {
         import std.bitmanip: nativeToLittleEndian;
         import std.conv: text;
 
+        resolveNonRootInitializer(declaration);
         auto initializer = declaration._init is null
             ? null
             : declaration._init.isExpInitializer;
@@ -8330,6 +8379,26 @@ private struct Compiler {
             "Unsupported module scalar initializer in bytecode core: ",
             declarationChars(declaration),
         ));
+    }
+
+    private void resolveNonRootInitializer(VarDeclaration declaration) {
+        import dmd.dsymbol: PASS;
+
+        if (declaration.semanticRun >= PASS.semantic2done)
+            return;
+
+        auto mod = declaration.getModule;
+        if (mod is null)
+            return;
+
+        import dmd.dscope: Scope;
+        import dmd.globals: global;
+        import dmd.semantic2: semantic2;
+
+        auto scope_ = Scope.createGlobal(mod, global.errorSink);
+        semantic2(declaration, scope_);
+        scope_ = scope_.pop;
+        scope_.pop;
     }
 
     private ushort allocateModuleBytes(in uint bytes, in uint alignmentArgument)
@@ -9463,7 +9532,7 @@ private struct Compiler {
 
     private Operand compileCall(
         CallExp call,
-        const ushort* evaluatedMethodReceiver = null,
+        const MethodReceiver* evaluatedMethodReceiver = null,
         const size_t* evaluatedReferenceArgumentIndex = null,
         const ushort* evaluatedReferenceArgumentOffset = null,
     ) {
@@ -9586,19 +9655,22 @@ private struct Compiler {
         const argumentArea = allocateBytes(layout.blockSize, 8);
         Operand classReceiver;
         bool hasClassReceiver;
+        MethodReceiver structReceiver;
+        bool hasStructReceiver;
 
         // A struct method call `receiver.method(args)` passes the receiver as
         // the hidden `this` block (by reference) at the start of the argument
         // area: store the receiver's frame offset there, which the machine
         // dereferences on entry and writes back on return.
         if (layout.hasThis) {
-            const receiver = evaluatedMethodReceiver is null
-                ? methodReceiverOffset(call)
+            structReceiver = evaluatedMethodReceiver is null
+                ? methodReceiver(call)
                 : *evaluatedMethodReceiver;
+            hasStructReceiver = true;
             _code ~= Instruction(
                 Op.loadConstant,
                 cast(ushort) (argumentArea + layout.thisOffset),
-                constantIndex(receiver),
+                constantIndex(structReceiver.offset),
                 cast(ushort) size(ScalarType.uint_),
             );
         }
@@ -9724,6 +9796,13 @@ private struct Compiler {
                 writeBack.pointerOffset,
                 compileSizeConstant(0),
             );
+        if (hasStructReceiver && structReceiver.writeBackSize != 0)
+            _code ~= Instruction(
+                Op.frameStore,
+                structReceiver.offset,
+                structReceiver.writeBackFrameIndex,
+                structReceiver.writeBackSize,
+            );
         if (isPointerType(call.type))
             return Operand(
                 destination, ScalarType.ulong_, false, true,
@@ -9758,7 +9837,7 @@ private struct Compiler {
              returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
              returnTy != TY.Tpointer && returnTy != TY.Tarray &&
              returnTy != TY.Tstruct) ||
-            call.arguments is null || call.arguments.length == 0)
+            call.arguments is null)
             return null;
 
         const argumentArea = allocateNativeArgumentArea(call.arguments.length);
@@ -11494,13 +11573,14 @@ private struct Compiler {
         if (isAssertFailCall(assert_.msg))
             return false;
 
-        auto message = messageSlice(assert_.msg);
-        if (message is null)
-            return false;
-
         auto integer = assert_.e1.isIntegerExp;
         if (integer !is null && integer.toInteger == 0) {
-            const slice = *message;
+            if (!isStringType(assert_.msg.type))
+                return false;
+            auto message = messageSlice(assert_.msg);
+            const slice = message is null
+                ? compileExpression(assert_.msg)
+                : *message;
             _code ~= Instruction(
                 Op.throwString,
                 slice.offset,
@@ -11509,6 +11589,10 @@ private struct Compiler {
             );
             return true;
         }
+
+        auto message = messageSlice(assert_.msg);
+        if (message is null)
+            return false;
 
         const condition = compileExpression(assert_.e1);
         const skipJump = emitJumpIfTrue(condition);
@@ -12684,6 +12768,8 @@ private struct Compiler {
             return sliceDescriptorSize;
 
         auto element = type.toBasetype.nextOf;
+        if (element.toBasetype.ty == TY.Tvoid)
+            return 1;
         if (element.toBasetype.ty == TY.Tstruct ||
             element.toBasetype.ty == TY.Tsarray)
             return cast(uint) staticArraySize(element);
@@ -13644,9 +13730,11 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
     if (element is null)
         return false;
 
-    // Only an immutable char element is a `string`/`wstring`/`dstring`; a
-    // mutable `char[]` is an ordinary dynamic array with heap-backed storage.
-    if (!element.isImmutable)
+    // A read-only char array uses the compact string representation. DMD may
+    // add `const` to a `string` result when calling a `const` method, as in
+    // `EntropyResult.toString`; a mutable `char[]` remains an ordinary dynamic
+    // array with heap-backed storage.
+    if (!element.isImmutable && !element.isConst)
         return false;
 
     switch (element.toBasetype.ty) with (TY) {

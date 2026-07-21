@@ -17,7 +17,6 @@ import ut.backends;
 // archive (Phobos) module.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "no getrandom source; CTFE cannot reach host entropy"),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("random.unpredictableSeedReadsNonRootInitializer." ~ backend.stringof)
     @Tags(backend.stringof)

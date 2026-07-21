@@ -432,15 +432,14 @@ changed:
 1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
    `std.conv.text` dependency path over an exception message character array.
 2. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
-   lazy evaluation over a mutating struct-typed caller local.
+   lazy evaluation over a mutating struct-typed caller local. Its next blocker
+   is `ulong <<=` compound assignment in `Reader.read64`.
 3. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
 4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-5. `random.unpredictableSeedReadsNonRootInitializer.Bytecode`: imported
-   Phobos module initialization and the host entropy path.
-6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+5. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.
