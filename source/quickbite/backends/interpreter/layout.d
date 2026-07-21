@@ -241,6 +241,78 @@ private size_t classInstanceByteSizeImpl(
 }
 
 
+// `class_`'s own fully-qualified, human-readable name (`Dsymbol.
+// toPrettyChars`, e.g. `"pkg.mod.C"`) -- the boxed class `Value`'s
+// singular `typeName`, the same fact `impl.d`'s boxed-era `classInfoName`
+// reads for that identical purpose. Read here instead so `place_value.d`'s
+// class-body composition (`readValue`'s class arm) stays on this module's
+// "DMD's own facts, no second set of rules" contract rather than growing
+// its own copy of this derivation.
+public string classQualifiedName(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @safe {
+    return classQualifiedNameImpl(class_);
+}
+
+// `Dsymbol.toPrettyChars` is not @safe/pure/nothrow; this is the @trusted
+// boundary. It returns a valid NUL-terminated string owned by DMD's arena;
+// `fromStringz.idup` copies it into GC memory immediately, the same trust
+// `typeByteSizeImpl`'s error path gives an identical `toChars`-family call.
+private string classQualifiedNameImpl(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @trusted {
+    import std.string: fromStringz;
+
+    return class_.toPrettyChars.fromStringz.idup;
+}
+
+
+// `class_`'s own inheritance-chain names, most-derived first (`class_`'s
+// own bare `ident`, then its `baseClass`'s, up to `Object`'s) -- the boxed
+// class `Value`'s `typeNames`, minus the interface names `impl.d`'s
+// boxed-era `classTypeNames` also folds in: interface identity has no
+// bearing on a class object's own field layout or body storage, the only
+// things this package's class-body composition needs `typeNames` for.
+public string[] classHierarchyNames(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @safe pure nothrow {
+    return classHierarchyNamesImpl(class_);
+}
+
+// `ClassDeclaration.baseClass`/`Dsymbol.ident` are not @safe (extern (C++)
+// members); this is the @trusted boundary -- it only walks and reads
+// DMD's own already-populated declarations, the same "read DMD's own
+// state, no arithmetic of our own" trust `classFieldsImpl` above applies
+// to `.fields`.
+private string[] classHierarchyNamesImpl(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @trusted pure nothrow {
+    string[] names;
+    for (auto current = class_; current !is null; current = current.baseClass)
+        names ~= current.ident is null ? "" : current.ident.toString.idup;
+
+    return names;
+}
+
+
+// `field`'s own declared name (`VarDeclaration.ident`), verbatim -- the
+// boxed class `Value`'s `fieldNames`, the same derivation `impl.d`'s
+// boxed-era `variableName` uses for that identical purpose.
+public string fieldName(
+    imported!"dmd.declaration".VarDeclaration field,
+) @safe {
+    return fieldNameImpl(field);
+}
+
+// `VarDeclaration.ident` is not @safe (an extern (C++) member); this is
+// the @trusted boundary, mirroring `classHierarchyNamesImpl` above.
+private string fieldNameImpl(
+    imported!"dmd.declaration".VarDeclaration field,
+) @trusted {
+    return field.ident is null ? "" : field.ident.toString.idup;
+}
+
+
 // The qualified name (`"E.b"`) DMD gives the member of enum `type` whose
 // value equals `value`, or `null` when no member carries it -- the same
 // qualification `value.md`'s Display format spec rule 5 requires ("E.b",

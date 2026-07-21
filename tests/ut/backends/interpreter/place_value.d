@@ -3,9 +3,12 @@ module ut.backends.interpreter.place_value;
 
 import ut;
 import ut.backends.interpreter: structTypeOf, classTypeOf, enumTypeOf;
-import quickbite.backends.interpreter.place_value: readValue, writeValue, isPlaceComposable;
+import quickbite.backends.interpreter.place_value:
+    readValue, writeValue, writeClassBody, isPlaceComposable, isClassBodyComposable;
 import quickbite.backends.interpreter.place: Place, placeAt;
-import quickbite.backends.interpreter.layout: fieldByteOffset, structFields, typeByteSize;
+import quickbite.backends.interpreter.layout:
+    fieldByteOffset, structFields, typeByteSize, classFields, classInstanceByteSize,
+    classQualifiedName, classHierarchyNames, fieldName;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar;
 import quickbite.lang: Value;
@@ -193,18 +196,213 @@ unittest {
 }
 
 
-@("place_value.readValue.writeValue.classTypeThrows")
+// Unlike `readValue`, `writeValue` still refuses a class-typed place
+// outright -- writing one would mean storing a reference, and the only
+// legal reference for an object identity is the address `object_table.
+// ObjectTable` handed out for it, which this module has no access to (see
+// `writeValue`'s own header comment). `writeValue` never touches `place`'s
+// address before reaching this refusal, so a bare `Place(null, classType)`
+// is safe here, unlike the class-composing tests below, which need a real
+// allocated slot.
+@("place_value.writeValue.classTypeThrows")
 unittest {
     auto classType = classTypeOf(q{ class C { int x; } }, "C");
     auto place = Place(null, classType);
 
-    readValue(place).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
-    );
-
     writeValue(place, Value.void_).shouldThrowWithMessage(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+// A null stored reference -- the zero-filled default `NativeBlock.allocate`
+// gives every fresh slot -- reads back as `Value.null_`, not an attempt to
+// read fields through a null object-body address.
+@("place_value.readValue.classReferenceNullReadsBackAsNull")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; } }, "C");
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    auto place = placeAt(referenceSlot, classType);
+
+    readValue(place).should == Value.null_;
+}
+
+
+// The round trip this slice exists for: `writeClassBody` writes a boxed
+// class `Value`'s fields into an already-allocated object body, and
+// `readValue`, reached through a place holding a reference to that body,
+// reads the identical fields back out -- plus the identity fact decision
+// 15 makes the point of this redesign: the body's own address, not a
+// minted counter.
+@("place_value.writeClassBody.readValue.objectBodyRoundTripsItsFields")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; long y; } }, "C");
+    auto bodyBlock = NativeBlock.allocate(
+        classInstanceByteSize(classType.sym), NativeBlock.Scan.conservative);
+    auto bodyPlace = placeAt(bodyBlock, classType);
+
+    // Runtime-computed, not bare literals passed straight to `Value`.
+    int writtenX = 3;
+    writtenX = writtenX * 5 + 1;
+    long writtenY = 1000L;
+    writtenY = writtenY * 7 + 2;
+
+    auto fields = classFields(classType.sym);
+    auto written = Value.classValue(
+        classQualifiedName(classType.sym),
+        classHierarchyNames(classType.sym),
+        [fieldName(fields[0]), fieldName(fields[1])],
+        [Value(writtenX), Value(writtenY)],
+        cast(size_t) bodyBlock.address,
+    );
+
+    writeClassBody(bodyPlace, written);
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = bodyBlock.address;
+    auto referencePlace = placeAt(referenceSlot, classType);
+
+    readValue(referencePlace).should == written;
+}
+
+
+// A derived class's body includes its base class's own fields, in DMD's
+// own base-to-derived order (`layout.classFields`'s own contract) -- the
+// class-body counterpart of `object_table.d`'s identical inheritance test.
+@("place_value.writeClassBody.readValue.inheritedFieldsRoundTripInDmdOrder")
+unittest {
+    auto classType = classTypeOf(
+        q{
+            class Base { int baseField; }
+            class Derived: Base { long derivedField; }
+        },
+        "Derived",
+    );
+    auto bodyBlock = NativeBlock.allocate(
+        classInstanceByteSize(classType.sym), NativeBlock.Scan.conservative);
+    auto bodyPlace = placeAt(bodyBlock, classType);
+
+    int writtenBase = 2;
+    writtenBase = writtenBase * 4 + 1;
+    long writtenDerived = 300L;
+    writtenDerived = writtenDerived * 6 + 3;
+
+    auto fields = classFields(classType.sym);
+    auto written = Value.classValue(
+        classQualifiedName(classType.sym),
+        classHierarchyNames(classType.sym),
+        [fieldName(fields[0]), fieldName(fields[1])],
+        [Value(writtenBase), Value(writtenDerived)],
+        cast(size_t) bodyBlock.address,
+    );
+
+    writeClassBody(bodyPlace, written);
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = bodyBlock.address;
+    auto referencePlace = placeAt(referenceSlot, classType);
+
+    auto read = readValue(referencePlace);
+    read.should == written;
+    read.classFieldAt(0).asLong.should == writtenBase;
+    read.classFieldAt(1).asLong.should == writtenDerived;
+}
+
+
+// A class field of struct, static-array, and enum type all compose the
+// same way a struct's own fields do (`readValue`'s class arm recurses
+// through the identical `readValue` a struct field already uses).
+@("place_value.writeClassBody.readValue.structStaticArrayAndEnumFieldsCompose")
+unittest {
+    auto classType = classTypeOf(
+        q{
+            enum Colour: int { red, green, blue }
+            struct P { int a; int b; }
+            class C { P p; int[3] xs; Colour colour; }
+        },
+        "C",
+    );
+    auto bodyBlock = NativeBlock.allocate(
+        classInstanceByteSize(classType.sym), NativeBlock.Scan.conservative);
+    auto bodyPlace = placeAt(bodyBlock, classType);
+
+    int writtenA = 1;
+    writtenA = writtenA * 3 + 1;
+    int writtenB = 2;
+    writtenB = writtenB * 3 + 2;
+    int first = 4;
+    first = first * 2 + 1;
+    int second = 5;
+    second = second * 2 + 2;
+    int third = 6;
+    third = third * 2 + 3;
+
+    auto fields = classFields(classType.sym);
+    auto written = Value.classValue(
+        classQualifiedName(classType.sym),
+        classHierarchyNames(classType.sym),
+        [fieldName(fields[0]), fieldName(fields[1]), fieldName(fields[2])],
+        [
+            Value.structValue("P", [Value(writtenA), Value(writtenB)]),
+            Value.arrayValue([Value(first), Value(second), Value(third)]),
+            Value.enumValue("Colour.green", 1),
+        ],
+        cast(size_t) bodyBlock.address,
+    );
+
+    writeClassBody(bodyPlace, written);
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = bodyBlock.address;
+    auto referencePlace = placeAt(referenceSlot, classType);
+
+    readValue(referencePlace).should == written;
+}
+
+
+@("place_value.isClassBodyComposable.trueForScalarStructStaticArrayAndEnumFields")
+unittest {
+    auto classType = classTypeOf(
+        q{
+            enum Colour: int { red, green, blue }
+            struct P { int a; }
+            class C { P p; int[3] xs; Colour colour; int y; }
+        },
+        "C",
+    );
+
+    isClassBodyComposable(classType.sym).should == true;
+}
+
+
+// A slice-typed field cannot round trip: `writeClassBody` would call
+// `writeValue` on it, which refuses a slice-typed place (needs backing-
+// storage allocation, out of `writeValue`'s scope) -- the predicate must
+// say so up front rather than let a caller find out via a thrown
+// exception.
+@("place_value.isClassBodyComposable.falseForClassWithSliceField")
+unittest {
+    auto classType = classTypeOf(q{ class C { int[] xs; } }, "C");
+
+    isClassBodyComposable(classType.sym).should == false;
+}
+
+
+// Inherited fields count too: a base class field that is itself not
+// composable (here, a pointer) makes the WHOLE derived body refused, since
+// `writeClassBody` writes every field `layout.classFields` returns,
+// inherited ones included.
+@("place_value.isClassBodyComposable.falseForInheritedNonComposableField")
+unittest {
+    auto classType = classTypeOf(
+        q{
+            class Base { int* p; }
+            class Derived: Base { int x; }
+        },
+        "Derived",
+    );
+
+    isClassBodyComposable(classType.sym).should == false;
 }
 
 

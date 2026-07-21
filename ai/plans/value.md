@@ -916,8 +916,27 @@ in parallel and never blocks it.
        local holds a real `{length, ptr}` slice header; a class
        variable holds a reference (address) to an object body owned by
        object identity and stored in `object_table.ObjectTable`, keyed
-       on that identity rather than any one variable binding; a union
-       is overlapping bytes.
+       on that identity rather than any one variable binding, and
+       composed field-by-field the same way a struct is: `readValue`
+       follows a class place's stored reference via `Place.deref` (a
+       null reference reads back as `Value.null_`) and recurses one
+       `readValue` per `layout.classFields` field (base-to-derived,
+       inherited fields included), naming the class and its
+       inheritance chain from the `ClassDeclaration` itself
+       (`layout.classQualifiedName`/`classHierarchyNames`); the boxed
+       `Value`'s `classIdentity` is the body's own address, not a
+       minted counter — decision 15's "identity is the address" made
+       concrete. `place_value.writeClassBody` is the write-side mirror
+       for a body whose address is already known (an `ObjectTable`
+       lookup), recursing `writeValue` per field; `writeValue` itself
+       still refuses a class-typed place; it would have to store a
+       reference, and the address for a given identity is only known
+       to whoever owns the `ObjectTable` (`impl.d`, in a later wiring
+       slice), so that arm stays deferred rather than guessed at.
+       `place_value.isClassBodyComposable` answers whether a class's
+       own fields round-trip this way, recursing the identical
+       `isPlaceComposable` check `writeClassBody`'s own field writes
+       rely on so the two cannot drift; a union is overlapping bytes.
    - The authority switch: native storage becomes the sole authority
      for all bindings. Merge gate: no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/
