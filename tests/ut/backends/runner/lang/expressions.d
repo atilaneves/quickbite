@@ -6518,5 +6518,68 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Gap fixture, not a fix (`ai/plans/value.md`'s Cell coherence "Known gaps"
+// list): `mid.leaf` and `aliasLeaf` are two live bindings to the SAME `Leaf`
+// identity. `mid.leaf.value = mark(1)` is a deep field-chain write reached
+// through `mid`'s own frame slot, which correctly refreshes the identity-
+// keyed object body the native frame mirror mirrors into (`classObjectTable`,
+// `impl.d`'s `mirrorClassToFrame`/`writeClassBody`) -- but `aliasLeaf`'s OWN
+// boxed local (`locals[]`, keyed per VARIABLE, not per identity) is never
+// refreshed, since only a var's own promoted cell or direct write path
+// touches its `locals[]` entry. Reading `aliasLeaf` afterward hits the
+// generic unpromoted-local path (`assertFrameMirror`), whose own invariant
+// check then finds the boxed local disagreeing with the (correct) mirrored
+// object body and throws `AssertError: "class body mirror diverged from
+// boxed local"` -- so today this crashes the interpreter outright rather
+// than silently returning a wrong value, but the fault is in the boxed
+// AUTHORITY itself (the stale `locals[]` copy), not in the mirror, which is
+// what actually caught it. Closing this generally needs every class-typed
+// local's read to consult identity-keyed storage instead of its own
+// per-variable boxed copy -- exactly the native-layout authority switch
+// (`ai/plans/value.md` decision 15/17), so it is frozen new
+// representation-ceiling machinery, not a correctness fix to existing boxed
+// machinery. `Bytecode` omitted per the omit-don't-pin convention
+// (unconfirmed for this shape, matching the other object-graph fixtures'
+// own backend set).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed-authority staleness: a deep field-chain write through one " ~
+        "alias does not refresh another alias's own cached copy of the " ~
+        "same object identity; throws AssertError(\"class body mirror " ~
+        "diverged from boxed local\") instead of silently returning a " ~
+        "wrong value -- see ai/plans/value.md's Cell coherence known gaps"),
+)) {
+    @("classField.deepChainWriteThroughOneAliasVisibleThroughAnother." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Leaf {
+                int value;
+            }
+
+            class Mid {
+                Leaf leaf;
+            }
+
+            int mark(int seed) {
+                return seed * 7 + 3;
+            }
+
+            unittest {
+                auto leaf = new Leaf();
+                auto mid = new Mid();
+                mid.leaf = leaf;
+
+                auto aliasLeaf = mid.leaf;
+
+                mid.leaf.value = mark(1);
+
+                assert(aliasLeaf.value == mark(1));
+            }
+        });
+    }
+}
 
 

@@ -676,6 +676,16 @@ they die with the machinery at the authority switch:
 - Class-typed fields and dynamic-array fields whose element is neither
   a native scalar nor a supported non-union struct have no cell support
   on either the read or write side.
+- A class-typed local's own `locals[]` copy is never refreshed when a
+  shared object identity is mutated through a different alias or a
+  deep field-chain write (`a.b.c.value = x`) reached via another
+  variable, so reading the stale alias currently crashes with
+  `AssertError("class body mirror diverged from boxed local")` rather
+  than returning a value at all — a real bug in the boxed authority
+  itself, not the mirror that catches it; closing it generally needs
+  every class-typed read to consult identity-keyed storage instead of
+  a per-variable copy, i.e. the authority switch itself
+  (`classField.deepChainWriteThroughOneAliasVisibleThroughAnother`).
 - Union residuals: aggregate members beyond plain structs, promotion
   for unions with non-scalar members, and default-init first members or
   siblings outside the supported recursively scalar shapes.
