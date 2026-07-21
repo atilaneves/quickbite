@@ -951,6 +951,177 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Direct call syntax (`addToTotal(1)`, not `&nested`/a delegate variable) is
+// the OTHER path a nested-function call reaches the walker through; this
+// exercises it with two mutations of the same captured local, back to back.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionDirectlyMutatesEnclosingLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int accumulate(int seed) {
+                int total = seed;
+
+                void addToTotal(int value) {
+                    total += value;
+                }
+
+                addToTotal(1);
+                addToTotal(2);
+
+                return total;
+            }
+
+            unittest {
+                assert(accumulate(10) == 13);
+            }
+        });
+    }
+}
+
+// Recursion means several activations of `recurse` are live at once, each
+// with its own `total` local and its own `bump` activation reaching it --
+// this fails if a nested function's captured-variable binding is ever
+// resolved against the WRONG activation (e.g. the innermost or outermost
+// one instead of its own direct caller).
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionInsideRecursiveFunctionKeepsPerActivationCapture." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int recurse(int depth) {
+                int total = depth * 10;
+
+                void bump() {
+                    total += 1;
+                }
+
+                if (depth > 0)
+                    recurse(depth - 1);
+
+                bump();
+
+                return total;
+            }
+
+            unittest {
+                assert(recurse(3) == 31);
+            }
+        });
+    }
+}
+
+// A delegate created early, held in a variable across unrelated statements,
+// and called twice afterward -- "stored and called later" rather than
+// invoked immediately where it is created.
+static foreach (backend; Matrix!()) {
+    @("delegate.storedThenCalledAfterUnrelatedWork." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int makeAndUseCounter(int seed) {
+                int total = seed;
+
+                int increment() {
+                    total += 1;
+                    return total;
+                }
+
+                int delegate() counter = &increment;
+
+                int unrelated = seed * 2;
+
+                auto first = counter();
+                auto second = counter();
+
+                return first + second + unrelated;
+            }
+
+            unittest {
+                assert(makeAndUseCounter(10) == 43);
+            }
+        });
+    }
+}
+
+// A lambda (`FuncExp`, not a named nested function) captures a local and is
+// passed as a VALUE into another function that invokes it -- `applyTwice`
+// is itself nested inside `addCaptured` so its own activation inherits
+// `captured` through the same boxed `locals.dup` chain the lambda's own
+// call later reads through; a lambda invoked from a call chain that never
+// passes back through an activation carrying its captured local is a
+// pre-existing, unrelated gap (boxed `locals.dup` copies whatever the
+// CALLING activation currently holds, not a snapshot taken when the
+// delegate value itself was created) and not what this fixture tests.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "a delegate-typed PARAMETER (`int delegate(int) f`) is not yet " ~
+        "supported in bytecode core (\"Unsupported type in bytecode core: " ~
+        "int delegate(int)\"); a delegate-typed LOCAL/field works today " ~
+        "(see delegate.nestedCallUsesCapturedValue above), only the " ~
+        "parameter form does not"),
+)) {
+    @("lambda.passedToNestedFunctionSeesCapturedContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int addCaptured(int seed) {
+                int captured = seed + 1;
+
+                int applyTwice(int delegate(int) f) {
+                    return f(f(seed));
+                }
+
+                auto lambda = (int value) => value + captured;
+
+                return applyTwice(lambda);
+            }
+
+            unittest {
+                assert(addCaptured(10) == 32);
+            }
+        });
+    }
+}
+
+// `int[]` is not `place_value.isPlaceComposable` (its elements live behind
+// a stored pointer, not inline), so a nested function capturing one gets no
+// verified reference-slot shadow for it -- `bindCapturedReferenceSlots`
+// still fills the slot's address (nothing about the ADDRESS depends on the
+// captured type's shape), but `assertReferenceBind` declines the
+// verification for it, exactly as it already does for a non-composing
+// `ref` parameter. Boxed authority is what this fixture actually checks:
+// the capture keeps working (read, appended to, and read again through the
+// nested function) whether or not the shadow can verify it.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionCapturesNonComposingArrayDeclinesShadowSilently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int sumWithNested(int seed) {
+                int[] captured = [seed, seed + 1, seed + 2];
+
+                int total() {
+                    int result = 0;
+                    foreach (value; captured)
+                        result += value;
+                    return result;
+                }
+
+                captured ~= seed + 3;
+
+                return total();
+            }
+
+            unittest {
+                assert(sumWithNested(1) == 1 + 2 + 3 + 4);
+            }
+        });
+    }
+}
+
 
 /++
     Casts involving slices, pointers, arrays, and bool.

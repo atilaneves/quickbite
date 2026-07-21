@@ -2965,6 +2965,7 @@ private struct Walker {
         child.addressOfRefReturn = true;
         child.result = Value(false);
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
+        bindCapturedReferenceSlots(call.f, child);
         forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
         child.bindFunctionParameters(
@@ -6512,6 +6513,7 @@ private struct Walker {
         child.locals = (captureLocals || function_.isNested)
             ? locals.dup
             : datasegLocals;
+        bindCapturedReferenceSlots(function_, child);
         forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
         registerClassArgumentAliases(function_, argumentExpressions, child);
@@ -7933,6 +7935,106 @@ private struct Walker {
             frameBytesAt(address, length) == scratch.bytes,
             "reference slot bind diverged from boxed argument",
         );
+    }
+
+    // Fills a nested `function_`'s own captured-outer-variable reference
+    // slots (`frame_layout.capturedVariables`/`FrameLayout.Slot.Kind.
+    // reference`, added to its layout alongside its `ref`/`out` parameter
+    // slots) in `child`'s freshly allocated activation with THIS activation's
+    // own address for each captured variable -- decision 15's "a captured
+    // variable is the enclosing activation's storage, reached by address"
+    // (`value.md`), composed as a verified SHADOW next to the boxed
+    // `locals.dup` copy every nested-function call site already makes.
+    // Authority stays with that boxed copy: nothing reads this slot yet, and
+    // this function never touches `locals`/`_activationFrame` on either
+    // `this` or `child` beyond reading them.
+    //
+    // No-op for a non-nested `function_`: `capturedVariables` is empty for
+    // one, so the loop below never runs.
+    //
+    // Reuses `callerReferenceBase` exactly as `bindReferenceSlot` above
+    // reuses it for a `ref`/`out` parameter -- the "caller" it resolves
+    // against is THIS activation's own `_activationFrame`, since the
+    // lexically enclosing activation for a captured variable IS the
+    // activation making this call (this function runs on `this`, the
+    // caller, never `child`; contrast `bindReferenceSlot`, which runs ON
+    // `child` and is handed the caller's frame explicitly because of that).
+    // A captured variable that is itself a `ref`/`out` parameter of the
+    // enclosing function, or is itself a capture forwarded from a still-
+    // further-out activation (a doubly-nested function directly naming a
+    // grandparent's local -- DMD's own `outerVars` already flattens that
+    // far), resolves the exact same way a forwarded `ref` argument does,
+    // through `callerReferenceBase`'s own reference-slot branch. One
+    // topology `callerReferenceBase` alone cannot resolve: a captured
+    // variable relayed through an INTERMEDIATE activation that never
+    // itself references it (so that activation's own frame has no slot for
+    // it at all, owning or reference) -- e.g. `outer` declares `x`,
+    // `middle` calls `inner`, and only `inner` reads `x`; DMD gives `inner`
+    // a direct `outerVars` entry for `x`, but `middle`'s own frame was
+    // never given a slot for `x` since `middle` itself never names it. A
+    // real compiled closure walks a static-link chain through every
+    // intermediate frame regardless of what it references itself; this
+    // shadow has no such chain yet, so that case throws inside
+    // `callerReferenceBase` (no owning or reference slot, not dataseg) and
+    // declines exactly like any other unmirrored base -- a known gap for a
+    // later slice, not a guess.
+    //
+    // Declines silently, exactly like `bindReferenceSlot`, for every one of
+    // its decline conditions: no mirrored caller-side storage at all
+    // (`callerReferenceBase`'s own throw), an eligible-but-never-filled
+    // reference slot read through (also `callerReferenceBase`'s own
+    // throw), or a composed address of `null`. Verification reuses
+    // `assertReferenceBind` unchanged -- the same bind-time-only check,
+    // the same skip when resolved through forwarding, the same silent
+    // decline for a captured shape `place_value.isPlaceComposable` does
+    // not compose (e.g. a captured slice, class, or array/AA) -- rather
+    // than a parallel check, and only runs when this activation's own
+    // `locals` still holds a boxed value for the captured variable to
+    // compare against.
+    //
+    // Escape lifetime, carried forward for the authority switch rather than
+    // solved here: a delegate created from `function_` can outlive THIS
+    // activation (stored, returned, or called later, as the boxed world
+    // already allows since it copies rather than references). Once native
+    // storage becomes the sole authority, this slot's address must stay
+    // valid for exactly as long as something can still call through it --
+    // decision 17 answers this by making the frame block a GC allocation
+    // (like DMD's own compiled closure frame), so a reference slot pointing
+    // into it keeps that block alive the same way any other GC pointer
+    // does; nothing in THIS slice depends on that, since authority is still
+    // boxed and this shadow is read by nothing.
+    private void bindCapturedReferenceSlots(
+        imported!"dmd.func".FuncDeclaration function_,
+        ref Walker child,
+    ) {
+        import quickbite.backends.interpreter.frame_layout: capturedVariables;
+
+        if (!function_.isNested)
+            return;
+
+        foreach (variable; capturedVariables(function_)) {
+            if (!child._activationFrame.hasReferenceSlot(variable))
+                continue;
+
+            bool resolvedThroughReference;
+            void* address;
+            try {
+                address = callerReferenceBase(
+                    variable, _activationFrame, resolvedThroughReference,
+                );
+            } catch (Exception) {
+                continue;
+            }
+
+            if (address is null)
+                continue;
+
+            child._activationFrame.setReferenceSlot(variable, address);
+
+            if (!resolvedThroughReference)
+                if (auto value = variable in locals)
+                    assertReferenceBind(variable, address, *value);
+        }
     }
 
     // A dynamic-array expression result can carry the allocation identity of
@@ -9519,6 +9621,7 @@ private struct Walker {
         child.refReturnAssignedValue = value;
         child.result = Value(false);
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
+        bindCapturedReferenceSlots(call.f, child);
         forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
         child.bindFunctionParameters(

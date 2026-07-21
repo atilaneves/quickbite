@@ -157,3 +157,94 @@ public VarDeclaration parseVar(in string source, in string name) {
     assert(variable !is null, "variable `" ~ name ~ "` not found in parsed snippet");
     return variable;
 }
+
+
+// Finds the `FuncDeclaration` named `name` declared directly in `outer`'s
+// own body -- a nested named function appears as a `DeclarationExp` in the
+// statement tree exactly like a nested variable (DMD's `statementsem.
+// toStatement`, which wraps any nested `Dsymbol` -- variable or function
+// alike -- in an `ExpStatement`/`DeclarationExp` pair), just narrowed to
+// `.isFuncDeclaration` here instead of `.isVarDeclaration`. Only walks the
+// small set of statement shapes a test snippet's straight-line body needs
+// (compound/compound-declaration/scope/exp statements); unlike `frame_
+// layout.bodyLocals`, this is test-only code with no obligation to mirror
+// every statement shape the walker itself runs.
+public FuncDeclaration findNestedFunction(
+    FuncDeclaration outer,
+    in string name,
+) {
+    return findNestedFunctionIn(outer.fbody, name);
+}
+
+private FuncDeclaration findNestedFunctionIn(
+    imported!"dmd.statement".Statement statement,
+    in string name,
+) {
+    import dmd.statement: Statement;
+
+    if (statement is null)
+        return null;
+
+    if (auto compound = statement.isCompoundStatement) {
+        if (compound.statements !is null)
+            foreach (child; *compound.statements)
+                if (auto found = findNestedFunctionIn(child, name))
+                    return found;
+        return null;
+    }
+
+    if (auto compound = statement.isCompoundDeclarationStatement) {
+        if (compound.statements !is null)
+            foreach (child; *compound.statements)
+                if (auto found = findNestedFunctionIn(child, name))
+                    return found;
+        return null;
+    }
+
+    if (auto scope_ = statement.isScopeStatement)
+        return findNestedFunctionIn(scope_.statement, name);
+
+    if (auto expression = statement.isExpStatement) {
+        if (expression.exp is null)
+            return null;
+
+        auto declaration = expression.exp.isDeclarationExp;
+        if (declaration is null)
+            return null;
+
+        auto function_ = declaration.declaration.isFuncDeclaration;
+        if (function_ !is null && function_.ident !is null && function_.ident.toString == name)
+            return function_;
+
+        return null;
+    }
+
+    return null;
+}
+
+// Parses `source`, finds the top-level function `outerName`, and returns
+// the `FuncDeclaration` named `nestedName` declared directly in its body --
+// the nested-function sibling of `parseFunction` above.
+public FuncDeclaration parseNestedFunction(
+    in string source,
+    in string outerName,
+    in string nestedName,
+) {
+    import dmd.funcsem: functionSemantic3;
+
+    auto outer = parseFunction(source, outerName);
+    // `outerVars`/`closureVars` are populated by `checkNestedReference`
+    // during the nested function's own body semantic (`funcsem.
+    // functionSemantic3`), not by parsing/`dsymbolsem` alone -- force it
+    // here so a test can rely on `outerVars` being populated regardless of
+    // whether `parseSnippet` already ran it, the same "resolve its body
+    // before walking it" precedent `impl.d`'s own constructor/ref-return
+    // call sites already apply to a function reached outside normal
+    // top-down compilation order.
+    functionSemantic3(outer);
+    auto nested = findNestedFunction(outer, nestedName);
+    assert(nested !is null,
+        "nested function `" ~ nestedName ~ "` not found in `" ~ outerName ~ "`'s body");
+    functionSemantic3(nested);
+    return nested;
+}

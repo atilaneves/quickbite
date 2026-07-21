@@ -992,6 +992,43 @@ in parallel and never blocks it.
        heuristics, the recursive-parameter residual) do not guarantee a
        return-time equality even on already-correct paths. Authority
        stays boxed throughout: nothing reads this slot yet.
+     - Captured-variable reference slots: a nested `FuncDeclaration`
+       gets one more pointer-width REFERENCE slot per enclosing local it
+       captures (`frame_layout.capturedVariables`, added to its own
+       layout alongside its `ref`/`out` parameter slots), reading DMD's
+       own `FuncDeclaration.outerVars` — populated by the frontend's own
+       nested-reference analysis, never re-derived by walking a
+       function's body here. `impl.d`'s `bindCapturedReferenceSlots`
+       fills each such slot, at every `isNested`-gated call site that
+       already boxes the capture via `locals.dup`, with THIS (calling)
+       activation's own address for that variable — reusing
+       `callerReferenceBase` exactly as the `ref`/`out` parameter slice
+       does, so a captured variable that is itself a `ref`/`out`
+       parameter, or itself a capture forwarded from a still-further-out
+       activation (a doubly-nested function directly naming a
+       grandparent's local — DMD's own `outerVars` already flattens that
+       far), resolves the same way a forwarded `ref` argument does.
+       Declines silently through the identical conditions: no mirrored
+       caller-side storage, an eligible-but-never-filled reference slot,
+       or a composed address of `null`. One topology it cannot yet
+       resolve: a capture relayed through an intermediate activation
+       that never itself references the variable, since that
+       activation's own frame carries no slot for it at all — a real
+       compiled closure walks a static-link chain through every
+       intermediate frame regardless of what it references itself; this
+       shadow has none yet, so that case declines rather than guesses.
+       Verification reuses `assertReferenceBind` unchanged (bind-time
+       only, skipped when resolved through forwarding, silently declined
+       for a captured shape `place_value.isPlaceComposable` does not
+       compose). Authority stays boxed throughout: nothing reads this
+       slot yet. What the authority switch will still owe here: a
+       delegate can outlive the activation it was created in (the boxed
+       world already allows this, since it copies rather than
+       references); once native storage is the sole authority, a
+       reference slot's address must stay valid for as long as
+       something can still call through it, which is exactly why
+       decision 17 makes the frame block a GC allocation — the same
+       answer DMD's own compiled closure frame gives.
      - Loads/stores routed through places: whole-aggregate read/write
        composed over places down to scalar leaves by
        `place_value.readValue`/`writeValue` (native scalar leaves via

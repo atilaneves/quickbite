@@ -7,16 +7,18 @@ private:
 // A per-activation frame slot: either an OWNING slot -- inline storage for
 // a local that owns its own storage (a value parameter or a body-declared
 // variable), sized/aligned to that local's own declared type -- or a
-// pointer-width REFERENCE slot for a `ref`/`out` parameter, holding the
-// caller-supplied address it binds to rather than a rendition of the
-// parameter's own declared type. The two kinds are deliberately
-// distinguishable (`Slot.kind`) so nothing composing a `Place` from a
-// slot's raw bytes at the local's own declared type could mistake a
-// reference slot's stored ADDRESS for inline storage of that type. A
-// `lazy` parameter and a `ref` body local still get no slot of either
-// kind: a `lazy` parameter is a delegate over the caller's own live frame,
-// not an address of its own, and a `ref` body local's binding machinery is
-// unchanged by this slice -- neither ever appears here.
+// pointer-width REFERENCE slot holding an address rather than a rendition
+// of the local's own declared type: for a `ref`/`out` parameter, the
+// caller-supplied address it binds to; for a captured outer variable (a
+// nested function's own `FuncDeclaration.outerVars`, see `capturedVariables`
+// below), the enclosing activation's own address for that variable. The two
+// kinds are deliberately distinguishable (`Slot.kind`) so nothing composing
+// a `Place` from a slot's raw bytes at the local's own declared type could
+// mistake a reference slot's stored ADDRESS for inline storage of that
+// type. A `lazy` parameter and a `ref` body local still get no slot of
+// either kind: a `lazy` parameter is a delegate over the caller's own live
+// frame, not an address of its own, and a `ref` body local's binding
+// machinery is unchanged by this slice -- neither ever appears here.
 public struct FrameLayout {
     import dmd.declaration: VarDeclaration;
 
@@ -60,7 +62,10 @@ public struct FrameLayout {
 // since what it holds is an address, never a rendition of the
 // parameter's own declared type; nothing at all for a `lazy` parameter,
 // which aliases the caller's live frame through a delegate instead of an
-// address of its own), then every OWNING variable declared in the body
+// address of its own), then -- for a nested function only -- one more
+// pointer-width REFERENCE slot per outer variable it captures
+// (`capturedVariables` below; empty for a non-nested function, so this
+// adds nothing for one), then every OWNING variable declared in the body
 // (`isAliasingLocal` below still excludes a `ref` body local, a
 // `static`/`__gshared` variable, and an `enum` manifest constant -- this
 // slice only gives `ref`/`out` PARAMETERS a slot of their own; a `ref`
@@ -109,6 +114,9 @@ public FrameLayout computeFrameLayout(
         place(parameter, typeByteSize(type), typeAlignment(type), FrameLayout.Slot.Kind.owning);
     }
 
+    foreach (variable; capturedVariables(function_))
+        place(variable, (void*).sizeof, (void*).alignof, FrameLayout.Slot.Kind.reference);
+
     foreach (variable; bodyLocals(function_.fbody)) {
         if (isAliasingLocal(variable))
             continue;
@@ -121,6 +129,47 @@ public FrameLayout computeFrameLayout(
     }
 
     return FrameLayout(slots, alignedUp(cursor, maxAlignment));
+}
+
+
+// The enclosing-scope locals `function_` reads or writes as a nested
+// function -- DMD's own `FuncDeclaration.outerVars`, populated by
+// `funcsem.checkNestedReference` during semantic analysis of `function_`'s
+// own body: every reference to a variable belonging to a lexically
+// enclosing function gets recorded here, deduplicated, and already
+// flattened across however many enclosing scopes it crosses (a doubly-
+// nested function's `outerVars` names a grandparent's local directly, not
+// just its immediate parent's -- `impl.d`'s capture binding resolves only
+// ONE level, against ITS OWN caller's frame, so a capture that needs a
+// relay through an intermediate activation that never itself references
+// the variable still declines; see that function's own header). Empty for
+// a non-nested function. Never includes a `dataseg`/`__gshared`/`static`
+// or `enum manifest` variable: `checkNestedReference` excludes both before
+// ever touching `outerVars`, matching `isAliasingLocal`'s identical
+// exclusion for a body local -- this is DMD's OWN capture analysis, not a
+// re-derivation of it: this module must never walk `function_.fbody`
+// itself to decide what it captures.
+public imported!"dmd.declaration".VarDeclaration[] capturedVariables(
+    imported!"dmd.func".FuncDeclaration function_,
+) @safe {
+    return capturedVariablesImpl(function_);
+}
+
+// `FuncDeclaration.outerVars` (an `Array!VarDeclaration`) is a plain field
+// read of DMD's own already-populated state, but `FuncDeclaration` (an
+// `extern (C++)` class) is not itself `@safe`-annotated; this is the
+// `@trusted` boundary, mirroring `activationParameters`'s identical trust
+// for `function_.parameters`.
+private imported!"dmd.declaration".VarDeclaration[] capturedVariablesImpl(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    import dmd.declaration: VarDeclaration;
+
+    VarDeclaration[] variables;
+    foreach (variable; function_.outerVars)
+        variables ~= variable;
+
+    return variables;
 }
 
 
