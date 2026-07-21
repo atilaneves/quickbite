@@ -10,6 +10,8 @@ import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.lang: Value;
 import dmd.expression: Expression, AssignExp;
 import dmd.statement: Statement;
+import dmd.declaration: VarDeclaration;
+import dmd.arraytypes: Dsymbols;
 
 private:
 
@@ -51,10 +53,72 @@ Expression lvalueTargetOf(in string source, in string name) {
 }
 
 
+// The method sibling of `lvalueTargetOf` above: the first assignment's LHS
+// inside `aggregateName`'s own method `methodName` -- `findFunction` only
+// searches a MODULE's own top-level members, not an aggregate's, so this
+// first finds `aggregateName`'s own struct/class declaration among the
+// module's top-level members, then reuses `findFunction` on ITS members.
+Expression lvalueTargetOfMethod(
+    in string source,
+    in string aggregateName,
+    in string methodName,
+) {
+    auto moduleResult = parseSnippet(source);
+
+    foreach (member; *moduleResult.module_.members) {
+        Dsymbols* members;
+        if (auto struct_ = member.isStructDeclaration) {
+            if (struct_.ident.toString != aggregateName)
+                continue;
+            members = struct_.members;
+        } else if (auto class_ = member.isClassDeclaration) {
+            if (class_.ident.toString != aggregateName)
+                continue;
+            members = class_.members;
+        } else
+            continue;
+
+        auto function_ = findFunction(members, methodName);
+        assert(function_ !is null,
+            "method `" ~ methodName ~ "` not found in `" ~ aggregateName ~ "`");
+
+        auto assign = firstAssignExp(function_.fbody);
+        assert(assign !is null,
+            "no assignment found in method `" ~ methodName ~ "`'s body");
+        return assign.e1;
+    }
+
+    assert(false, "aggregate `" ~ aggregateName ~ "` not found in parsed snippet");
+}
+
+
+// The right-hand-side sibling of `lvalueTargetOf` above: a `SymOffExp` (DMD's
+// constant-offset address-of shape) is itself an rvalue -- the VALUE of
+// `&local`/`&arr[2]` -- never something assigned INTO, so its fixtures below
+// need the first assignment's RHS rather than its LHS.
+Expression addressOfTargetOf(in string source, in string name) {
+    auto moduleResult = parseSnippet(source);
+    auto function_ = findFunction(moduleResult.module_, name);
+    assert(function_ !is null, "function `" ~ name ~ "` not found in parsed snippet");
+
+    auto assign = firstAssignExp(function_.fbody);
+    assert(assign !is null, "no assignment found in function `" ~ name ~ "`'s body");
+    return assign.e2;
+}
+
+
 // `placeOfLvalue` must never call `evalIndex` for a shape that has no
 // `IndexExp` in it, so this fake asserts if it is ever called.
 size_t refuseEvalIndex(Expression expr) @safe {
     assert(false, "evalIndex must not be called for a shape with no IndexExp");
+}
+
+
+// The `resolveBase` sibling of `refuseEvalIndex` above: a shape that
+// `placeOfLvalue` refuses outright must never resolve any variable's base
+// address first.
+void* refuseResolveBase(VarDeclaration variable) @safe {
+    assert(false, "resolveBase must not be called for an unsupported lvalue shape");
 }
 
 
@@ -249,4 +313,149 @@ unittest {
     written = written * 8 + 2;
     place.storeScalar(Value(written));
     place.loadScalar.asLong.should == written;
+}
+
+// The centrepiece for a struct `ThisExp`: the hidden `this` resolves to
+// its own `vthis` variable exactly like a bare local, so `resolveBase`'s
+// address IS the receiver's own storage directly -- no `deref` needed,
+// matching how a plain struct-typed variable already composes above.
+@("placeOfLvalue.thisExp.structResolvesReceiverStorageAddressAndType")
+unittest {
+    enum source = q{ struct S { int x; void reset() { this = S.init; } } };
+    auto target = lvalueTargetOfMethod(source, "S", "reset");
+    auto sType = structTypeOf(source, "S");
+
+    auto block = NativeBlock.allocate(typeByteSize(sType), NativeBlock.Scan.no);
+    auto place = placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr));
+
+    place.address.should == block.address;
+    (place.type is target.type).should == true;
+}
+
+
+// The centrepiece for a CLASS `ThisExp`: unlike a struct's, a class
+// receiver's `vthis` slot holds a stored REFERENCE, so `this.field` must
+// `Place.deref` through it to reach the object body before composing the
+// field's own offset -- the exact same composition `DotVarExp`'s class
+// receiver already performs for an ordinary class-typed variable, just
+// reached through `this` instead of a named variable.
+@("placeOfLvalue.thisExp.classFieldWriteDerefsThisThenComposesOffsetWithScalarRoundTrip")
+unittest {
+    enum source = q{ class C { int x; void reset() { this.x = 0; } } };
+    auto target = lvalueTargetOfMethod(source, "C", "reset");
+    auto classType = classTypeOf(source, "C");
+    auto fields = classFields(classType.sym);
+    auto xField = fields[0];
+
+    auto bodyByteSize = fieldByteOffset(xField) + typeByteSize(xField.type);
+    auto body_ = NativeBlock.allocate(bodyByteSize, NativeBlock.Scan.no);
+
+    auto referenceBlock = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *(cast(void**) referenceBlock.address) = body_.address;
+
+    auto place = placeOfLvalue(target, (variable) => referenceBlock.address, (expr) => refuseEvalIndex(expr));
+
+    (cast(size_t) place.address).should == cast(size_t) body_.address + fieldByteOffset(xField);
+
+    int written = 11;
+    written = written * 6 + 3;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
+}
+
+
+// An `IndexExp` chained onto a `DotVarExp` field access chained onto a
+// struct `ThisExp`: `this.arr[1]` composes `this`'s own place (directly at
+// the receiver's storage), then the `arr` field's own offset, then the
+// element stride -- three of this slice's/the module's shapes nested
+// together.
+@("placeOfLvalue.thisExp.structArrayFieldIndexChainsFieldThenStrideWithScalarRoundTrip")
+unittest {
+    enum source = q{ struct S2 { int[3] arr; void setElement() { this.arr[1] = 0; } } };
+    auto target = lvalueTargetOfMethod(source, "S2", "setElement");
+    auto sType = structTypeOf(source, "S2");
+    auto arrField = structFields(sType)[0];
+
+    auto block = NativeBlock.allocate(typeByteSize(sType), NativeBlock.Scan.no);
+    auto place = placeOfLvalue(target, (variable) => block.address, (index) => 1);
+
+    (cast(size_t) place.address).should ==
+        cast(size_t) block.address + fieldByteOffset(arrField) + 1 * int.sizeof;
+
+    int written = 13;
+    written = written * 2 + 9;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
+}
+
+
+// The base case for `SymOffExp`: `&v` for a plain scalar local folds to a
+// `SymOffExp` with a zero byte offset (DMD's own `symbol.offset`, applied
+// verbatim) and a pointer-to-`int` static type, landing the place directly
+// on `v`'s own storage.
+@("placeOfLvalue.symOffExp.scalarLocalComposesZeroOffsetWithScalarRoundTrip")
+unittest {
+    auto target = addressOfTargetOf(
+        q{ void quickbiteLvalueSymOffScalar(int v) { int* p; p = &v; } },
+        "quickbiteLvalueSymOffScalar",
+    );
+
+    auto block = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+    auto place = placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr));
+
+    place.address.should == block.address;
+
+    int written = 15;
+    written = written * 3 + 4;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
+}
+
+
+// The centrepiece for `SymOffExp`'s non-zero-offset case: `&buf[2]` (a
+// constant-index address into a static-array local) folds to a `SymOffExp`
+// whose own `offset` is DMD's already-computed byte offset -- `2 *
+// int.sizeof` -- which `placeOfLvalue` must apply DIRECTLY to `buf`'s own
+// cell address rather than re-deriving it as an element index (`value.md`'s
+// Layout authority contract).
+@("placeOfLvalue.symOffExp.arrayElementAppliesDmdsOwnByteOffsetWithScalarRoundTrip")
+unittest {
+    auto target = addressOfTargetOf(
+        q{ void quickbiteLvalueSymOffElement(int[4] buf) { int* p; p = &buf[2]; } },
+        "quickbiteLvalueSymOffElement",
+    );
+
+    auto block = NativeBlock.allocate(4 * int.sizeof, NativeBlock.Scan.no);
+    auto place = placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr));
+
+    (cast(size_t) place.address).should == cast(size_t) block.address + 2 * int.sizeof;
+
+    int written = 17;
+    written = written * 5 + 6;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
+}
+
+
+// A shape this slice deliberately leaves unsupported: `a[1..3] = 0` is a
+// legal assignment target (DMD's own `SliceExp`), but composing its place
+// would need a RANGE, not a single address -- outside this module's "one
+// address plus a static type" contract. It must refuse honestly rather
+// than guess, the same as any other still-unhandled shape, and must not
+// call either delegate first.
+@("placeOfLvalue.stillUnsupported.sliceExpAssignTargetRefuses")
+unittest {
+    auto target = lvalueTargetOf(
+        q{ void quickbiteLvalueSlice(int[4] a) { a[1..3] = 0; } },
+        "quickbiteLvalueSlice",
+    );
+
+    placeOfLvalue(
+        target,
+        (variable) => refuseResolveBase(variable),
+        (expr) => refuseEvalIndex(expr),
+    ).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
+        ~ "unsupported lvalue expression",
+    );
 }

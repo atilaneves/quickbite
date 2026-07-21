@@ -921,13 +921,20 @@ in parallel and never blocks it.
        DMD class field offset) so pointer-deref and class-field lvalues
        can compose — and scalar load/store routes through the
        `native_scalar` codec. `lvalue_place.placeOfLvalue` composes a
-       place for the variable, struct- and class-field, index, and
-       pointer-deref lvalue shapes from a caller-supplied base-address
-       resolver and index evaluator (`a[i]` =
+       place for the variable, `this`, struct- and class-field, index,
+       pointer-deref, and DMD's constant-offset address-of (`SymOffExp`,
+       e.g. `&local`/`&arr[2]`) lvalue shapes from a caller-supplied
+       base-address resolver and index evaluator (`a[i]` =
        `placeOfLvalue(a).index(evalIndex(i))`, uniform over a
-       static-array, pointer, or slice base; a class receiver's field
-       and `*p` both compose through `Place.deref`), refusing anything
-       else.
+       static-array, pointer, or slice base; a class receiver's field,
+       `*p`, and a class `this` all compose through `Place.deref` — a
+       struct `this` instead resolves like a bare variable straight onto
+       the receiver's own storage, needing no `deref`; a `SymOffExp`
+       applies DMD's own byte offset directly onto its variable's address
+       rather than re-deriving it as an element index, landing on the
+       pointee its own type names a pointer to). Still refuses anything
+       else — e.g. `SliceExp` as an assignment target, or a `SymOffExp`
+       naming a function rather than a variable.
      - Loads/stores routed through places: whole-aggregate read/write
        composed over places down to scalar leaves by
        `place_value.readValue`/`writeValue` (native scalar leaves via
