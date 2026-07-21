@@ -1798,6 +1798,169 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Module-level guest state (`VarDeclaration.isDataseg`) now gets the same
+// verified-frame-mirror treatment true stack locals already have
+// (`impl.d`'s `mirrorToFrame`/`assertFrameMirror`, routed to a
+// `module_table.ModuleTable` block instead of a frame slot, since a dataseg
+// local owns no frame slot at all). Authority is still boxed `locals`; the
+// four fixtures below exercise the mirror's own contract rather than any
+// new guest-visible behaviour -- a wiring bug here surfaces as a hard
+// `assert` failure inside the Interpreter's own execution, not a wrong
+// displayed value, so `SystemLinker` agreement is still the pass bar.
+//
+// A scalar and a struct `__gshared` global, each mutated across several
+// separate calls -- every intervening read re-verifies the mirror against
+// the just-written boxed value. `Ctfe` cannot read or write dataseg storage
+// at all (compile-time execution has no such storage to access); `Bytecode`
+// does not yet support a struct-typed dataseg variable.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("dataseg.moduleScalarAndStructMirroredAcrossWrites." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            __gshared int quickbiteDatasegCounter;
+            __gshared Point quickbiteDatasegPoint;
+
+            void bump() {
+                quickbiteDatasegCounter = quickbiteDatasegCounter + 1;
+            }
+
+            void movePoint(int dx, int dy) {
+                quickbiteDatasegPoint.x = quickbiteDatasegPoint.x + dx;
+                quickbiteDatasegPoint.y = quickbiteDatasegPoint.y + dy;
+            }
+
+            unittest {
+                bump();
+                bump();
+                bump();
+                assert(quickbiteDatasegCounter == 3);
+
+                movePoint(1, 2);
+                movePoint(3, 4);
+                assert(quickbiteDatasegPoint.x == 4);
+                assert(quickbiteDatasegPoint.y == 6);
+            }
+        });
+    }
+}
+
+// The same `__gshared` global read from two different call frames (the
+// top-level unittest body's own root frame, and a called function's own
+// forked child frame) resolves to ONE mirror block -- `impl.d`'s
+// `moduleTable` field is allocated once per root `Walker` and shared by
+// pointer into every forked child, exactly like `classObjectTable`. Were a
+// child frame to instead lazily allocate its OWN (fresh, zeroed) block the
+// first time it read `quickbiteDatasegSharedAcrossFrames`, the very first
+// call to `readSharedGlobal` below would already disagree with the boxed
+// value it was handed (7, not 0) and the interpreter's own mirror assert
+// would fire. `Ctfe` cannot read or write dataseg storage at all
+// (compile-time execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.sameGlobalFromTwoFramesResolvesToOneBlock." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDatasegSharedAcrossFrames = 7;
+
+            int readSharedGlobal() {
+                return quickbiteDatasegSharedAcrossFrames;
+            }
+
+            unittest {
+                assert(quickbiteDatasegSharedAcrossFrames == 7);
+                assert(readSharedGlobal() == 7);
+
+                quickbiteDatasegSharedAcrossFrames = 21;
+                assert(readSharedGlobal() == 21);
+            }
+        });
+    }
+}
+
+// A `__gshared` global whose initializer is a function call is materialized
+// lazily on its first read (`impl.d`'s `isDataseg && variable._init !is
+// null` arm), not at frame-fork time -- `module_table.ModuleTable` only
+// ever allocates a variable's block from inside `setLocal`'s own
+// `mirrorToFrame` call, which runs after that lazy initializer has already
+// produced a real value, never before. Reading it for the first time from
+// inside a CALLED function (not the top-level unittest body itself) proves
+// the child frame observes the same materialized value, not a
+// pre-mirrored default. `Ctfe` cannot read or write dataseg storage at all
+// (compile-time execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.lazilyMaterializedGlobalNotMirroredBeforeMaterialization." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int computeInit() {
+                return 5 * 2 + 1;
+            }
+
+            __gshared int quickbiteDatasegLazyInit = computeInit();
+
+            int readLazyGlobal() {
+                return quickbiteDatasegLazyInit;
+            }
+
+            unittest {
+                assert(readLazyGlobal() == 11);
+            }
+        });
+    }
+}
+
+// A `__gshared` struct whose own type the mirror codec refuses -- a
+// dynamic-array field makes `place_value.isPlaceComposable` answer `false`
+// for the whole struct (a slice is not itself composable; see its own
+// header comment) -- declines on BOTH `mirrorToFrame` and `assertFrameMirror`
+// identically, via their shared `isPlaceComposable` gate, so this global
+// never enters the mirror at all and keeps using the existing boxed
+// `locals` path exclusively. `Ctfe` cannot read or write dataseg storage at
+// all (compile-time execution has no such storage to access); `Bytecode`
+// does not yet support a dynamic-array field access on a dataseg struct.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("dataseg.mirrorRefusedShapeDeclinesOnBothSides." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct WithArray { int[] data; }
+
+            __gshared WithArray quickbiteDatasegWithArray;
+
+            void appendOne() {
+                quickbiteDatasegWithArray.data =
+                    quickbiteDatasegWithArray.data ~ 1;
+            }
+
+            unittest {
+                appendOne();
+                appendOne();
+                assert(quickbiteDatasegWithArray.data.length == 2);
+                assert(quickbiteDatasegWithArray.data[0] == 1);
+                assert(quickbiteDatasegWithArray.data[1] == 1);
+            }
+        });
+    }
+}
+
 // Once `&i` has promoted a native-scalar
 // cell, `writeLocation`'s `PtrExp` arm required the pointee to be a
 // native-scalar type no wider than the cell; a struct-typed (or wider)

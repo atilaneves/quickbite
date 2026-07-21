@@ -893,7 +893,24 @@ in parallel and never blocks it.
        variable-keyed cell does. `Value.null_` mirrors as a plain
        `null` reference; a `classIdentity` of 0 or a class whose
        fields are not `place_value.isClassBodyComposable` is left
-       unmirrored, matching every other decline case above.
+       unmirrored, matching every other decline case above. Module-level
+       guest state (`VarDeclaration.isDataseg`: module-level, `__gshared`,
+       or `static`) owns no frame slot at all — `frame_layout.
+       isAliasingLocal` excludes it from `computeFrameLayout` on purpose,
+       "it lives in the module table instead" — so it gets the identical
+       verified-mirror treatment routed to its own block in
+       `module_table.ModuleTable` instead of a frame slot
+       (`mirrorToFrame`/`assertFrameMirror`'s shared `hasMirrorSlot`/
+       `mirrorAddress` resolving which storage a variable mirrors into);
+       the table follows `object_table.ObjectTable`'s identical
+       once-per-root-`Walker`, shared-by-pointer lifetime, so two frames
+       touching the same module variable resolve to the same block. A
+       dataseg variable bound to an extern host address (`ffi.md` §35.2)
+       never reaches the mirror at all: it never enters `locals` in the
+       first place (`writeLocation`'s extern arm writes straight through
+       the resolved address and returns before ever calling `setLocal`,
+       this mirror's only caller), so the exclusion needs no separate
+       check.
      - Lvalue evaluation yielding places: a `place.Place` is an address
        plus its static type; `field`/`index` compose another place by
        DMD offsets/strides — `index` on a pointer or slice place follows
@@ -911,10 +928,8 @@ in parallel and never blocks it.
        static-array, pointer, or slice base; a class receiver's field
        and `*p` both compose through `Place.deref`), refusing anything
        else.
-     - Loads/stores routed through places: module-level guest state
-       bound to blocks by `module_table.ModuleTable` per the existing
-       extern-data rules; whole-aggregate read/write composed over
-       places down to scalar leaves by
+     - Loads/stores routed through places: whole-aggregate read/write
+       composed over places down to scalar leaves by
        `place_value.readValue`/`writeValue` (native scalar leaves via
        `Place.loadScalar`/`storeScalar`, non-union struct and
        static-array shapes recursed field-by-field/element-by-element
