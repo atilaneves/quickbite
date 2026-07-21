@@ -61,6 +61,41 @@ private bool typeHasPointersImpl(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
+// Whether DMD can report a byte size for `type` at all -- `false` for
+// DMD's `SIZE_INVALID` sentinel (e.g. `Type.terror`), `true` otherwise.
+// Callers that must skip an unsized type without treating an exception as
+// control flow (`typeByteSize` throws on that same condition) check this
+// first instead.
+public bool typeIsSized(imported!"dmd.mtype".Type type) @safe {
+    return typeIsSizedImpl(type);
+}
+
+// `dmd.typesem.size` is not @safe/pure/nothrow; this is the @trusted
+// boundary -- it only reads DMD's own computed size, the same call
+// `typeByteSizeImpl` above trusts, but compares it against the sentinel
+// instead of throwing.
+private bool typeIsSizedImpl(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.mtype: SIZE_INVALID;
+    import dmd.typesem: size;
+
+    return type.size != SIZE_INVALID;
+}
+
+
+// The alignment DMD assigns `type` (`Type.alignsize`), verbatim -- the
+// same "DMD's own number, no arithmetic of our own" contract `typeByteSize`
+// applies to `Type.size`.
+public uint typeAlignment(imported!"dmd.mtype".Type type) @safe {
+    return typeAlignmentImpl(type);
+}
+
+// `Type.alignsize` is not @safe/pure/nothrow (it forces layout for an
+// aggregate type, same as `Type.size`); this is the @trusted boundary.
+private uint typeAlignmentImpl(imported!"dmd.mtype".Type type) @trusted {
+    return type.alignsize;
+}
+
+
 // `type`'s fields, in declaration order, as DMD's own `VarDeclaration`s
 // (`TypeStruct.sym.fields`, sliced to a plain array). Takes a `TypeStruct`
 // rather than a `Type` so the type system -- not a runtime cast -- rejects
@@ -121,6 +156,23 @@ public size_t staticArrayLength(imported!"dmd.mtype".TypeSArray type) @safe {
 // applies to `Type.size`.
 private size_t staticArrayLengthImpl(imported!"dmd.mtype".TypeSArray type) @trusted {
     return cast(size_t) type.dim.toUInteger;
+}
+
+
+// `variable`'s declared type (`VarDeclaration.type`), verbatim.
+public imported!"dmd.mtype".Type declaredType(
+    imported!"dmd.declaration".VarDeclaration variable,
+) @safe {
+    return declaredTypeImpl(variable);
+}
+
+// `VarDeclaration.type` is a plain field read, but `VarDeclaration` (an
+// `extern (C++)` class) is not itself `@safe`-annotated; this is the
+// `@trusted` boundary for reading it.
+private imported!"dmd.mtype".Type declaredTypeImpl(
+    imported!"dmd.declaration".VarDeclaration variable,
+) @trusted {
+    return variable.type;
 }
 
 
