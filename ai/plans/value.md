@@ -441,8 +441,19 @@ change that makes them false, never prospectively.
   fixed-width leaf codec must not absorb. That is an ABI-width concern
   specific to libffi's calling convention, not a second set of layout
   rules.
-- `native_scalar` deliberately excludes `real` (`Tfloat80`): its 80-bit
-  padded layout is host- and ABI-specific, not a portable native scalar.
+- `native_scalar` deliberately excludes `real` (`Tfloat80`) because
+  `ffi_marshal` shares that codec for its exact-size scalar arms, and
+  widening it would change shipping FFI behaviour — out of scope for the
+  place-composition layer. `real` IS otherwise `place_value.
+  isPlaceComposable`, through its own leaf codec there
+  (`readRealBits`/`writeRealBits`): decision 15 makes host layout the spec
+  on THIS host, not a hazard to refuse, so `layout.typeByteSize`'s own
+  answer for `Tfloat80` (16 bytes on x86-64, DMD's `Target.realsize`) is
+  as authoritative as any other type's. The one real hazard is padding
+  determinism: an x87 extended-precision store only touches the
+  significant bytes (10 of 16 here), so a write must zero the whole slot
+  first or the verified frame mirror's whole-slot byte comparison sees
+  nondeterministic trailing bytes and asserts.
 - Integer offsetting of a native pointer preserves the native-pointer carrier
   and applies the byte delta already scaled from the expression's static
   pointer type. Do not route it through the boxed pointer's allocation id or

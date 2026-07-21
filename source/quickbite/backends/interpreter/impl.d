@@ -1138,26 +1138,38 @@ private struct Walker {
     // Whether `value`'s shape matches what `place_value.readValue`/
     // `writeValue` compose for `type` at EVERY depth, not only the top
     // level: a concrete scalar (`isNumericScalar`/`isCharacter`) for a
-    // native scalar type; `value.isStruct` AND a field count matching
-    // `layout.structFields.length` AND every field's boxed value itself
-    // matching that field's own declared type, for a struct OR union type
-    // (`type.isTypeStruct` does not distinguish them, and neither does this
-    // check -- a union's `Value` is shaped exactly like a struct's, see
-    // `place_value.writeUnionValue`'s own header comment); `value.isArray`
-    // AND a length matching `layout.staticArrayLength` AND every element's
-    // boxed value itself matching the element type, for a static-array
-    // type. A mismatch at any depth fails the whole check -- `writeValue`
-    // recurses by position with no bounds check of its own (`value[i]`,
-    // `value.structFieldAt(index)`), so a boxed value shorter than the type
-    // it is being written into would index out of range. Callers gate this
-    // on `isPlaceComposable(type)` first, so `type` is always one of
-    // exactly those three shapes here.
+    // native scalar type; a concrete numeric scalar (`isNumericScalar`
+    // alone -- `real` is never `isCharacter`) for `real`, its own leaf
+    // shape (`place_value.isRealType`); `value.isStruct` AND a field count
+    // matching `layout.structFields.length` AND every field's boxed value
+    // itself matching that field's own declared type, for a struct OR
+    // union type (`type.isTypeStruct` does not distinguish them, and
+    // neither does this check -- a union's `Value` is shaped exactly like
+    // a struct's, see `place_value.writeUnionValue`'s own header comment);
+    // `value.isArray` AND a length matching `layout.staticArrayLength` AND
+    // every element's boxed value itself matching the element type, for a
+    // static-array type. A mismatch at any depth fails the whole check --
+    // `writeValue` recurses by position with no bounds check of its own
+    // (`value[i]`, `value.structFieldAt(index)`), so a boxed value shorter
+    // than the type it is being written into would index out of range.
+    // Callers gate this on `isPlaceComposable(type)` first, so `type` is
+    // always one of exactly those FOUR shapes here.
     private static bool placeShapeMatches(imported!"dmd.mtype".Type type, in Value value) {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.backends.interpreter.place_value: isRealType;
         import quickbite.backends.interpreter.layout: structFields, staticArrayLength, declaredType;
 
         if (isNativeScalarType(type))
             return value.isNumericScalar || value.isCharacter;
+
+        // `real` is `place_value.isPlaceComposable` but not `native_scalar.
+        // isNativeScalarType` (its own leaf codec -- see `place_value.
+        // readValue`'s header comment): a boxed `real` `Value` is always
+        // `isNumericScalar` (never `isCharacter`, unlike an integral/`bool`
+        // native scalar), so this repeats only the half of the check above
+        // that actually applies.
+        if (isRealType(type))
+            return value.isNumericScalar;
 
         auto structType = type.isTypeStruct;
         if (structType !is null) {
@@ -1193,9 +1205,9 @@ private struct Walker {
             return value.isNativePointer || value == Value.null_;
 
         // Reachable only for a composable type (caller gates on
-        // `isPlaceComposable`), which past the scalar, struct, and pointer
-        // arms leaves exactly a static array -- so `isTypeSArray` is
-        // non-null here.
+        // `isPlaceComposable`), which past the scalar, `real`, struct, and
+        // pointer arms leaves exactly a static array -- so `isTypeSArray`
+        // is non-null here.
         auto arrayType = type.isTypeSArray;
         assert(arrayType !is null, "placeShapeMatches: non-composable type");
         if (!value.isArray)

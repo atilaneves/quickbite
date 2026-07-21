@@ -1073,3 +1073,113 @@ unittest {
 
     readValue(pointeePlace).asLong.should == writtenPointee;
 }
+
+
+// `real` is a composable place LEAF (its own codec, not `native_scalar`'s
+// -- see `readValue`'s own header comment) -- and the whole point of the
+// type: `written` needs `real`'s full mantissa, so truncating it to
+// `double` and back loses bits (`written == back` below is `false`),
+// proving this round trip actually exercises the WIDER type rather than
+// merely agreeing with what a `double` codec would already give.
+@("place_value.writeValue.readValue.realRoundTripsValueDoubleCannotRepresentExactly")
+unittest {
+    auto type = Type.tfloat80;
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    real one = 1;
+    one = one * 1 + 0;
+    real written = one + real.epsilon;
+
+    // A genuine `double`-typed local, not a chained inline cast -- DMD does
+    // not always force a real memory-width round trip for the latter, so it
+    // can silently keep the FULL `real` precision through both casts
+    // (observed on this host/compiler), defeating the point of this guard.
+    const double narrowed = written;
+    const back = cast(real) narrowed;
+    (written == back).should == false;
+
+    writeValue(root, Value(written));
+
+    readValue(root).should == Value(written);
+}
+
+
+// `P.r` follows `P.c` with the host compiler's own `real.alignof` padding
+// (16 on this host), so a round trip through `writeValue`/`readValue` must
+// land `r` at DMD's own field offset independently of `c` -- the `real`
+// counterpart of `structRoundTripsFlatScalarFields`.
+@("place_value.writeValue.readValue.structRoundTripsRealFieldAtItsOwnOffset")
+unittest {
+    auto type = structTypeOf(q{ struct P { char c; real r; } }, "P");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    real one = 1;
+    one = one * 1 + 0;
+    real writtenR = one + real.epsilon;
+
+    auto written = Value.structValue("P", [Value('x'), Value(writtenR)]);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// A static array of `real` composes element by element, through `Place.
+// index`'s inline stride arithmetic at DMD's own `real` stride (16 bytes
+// on this host) -- the `real` counterpart of `staticArrayOfPointersComposes`.
+@("place_value.writeValue.readValue.staticArrayOfRealComposesWithDmdOwnStride")
+unittest {
+    auto arrayType = Type.tfloat80.sarrayOf(2);
+    auto block = NativeBlock.allocate(typeByteSize(arrayType), NativeBlock.Scan.no);
+    auto root = placeAt(block, arrayType);
+
+    real one = 1;
+    one = one * 1 + 0;
+    real first = one + real.epsilon;
+    real two = 2;
+    two = two * 1 + 0;
+    real second = two + real.epsilon;
+
+    auto written = Value.arrayValue([Value(first), Value(second)]);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// The property the verified frame mirror's whole-slot RAW BYTE comparison
+// depends on (`ai/plans/value.md`'s Layout authority contract): writing
+// the SAME `real` value twice must produce IDENTICAL bytes, padding
+// included, not merely an equal `real` on read-back. Asserted directly on
+// the block's own raw bytes, not only on the round-tripped `Value`, since
+// two different padding patterns could still both read back correctly
+// (`readRealBits` never inspects the padding) while still breaking the
+// mirror's byte-for-byte comparison.
+@("place_value.writeValue.realWritePaddingIsDeterministicAcrossTwoWrites")
+unittest {
+    auto type = Type.tfloat80;
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    real one = 1;
+    one = one * 1 + 0;
+    real written = one + real.epsilon;
+
+    writeValue(root, Value(written));
+    auto firstBytes = block.bytes.dup;
+
+    writeValue(root, Value(written));
+    auto secondBytes = block.bytes.dup;
+
+    firstBytes.should == secondBytes;
+}
+
+
+@("place_value.isPlaceComposable.trueForReal")
+unittest {
+    isPlaceComposable(Type.tfloat80).should == true;
+}

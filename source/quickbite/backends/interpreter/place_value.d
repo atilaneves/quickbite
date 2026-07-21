@@ -35,15 +35,23 @@ private:
 // stored-pointer read `Place.index`'s own pointer case already performs)
 // and boxes it, with no element recursion -- a pointer's pointee is not
 // part of ITS value the way a slice's or static array's elements are.
-// `real` alone is still refused: it is outside `native_scalar`'s codec
-// (see its own header comment), with no place-composed shape to fall back
-// to, so it throws rather than guessing at a byte interpretation.
+// `real` (`TY.Tfloat80`) is ALSO a composable leaf, but through its OWN
+// codec below (`isRealType`/`readRealBits`/`writeRealBits`), not
+// `native_scalar`'s: `native_scalar` deliberately excludes `real` because
+// `ffi_marshal.d` routes exact-size scalar arms through its
+// `writeScalar`/`readScalar`, and widening that shared codec would change
+// shipping FFI behaviour, out of scope for this place-composition layer
+// (`ai/plans/value.md`'s decision 15 -- host layout IS the spec on THIS
+// host, not a hazard to refuse -- is what makes a place-local codec
+// honest here). See `readRealBits`/`writeRealBits`'s own header comments
+// for the padding-determinism argument the verified frame mirror's
+// whole-slot byte comparison depends on.
 public imported!"quickbite.lang".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
-        staticArrayLength, enumMemberQualifiedName;
+        staticArrayLength, enumMemberQualifiedName, typeByteSize;
     import quickbite.lang: Value;
 
     auto type = place.type;
@@ -71,6 +79,9 @@ public imported!"quickbite.lang".Value readValue(
 
     if (isNativeScalarType(type))
         return place.loadScalar;
+
+    if (isRealType(type))
+        return Value(readRealBits(place.address, typeByteSize(type)));
 
     auto structType = nonUnionStructOf(type);
     if (structType !is null)
@@ -159,6 +170,75 @@ public imported!"quickbite.lang".Value readValue(
 }
 
 
+// True for `real` (`TY.Tfloat80`), resolving an enum's base type the same
+// way `native_scalar.d`'s own `nativeScalarKindOf` does, so an enum whose
+// base type is `real` would dispatch correctly here too (though DMD gives
+// every enum an integral base type in practice). `@trusted`: `Type.
+// toBasetype` is not `@safe`, mirroring `native_scalar.d`'s identical
+// boundary for the identical call. `public`: `impl.d`'s `placeShapeMatches`
+// needs the identical check, to decide whether a boxed `Value` reaching a
+// `real`-typed place is itself a numeric scalar before calling `writeValue`
+// -- reusing this rather than growing a second `Tfloat80` check keeps the
+// two from drifting apart the same way `isNativeScalarType` already does
+// for every native scalar type.
+public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    return type.toBasetype.ty == TY.Tfloat80;
+}
+
+
+// Reads `length` bytes at `address` back as a `real` -- the inverse of
+// `writeRealBits` below. An x87 extended-precision LOAD only reads the
+// significant bytes (10 of them on this host); it never inspects the
+// trailing padding bytes, so a plain `memcpy` into a same-sized local is
+// exact -- the identical shape `native_scalar.d`'s own read side uses for
+// `float`/`double`, just kept here instead (see `readValue`'s own header
+// comment for why). `@trusted`: reinterpreting `address` as a byte range
+// and `memcpy`-ing it into a `real` local is not `@safe`. The `in`
+// contract is stripped under `-release`; this function's actual safety
+// rests on its sole caller, `readValue`, always passing `layout.
+// typeByteSize(type)` for a `real`-typed place, which is `real.sizeof` on
+// every host this interpreter runs on (DMD's own `Target.realsize`,
+// decision 15's "host layout is the spec").
+private real readRealBits(const(void)* address, in size_t length) @trusted
+in (length == real.sizeof)
+{
+    import core.stdc.string: memcpy;
+
+    real bits;
+    memcpy(&bits, address, length);
+    return bits;
+}
+
+
+// Writes `value` into `length` bytes at `address`, with the padding bytes
+// (6 of them on this host, past the 10 significant ones) DETERMINISTIC --
+// always zero -- rather than whatever an x87 extended-precision STORE
+// happens to leave behind. Verified empirically on this host with both
+// `dmd` and `ldc2`: a store instruction for `real` (`local = value;`)
+// touches only the significant bytes, never the trailing padding, so
+// zeroing a local FIRST and assigning `value` into it SECOND leaves that
+// padding zero, deterministically, no matter what `value` is. This is the
+// exact property the verified frame mirror's whole-slot RAW BYTE
+// comparison depends on (`ai/plans/value.md`'s Layout authority contract):
+// two writes of the same value must produce identical bytes, padding
+// included, or `impl.d`'s `assertFrameMirror` fires as a hard failure --
+// the reason this codec zeroes explicitly rather than trusting whatever
+// was already at `address`. `@trusted` and the `in` contract: the same
+// reasoning as `readRealBits` above, mirrored for the write side.
+private void writeRealBits(void* address, in size_t length, in real value) @trusted
+in (length == real.sizeof)
+{
+    import core.stdc.string: memcpy, memset;
+
+    real bits = void;
+    memset(&bits, 0, bits.sizeof);
+    bits = value;
+    memcpy(address, &bits, length);
+}
+
+
 // The shared field-by-field composition `readValue` uses for BOTH a
 // non-union struct and a union at `place`: read each of `structType`'s own
 // `layout.structFields`, in declaration order, through its own `Place.
@@ -222,20 +302,29 @@ private imported!"quickbite.lang".Value structValueAt(
 // stand-ins for one, and this codec has no address to invent for them.
 // That is a fact about the VALUE handed to a call this slice makes always
 // legal by TYPE, the opposite shape from every refusal above (a slice
-// element type that cannot compose, a class place, a non-scalar `real`),
-// which all refuse the same way for every value of that type.
+// element type that cannot compose, a class place), which all refuse the
+// same way for every value of that type. `real` is a plain leaf here too
+// (`writeRealBits`, via `isRealType`) -- see `readValue`'s own header
+// comment for why it lives in this module rather than `native_scalar`'s
+// shared codec.
 public void writeValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     in imported!"quickbite.lang".Value value,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.layout: structFields, staticArrayLength;
+    import quickbite.backends.interpreter.layout:
+        structFields, staticArrayLength, typeByteSize;
     import quickbite.lang: Value;
 
     auto type = place.type;
 
     if (isNativeScalarType(type)) {
         place.storeScalar(value);
+        return;
+    }
+
+    if (isRealType(type)) {
+        writeRealBits(place.address, typeByteSize(type), value.asReal);
         return;
     }
 
@@ -449,23 +538,24 @@ public void writeClassBody(
 
 
 // Whether `type` is one `readValue`/`writeValue` compose down to scalar
-// leaves without throwing: a native scalar; a non-union struct all of whose
-// `layout.structFields` field types are themselves place-composable; a
-// union all of whose declared members are themselves place-composable
-// (`allFieldsComposable`, shared with the struct case immediately above --
-// a union's own fields are exactly as composable as a struct's, since
-// `readValue`/`writeValue`'s union arms recurse the identical per-field
-// composition); a static array whose element type (`.next`) is
-// place-composable; or a pointer. Recurses the identical dispatch
-// `readValue`/`writeValue` use (`isNativeScalarType`, `nonUnionStructOf`,
-// `unionStructOf`, `isTypeSArray`, `isTypePointer`) so this predicate can
-// never drift from what those two actually accept for the shapes it DOES
-// claim -- false for a class or slice/dynamic array, the same set their
-// own header comment gives, and for `real` (outside `native_scalar`'s
-// codec, see its own header); a union with ANY such member (a slice,
-// class, or `real` field) answers `false` for the WHOLE union, exactly
-// like `isClassBodyComposable` declining a whole class body over one
-// non-composable field.
+// leaves without throwing: a native scalar; `real` (its own leaf codec,
+// `isRealType`/`readRealBits`/`writeRealBits` -- see `readValue`'s own
+// header comment for why it is not `native_scalar.isNativeScalarType`); a
+// non-union struct all of whose `layout.structFields` field types are
+// themselves place-composable; a union all of whose declared members are
+// themselves place-composable (`allFieldsComposable`, shared with the
+// struct case immediately above -- a union's own fields are exactly as
+// composable as a struct's, since `readValue`/`writeValue`'s union arms
+// recurse the identical per-field composition); a static array whose
+// element type (`.next`) is place-composable; or a pointer. Recurses the
+// identical dispatch `readValue`/`writeValue` use (`isNativeScalarType`,
+// `isRealType`, `nonUnionStructOf`, `unionStructOf`, `isTypeSArray`,
+// `isTypePointer`) so this predicate can never drift from what those two
+// actually accept for the shapes it DOES claim -- false only for a class
+// or slice/dynamic array, the same set their own header comment gives; a
+// union with ANY such member (a slice or class field) answers `false` for
+// the WHOLE union, exactly like `isClassBodyComposable` declining a whole
+// class body over one non-composable field.
 //
 // A pointer answers `true` unconditionally here (a TYPE-shape question,
 // the only kind this predicate asks), even though `writeValue`'s own
@@ -490,6 +580,9 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
 
     if (isNativeScalarType(type))
+        return true;
+
+    if (isRealType(type))
         return true;
 
     auto structType = nonUnionStructOf(type);
