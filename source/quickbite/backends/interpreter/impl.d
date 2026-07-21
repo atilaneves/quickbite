@@ -862,15 +862,28 @@ private struct Walker {
     // Keeps `variable`'s frame slot in sync with its just-written boxed
     // value, so the frame can serve as a verified shadow of the boxed
     // local -- for every place-composable local (`place_value.
-    // isPlaceComposable`: a native scalar, a non-union struct, or a static
-    // array of composable elements), not only scalars. Authority stays with
-    // `locals`: this never fails a write it cannot perform cleanly, it
-    // simply skips it -- a local with no frame slot (aliasing `ref`/`out`/
-    // `lazy`), a type `place_value` does not compose, or a value that does
-    // not itself match that type's own shape (e.g. still `void`, or a
-    // struct/array local mid-construction holding a transient boxed value of
-    // the wrong shape) is left unmirrored rather than risking `writeValue`
-    // throwing; a later matching write re-syncs it.
+    // isPlaceComposable`: a native scalar, a struct or composable union, or
+    // a static array of composable elements), not only scalars. Authority
+    // stays with `locals`: this never fails a write it cannot perform
+    // cleanly, it simply skips it -- a local with no frame slot (aliasing
+    // `ref`/`out`/`lazy`), a type `place_value` does not compose, or a
+    // value that does not itself match that type's own shape (e.g. still
+    // `void`, or a struct/array local mid-construction holding a transient
+    // boxed value of the wrong shape) is left unmirrored rather than
+    // risking `writeValue` throwing; a later matching write re-syncs it.
+    //
+    // A composable union local writes through `place_value.writeValue`'s
+    // union arm exactly like every other arm here -- no extra gating needed
+    // even though that arm only writes ONE (the widest) member's bytes
+    // (`writeUnionValue`'s own header comment): `assertFrameMirror` below
+    // recomputes its own "expected bytes" by calling this SAME `writeValue`
+    // on this SAME `value` (never on some independently-derived expectation
+    // of what a union "should" contain), so the two sides can never disagree
+    // with each other, whatever `value`'s own fields say -- the boxed
+    // walker's own correctness (e.g. `impl.d`'s still-untouched union
+    // default-value gap noted in `value.md`'s Unions section) is a separate
+    // question from whether the mirror agrees with the boxed value it was
+    // given, which is all this assert ever checks.
     private void mirrorToFrame(VarDeclaration variable, in Value value) {
         import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
         import quickbite.backends.interpreter.place: placeAt;
@@ -1019,16 +1032,18 @@ private struct Walker {
     // level: a concrete scalar (`isNumericScalar`/`isCharacter`) for a
     // native scalar type; `value.isStruct` AND a field count matching
     // `layout.structFields.length` AND every field's boxed value itself
-    // matching that field's own declared type, for a non-union struct
-    // type; `value.isArray` AND a length matching `layout.
-    // staticArrayLength` AND every element's boxed value itself matching
-    // the element type, for a static-array type. A mismatch at any depth
-    // fails the whole check -- `writeValue` recurses by position with no
-    // bounds check of its own (`value[i]`, `value.structFieldAt(index)`),
-    // so a boxed value shorter than the type it is being written into
-    // would index out of range. Callers gate this on `isPlaceComposable
-    // (type)` first, so `type` is always one of exactly those three shapes
-    // here.
+    // matching that field's own declared type, for a struct OR union type
+    // (`type.isTypeStruct` does not distinguish them, and neither does this
+    // check -- a union's `Value` is shaped exactly like a struct's, see
+    // `place_value.writeUnionValue`'s own header comment); `value.isArray`
+    // AND a length matching `layout.staticArrayLength` AND every element's
+    // boxed value itself matching the element type, for a static-array
+    // type. A mismatch at any depth fails the whole check -- `writeValue`
+    // recurses by position with no bounds check of its own (`value[i]`,
+    // `value.structFieldAt(index)`), so a boxed value shorter than the type
+    // it is being written into would index out of range. Callers gate this
+    // on `isPlaceComposable(type)` first, so `type` is always one of
+    // exactly those three shapes here.
     private static bool placeShapeMatches(imported!"dmd.mtype".Type type, in Value value) {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.backends.interpreter.layout: structFields, staticArrayLength, declaredType;

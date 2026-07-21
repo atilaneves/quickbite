@@ -500,18 +500,155 @@ unittest {
 }
 
 
-@("place_value.readValue.writeValue.unionTypeThrows")
+// A union composes as overlapping bytes: writing `i` (the whole 4-byte
+// member) directly through its own `Place.field` must be visible,
+// reinterpreted, through the narrower sibling `s` when the WHOLE union is
+// read back -- the value.md "Unions" example made concrete, and the read
+// side (`structValueAt`'s union arm, via `readValue`) needs no write
+// through the top-level union `Value` at all to prove this: `Place.field`'s
+// own offset arithmetic already lands both members at the same address.
+@("place_value.readValue.unionWritingIntMemberIsVisibleThroughShortSiblingReinterpreted")
 unittest {
-    auto unionType = structTypeOf(q{ union U { int x; long y; } }, "U");
-    auto place = Place(null, unionType);
+    auto unionType = structTypeOf(q{ union U { int i; short s; } }, "U");
+    auto fields = structFields(unionType);
+    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
+    auto root = placeAt(block, unionType);
 
-    readValue(place).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
-    );
+    int writtenI = 7;
+    writtenI = writtenI * 100_000 + 3;
 
-    writeValue(place, Value.void_).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
-    );
+    writeValue(root.field(fields[0]), Value(writtenI));
+
+    readValue(root).structFieldAt(1).asLong.should == cast(short) writtenI;
+}
+
+
+// The narrow-to-wide direction of the same reinterpretation: `s` (2 bytes)
+// written alone leaves the block's remaining bytes at whatever `place`
+// already held (zero, straight off `NativeBlock.allocate`) -- so `i`,
+// read back, is `s`'s own bits zero-extended into the wider type, not
+// sign-extended the way a `cast(int)` from `short` would be.
+@("place_value.readValue.unionWritingShortMemberIsVisibleThroughIntSiblingReinterpreted")
+unittest {
+    auto unionType = structTypeOf(q{ union U { int i; short s; } }, "U");
+    auto fields = structFields(unionType);
+    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
+    auto root = placeAt(block, unionType);
+
+    short writtenS = 3;
+    writtenS = cast(short)(writtenS * 1000 + 7);
+
+    writeValue(root.field(fields[1]), Value(writtenS));
+
+    readValue(root).structFieldAt(0).asLong.should == cast(int) cast(ushort) writtenS;
+}
+
+
+// The whole-union write side: `writeValue` on the union's OWN place, given
+// `structValueAt`'s struct-shaped `Value` (one entry per declared member,
+// already mutually consistent -- see `writeUnionValue`'s own header
+// comment), round-trips through the WIDEST declared member's bytes alone.
+// Here the widest member (`i`) is also the FIRST declared, the simplest
+// case value.md's own union example gives.
+@("place_value.writeValue.readValue.unionRoundTripsThroughWidestFirstDeclaredMember")
+unittest {
+    auto unionType = structTypeOf(q{ union U { int i; short s; } }, "U");
+    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
+    auto root = placeAt(block, unionType);
+
+    int writtenI = 11;
+    writtenI = writtenI * 100_000 + 13;
+
+    auto written = Value.structValue("U", [Value(writtenI), Value(cast(short) writtenI)]);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// `writeUnionValue` must find the WIDEST member by its own byte size, not
+// just take the first declared one -- here the first-declared member (`s`)
+// is the NARROWER one, so a write that (wrongly) picked it would only ever
+// touch 2 of the block's 4 bytes, losing `i`'s own upper bytes (nonzero:
+// `writtenI` is picked above 65536 so this would fail if that bug were
+// reintroduced) on the round trip.
+@("place_value.writeValue.readValue.unionRoundTripsThroughWidestMemberRegardlessOfDeclarationOrder")
+unittest {
+    auto unionType = structTypeOf(q{ union U { short s; int i; } }, "U");
+    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
+    auto root = placeAt(block, unionType);
+
+    int writtenI = 11;
+    writtenI = writtenI * 100_000 + 13;
+
+    auto written = Value.structValue("U", [Value(cast(short) writtenI), Value(writtenI)]);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// DMD flattens an anonymous union's members directly into the enclosing
+// struct's own fields, at overlapping offsets (`value.md`'s Unions
+// section) -- `S` itself is not a `UnionDeclaration`, so this already goes
+// through the plain (non-union) struct arm of `readValue`/`writeValue`,
+// unchanged by this slice; the point of this fixture is that nothing about
+// that generic per-field composition assumes fields never overlap, so the
+// flattened case already round-trips correctly with no union-specific code
+// needed at all.
+@("place_value.writeValue.readValue.anonymousUnionFlattenedIntoStructRoundTrips")
+unittest {
+    auto type = structTypeOf(q{
+        struct S {
+            union { int i; short s; }
+            int tag;
+        }
+    }, "S");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    int writtenI = 5;
+    writtenI = writtenI * 100_000 + 17;
+    int writtenTag = 9;
+    writtenTag = writtenTag * 3 + 1;
+
+    auto written = Value.structValue(
+        "S", [Value(writtenI), Value(cast(short) writtenI), Value(writtenTag)]);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// A NAMED union-typed field (unlike the anonymous case above) stays ONE
+// field of its enclosing struct, at that field's own offset -- exercising
+// this slice's new union arm through one extra level of `Place.field`
+// nesting, the union counterpart of `structRoundTripsNestedStructField`.
+@("place_value.writeValue.readValue.unionFieldNestedInsideStructComposesAtRightOffset")
+unittest {
+    auto type = structTypeOf(q{
+        union U { int i; short s; }
+        struct Outer { int tag; U u; }
+    }, "Outer");
+    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
+    auto root = placeAt(block, type);
+
+    int writtenTag = 4;
+    writtenTag = writtenTag * 6 + 1;
+    int writtenI = 8;
+    writtenI = writtenI * 100_000 + 19;
+
+    auto written = Value.structValue("Outer", [
+        Value(writtenTag),
+        Value.structValue("U", [Value(writtenI), Value(cast(short) writtenI)]),
+    ]);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
 }
 
 
@@ -576,9 +713,25 @@ unittest {
 }
 
 
-@("place_value.isPlaceComposable.falseForUnion")
+// A union whose declared members are all native scalars is composable --
+// `readValue`/`writeValue` compose it exactly as they do a struct's own
+// fields (`allFieldsComposable`, shared between the two arms).
+@("place_value.isPlaceComposable.trueForUnionWithComposableMembers")
 unittest {
     auto unionType = structTypeOf(q{ union U { int x; long y; } }, "U");
+    isPlaceComposable(unionType).should == true;
+}
+
+
+// One non-composable member (a pointer, here) refuses the WHOLE union,
+// exactly as one non-composable field refuses a whole class body
+// (`isClassBodyComposable`'s own inherited-field test) -- `writeValue`'s
+// union arm would otherwise recurse into that member via `writeUnionValue`
+// (were it ever the widest) or `readValue`'s union arm via `structValueAt`
+// (always, since every member is read), either of which would throw.
+@("place_value.isPlaceComposable.falseForUnionWithNonComposableMember")
+unittest {
+    auto unionType = structTypeOf(q{ union U { int x; int* p; } }, "U");
     isPlaceComposable(unionType).should == false;
 }
 

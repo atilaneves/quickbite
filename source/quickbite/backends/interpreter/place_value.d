@@ -13,22 +13,31 @@ private:
 // native `{ length, ptr }` header (`native_array.readSliceHeaderBytes`) and
 // recurses once per element via `Place.index`, which already follows the
 // header's stored `ptr` -- the read side of a slice's place-composed shape.
-// A class (`Type.isTypeClass`) is the odd one out: unlike every other case
+// A union is the SAME field-by-field recursion as a non-union struct
+// (`structValueAt` below serves both), and needs no union-specific
+// arithmetic to get that right: every member's `layout.fieldByteOffset` is
+// already the union's own overlapping offset (0 for a top-level union's
+// members, DMD's own flattened offsets for an anonymous union's), so
+// composing each member independently through its OWN `Place.field` is
+// already reinterpretation of the identical underlying bytes at each
+// member's own type -- exactly what `SystemLinker` gives, with no
+// reconciliation step to perform because there is nothing to reconcile:
+// the bytes are simply read again, at a different type, per member. A
+// class (`Type.isTypeClass`) is the odd one out: unlike every other case
 // above, this place's own bytes are not the object's bytes, only a stored
 // reference to them (`Place.deref` already documents this) -- so the class
 // arm below composes the object's body through that reference rather than
-// this place directly. Anything else -- pointer, union, `real` -- still has
-// no place-composed shape: a pointer's elements live behind a stored
-// address with no length to recurse over, a union has no single field
-// layout to recurse over, and `real` is outside `native_scalar`'s codec (see
-// its own header comment) -- so those throw rather than guessing at a byte
-// interpretation.
+// this place directly. Anything else -- pointer, `real` -- still has no
+// place-composed shape: a pointer's elements live behind a stored address
+// with no length to recurse over, and `real` is outside `native_scalar`'s
+// codec (see its own header comment) -- so those throw rather than
+// guessing at a byte interpretation.
 public imported!"quickbite.lang".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
-        structFields, staticArrayLength, enumMemberQualifiedName;
+        staticArrayLength, enumMemberQualifiedName;
     import quickbite.lang: Value;
 
     auto type = place.type;
@@ -58,13 +67,12 @@ public imported!"quickbite.lang".Value readValue(
         return place.loadScalar;
 
     auto structType = nonUnionStructOf(type);
-    if (structType !is null) {
-        Value[] fields;
-        foreach (field; structFields(structType))
-            fields ~= readValue(place.field(field));
+    if (structType !is null)
+        return structValueAt(place, structType);
 
-        return Value.structValue(structTypeName(structType), fields);
-    }
+    auto unionType = unionStructOf(type);
+    if (unionType !is null)
+        return structValueAt(place, unionType);
 
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null) {
@@ -131,6 +139,35 @@ public imported!"quickbite.lang".Value readValue(
 }
 
 
+// The shared field-by-field composition `readValue` uses for BOTH a
+// non-union struct and a union at `place`: read each of `structType`'s own
+// `layout.structFields`, in declaration order, through its own `Place.
+// field`. For a plain struct this reads non-overlapping bytes, one field
+// each; for a union every field's `Place.field` lands at the SAME
+// overlapping offset(s) (DMD's own fact, `value.md`'s Unions section), so
+// this reads every member as its own reinterpretation of those identical
+// bytes -- no union-specific arithmetic needed, because `Place.field`'s
+// offset arithmetic already IS the aliasing truth. `readValue`'s recursion
+// makes each field's own value tagged/typed correctly (an enum, a nested
+// struct or union, ...), matching the boxed walker's own struct-shaped
+// `Value` for a union (`impl.d`'s `withUnionFieldWrite`, which likewise
+// stores a union's `Value` as `Value.structValue` with one entry per
+// declared member, never a smaller "only the live member" shape).
+private imported!"quickbite.lang".Value structValueAt(
+    imported!"quickbite.backends.interpreter.place".Place place,
+    imported!"dmd.mtype".TypeStruct structType,
+) @safe {
+    import quickbite.backends.interpreter.layout: structFields;
+    import quickbite.lang: Value;
+
+    Value[] fields;
+    foreach (field; structFields(structType))
+        fields ~= readValue(place.field(field));
+
+    return Value.structValue(structTypeName(structType), fields);
+}
+
+
 // The inverse of `readValue`: writes `value`'s scalar leaves into `place`
 // through the identical field-by-field/element-by-element composition --
 // scalar leaves via `Place.storeScalar`, everything else unsupported for
@@ -146,7 +183,9 @@ public imported!"quickbite.lang".Value readValue(
 // to `impl.d`'s frame mirror, not to this place-composition layer. Writing
 // an already-allocated body's OWN fields (once its address is known) is
 // `writeClassBody` below, the write-side counterpart of `readValue`'s class
-// arm.
+// arm. A union-typed place writes ONE member's bytes rather than recursing
+// every field the way a non-union struct does -- see `writeUnionValue`'s
+// own header comment for why, and for the limits of that choice.
 public void writeValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     in imported!"quickbite.lang".Value value,
@@ -168,6 +207,12 @@ public void writeValue(
         return;
     }
 
+    auto unionType = unionStructOf(type);
+    if (unionType !is null) {
+        writeUnionValue(place, unionType, value);
+        return;
+    }
+
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null) {
         foreach (i; 0 .. staticArrayLength(arrayType))
@@ -178,6 +223,61 @@ public void writeValue(
     throw new Exception(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+// `value` is `structValueAt`'s own shape for a union -- one entry per
+// declared member, built by independently reinterpreting the SAME
+// underlying bytes at each member's own type (`readValue`'s union arm), or
+// (from the boxed walker) `impl.d`'s `withUnionFieldWrite`, which
+// re-derives every sibling from the just-written member's bytes before
+// this is ever reached. Either source already has every entry agreeing
+// bit-for-bit as reinterpretations of one another, over each entry's own
+// byte width -- there is no OTHER way to construct a union-shaped `Value`
+// in this codebase. Writing every entry back, field by field, the way the
+// non-union struct arm of `writeValue` does, would make the LAST declared
+// member win regardless of which one the caller actually meant, and worse,
+// a member narrower than a later sibling would leave that sibling's own
+// trailing bytes as whatever was already at `place` rather than what
+// `value` says they should be.
+//
+// The honest single-write semantics: write the WIDEST declared member's
+// own bytes (`layout.typeByteSize`). A D union's own storage is exactly
+// its widest member's size (plus any trailing padding no member ever
+// reads), so writing the widest member in one shot covers the union's
+// entire live extent -- every narrower sibling then reads back correctly
+// by reinterpreting a subrange of those same bytes, with nothing left
+// over to reconcile. This is exact, not approximate, given the
+// bit-for-bit agreement above; ties are broken by picking the first
+// declared member at the max width, an arbitrary but deterministic choice
+// (agreement makes any tied member's own bytes identical to write).
+//
+// The one thing this does NOT attempt: a `value` whose entries were
+// assembled to deliberately disagree has no well-defined union byte
+// pattern in the first place -- compiled D has no such value, a union
+// assignment is always one physical block of bytes -- so this picks ONE
+// member's bytes and leaves every other entry in `value` unconsulted,
+// rather than guessing at a reconciliation this module has no basis for.
+private void writeUnionValue(
+    imported!"quickbite.backends.interpreter.place".Place place,
+    imported!"dmd.mtype".TypeStruct unionType,
+    in imported!"quickbite.lang".Value value,
+) @safe {
+    import quickbite.backends.interpreter.layout: structFields, declaredType, typeByteSize;
+
+    auto fields = structFields(unionType);
+
+    size_t widestIndex = 0;
+    size_t widestSize = 0;
+    foreach (index, field; fields) {
+        const size = typeByteSize(declaredType(field));
+        if (size > widestSize) {
+            widestSize = size;
+            widestIndex = index;
+        }
+    }
+
+    writeValue(place.field(fields[widestIndex]), value.structFieldAt(widestIndex));
 }
 
 
@@ -212,33 +312,56 @@ public void writeClassBody(
 
 // Whether `type` is one `readValue`/`writeValue` compose down to scalar
 // leaves without throwing: a native scalar; a non-union struct all of whose
-// `layout.structFields` field types are themselves place-composable; or a
-// static array whose element type (`.next`) is place-composable. Recurses
-// the identical dispatch `readValue`/`writeValue` use (`isNativeScalarType`,
-// `nonUnionStructOf`, `isTypeSArray`) so this predicate can never drift from
+// `layout.structFields` field types are themselves place-composable; a
+// union all of whose declared members are themselves place-composable
+// (`allFieldsComposable`, shared with the struct case immediately above --
+// a union's own fields are exactly as composable as a struct's, since
+// `readValue`/`writeValue`'s union arms recurse the identical per-field
+// composition); or a static array whose element type (`.next`) is
+// place-composable. Recurses the identical dispatch `readValue`/
+// `writeValue` use (`isNativeScalarType`, `nonUnionStructOf`,
+// `unionStructOf`, `isTypeSArray`) so this predicate can never drift from
 // what those two actually accept -- false for a class, slice/dynamic array,
-// pointer, union, or `real`, the same set their own header comment gives.
+// pointer, or `real`, the same set their own header comment gives; a
+// union with ANY such member (a slice, class, pointer, or `real` field)
+// answers `false` for the WHOLE union, exactly like `isClassBodyComposable`
+// declining a whole class body over one non-composable field.
 public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.layout: structFields, declaredType;
 
     if (isNativeScalarType(type))
         return true;
 
     auto structType = nonUnionStructOf(type);
-    if (structType !is null) {
-        foreach (field; structFields(structType))
-            if (!isPlaceComposable(declaredType(field)))
-                return false;
+    if (structType !is null)
+        return allFieldsComposable(structType);
 
-        return true;
-    }
+    auto unionType = unionStructOf(type);
+    if (unionType !is null)
+        return allFieldsComposable(unionType);
 
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null)
         return isPlaceComposable(arrayType.next);
 
     return false;
+}
+
+
+// Whether every one of `structType`'s own `layout.structFields` (in
+// declaration order, base struct or union alike -- `layout.structFields`
+// does not distinguish) is itself `isPlaceComposable` -- the one place
+// `isPlaceComposable`'s own struct and union arms both recurse through, so
+// the two cannot drift from each other any more than `isClassBodyComposable`
+// can drift from `isPlaceComposable` itself.
+private bool allFieldsComposable(imported!"dmd.mtype".TypeStruct structType) @safe {
+    import quickbite.backends.interpreter.layout: structFields, declaredType;
+
+    foreach (field; structFields(structType))
+        if (!isPlaceComposable(declaredType(field)))
+            return false;
+
+    return true;
 }
 
 
@@ -275,6 +398,24 @@ private imported!"dmd.mtype".TypeStruct nonUnionStructOf(
 ) @safe {
     auto structType = type.isTypeStruct;
     return structType !is null && structType.sym.isUnionDeclaration is null
+        ? structType
+        : null;
+}
+
+
+// `nonUnionStructOf`'s mirror image: `type` narrowed to `TypeStruct`, but
+// only when it IS a union (DMD reports a union as a `TypeStruct` whose
+// `sym` is a `UnionDeclaration` -- `value.md`'s Unions section, the same
+// durable fact `nonUnionStructOf` reads from the opposite side). The one
+// place `readValue`/`writeValue`/`isPlaceComposable` decide "union, not a
+// plain struct" -- so, symmetrically, this cannot drift from
+// `nonUnionStructOf` either: exactly one of the two ever returns non-null
+// for a given `TypeStruct`.
+private imported!"dmd.mtype".TypeStruct unionStructOf(
+    imported!"dmd.mtype".Type type,
+) @safe {
+    auto structType = type.isTypeStruct;
+    return structType !is null && structType.sym.isUnionDeclaration !is null
         ? structType
         : null;
 }

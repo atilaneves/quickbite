@@ -872,9 +872,11 @@ in parallel and never blocks it.
        a unittest/REPL body, and held on `Walker._activationFrame`, with
        authority still in `locals`/cells until reads route through it. A
        non-address-taken local whose type is place-composable
-       (`place_value.isPlaceComposable`: a native scalar, non-union
-       struct, or static array of composable elements) has its frame
-       slot kept as a verified shadow, mirrored by `setLocal` and
+       (`place_value.isPlaceComposable`: a native scalar, a struct or
+       union all of whose own fields/members are themselves
+       place-composable, or a static array of composable elements) has
+       its frame slot kept as a verified shadow, mirrored by `setLocal`
+       and
        checked against the boxed value on every read; a slice local's
        slot instead holds a `{length, ptr}` header mirror (from the
        boxed value's stable native backing) verified the same way. A
@@ -953,7 +955,34 @@ in parallel and never blocks it.
        `place_value.isClassBodyComposable` answers whether a class's
        own fields round-trip this way, recursing the identical
        `isPlaceComposable` check `writeClassBody`'s own field writes
-       rely on so the two cannot drift; a union is overlapping bytes.
+       rely on so the two cannot drift. A union composes as what it
+       actually is: overlapping bytes at DMD's own offsets, with no
+       union-specific arithmetic anywhere. `readValue`/`writeValue`
+       recurse a union's `layout.structFields` exactly as they do a
+       plain struct's (`place_value.structValueAt`, shared by both
+       arms) — every member's `Place.field` already lands at the
+       union's own (overlapping) offset, so reading every member
+       independently is reinterpretation with no reconciliation step,
+       matching the boxed walker's own struct-shaped union `Value`
+       (`impl.d`'s `withUnionFieldWrite`) with no shape change needed.
+       Writing a whole union `Value` (`place_value.writeUnionValue`)
+       writes only the WIDEST declared member's bytes, covering the
+       union's full live extent in one shot — exact given the
+       incoming value's members already agree bit-for-bit, true of
+       every union `Value` this codebase ever constructs, but not a
+       claim about a hypothetically inconsistent one. `isPlaceComposable`
+       recurses a union's own fields exactly like a struct's
+       (`allFieldsComposable`, shared between the two arms), so a
+       union with a slice/class/pointer/`real` member refuses the
+       whole union, matching `isClassBodyComposable`'s one-bad-field-
+       refuses-the-body rule. This makes a composable union local
+       newly eligible for the verified frame mirror above; the mirror
+       stays symmetric with no extra gating because `mirrorToFrame`
+       and `assertFrameMirror` both call the identical deterministic
+       `writeValue` on the identical boxed value, so the two sides can
+       never disagree with each other — independently of whether that
+       boxed value itself agrees with `SystemLinker` (the union
+       default-value gap the Unions contract below still documents).
    - The authority switch: native storage becomes the sole authority
      for all bindings. Merge gate: no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/
