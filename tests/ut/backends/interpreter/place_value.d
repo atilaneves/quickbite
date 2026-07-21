@@ -922,3 +922,144 @@ unittest {
 unittest {
     isPlaceComposable(Type.tint32.pointerTo).should == false;
 }
+
+
+// A pointer place's own bytes ARE the host address (`ai/plans/value.md`
+// decision 15) -- writing a `Value.nativePointerValue` and reading it back
+// must round-trip that exact address, with no element recursion at all.
+@("place_value.writeValue.readValue.pointerRoundTripsHostAddress")
+unittest {
+    auto pointerType = Type.tint32.pointerTo;
+    auto block = NativeBlock.allocate(typeByteSize(pointerType), NativeBlock.Scan.conservative);
+    auto root = placeAt(block, pointerType);
+
+    auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+    auto written = Value.nativePointerValue(pointee.address);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// A stored `null` address reads back as `Value.null_` -- the same value
+// `impl.d` produces for a `null` pointer literal (`isNullExp`'s non-array
+// arm) -- not an invented `nativePointerValue(null)` shape.
+@("place_value.writeValue.readValue.pointerRoundTripsNull")
+unittest {
+    auto pointerType = Type.tint32.pointerTo;
+    auto block = NativeBlock.allocate(typeByteSize(pointerType), NativeBlock.Scan.conservative);
+    auto root = placeAt(block, pointerType);
+
+    writeValue(root, Value.null_);
+
+    readValue(root).should == Value.null_;
+}
+
+
+// A struct with a pointer field composes through the same per-field
+// `writeValue`/`readValue` recursion as any other struct -- and the block
+// backing it must be conservatively scanned, the mechanical fact
+// `NativeStruct.allocate` already derives from `layout.typeHasPointers`
+// (`value.md`'s Containers contract: never defaulted). Asserted directly
+// on the GC attribute, not inferred from a `GC.collect` survival, per that
+// same contract.
+@("place_value.writeValue.readValue.structWithPointerFieldComposesAndBlockIsConservativelyScanned")
+unittest {
+    import core.memory: GC;
+    import quickbite.backends.interpreter.native_struct: NativeStruct;
+
+    auto type = structTypeOf(q{ struct PointerHolder { int* p; int x; } }, "PointerHolder");
+    auto native = NativeStruct.allocate(type);
+    auto root = placeAt(native.block, type);
+
+    auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+
+    int writtenX = 3;
+    writtenX = writtenX * 4 + 1;
+
+    auto written = Value.structValue(
+        "PointerHolder", [Value.nativePointerValue(pointee.address), Value(writtenX)]);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+
+    const attr = GC.getAttr(native.block.address);
+    (attr & GC.BlkAttr.NO_SCAN).should == 0;
+}
+
+
+// A static array of pointers composes element by element, through
+// `Place.index`'s inline stride arithmetic, exactly like a static array of
+// any other place-composable element.
+@("place_value.writeValue.readValue.staticArrayOfPointersComposes")
+unittest {
+    auto arrayType = Type.tint32.pointerTo.sarrayOf(2);
+    auto block = NativeBlock.allocate(typeByteSize(arrayType), NativeBlock.Scan.conservative);
+    auto root = placeAt(block, arrayType);
+
+    auto first = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+    auto second = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+
+    auto written = Value.arrayValue([
+        Value.nativePointerValue(first.address),
+        Value.nativePointerValue(second.address),
+    ]);
+
+    writeValue(root, written);
+
+    readValue(root).should == written;
+}
+
+
+// Unlike a native pointer or `Value.null_`, a boxed pointer carrier with no
+// host address of its own (here, `Value.localPointerValue`, the boxed-era
+// allocation-id carrier) has nothing `writeValue` can store -- it must
+// refuse the write, value-dependently, and leave `place`'s existing
+// address untouched rather than fabricate one.
+@("place_value.writeValue.pointerWithBoxedNonHostAddressValueRefusesAndLeavesDestinationUnchanged")
+unittest {
+    auto pointerType = Type.tint32.pointerTo;
+    auto block = NativeBlock.allocate(typeByteSize(pointerType), NativeBlock.Scan.conservative);
+    auto root = placeAt(block, pointerType);
+
+    auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+    auto original = Value.nativePointerValue(pointee.address);
+    writeValue(root, original);
+
+    writeValue(root, Value.localPointerValue(7)).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place_value.writeValue: pointer "
+        ~ "place requires a Value holding a host address (a native pointer "
+        ~ "or null), not a boxed pointer carrier with no host address to "
+        ~ "store",
+    );
+
+    readValue(root).should == original;
+}
+
+
+// `Place.deref` already follows a pointer place's own stored address to
+// the pointee; this proves the round trip end to end: `writeValue` stores
+// a pointee's own address, `readValue` reads that same address back out
+// boxed, and a NEW place composed straight from the read-back address
+// reaches the identical pointee value -- the point of storing a host
+// address at all, per decision 15.
+@("place_value.writeValue.readValue.derefThroughWrittenPointerReachesPointeeValue")
+unittest {
+    auto pointerType = Type.tint32.pointerTo;
+    auto block = NativeBlock.allocate(typeByteSize(pointerType), NativeBlock.Scan.conservative);
+    auto root = placeAt(block, pointerType);
+
+    auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+    int writtenPointee = 9;
+    writtenPointee = writtenPointee * 3 + 2;
+    writeScalar(pointerType.nextOf, pointee.bytes, Value(writtenPointee));
+
+    writeValue(root, Value.nativePointerValue(pointee.address));
+
+    auto readBack = readValue(root);
+    auto pointeePlace = Place(readBack.asNativePointer, pointerType.nextOf);
+
+    readValue(pointeePlace).asLong.should == writtenPointee;
+}

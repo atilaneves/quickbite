@@ -949,7 +949,32 @@ in parallel and never blocks it.
        from DMD's own member declarations via
        `layout.enumMemberQualifiedName`; `writeValue` already stores an
        enum's bits correctly through the same scalar path, since
-       `Value.asLong` already unwraps an `EnumValue`. A dynamic-array
+       `Value.asLong` already unwraps an `EnumValue`. A pointer is a
+       composable LEAF, not a recursion: its own bytes ARE the host
+       address (decision 15), so `readValue` reads it back via
+       `Place.deref.address` (`Place.deref`'s existing pointer arm,
+       reused rather than growing a parallel raw-address accessor),
+       boxing a `null` address as `Value.null_` — the same value
+       `impl.d` gives a `null` pointer literal — and any other address as
+       `Value.nativePointerValue`. `writeValue` stores a boxed value's
+       own host address through `Place.storeReference` (`place.d`,
+       shared between a pointer and a class place). This refusal is
+       VALUE-dependent, unlike every type-shape refusal elsewhere in
+       this codec: the pointer TYPE is always accepted, and `writeValue`
+       refuses only a `value` that is not itself a host address —
+       `isLocalPointer`'s allocation-id carrier, the struct-shaped
+       `Pointer`, a function pointer's minted id — since none of those
+       boxed-era stand-ins IS the address decision 15 requires, and this
+       codec has no address to invent for them. `isPlaceComposable`
+       still answers `false` for a pointer (a pinned characterization,
+       unchanged): making it `true` would make a pointer local
+       mirror-eligible, but `assertFrameMirror`'s comparison scratch
+       block is allocated `NativeBlock.Scan.no` unconditionally, which
+       is exactly wrong for a live GC address (the Containers contract
+       below: a block holding a pointer must be conservatively scanned,
+       never defaulted) — eligibility needs that scratch allocation's
+       scan policy threaded per-type instead of fixed, deferred to
+       whichever slice does that. A dynamic-array
        local holds a real `{length, ptr}` slice header; a class
        variable holds a reference (address) to an object body owned by
        object identity and stored in `object_table.ObjectTable`, keyed

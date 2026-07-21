@@ -27,11 +27,17 @@ private:
 // above, this place's own bytes are not the object's bytes, only a stored
 // reference to them (`Place.deref` already documents this) -- so the class
 // arm below composes the object's body through that reference rather than
-// this place directly. Anything else -- pointer, `real` -- still has no
-// place-composed shape: a pointer's elements live behind a stored address
-// with no length to recurse over, and `real` is outside `native_scalar`'s
-// codec (see its own header comment) -- so those throw rather than
-// guessing at a byte interpretation.
+// this place directly. A pointer (`Type.isTypePointer`) is a composable
+// LEAF, not a recursion: this place's own bytes ARE the host address
+// (`ai/plans/value.md` decision 15, "there is exactly one data-pointer
+// representation -- the host address"), so the pointer arm below reads
+// exactly that address back out via `Place.deref.address` (the same
+// stored-pointer read `Place.index`'s own pointer case already performs)
+// and boxes it, with no element recursion -- a pointer's pointee is not
+// part of ITS value the way a slice's or static array's elements are.
+// `real` alone is still refused: it is outside `native_scalar`'s codec
+// (see its own header comment), with no place-composed shape to fall back
+// to, so it throws rather than guessing at a byte interpretation.
 public imported!"quickbite.lang".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
@@ -133,6 +139,20 @@ public imported!"quickbite.lang".Value readValue(
         );
     }
 
+    // A pointer place's own bytes are the stored host address itself
+    // (`ai/plans/value.md` decision 15) -- `place.deref` already reads
+    // exactly that address back out (its pointer arm returns a `Place` at
+    // the pointee whose OWN `.address` is that stored value), so reusing it
+    // needs no parallel raw-address accessor. A stored `null` address reads
+    // back as `Value.null_`, matching `impl.d`'s own null-pointer-literal
+    // value (`isNullExp`'s non-array arm) rather than inventing a
+    // `nativePointerValue(null)` shape nothing else in the walker produces.
+    auto pointerType = type.isTypePointer;
+    if (pointerType !is null) {
+        auto address = place.deref.address;
+        return address is null ? Value.null_ : Value.nativePointerValue(address);
+    }
+
     throw new Exception(
         "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
     );
@@ -189,13 +209,28 @@ private imported!"quickbite.lang".Value structValueAt(
 // `writeClassBody` below, the write-side counterpart of `readValue`'s class
 // arm. A union-typed place writes ONE member's bytes rather than recursing
 // every field the way a non-union struct does -- see `writeUnionValue`'s
-// own header comment for why, and for the limits of that choice.
+// own header comment for why, and for the limits of that choice. A
+// pointer-typed place composes symmetrically with `readValue`'s pointer
+// arm -- but its refusal, unlike every type-shape refusal above, is
+// VALUE-dependent, not type-shape-dependent: the type itself (a pointer)
+// is always accepted, and what gets refused is a `value` that has no host
+// address to store. `Value.isNativePointer` or `Value.null_` carry one (a
+// real host address, or the null address); every other pointer-flavoured
+// boxed carrier the walker still has (`isLocalPointer`'s allocation-id
+// carrier, the struct-shaped `Pointer`, a function pointer's minted id)
+// does not, because none of them IS a host address -- they are boxed-era
+// stand-ins for one, and this codec has no address to invent for them.
+// That is a fact about the VALUE handed to a call this slice makes always
+// legal by TYPE, the opposite shape from every refusal above (a slice
+// element type that cannot compose, a class place, a non-scalar `real`),
+// which all refuse the same way for every value of that type.
 public void writeValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     in imported!"quickbite.lang".Value value,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout: structFields, staticArrayLength;
+    import quickbite.lang: Value;
 
     auto type = place.type;
 
@@ -230,9 +265,33 @@ public void writeValue(
         return;
     }
 
+    auto pointerType = type.isTypePointer;
+    if (pointerType !is null) {
+        if (!value.isNativePointer && value != Value.null_)
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.writeValue: "
+                ~ "pointer place requires a Value holding a host address "
+                ~ "(a native pointer or null), not a boxed pointer carrier "
+                ~ "with no host address to store",
+            );
+
+        place.storeReference(nativePointerAddress(value));
+        return;
+    }
+
     throw new Exception(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+// `Value.asNativePointer` is not `@safe`; this is the `@trusted` boundary.
+// Called only once `writeValue`'s pointer arm has already checked `value`
+// is `isNativePointer` or `Value.null_`, so this never reaches
+// `asNativePointer`'s own throwing arm -- it always returns a real host
+// address, or `null`.
+private void* nativePointerAddress(in imported!"quickbite.lang".Value value) @trusted {
+    return value.asNativePointer;
 }
 
 
@@ -263,11 +322,13 @@ public void writeValue(
 // The header write into `place` itself comes LAST, after every element
 // has already been written successfully into `array` -- storage nothing
 // else can yet see, since no guest-visible location points at it until
-// then. An element type `writeValue` cannot compose (a class, pointer, or
-// `real` element, or a nested aggregate containing one) throws from deep
-// in that recursion, before `place`'s own header is ever touched -- so a
-// non-composable element type refuses the WHOLE write, leaving `place`
-// exactly as it was, never a partially written array visible through it.
+// then. An element `writeValue` cannot compose -- a class or `real`
+// element (or a nested aggregate containing one), or a pointer element
+// given a boxed value with no host address (`writeValue`'s own pointer
+// arm) -- throws from deep in that recursion, before `place`'s own header
+// is ever touched -- so a non-composable element refuses the WHOLE write,
+// leaving `place` exactly as it was, never a partially written array
+// visible through it.
 //
 // Lifetime: once this function returns, the only thing keeping `array`'s
 // block reachable from a GC root is `place`'s own header, just written --
@@ -398,11 +459,29 @@ public void writeClassBody(
 // place-composable. Recurses the identical dispatch `readValue`/
 // `writeValue` use (`isNativeScalarType`, `nonUnionStructOf`,
 // `unionStructOf`, `isTypeSArray`) so this predicate can never drift from
-// what those two actually accept -- false for a class, slice/dynamic array,
-// pointer, or `real`, the same set their own header comment gives; a
-// union with ANY such member (a slice, class, pointer, or `real` field)
-// answers `false` for the WHOLE union, exactly like `isClassBodyComposable`
-// declining a whole class body over one non-composable field.
+// what those two actually accept for the shapes it DOES claim -- false for
+// a class, slice/dynamic array, or `real`, the same set their own header
+// comment gives; a union with ANY such member (a slice, class, or `real`
+// field) answers `false` for the WHOLE union, exactly like
+// `isClassBodyComposable` declining a whole class body over one
+// non-composable field.
+//
+// A pointer answers `false` here too, even though `readValue`/`writeValue`
+// now compose one as a leaf: this predicate does not mean "does the codec
+// accept it", it means "is this local eligible for the verified FRAME
+// mirror" (`impl.d`'s `mirrorToFrame`/`assertFrameMirror`), and that
+// mirror's `assertFrameMirror` writes the expected bytes into a SCRATCH
+// block allocated `NativeBlock.Scan.no` (its own comment: a throwaway
+// comparison buffer, never a real local's storage) -- a policy that is
+// exactly wrong for a pointer's own bytes, a live GC-traceable address
+// (`value.md`'s Containers contract: a block holding a pointer must be
+// conservatively scanned, never defaulted). Extending eligibility to a
+// pointer would need that scratch allocation's scan policy threaded
+// per-type instead of fixed, an `impl.d` change out of scope for this
+// slice; until then a pointer local mirrors nowhere and reads only through
+// its boxed authority, matching every other still-unmirrored shape (a
+// slice local mirrors by header alone, `mirrorSliceToFrame`, never through
+// this predicate either).
 public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
 

@@ -141,24 +141,25 @@ public struct Place {
         );
     }
 
-    // The write side of `deref`'s class case: stores `reference` -- a
-    // class object body's own address, or `null` -- as the reference this
-    // class place's own address holds, for a caller that already knows
-    // the address to store (an `object_table.ObjectTable` lookup) rather
-    // than one following it FROM somewhere else. A stored class reference
-    // is itself just a pointer-width bit pattern, the same width `deref`'s
-    // class case already reads back out via `readStoredPointer` -- this is
-    // that read's exact inverse. Only a class place is legal here; a
-    // pointer place's own stored value has no call site yet that needs to
-    // construct it this way (every existing pointer write routes through
-    // `index`/`field` composition into whatever the pointer already
-    // points at, never into the pointer's own slot), so that case stays
-    // refused until one does.
+    // The write side of `deref`'s class case, and now also of a pointer
+    // place's own slot: stores `reference` -- a class object body's own
+    // address, a pointer's own host address, or `null` -- as the
+    // reference/pointer this place's own address holds. A caller here
+    // already knows the address to store (an `object_table.ObjectTable`
+    // lookup for a class, or a boxed `Value`'s own host address for a
+    // pointer -- `place_value.writeValue`'s pointer arm, the call site that
+    // retires the "no call site yet" gap this comment used to record)
+    // rather than one following it FROM somewhere else. A stored class
+    // reference or pointer value is itself just a pointer-width bit
+    // pattern, the same width `deref`'s class case and `index`'s pointer
+    // case already read back out via `readStoredPointer` -- this is that
+    // read's exact inverse. Only a pointer or class place is legal here;
+    // every other type is refused.
     public void storeReference(void* reference) @safe {
-        if (_type.isTypeClass is null)
+        if (_type.isTypePointer is null && _type.isTypeClass is null)
             throw new Exception(
                 "quickbite.backends.interpreter.place.Place.storeReference: "
-                ~ "only a class place can store a reference",
+                ~ "only a pointer or class place can store a reference",
             );
 
         writeStoredPointer(_address, reference);
