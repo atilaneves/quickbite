@@ -381,44 +381,17 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `bin/ut --random` runs must be green and stable. An order-dependent crash or
   hang is a blocker to reproduce with the reported seed and fix; it is not
   acceptable handoff noise.
-- `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is the one
-  remaining red enabled row (`std.conv.text` rendering a `ubyte[]` into an
-  exception message through `std.array.Appender`). The row is blocked on
-  inlining a void IIFE whose body is a single expression statement (Phobos's
-  common `(() @trusted { ... })()` escape idiom, e.g. `std.array.Appender`'s
-  `() @trusted { memcpy(bi.base, ...); }()` growth-copy in `ensureAddable`),
-  the same way a single-`return` IIFE already inlines (mirroring
-  `immediateLambdaReturn`/`singleReturnExpression` for a bare `ExpStatement`
-  instead of a `ReturnStatement`); reproduces standalone as `std.conv.text`
-  with two or more arguments of any type (minimal: `text("a",
-  someUlongLocal)`), surfacing as "Unsupported variable in bytecode core:
-  bi". Inlining that IIFE alone is not safe to land on its own: it turns
-  this row's failure from a caught exception (tolerated as "failing as
-  expected") into a process-terminating `SIGSEGV` — an out-of-bounds
-  `copySlice` (the slice-copy helper in `backends/bytecode/core/machine.d`)
-  while `Appender.put` assigns into the buffer `ensureAddable` just grew,
-  reachable with the same `text("a", ulongLocal)` repro — which would crash
-  any `bin/ut --random` run that reaches this row. The two fixes need to
-  land together — void-IIFE inlining plus whatever produces the bad
-  destination length `copySlice` reads.
-
-  Ruled out: the FFI-bridge {ptr, length}/{length, ptr} word-order
-  violation described above — both descriptor words decode as plausible
-  addresses/lengths in their expected positions; the corrupt value is
-  specifically the length word of one destination sub-slice.
-
-  Diagnosis: several frame slots each hold their own materialised copy of
-  the heap struct's `_data.arr` descriptor, refreshed by a fresh
-  `Op.pointerLoad16` before every read. Exactly one slot — read via
-  `Op.sliceLength`/`Op.subSlice` for the second `put`'s destination
-  sub-slice — is never refreshed and holds a stale value unrelated to the
-  live field. Diagnosed, not fixed: pinning down which compiled access to
-  `_data.arr` (likely inside `bigDataFun`) skips re-materialising its
-  descriptor needs compile-time instrumentation over
-  `dynamicArrayDescriptorOrNull`'s struct-pointer-field branch (compiler.d),
-  not runtime value dumps — confirm whether it reuses a `DynamicArrayLocal`
-  from before the nested call instead of materialising a fresh one, and fix
-  that site.
+- `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is omitted
+  while `std.conv.text` reaches the unsupported ref argument `front(val)`.
+  Implement general ref binding for that Phobos path, then promote the row.
+- `cerealed.emplaceRefWritesArrayElement.Bytecode` is omitted because its
+  scalar array-element destination acquires corrupt slice bounds in the
+  machine. Preserve the destination descriptor through the generated
+  `emplaceRef` wrapper, then promote the row.
+- `struct.staticCharArrayFieldDefaultInit.Bytecode` is omitted while static
+  array field storage rejects DMD's sparse array-literal representation of
+  `char.init`. Expand the `basis` value across null elements, then promote the
+  row.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
@@ -429,17 +402,23 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
+1. `arrayTooShortExceptionMessageIncludesBytes.Bytecode`: support the
+   `std.conv.text` ref argument `front(val)`.
+2. `emplaceRefWritesArrayElement.Bytecode`: preserve the scalar array-element
+   destination descriptor through `emplaceRef`.
+3. `staticCharArrayFieldDefaultInit.Bytecode`: materialize sparse
+   array-literal elements from their `basis` value.
+4. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
    `std.conv.text` dependency path over an exception message character array.
-2. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
+5. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
    lazy evaluation over a mutating struct-typed caller local. Its next blocker
    is `ulong <<=` compound assignment in `Reader.read64`.
-3. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
+6. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
-4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
+7. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-5. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+8. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.

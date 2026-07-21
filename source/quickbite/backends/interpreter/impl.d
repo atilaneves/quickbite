@@ -12326,6 +12326,13 @@ private struct Walker {
             setLocal(alias_.source, defaultValue(alias_.source));
 
         auto source = alias_.source in locals;
+        // A slice argument can name caller storage represented in this child
+        // frame only by a shared native array cell. Write directly through
+        // that authority when no boxed source mirror was carried across.
+        if (source is null && (alias_.source in arrayCells) !is null) {
+            writeThroughArrayCell(alias_.source, alias_.lower + index, value);
+            return;
+        }
         if (source is null)
             throw new Exception("Unsupported interpreter slice assignment target.");
 
@@ -12857,15 +12864,13 @@ private struct Walker {
         // array sibling. A no-op when no cell was ever promoted for
         // `alias_.source`.
         //
-        // `recordStructFieldAlias` records
-        // ANY `DotVarExp` initializer, including a non-scalar (array/nested-
-        // struct) field, but a `structCells` entry only ever holds native
-        // SCALAR field bytes (`writeStructCellScalarFields`'s own guard).
-        // Guard the cell write the same way, or a non-scalar aliased field
-        // reaches `writeScalar` with a type it cannot represent and throws;
-        // the boxed mirror write just above already handles a non-scalar
-        // field correctly on its own.
-        if (structCell !is null) {
+        // `recordStructFieldAlias` records any `DotVarExp` initializer,
+        // including array and nested-struct fields. Refresh the whole cell from
+        // the rebuilt boxed owner so dynamic-array headers stay coherent too.
+        // If no boxed owner exists, retain the narrow scalar-only fallback.
+        if (structCell !is null && source !is null) {
+            writeStructCellScalarFields(*structCell, locals[alias_.source]);
+        } else if (structCell !is null) {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType, writeScalar;
 

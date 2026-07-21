@@ -1412,6 +1412,11 @@ write with `writeLocation(var, Value.arrayValue(elements))`, so the
 authority as every other assignment, including
 `writeThroughStructFieldAlias`.
 
+The alias write must refresh any promoted native struct cell from the rebuilt
+owner, not only its scalar fields. Once promoted, that cell is authoritative
+for reads; leaving a dynamic-array field's slice header stale would overwrite
+the correct boxed growth with the old length on the next field read.
+
 Exposing fixture
 `struct.postfixLengthIncrementGrowsRefParamArrayField`
 (`tests/ut/backends/runner/lang/structs.d`): a `Holder { int[] arr; }`,
@@ -3072,6 +3077,28 @@ shim. Ctfe, Bytecode, and LLVMJit are included as the widest currently-green
 matrix. Verification: `ninja bin/ut` built cleanly; the four focused backend
 instances passed (0 failed); and `bin/ut --random` passed with seed
 `919839423`.
+
+### 9.11 Current unconfirmed language-surface queue
+
+These `Interpreter` omissions are implementation work. Promote each fixture
+back into its `SystemLinker`-oracle matrix after fixing the named red behavior:
+
+- `dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate`: retain the
+  zero-length allocation's pointer identity across `reserve` and append.
+- `pointer.comparisonWithinArray`, `pointer.relationsAcrossArraysReturnFalse`,
+  and `pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly`:
+  provide the native pointer representation required by comparison and
+  write-through operations.
+- `pointer.slicePastAllocatedBlockDiagnostic`: decide whether the interpreter
+  should retain its allocated-block diagnostic; it currently neither matches
+  that characterization nor participates in the compiled-behavior row.
+- `stdConvTextRendersCharArrayExpressionRaw`: keep the character array's full
+  allocated block visible through the `std.array`/`std.conv.text` path.
+- `refArgument.voidStructLocalFieldWritableThroughNestedRefWrite`: materialize
+  the void-initialized struct before nested ref forwarding reads its field.
+- `struct.staticArrayCopyRunsPostblitAndDtors`: preserve pointer fields while
+  copying static-array elements before their postblits run; the current
+  postblit dereferences a null counter pointer and terminates the test process.
 
 ## 10. Completion criteria
 
