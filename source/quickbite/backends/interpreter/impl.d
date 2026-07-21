@@ -538,6 +538,24 @@ private struct Walker {
     // address the moment either one allocates first.
     private ObjectTable* classObjectTable;
 
+    // The identity-to-address capability `place_value.writeClassBody` needs
+    // to write a class-typed FIELD's own reference (an object graph, not
+    // only a single object -- `writeClassBody`'s own header comment) --
+    // `classObjectTable.storageFor` itself, bound to this `Walker`'s own
+    // table. `writeClassBody` takes this as an explicit delegate parameter
+    // rather than importing `impl.d` or `object_table.d` itself, so
+    // `place_value.d` stays pure composition parameterized by a
+    // caller-supplied policy (the same shape `lvalue_place.placeOfLvalue`'s
+    // `resolveBase`/`evalIndex` already use); `&resolveObjectBody` is that
+    // delegate, shared by `mirrorClassToFrame` and `assertClassFrameMirror`
+    // below so neither can resolve an identity differently from the other.
+    private void* resolveObjectBody(
+        size_t identity,
+        imported!"dmd.dclass".ClassDeclaration class_,
+    ) @safe {
+        return classObjectTable.storageFor(identity, class_);
+    }
+
     // The module-lifetime storage backing the verified frame mirror for
     // module-level guest state (`VarDeclaration.isDataseg`: module-level,
     // `__gshared`, or `static`) -- `mirrorToFrame`'s dataseg routing below,
@@ -1074,10 +1092,12 @@ private struct Walker {
     //   null_` instead, handled separately below), so an `isClassObject`
     //   value with identity 0 has no `ObjectTable` key to resolve.
     // - a class whose own fields are not `place_value.
-    //   isClassBodyComposable` (a slice/nested-class field, ... -- see its
-    //   own header): `writeClassBody` would throw recursing into that
-    //   field, so this declines up front rather than letting the write
-    //   raise mid-composition.
+    //   isClassBodyComposable` (a slice field, ... -- see its own header):
+    //   `writeClassBody` would throw recursing into that field, so this
+    //   declines up front rather than letting the write raise
+    //   mid-composition. A class-typed field no longer disqualifies a body
+    //   by itself (`isClassBodyComposable`'s own header) -- an object
+    //   GRAPH, not only a single object, is now eligible.
     // - a class that IS `isClassBodyComposable` (a TYPE-shape question)
     //   but whose current field VALUES do not themselves match
     //   (`classBodyShapeMatches`, the class-body counterpart of
@@ -1090,6 +1110,15 @@ private struct Walker {
     //   arm exists to catch. Without this second check, a class with an
     //   `int*` field pointing at a local (a routine, valid program) would
     //   throw here instead of leaving the local unmirrored.
+    //   `classBodyShapeMatches` now also carries a class-typed field's own
+    //   VALUE-level check -- an unresolvable identity (0, or not actually
+    //   an `isClassObject`), or a live cycle (`class Node { Node next; }`
+    //   with `a.next.next is a`) -- declining a cyclic graph HERE, before
+    //   `writeClassBody` is ever reached, is what keeps this decline and
+    //   `assertClassFrameMirror`'s own identical decline symmetric: neither
+    //   side ever calls `writeClassBody`'s own cycle-throwing recursion in
+    //   the first place (see `writeClassBody`'s own header comment on why
+    //   IT still carries a cycle guard despite this).
     //
     // `Value.null_` DOES mirror, unlike the declines above: a null
     // reference is cheap and verifiable -- a plain `null` pointer written
@@ -1131,7 +1160,7 @@ private struct Walker {
         // Not `const`: `Place`'s constructor and `storeReference` both
         // take a mutable `void*`.
         auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
-        writeClassBody(Place(bodyAddress, classType), value);
+        writeClassBody(Place(bodyAddress, classType), value, &resolveObjectBody);
         Place(mirrorAddress(variable), classType).storeReference(bodyAddress);
     }
 
@@ -1247,15 +1276,104 @@ private struct Walker {
     // the same way `placeShapeMatches` itself keeps the generic path
     // symmetric: neither side can compose a field value the other
     // declined.
-    private static bool classBodyShapeMatches(
+    //
+    // A class-typed field is a second exception, for the identical reason a
+    // pointer field is: `isClassBodyComposable` now answers `true` for one
+    // unconditionally (a TYPE-shape question, its own header comment), but
+    // `writeClassBody` can still refuse the VALUE -- an unresolvable
+    // identity, or a live cycle (`class Node { Node next; }` with
+    // `a.next.next is a`). `classBodyShapeMatchesImpl` below carries that
+    // check, recursing into the referenced object's own fields exactly as
+    // `writeClassBody` itself would, so this stays the single PURE gate
+    // both `mirrorClassToFrame` and `assertClassFrameMirror` call before
+    // either ever reaches `writeClassBody` -- a cycle declines HERE,
+    // deterministically, rather than by throwing out of `writeClassBody`'s
+    // own recursion (this codebase avoids exceptions for control flow; see
+    // AGENTS.md). Not `static` any more: the promoted-cell check below
+    // needs `this.classObjectCells`.
+    private bool classBodyShapeMatches(
         imported!"dmd.dclass".ClassDeclaration class_,
         in Value value,
     ) {
-        import quickbite.backends.interpreter.layout: classFields, declaredType;
+        return classBodyShapeMatchesImpl(class_, value, null);
+    }
 
-        foreach (index, field; classFields(class_))
-            if (!placeShapeMatches(declaredType(field), value.classFieldAt(index)))
+    // `classBodyShapeMatches`'s own recursion, threading `visiting` -- the
+    // set of object identities already being checked along the CURRENT
+    // reference chain -- exactly the DFS "currently in progress" set
+    // `place_value.readClassValue`/`writeClassBodyImpl` each carry on their
+    // own side (see their header comments), kept here instead of there
+    // because this is a VALUE-only check (no address to resolve or write),
+    // so it can decline a cycle without ever calling `writeClassBody` at
+    // all. Keyed by `Value.classIdentity`, not an address: this function
+    // never resolves one (unlike `place_value`'s own guards), it only walks
+    // the boxed VALUE tree, exactly as `placeShapeMatches` already does for
+    // every other shape. An identity is removed once its own subtree
+    // finishes (`scope(exit)`), so two SIBLING fields referencing the SAME
+    // object (a DAG, not a cycle) each still get checked independently --
+    // matching `writeClassBody`'s own "two fields, one address" case, not a
+    // reason to decline.
+    //
+    // A nested identity present in `classObjectCells` is a THIRD decline
+    // condition, and the one closing a real gap found empirically (a
+    // `Parent { Child child; }` object whose `child` was independently
+    // address-taken -- `&someAlias.x` on a SEPARATE local sharing that
+    // identity -- then written through that pointer): `locals[]` caches
+    // one boxed copy of an object graph PER VARIABLE that references it,
+    // and a write through a promoted CELL for one alias's identity is
+    // never propagated into every OTHER variable's own cached copy of the
+    // same nested field (a real, pre-existing boxed-authority limit --
+    // `ai/plans/value.md`'s Cell coherence contract already names the
+    // general shape: "Class-typed fields ... have no cell support on
+    // either the read or write side"). `assertFrameMirror`'s OWN
+    // caller-level guard already skips this exact staleness for a
+    // DIRECTLY promoted variable (`variable in classCells`, checked before
+    // `assertClassFrameMirror` is ever reached); a class-typed FIELD has
+    // no variable of its own to gate on, so this repeats that same
+    // protection one level down, keyed by the shared identity instead of a
+    // binding. Declining here — before `writeClassBody` ever touches this
+    // object's body — is what keeps `mirrorClassToFrame`'s write and
+    // `assertClassFrameMirror`'s verify agreeing: once ANY alias's cell
+    // might hold this identity's true current bytes, this mirror stops
+    // tracking it at all, exactly as it already does for a promoted local.
+    private bool classBodyShapeMatchesImpl(
+        imported!"dmd.dclass".ClassDeclaration class_,
+        in Value value,
+        bool[size_t] visiting,
+    ) {
+        import quickbite.backends.interpreter.layout: classFields, declaredType;
+        import quickbite.backends.interpreter.place_value: isClassBodyComposable;
+
+        foreach (index, field; classFields(class_)) {
+            auto fieldType = declaredType(field);
+            auto fieldValue = value.classFieldAt(index);
+
+            auto fieldClassType = fieldType.isTypeClass;
+            if (fieldClassType is null) {
+                if (!placeShapeMatches(fieldType, fieldValue))
+                    return false;
+                continue;
+            }
+
+            if (fieldValue == Value.null_)
+                continue;
+
+            if (!fieldValue.isClassObject)
                 return false;
+
+            const identity = fieldValue.classIdentity;
+            if (identity == 0 || (identity in visiting) || (identity in classObjectCells))
+                return false;
+
+            if (!isClassBodyComposable(fieldClassType.sym))
+                return false;
+
+            visiting[identity] = true;
+            scope(exit) visiting.remove(identity);
+
+            if (!classBodyShapeMatchesImpl(fieldClassType.sym, fieldValue, visiting))
+                return false;
+        }
 
         return true;
     }
@@ -1391,15 +1509,11 @@ private struct Walker {
     // comparison `assertFrameSliceMirror` performs for a slice header),
     // and -- only once that reference resolves to a real object, not
     // `Value.null_` -- the object body's own fields at that reference,
-    // compared against a fresh `place_value.writeClassBody` composition,
-    // the class counterpart of `assertFrameMirror`'s own scratch
-    // comparison for a composable local.
+    // verified by `assertClassBodyValue` below (own header comment for why
+    // that is a dedicated recursive function rather than a call to
+    // `place_value.writeClassBody` the way `mirrorClassToFrame` makes).
     private void assertClassFrameMirror(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value:
-            isClassBodyComposable, writeClassBody;
-        import quickbite.backends.interpreter.layout: classInstanceByteSize;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.place_value: isClassBodyComposable;
 
         auto classType = variable.type.toBasetype.isTypeClass;
 
@@ -1420,7 +1534,9 @@ private struct Walker {
 
         // Matches `mirrorClassToFrame`'s own identical check, in the same
         // position -- see its header comment for why a TYPE-composable
-        // field is not enough once a pointer field can be one.
+        // field is not enough once a pointer field can be one, and why it
+        // is also the gate that declines a cyclic object graph before
+        // either this function or `writeClassBody` ever reaches one.
         if (!classBodyShapeMatches(classType.sym, value))
             return;
 
@@ -1428,38 +1544,82 @@ private struct Walker {
         // and `assertClassReferenceMirror` all take a mutable `void*`.
         auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
         assertClassReferenceMirror(variable, classType, bodyAddress);
+        assertClassBodyValue(classType, value, identity);
+    }
 
-        // The expected body bytes: `value` written through the identical
-        // `place_value.writeClassBody` composition into a scratch block
-        // sized from DMD's own instance size (`layout.
-        // classInstanceByteSize`, the same size `object_table.
-        // ObjectTable` itself allocates a fresh body with) -- the class
-        // counterpart of `assertFrameMirror`'s own `writeValue`-into-
-        // scratch comparison. `classObjectTable[identity]` (not the frame)
-        // is the actual body -- `(*classObjectTable)` because the shared
-        // table is reached through a pointer (see its own field comment).
-        //
+    // Recursively verifies `value`'s composed bytes against the REAL object
+    // body `classObjectTable` already holds for `identity`, at every depth
+    // an object graph can reach -- the class counterpart of
+    // `assertFrameMirror`'s own `writeValue`-into-scratch comparison for a
+    // single composable local, generalized past one object.
+    //
+    // Deliberately NOT a call to `place_value.writeClassBody` the way
+    // `mirrorClassToFrame` makes: `writeClassBody`'s resolver, for a
+    // class-typed field, hands back the REAL nested object's address and
+    // then WRITES into it -- correct for `mirrorClassToFrame` (it is
+    // supposed to mutate real storage), wrong for an assertion, which must
+    // not mutate the very body it is comparing against. So a class-typed
+    // field here still consults `classObjectTable.storageFor` for the
+    // nested object's own stable address (the identical read
+    // `mirrorClassToFrame`/this function's own caller already performs for
+    // the TOP object), stores that reference into THIS level's scratch, and
+    // recurses into ANOTHER scratch-vs-real comparison one level down,
+    // rather than composing into the real nested body at all.
+    //
+    // No cycle guard of its own: `classBodyShapeMatches`
+    // (`assertClassFrameMirror`'s caller, immediately before this) has
+    // already proven `value`'s graph acyclic for the identical value, so a
+    // cycle reaching here would mean the two disagree -- an invariant this
+    // function trusts rather than re-checks, the same way `writeClassBody`
+    // trusts its own callers once `classBodyShapeMatches` has run.
+    private void assertClassBodyValue(
+        imported!"dmd.mtype".TypeClass classType,
+        in Value value,
+        in size_t identity,
+    ) {
+        import quickbite.backends.interpreter.layout: classFields, classInstanceByteSize;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeValue;
+
         // Scanned conservatively, unconditionally -- not derived from
         // `layout.typeHasPointers` over any one field, the same choice
         // `object_table.allocateBlock` makes for the real body this
         // scratch mirrors, and for the identical reason: every class
         // instance begins with a vtable pointer (and monitor field) at
-        // offset 0 regardless of its own declared fields' types, so
-        // there is no non-pointer-carrying shape for a class body to
-        // check for. `writeClassBody` never writes into that header
-        // region itself (it composes only `layout.classFields`), but a
-        // pointer-typed field (`isClassBodyComposable` no longer excludes
-        // one, now that `isPlaceComposable` accepts a pointer type) can
-        // and does write a genuine host address into this scratch's own
-        // field region -- a real, present-day reason to scan, not merely
-        // future-proofing. A forgotten argument must never silently pick
-        // the unsafe direction (the Containers contract, `value.md`), so
-        // this states the only legal choice explicitly rather than
-        // defaulting to `no` by habit.
+        // offset 0 regardless of its own declared fields' types, so there
+        // is no non-pointer-carrying shape for a class body to check for.
+        // A pointer- or class-typed field also writes a genuine host
+        // address into this scratch's own field region -- a real,
+        // present-day reason to scan, not merely future-proofing.
         const length = classInstanceByteSize(classType.sym);
         auto scratch = NativeBlock.allocate(length, NativeBlock.Scan.conservative);
-        writeClassBody(Place(scratch.address, classType), value);
+        auto scratchPlace = Place(scratch.address, classType);
 
+        foreach (index, field; classFields(classType.sym)) {
+            auto fieldPlace = scratchPlace.field(field);
+            auto fieldValue = value.classFieldAt(index);
+            auto fieldClassType = fieldPlace.type.isTypeClass;
+
+            if (fieldClassType is null) {
+                writeValue(fieldPlace, fieldValue);
+                continue;
+            }
+
+            if (fieldValue == Value.null_) {
+                fieldPlace.storeReference(null);
+                continue;
+            }
+
+            const nestedIdentity = fieldValue.classIdentity;
+            auto nestedAddress = classObjectTable.storageFor(nestedIdentity, fieldClassType.sym);
+            fieldPlace.storeReference(nestedAddress);
+            assertClassBodyValue(fieldClassType, fieldValue, nestedIdentity);
+        }
+
+        // `classObjectTable[identity]` (not the frame) is the actual body
+        // -- `(*classObjectTable)` because the shared table is reached
+        // through a pointer (see its own field comment).
         assert(
             (*classObjectTable)[identity].bytes == scratch.bytes,
             "class body mirror diverged from boxed local",

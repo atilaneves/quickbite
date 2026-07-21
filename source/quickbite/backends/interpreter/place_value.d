@@ -27,7 +27,11 @@ private:
 // above, this place's own bytes are not the object's bytes, only a stored
 // reference to them (`Place.deref` already documents this) -- so the class
 // arm below composes the object's body through that reference rather than
-// this place directly. A pointer (`Type.isTypePointer`) is a composable
+// this place directly, delegating to `readClassValue` (own header comment)
+// for the recursion, since a class field can itself point at another
+// object -- an object GRAPH, not only a single object -- and that
+// recursion needs a cycle guard a plain `readValue` call does not carry.
+// A pointer (`Type.isTypePointer`) is a composable
 // LEAF, not a recursion: this place's own bytes ARE the host address
 // (`ai/plans/value.md` decision 15, "there is exactly one data-pointer
 // representation -- the host address"), so the pointer arm below reads
@@ -115,40 +119,14 @@ public imported!"quickbite.lang".Value readValue(
         return Value.arrayValue(elements);
     }
 
-    auto classType = type.isTypeClass;
-    if (classType !is null) {
-        import quickbite.backends.interpreter.layout:
-            classFields, classQualifiedName, classHierarchyNames, fieldName;
-
-        // `place.deref` follows this place's own stored reference and keeps
-        // the class type, giving a place at the object body's own address
-        // (`place.d`'s own contract) -- a null reference (no object bound
-        // yet) reads back as `Value.null_` rather than attempting to read
-        // fields through a null address.
-        auto bodyPlace = place.deref;
-        if (bodyPlace.address is null)
-            return Value.null_;
-
-        string[] fieldNames;
-        Value[] fields;
-        foreach (field; classFields(classType.sym)) {
-            fieldNames ~= fieldName(field);
-            fields ~= readValue(bodyPlace.field(field));
-        }
-
-        // Identity IS the body's own address (`ai/plans/value.md` decision
-        // 15): unlike the boxed walker's minted `classIdentity` counter,
-        // native storage already has a stable, unique fact for "which
-        // object is this" -- the address `object_table.ObjectTable` handed
-        // out for it -- so there is nothing left to invent here.
-        return Value.classValue(
-            classQualifiedName(classType.sym),
-            classHierarchyNames(classType.sym),
-            fieldNames,
-            fields,
-            cast(size_t) bodyPlace.address,
-        );
-    }
+    // A class-typed FIELD is itself a stored reference (identical shape to
+    // `place` here), so composing an object graph -- a class field pointing
+    // at another object, `class Node { Node next; }` being the extreme
+    // case -- needs the same `deref`-then-compose treatment recursively.
+    // `readClassValue` carries that recursion (and its cycle guard); see
+    // its own header comment.
+    if (type.isTypeClass !is null)
+        return readClassValue(place, null);
 
     // A pointer place's own bytes are the stored host address itself
     // (`ai/plans/value.md` decision 15) -- `place.deref` already reads
@@ -166,6 +144,80 @@ public imported!"quickbite.lang".Value readValue(
 
     throw new Exception(
         "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
+    );
+}
+
+
+// The class-composing recursion `readValue`'s class arm delegates to,
+// carrying `visiting` -- the set of object-body addresses already being
+// read along the CURRENT reference chain -- so a live cycle
+// (`class Node { Node next; }` with `a.next.next is a`) declines with a
+// clear exception instead of recursing forever. `place` is at a class-typed
+// place (a stored reference, `place`'s own contract), exactly the shape
+// `readValue`'s class arm and a class-typed FIELD's own place share, which
+// is what lets this function call itself directly for a nested class field
+// rather than routing back through the generic `readValue` dispatch (kept
+// simple below: only a class-typed field recurses through `readClassValue`;
+// every other field type recurses through `readValue` unchanged, since a
+// struct or array field can never reintroduce a class reference into this
+// chain -- `writeValue`'s own struct/array arms refuse a class-typed field
+// outright, see their header comment, so no native storage this codebase
+// ever writes can carry one except directly, through another class-typed
+// field).
+//
+// `visiting` is keyed by the body's OWN address, not a minted counter --
+// decision 15's "identity IS the address" (`ai/plans/value.md`), the same
+// fact the returned `Value.classValue`'s `identity` argument uses below --
+// and it is a genuine "currently being read" set, not a "read at all"
+// set: an address is removed once its own subtree finishes (`scope(exit)`),
+// so two SIBLING fields referencing the SAME object (a DAG, not a cycle)
+// each still compose independently, matching `object_table.ObjectTable`'s
+// own "one identity, one address" guarantee rather than needing a second
+// one here.
+private imported!"quickbite.lang".Value readClassValue(
+    imported!"quickbite.backends.interpreter.place".Place place,
+    bool[size_t] visiting,
+) @safe {
+    import quickbite.backends.interpreter.layout:
+        classFields, classQualifiedName, classHierarchyNames, fieldName;
+    import quickbite.lang: Value;
+
+    // `place.deref` follows this place's own stored reference and keeps
+    // the class type, giving a place at the object body's own address
+    // (`place.d`'s own contract) -- a null reference (no object bound
+    // yet) reads back as `Value.null_` rather than attempting to read
+    // fields through a null address.
+    auto bodyPlace = place.deref;
+    if (bodyPlace.address is null)
+        return Value.null_;
+
+    const identity = cast(size_t) bodyPlace.address;
+    if (identity in visiting)
+        throw new Exception(
+            "quickbite.backends.interpreter.place_value.readValue: "
+            ~ "cyclic class object graph",
+        );
+    visiting[identity] = true;
+    scope(exit) visiting.remove(identity);
+
+    auto classType = place.type.isTypeClass;
+    string[] fieldNames;
+    Value[] fields;
+    foreach (field; classFields(classType.sym)) {
+        fieldNames ~= fieldName(field);
+
+        auto fieldPlace = bodyPlace.field(field);
+        fields ~= fieldPlace.type.isTypeClass !is null
+            ? readClassValue(fieldPlace, visiting)
+            : readValue(fieldPlace);
+    }
+
+    return Value.classValue(
+        classQualifiedName(classType.sym),
+        classHierarchyNames(classType.sym),
+        fieldNames,
+        fields,
+        identity,
     );
 }
 
@@ -516,14 +568,57 @@ private void writeUnionValue(
 // address paired with `place.placeAt` gives directly), not a place holding
 // a reference to it. There is no reference to store here -- unlike
 // `writeValue`, which refuses a class-typed place because it would have to
-// invent or look up that reference -- so this has no such gap: the body's
-// own address is already `bodyPlace.address`, supplied by whoever called
-// this (`object_table.ObjectTable`, eventually via `impl.d`'s wiring).
+// invent or look up that reference -- so this has no such gap for THIS
+// object's own fields: the body's own address is already `bodyPlace.
+// address`, supplied by whoever called this (`object_table.ObjectTable`).
+//
+// A class-typed FIELD is a second, nested instance of that exact gap one
+// level down -- writing a reference into the field's own slot needs an
+// object-body address for THAT identity too. `resolveObjectBody` is the
+// explicit capability that closes it: a caller-supplied identity-to-address
+// function (`impl.d` satisfies it from its own `classObjectTable`, the
+// identical `ObjectTable` this function's own top-level address already
+// came from), rather than this module importing the walker or holding any
+// table of its own -- the same "caller supplies a resolver, this module
+// stays pure composition" shape `lvalue_place.placeOfLvalue`'s own
+// `resolveBase`/`evalIndex` parameters already use. A `null` field value
+// stores a `null` reference and recurses no further, matching `readValue`'s
+// own null-reference short circuit. A non-`null` field value that is not a
+// class object, or carries no real identity (`classIdentity == 0`), has
+// nothing this function can resolve, so it throws rather than guessing.
+//
+// Cycle guard: `writeClassBodyImpl` threads a `visiting` set exactly like
+// `readClassValue`'s own (see its header comment for the DFS "currently
+// being written" reasoning) so a live cycle declines with a clear exception
+// instead of recursing forever. Unlike `writeSliceValue`'s "never touch the
+// destination until every element is written" guarantee, a cycle detected
+// here may have already written PRECEDING fields (of this object or an
+// ancestor's) before the throw -- an all-or-nothing guarantee would need a
+// separate, side-effect-free pre-pass this module has no reason to grow,
+// since every real call site (`impl.d`'s `mirrorClassToFrame`/
+// `assertClassFrameMirror`) already runs the pure, cycle-aware
+// `classBodyShapeMatches` gate first and never reaches a cycle here at all;
+// this function's own guard exists so a direct call (this module's own
+// tests) still terminates rather than overflowing the stack.
 public void writeClassBody(
     imported!"quickbite.backends.interpreter.place".Place bodyPlace,
     in imported!"quickbite.lang".Value value,
+    void* delegate(size_t identity, imported!"dmd.dclass".ClassDeclaration class_) @safe
+        resolveObjectBody,
+) @safe {
+    writeClassBodyImpl(bodyPlace, value, resolveObjectBody, null);
+}
+
+private void writeClassBodyImpl(
+    imported!"quickbite.backends.interpreter.place".Place bodyPlace,
+    in imported!"quickbite.lang".Value value,
+    void* delegate(size_t identity, imported!"dmd.dclass".ClassDeclaration class_) @safe
+        resolveObjectBody,
+    bool[size_t] visiting,
 ) @safe {
     import quickbite.backends.interpreter.layout: classFields;
+    import quickbite.backends.interpreter.place: Place;
+    import quickbite.lang: Value;
 
     auto classType = bodyPlace.type.isTypeClass;
     if (classType is null)
@@ -532,8 +627,44 @@ public void writeClassBody(
             ~ "bodyPlace must be a class-typed place",
         );
 
-    foreach (index, field; classFields(classType.sym))
-        writeValue(bodyPlace.field(field), value.classFieldAt(index));
+    const identity = cast(size_t) bodyPlace.address;
+    if (identity in visiting)
+        throw new Exception(
+            "quickbite.backends.interpreter.place_value.writeClassBody: "
+            ~ "cyclic class object graph",
+        );
+    visiting[identity] = true;
+    scope(exit) visiting.remove(identity);
+
+    foreach (index, field; classFields(classType.sym)) {
+        auto fieldPlace = bodyPlace.field(field);
+        auto fieldValue = value.classFieldAt(index);
+
+        if (fieldPlace.type.isTypeClass is null) {
+            writeValue(fieldPlace, fieldValue);
+            continue;
+        }
+
+        if (fieldValue == Value.null_) {
+            fieldPlace.storeReference(null);
+            continue;
+        }
+
+        if (!fieldValue.isClassObject || fieldValue.classIdentity == 0)
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.writeClassBody: "
+                ~ "class-typed field requires a Value holding a class "
+                ~ "object with a real identity, or null",
+            );
+
+        auto nestedClassType = fieldPlace.type.isTypeClass;
+        auto nestedAddress =
+            resolveObjectBody(fieldValue.classIdentity, nestedClassType.sym);
+        fieldPlace.storeReference(nestedAddress);
+        writeClassBodyImpl(
+            Place(nestedAddress, fieldPlace.type), fieldValue, resolveObjectBody, visiting,
+        );
+    }
 }
 
 
@@ -628,18 +759,42 @@ private bool allFieldsComposable(imported!"dmd.mtype".TypeStruct structType) @sa
 // `isPlaceComposable` already carries for a struct's fields. Deliberately
 // reuses `isPlaceComposable` per field rather than growing a parallel
 // dispatch, for the identical anti-drift reason `isPlaceComposable`'s own
-// header gives: a field whose type is itself a class answers `false` here
-// too (`isPlaceComposable` already says so), matching `writeClassBody`'s
-// own field-by-field `writeValue` calls, which refuse a class-typed field
-// exactly as `writeValue` refuses any class-typed place.
+// header gives.
+//
+// A field whose type is itself a class is the one exception, answering
+// `true` unconditionally rather than delegating to `isPlaceComposable`
+// (which still, deliberately, answers `false` for a class type -- see its
+// own header comment: that predicate gates the plain composable-local
+// mirror, unrelated to this one). `writeClassBody` now has a resolver
+// capability to write a class-typed field's own reference (its own header
+// comment), so the field's TYPE always composes; what can still fail is a
+// VALUE-level fact -- an unresolvable identity, or a cycle -- neither of
+// which this predicate can see (it takes a `ClassDeclaration`, not a
+// `Value`), and neither of which is a TYPE question in the first place.
+// `impl.d`'s `classBodyShapeMatches` is the value-level counterpart that
+// catches those, called identically alongside this predicate by both
+// `mirrorClassToFrame` and `assertClassFrameMirror` before either ever
+// reaches `writeClassBody`. Answering `true` here unconditionally, rather
+// than recursing into the referenced class's OWN `isClassBodyComposable`,
+// is also what keeps this a plain, terminating TYPE-shape walk: DMD class
+// declarations are free to reference themselves directly
+// (`class Node { Node next; }`), and a class's own field TYPES form no
+// well-founded recursion to bottom out on the way `isPlaceComposable`'s
+// struct/array recursion does (a struct cannot contain itself by value,
+// but a class field naming its own class is completely ordinary D).
 public bool isClassBodyComposable(
     imported!"dmd.dclass".ClassDeclaration class_,
 ) @safe {
     import quickbite.backends.interpreter.layout: classFields, declaredType;
 
-    foreach (field; classFields(class_))
-        if (!isPlaceComposable(declaredType(field)))
+    foreach (field; classFields(class_)) {
+        auto fieldType = declaredType(field);
+        if (fieldType.isTypeClass !is null)
+            continue;
+
+        if (!isPlaceComposable(fieldType))
             return false;
+    }
 
     return true;
 }

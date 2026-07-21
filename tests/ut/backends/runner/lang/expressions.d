@@ -2839,6 +2839,95 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A class field whose own type is a class -- an object GRAPH, not only a
+// single object -- built as a short linked list, then mutated and read back
+// through the SAME chain of field accesses throughout: this is the
+// real-object-graph shape the native frame mirror's class-body composition
+// now has to compose and verify without asserting. Deliberately built and
+// read through one root reference only (`first.next...`), never through a
+// second, independent local bound to an interior node: `ai/plans/value.md`'s
+// Cell coherence contract already names class-typed fields as having "no
+// cell support on either the read or write side", and a second alias into
+// the middle of the graph is exactly the shape that gap affects -- out of
+// this fixture's scope, which is the mirror's own composition, not that
+// pre-existing boxed-authority limit.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.linkedListNodeMutationVisibleThroughChain." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Node {
+                int value;
+                Node next;
+            }
+
+            int mark(int seed) {
+                return seed * 5 + 2;
+            }
+
+            unittest {
+                auto first = new Node();
+                first.value = mark(1);
+                first.next = new Node();
+                first.next.value = mark(2);
+                first.next.next = new Node();
+                first.next.next.value = mark(3);
+
+                assert(first.value == mark(1));
+                assert(first.next.value == mark(2));
+                assert(first.next.next.value == mark(3));
+
+                first.next.next.value = mark(30);
+
+                assert(first.next.next.value == mark(30));
+                assert(first.next.value == mark(2));
+                assert(first.value == mark(1));
+            }
+        });
+    }
+}
+
+// A class-typed field reassigned to a NEW object must observe the new
+// object's own fields afterward, not retain the old object's -- ordinary
+// class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
+// coherence contract), which the native mirror's object-graph composition
+// must not disturb.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classField.reassignedObjectFieldObservesNewObjectsFields." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int value;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            int mark(int seed) {
+                return seed * 3 + 1;
+            }
+
+            unittest {
+                auto parent = new Parent();
+
+                parent.child = new Child();
+                parent.child.value = mark(1);
+                assert(parent.child.value == mark(1));
+
+                parent.child = new Child();
+                parent.child.value = mark(2);
+                assert(parent.child.value == mark(2));
+            }
+        });
+    }
+}
+
 // Two ref class parameters bound from the same plain variable denote the same
 // reference slot, so taking either parameter's address must produce equal
 // pointers.
@@ -6428,3 +6517,6 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+

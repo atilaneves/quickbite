@@ -8,14 +8,32 @@ import quickbite.backends.interpreter.place_value:
 import quickbite.backends.interpreter.place: Place, placeAt;
 import quickbite.backends.interpreter.layout:
     fieldByteOffset, structFields, typeByteSize, classFields, classInstanceByteSize,
-    classQualifiedName, classHierarchyNames, fieldName;
+    classQualifiedName, classHierarchyNames, fieldName, declaredType;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar;
+import quickbite.backends.interpreter.object_table: ObjectTable;
 import quickbite.lang: Value;
+import dmd.dclass: ClassDeclaration;
 import dmd.mtype: Type;
 import dmd.typesem: sarrayOf, pointerTo;
 
 private:
+
+
+// `writeClassBody`'s resolver capability, for the fixtures below that write
+// no class-typed field at all: reaching it would mean this module's own
+// dispatch is broken, not a legitimate call. Returns a delegate (rather than
+// being one itself) since a plain function does not implicitly convert to a
+// delegate parameter at the call site.
+private void* delegate(size_t identity, ClassDeclaration class_) @safe
+unreachableResolveObjectBody() @safe {
+    return (identity, class_) @safe {
+        throw new Exception(
+            "place_value test: unreachableResolveObjectBody: no class-typed "
+            ~ "field expected in this fixture",
+        );
+    };
+}
 
 
 // `P.y` follows `P.x` with the host compiler's own alignment padding, so a
@@ -256,7 +274,7 @@ unittest {
         cast(size_t) bodyBlock.address,
     );
 
-    writeClassBody(bodyPlace, written);
+    writeClassBody(bodyPlace, written, unreachableResolveObjectBody());
 
     auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
     *cast(void**) referenceSlot.address = bodyBlock.address;
@@ -296,7 +314,7 @@ unittest {
         cast(size_t) bodyBlock.address,
     );
 
-    writeClassBody(bodyPlace, written);
+    writeClassBody(bodyPlace, written, unreachableResolveObjectBody());
 
     auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
     *cast(void**) referenceSlot.address = bodyBlock.address;
@@ -350,7 +368,7 @@ unittest {
         cast(size_t) bodyBlock.address,
     );
 
-    writeClassBody(bodyPlace, written);
+    writeClassBody(bodyPlace, written, unreachableResolveObjectBody());
 
     auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
     *cast(void**) referenceSlot.address = bodyBlock.address;
@@ -407,6 +425,262 @@ unittest {
     );
 
     isClassBodyComposable(classType.sym).should == false;
+}
+
+
+// A class-typed field no longer disqualifies a body on its own -- an object
+// GRAPH, not only a single object, is what this slice unlocks
+// (`writeClassBody`'s own `resolveObjectBody` capability). The predicate's
+// answer must match what `writeClassBody`/`readValue` actually accept, the
+// same round trip meaning it has always carried.
+@("place_value.isClassBodyComposable.trueForClassTypedField")
+unittest {
+    auto classType = classTypeOf(
+        q{
+            class Child { int x; }
+            class Parent { Child child; }
+        },
+        "Parent",
+    );
+
+    isClassBodyComposable(classType.sym).should == true;
+}
+
+
+// The object-graph round trip this slice exists for: `Parent.child` is
+// itself class-typed, so composing `Parent`'s own body needs to write a
+// SECOND object's body (`Child`'s) and store a reference to it, not just
+// scalar/struct/array fields. `writeClassBody`'s `resolveObjectBody`
+// capability supplies the nested identity-to-address translation; here it
+// is the plain cast decision 15 makes legal for a NATIVE-only identity
+// (`readClassValue`'s own header comment: identity IS the address), since
+// `childBlock`'s own address is what both sides of the round trip agree to
+// call the child's identity.
+@("place_value.writeClassBody.readValue.classFieldObjectGraphRoundTrips")
+unittest {
+    auto parentType = classTypeOf(
+        q{
+            class Child { int x; }
+            class Parent { Child child; }
+        },
+        "Parent",
+    );
+    auto parentFields = classFields(parentType.sym);
+    auto childType = declaredType(parentFields[0]).isTypeClass;
+
+    auto parentBlock = NativeBlock.allocate(
+        classInstanceByteSize(parentType.sym), NativeBlock.Scan.conservative);
+    auto childBlock = NativeBlock.allocate(
+        classInstanceByteSize(childType.sym), NativeBlock.Scan.conservative);
+
+    int writtenX = 4;
+    writtenX = writtenX * 5 + 1;
+
+    auto childFields = classFields(childType.sym);
+    auto childValue = Value.classValue(
+        classQualifiedName(childType.sym),
+        classHierarchyNames(childType.sym),
+        [fieldName(childFields[0])],
+        [Value(writtenX)],
+        cast(size_t) childBlock.address,
+    );
+
+    auto parentValue = Value.classValue(
+        classQualifiedName(parentType.sym),
+        classHierarchyNames(parentType.sym),
+        [fieldName(parentFields[0])],
+        [childValue],
+        cast(size_t) parentBlock.address,
+    );
+
+    writeClassBody(
+        placeAt(parentBlock, parentType), parentValue,
+        (identity, class_) => cast(void*) identity,
+    );
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = parentBlock.address;
+    auto referencePlace = placeAt(referenceSlot, parentType);
+
+    readValue(referencePlace).should == parentValue;
+}
+
+
+// A `null` nested reference must round-trip as `Value.null_`, the same as
+// a top-level class reference does, and must never reach the resolver --
+// there is no identity to resolve for "no object bound yet"
+// (`unreachableResolveObjectBody` throws if it is ever called).
+@("place_value.writeClassBody.readValue.classFieldNullReferenceRoundTrips")
+unittest {
+    auto parentType = classTypeOf(
+        q{
+            class Child { int x; }
+            class Parent { Child child; }
+        },
+        "Parent",
+    );
+    auto parentFields = classFields(parentType.sym);
+
+    auto parentBlock = NativeBlock.allocate(
+        classInstanceByteSize(parentType.sym), NativeBlock.Scan.conservative);
+
+    auto parentValue = Value.classValue(
+        classQualifiedName(parentType.sym),
+        classHierarchyNames(parentType.sym),
+        [fieldName(parentFields[0])],
+        [Value.null_],
+        cast(size_t) parentBlock.address,
+    );
+
+    writeClassBody(
+        placeAt(parentBlock, parentType), parentValue, unreachableResolveObjectBody());
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = parentBlock.address;
+    auto referencePlace = placeAt(referenceSlot, parentType);
+
+    readValue(referencePlace).should == parentValue;
+}
+
+
+// Two fields referencing the SAME object must resolve to ONE body address,
+// not two independent ones -- `ObjectTable.storageFor`'s own "stable
+// address across repeated calls for the same identity" contract, exercised
+// here through `writeClassBody`'s resolver rather than directly. Unlike the
+// round-trip fixture above, the shared identity is an arbitrary
+// caller-chosen number (boxed-era style), not itself an address, so this
+// also proves it is the RESOLVER's job to mint/look up the real address,
+// not this module's own arithmetic.
+@("place_value.writeClassBody.readValue.twoFieldsReferencingSameObjectShareOneBodyAddress")
+unittest {
+    auto parentType = classTypeOf(
+        q{
+            class Child { int x; }
+            class Parent { Child first; Child second; }
+        },
+        "Parent",
+    );
+    auto parentFields = classFields(parentType.sym);
+    auto childType = declaredType(parentFields[0]).isTypeClass;
+
+    auto parentBlock = NativeBlock.allocate(
+        classInstanceByteSize(parentType.sym), NativeBlock.Scan.conservative);
+
+    int writtenX = 6;
+    writtenX = writtenX * 3 + 1;
+
+    const sharedIdentity = 7;
+    auto childFields = classFields(childType.sym);
+    auto childValue = Value.classValue(
+        classQualifiedName(childType.sym),
+        classHierarchyNames(childType.sym),
+        [fieldName(childFields[0])],
+        [Value(writtenX)],
+        sharedIdentity,
+    );
+
+    auto parentValue = Value.classValue(
+        classQualifiedName(parentType.sym),
+        classHierarchyNames(parentType.sym),
+        [fieldName(parentFields[0]), fieldName(parentFields[1])],
+        [childValue, childValue],
+        cast(size_t) parentBlock.address,
+    );
+
+    ObjectTable table;
+    writeClassBody(
+        placeAt(parentBlock, parentType), parentValue,
+        (identity, class_) => table.storageFor(identity, class_),
+    );
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = parentBlock.address;
+    auto referencePlace = placeAt(referenceSlot, parentType);
+
+    auto read = readValue(referencePlace);
+    const firstIdentity = read.classFieldAt(0).classIdentity;
+    const secondIdentity = read.classFieldAt(1).classIdentity;
+
+    firstIdentity.should == secondIdentity;
+    (firstIdentity != 0).should == true;
+    read.classFieldAt(0).classFieldAt(0).asLong.should == writtenX;
+    read.classFieldAt(1).classFieldAt(0).asLong.should == writtenX;
+}
+
+
+// `readValue` must decline a live cycle in ALREADY-WRITTEN native storage
+// (`a.next.next is a`) rather than recursing forever -- wired directly
+// through `Place.field`/`storeReference`, bypassing `writeClassBody`
+// entirely, since this fixture is about the READ side refusing to walk a
+// cyclic reference chain, not about how that chain came to exist.
+@("place_value.readValue.classFieldCycleDeclines")
+unittest {
+    auto nodeType = classTypeOf(q{ class Node { Node next; } }, "Node");
+    auto fields = classFields(nodeType.sym);
+
+    auto nodeABlock = NativeBlock.allocate(
+        classInstanceByteSize(nodeType.sym), NativeBlock.Scan.conservative);
+    auto nodeBBlock = NativeBlock.allocate(
+        classInstanceByteSize(nodeType.sym), NativeBlock.Scan.conservative);
+
+    auto placeA = placeAt(nodeABlock, nodeType);
+    auto placeB = placeAt(nodeBBlock, nodeType);
+
+    placeA.field(fields[0]).storeReference(nodeBBlock.address);
+    placeB.field(fields[0]).storeReference(nodeABlock.address);
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = nodeABlock.address;
+    auto referencePlace = placeAt(referenceSlot, nodeType);
+
+    readValue(referencePlace).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place_value.readValue: cyclic class object graph",
+    );
+}
+
+
+// `writeClassBody` must equally decline a cyclic OBJECT GRAPH DESCRIPTION
+// (`a`'s own `next` field is `b`, whose `next` field is `a` again, same
+// identity) rather than recursing forever -- a shape `readValue` itself
+// could never produce from live storage (`Value` is a finite tree; see
+// `place_value.readClassValue`'s own header comment), built by hand here to
+// exercise the write side's own cycle guard directly.
+@("place_value.writeClassBody.classFieldCycleDeclines")
+unittest {
+    auto nodeType = classTypeOf(q{ class Node { Node next; } }, "Node");
+    auto fields = classFields(nodeType.sym);
+
+    auto nodeABlock = NativeBlock.allocate(
+        classInstanceByteSize(nodeType.sym), NativeBlock.Scan.conservative);
+    auto nodeBBlock = NativeBlock.allocate(
+        classInstanceByteSize(nodeType.sym), NativeBlock.Scan.conservative);
+
+    const identityA = cast(size_t) nodeABlock.address;
+    const identityB = cast(size_t) nodeBBlock.address;
+
+    // `a`'s `next` is `b`; `b`'s `next` claims to be `a` again (same
+    // identity, `identityA`) -- the sub-fields on that innermost "claims to
+    // be `a`" node are never reached (the cycle is caught first), so they
+    // are an arbitrary but valid placeholder.
+    auto claimsToBeA = Value.classValue(
+        classQualifiedName(nodeType.sym), classHierarchyNames(nodeType.sym),
+        [fieldName(fields[0])], [Value.null_], identityA,
+    );
+    auto nodeB = Value.classValue(
+        classQualifiedName(nodeType.sym), classHierarchyNames(nodeType.sym),
+        [fieldName(fields[0])], [claimsToBeA], identityB,
+    );
+    auto nodeA = Value.classValue(
+        classQualifiedName(nodeType.sym), classHierarchyNames(nodeType.sym),
+        [fieldName(fields[0])], [nodeB], identityA,
+    );
+
+    writeClassBody(
+        placeAt(nodeABlock, nodeType), nodeA,
+        (identity, class_) => cast(void*) identity,
+    ).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place_value.writeClassBody: cyclic class object graph",
+    );
 }
 
 

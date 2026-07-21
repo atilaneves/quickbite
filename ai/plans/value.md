@@ -1142,11 +1142,68 @@ in parallel and never blocks it.
        `classObjectTable`, wired into the verified frame mirror above
        but not into this generic per-place dispatch, which has no
        such table to consult), so that arm stays deferred until the
-       authority switch itself supplies one.
-       `place_value.isClassBodyComposable` answers whether a class's
-       own fields round-trip this way, recursing the identical
-       `isPlaceComposable` check `writeClassBody`'s own field writes
-       rely on so the two cannot drift. A union composes as what it
+       authority switch itself supplies one. A class-typed FIELD now
+       composes too — an object GRAPH, not only a single object —
+       because `writeClassBody` takes an explicit
+       `resolveObjectBody` capability (identity-to-address, the same
+       caller-supplied-policy shape `lvalue_place.placeOfLvalue`'s
+       `resolveBase`/`evalIndex` already use; `impl.d` satisfies it
+       from `classObjectTable` itself) and recurses into a nested
+       field's own body once that address is resolved; `readValue`'s
+       class arm (`place_value.readClassValue`) already composed a
+       nested class field with no changes needed, since a field's
+       place is shaped identically to the top-level one. Cycle policy:
+       both `readClassValue` and `writeClassBody` thread a DFS
+       "currently on this reference chain" identity set (removed on
+       backtrack, so two SIBLING fields sharing one identity — a DAG,
+       not a cycle — still compose independently) and THROW, declining
+       rather than recursing forever or silently truncating, the
+       moment an identity reappears on the path.
+       `place_value.isClassBodyComposable` answers `true`
+       unconditionally for a class-typed field (a TYPE-shape question;
+       recursing into the referenced class's own fields would have no
+       well-founded base case for a self-referencing declaration like
+       `class Node { Node next; }`) rather than recursing the
+       `isPlaceComposable` check it still uses for every other field
+       type. The VALUE-level questions `isClassBodyComposable` cannot
+       ask — an unresolvable identity, a live cycle, or a nested
+       object whose OTHER field is itself not composable — are
+       `impl.d`'s `classBodyShapeMatches`, extended with the identical
+       identity-keyed DFS guard, recursing into a class-typed field's
+       own value before `mirrorClassToFrame`/`assertClassFrameMirror`
+       ever reach `writeClassBody`, so a cycle declines there,
+       deterministically, rather than by throwing out of
+       `writeClassBody`'s own recursion (this codebase avoids
+       exceptions for control flow). `classBodyShapeMatches` also
+       declines whenever a nested identity is present in
+       `classObjectCells` (the boxed-era promoted-cell table) — a real
+       gap found empirically, not hypothesized: `locals[]` caches one
+       boxed copy of an object graph PER VARIABLE that references it,
+       and neither a write through an independently promoted cell for
+       a shared identity nor a deep field-chain assignment
+       (`a.b.c.value = x`) propagates into every OTHER variable's own
+       cached copy of that identity — `assertFrameMirror`'s own
+       caller-level guard already skips this exact staleness for a
+       DIRECTLY promoted variable (`variable in classCells`); a
+       class-typed field has no variable of its own to gate on, so
+       this repeats that protection one level down. The mirror's own
+       object-body comparison (`impl.d`'s `assertClassBodyValue`) is a
+       DEDICATED recursive function, not a call to `writeClassBody`:
+       `writeClassBody`'s resolver writes into the REAL nested body
+       (correct for `mirrorClassToFrame`, wrong for an assertion, which
+       must never mutate the body it is comparing against), so
+       `assertClassBodyValue` builds one scratch per graph level and
+       compares each against `classObjectTable`'s own entry instead.
+       Residual, NOT fixed by this slice (out of scope — authority
+       stays boxed): the `classObjectCells` decline above only papers
+       over the symptom for the mirror; the underlying boxed-authority
+       staleness (a write through one alias of a shared object graph
+       not propagating into every other alias's own cached copy) is a
+       real, pre-existing gap in `locals[]` itself, found while adding
+       this slice's own Matrix fixtures (mutating a linked-list node
+       through a SEPARATE local aliasing an interior node, then
+       reading it back through a DIFFERENT root reference, reads
+       stale). A union composes as what it
        actually is: overlapping bytes at DMD's own offsets, with no
        union-specific arithmetic anywhere. `readValue`/`writeValue`
        recurse a union's `layout.structFields` exactly as they do a
