@@ -3913,6 +3913,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto literal = arrayLiteralOf(element)) {
+            compileStaticArrayLiteral(fieldOffset, fieldType, literal);
+            return;
+        }
+
         // `S(seed)` broadcasts a scalar into all elements of the field.
         if (element.type.toBasetype.ty != TY.Tsarray) {
             const value = compileExpression(element);
@@ -9286,7 +9291,10 @@ private struct Compiler {
         const elementSize = cast(uint) size(elementScalar);
 
         foreach (elementIndex; 0 .. literal.elements.length) {
-            const value = compileExpression((*literal.elements)[elementIndex]);
+            auto element = (*literal.elements)[elementIndex];
+            const value = compileExpression(
+                element is null ? literal.basis : element,
+            );
             if (value.type != elementScalar)
                 throw new Exception(text(
                     "Unsupported static array literal element in bytecode core: ",

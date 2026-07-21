@@ -383,15 +383,15 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   acceptable handoff noise.
 - `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is omitted
   while `std.conv.text` reaches the unsupported ref argument `front(val)`.
-  Implement general ref binding for that Phobos path, then promote the row.
+  The remaining dependency sequence is general ref binding for that path,
+  void-IIFE expression-statement inlining, then the specific stale
+  `_data.arr` descriptor materialisation across `bigDataFun`'s nested call
+  that gives `copySlice` a corrupt destination length; only then promote the
+  row.
 - `cerealed.emplaceRefWritesArrayElement.Bytecode` is omitted because its
   scalar array-element destination acquires corrupt slice bounds in the
   machine. Preserve the destination descriptor through the generated
   `emplaceRef` wrapper, then promote the row.
-- `struct.staticCharArrayFieldDefaultInit.Bytecode` is omitted while static
-  array field storage rejects DMD's sparse array-literal representation of
-  `char.init`. Expand the `basis` value across null elements, then promote the
-  row.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
@@ -402,23 +402,23 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `arrayTooShortExceptionMessageIncludesBytes.Bytecode`: support the
-   `std.conv.text` ref argument `front(val)`.
+1. `arrayTooShortExceptionMessageIncludesBytes.Bytecode`: general ref binding
+   for `std.conv.text`'s `front(val)`, void-IIFE expression-statement
+   inlining, then the stale `_data.arr` descriptor materialisation across
+   `bigDataFun`'s nested call that corrupts `copySlice`'s destination length.
 2. `emplaceRefWritesArrayElement.Bytecode`: preserve the scalar array-element
    destination descriptor through `emplaceRef`.
-3. `staticCharArrayFieldDefaultInit.Bytecode`: materialize sparse
-   array-literal elements from their `basis` value.
-4. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
+3. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
    `std.conv.text` dependency path over an exception message character array.
-5. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
+4. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
    lazy evaluation over a mutating struct-typed caller local. Its next blocker
    is `ulong <<=` compound assignment in `Reader.read64`.
-6. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
+5. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
-7. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
+6. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-8. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+7. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.
