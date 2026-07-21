@@ -1266,6 +1266,101 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A pointer local reassigned twice within the same activation, each
+// assignment a genuine host address (`values.ptr`, not `&scalar` -- see the
+// carrier fixture below), exercises `impl.d`'s verified frame mirror on its
+// ACCEPT path twice: `setLocal`/`mirrorToFrame` writes the new address into
+// the frame slot, and the next read's `assertFrameMirror` recomposes it
+// through the identical `place_value.writeValue` and compares raw bytes
+// (`ai/plans/value.md` "Remaining work" item 5, the pointer leaf). A wrong
+// scan policy or an asymmetric write/verify guard would surface here as an
+// `AssertError` from inside the interpreter, not a wrong return value.
+static foreach (backend; Matrix!()) {
+    @("pointer.mirroredAcrossReassignment." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int reassignPointerAcrossWrites() {
+                int[] first = [10, 20];
+                int[] second = [30, 40, 50];
+
+                int* p = first.ptr;
+                const a = *p;
+
+                p = second.ptr + 1;
+                const b = *p;
+
+                return a + b;
+            }
+
+            unittest {
+                assert(reassignPointerAcrossWrites() == 50);
+            }
+        });
+    }
+}
+
+// `&x` for a scalar local boxes as `isLocalPointer` (an allocation-id
+// carrier), not a host address -- `place_value.writeValue`'s pointer arm
+// refuses to store one, so `p`'s own frame slot must be left unmirrored on
+// both the write side (`mirrorToFrame`) and the read side
+// (`assertFrameMirror`), both gated by the identical `placeShapeMatches`
+// check. Reading `p` (and through it, `x`'s live updates) repeatedly must
+// still work correctly and never throw or assert -- the mirror's decline is
+// silent, authority stays with the boxed value regardless.
+static foreach (backend; Matrix!()) {
+    @("pointer.localAddressCarrierDoesNotMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int localAddressPointerTracksLiveUpdates() {
+                int x = 10;
+                int* p = &x;
+
+                x = 20;
+                const first = *p;
+
+                x = 30;
+                const second = *p;
+
+                return first + second;
+            }
+
+            unittest {
+                assert(localAddressPointerTracksLiveUpdates() == 50);
+            }
+        });
+    }
+}
+
+// A pointer PARAMETER rebound to a fresh, per-activation array's own
+// `.ptr` at every recursive depth: each activation gets its own frame slot
+// (`frame_layout.computeFrameLayout`, one per activation) and its own
+// mirrored address, so a stale sibling activation's address must never
+// leak into another's read -- proving the per-activation frame, not a
+// single shared slot, is what the mirror actually verifies against.
+static foreach (backend; Matrix!()) {
+    @("pointer.reboundAcrossActivations." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int recurseReboundPointer(int depth) {
+                int[] values = [depth * 10, depth * 10 + 1];
+                int* p = values.ptr;
+
+                if (depth == 0)
+                    return *p;
+
+                return *p + recurseReboundPointer(depth - 1);
+            }
+
+            unittest {
+                assert(recurseReboundPointer(2) == 30);
+            }
+        });
+    }
+}
+
 // Dereferencing a pointer cast to a *different, same-size* type than the
 // local it points to (grainReinterpret's shape) does not get an implicit
 // promoting cast inserted by DMD's frontend, unlike every other operator

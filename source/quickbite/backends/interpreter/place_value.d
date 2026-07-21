@@ -455,33 +455,37 @@ public void writeClassBody(
 // (`allFieldsComposable`, shared with the struct case immediately above --
 // a union's own fields are exactly as composable as a struct's, since
 // `readValue`/`writeValue`'s union arms recurse the identical per-field
-// composition); or a static array whose element type (`.next`) is
-// place-composable. Recurses the identical dispatch `readValue`/
-// `writeValue` use (`isNativeScalarType`, `nonUnionStructOf`,
-// `unionStructOf`, `isTypeSArray`) so this predicate can never drift from
-// what those two actually accept for the shapes it DOES claim -- false for
-// a class, slice/dynamic array, or `real`, the same set their own header
-// comment gives; a union with ANY such member (a slice, class, or `real`
-// field) answers `false` for the WHOLE union, exactly like
-// `isClassBodyComposable` declining a whole class body over one
+// composition); a static array whose element type (`.next`) is
+// place-composable; or a pointer. Recurses the identical dispatch
+// `readValue`/`writeValue` use (`isNativeScalarType`, `nonUnionStructOf`,
+// `unionStructOf`, `isTypeSArray`, `isTypePointer`) so this predicate can
+// never drift from what those two actually accept for the shapes it DOES
+// claim -- false for a class or slice/dynamic array, the same set their
+// own header comment gives, and for `real` (outside `native_scalar`'s
+// codec, see its own header); a union with ANY such member (a slice,
+// class, or `real` field) answers `false` for the WHOLE union, exactly
+// like `isClassBodyComposable` declining a whole class body over one
 // non-composable field.
 //
-// A pointer answers `false` here too, even though `readValue`/`writeValue`
-// now compose one as a leaf: this predicate does not mean "does the codec
-// accept it", it means "is this local eligible for the verified FRAME
-// mirror" (`impl.d`'s `mirrorToFrame`/`assertFrameMirror`), and that
-// mirror's `assertFrameMirror` writes the expected bytes into a SCRATCH
-// block allocated `NativeBlock.Scan.no` (its own comment: a throwaway
-// comparison buffer, never a real local's storage) -- a policy that is
-// exactly wrong for a pointer's own bytes, a live GC-traceable address
-// (`value.md`'s Containers contract: a block holding a pointer must be
-// conservatively scanned, never defaulted). Extending eligibility to a
-// pointer would need that scratch allocation's scan policy threaded
-// per-type instead of fixed, an `impl.d` change out of scope for this
-// slice; until then a pointer local mirrors nowhere and reads only through
-// its boxed authority, matching every other still-unmirrored shape (a
-// slice local mirrors by header alone, `mirrorSliceToFrame`, never through
-// this predicate either).
+// A pointer answers `true` unconditionally here (a TYPE-shape question,
+// the only kind this predicate asks), even though `writeValue`'s own
+// pointer arm still refuses some VALUES of that type (a boxed-era pointer
+// carrier with no host address -- `isLocalPointer`'s allocation-id
+// carrier, the struct-shaped `Pointer`, a function pointer's minted id).
+// That is not a gap `isPlaceComposable` needs to close: `impl.d`'s
+// `mirrorToFrame`/`assertFrameMirror` never call `writeValue` on a value
+// they have not already run through `placeShapeMatches` first, and that
+// function's own pointer arm repeats `writeValue`'s EXACT refusal
+// condition (`value.isNativePointer || value == Value.null_`) as the
+// shared gate both the write and the verify side call before touching
+// `writeValue` at all -- so a value this type-level predicate makes
+// eligible but that value-level gate declines is skipped on both sides
+// identically, never asserted on. The other blocker a prior slice found,
+// `assertFrameMirror`'s comparison scratch being allocated `NativeBlock.
+// Scan.no` unconditionally, is fixed at its own call site: the scratch's
+// scan policy is now `layout.typeHasPointers` over the type being
+// composed, mechanically, not a hardcoded default -- see `impl.d`'s own
+// comment there.
 public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
 
@@ -499,6 +503,9 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null)
         return isPlaceComposable(arrayType.next);
+
+    if (type.isTypePointer !is null)
+        return true;
 
     return false;
 }

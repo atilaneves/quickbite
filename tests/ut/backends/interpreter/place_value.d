@@ -392,14 +392,15 @@ unittest {
 
 
 // Inherited fields count too: a base class field that is itself not
-// composable (here, a pointer) makes the WHOLE derived body refused, since
-// `writeClassBody` writes every field `layout.classFields` returns,
-// inherited ones included.
+// composable (here, a slice -- a pointer no longer disqualifies a field,
+// see `isPlaceComposable.trueForPointer`) makes the WHOLE derived body
+// refused, since `writeClassBody` writes every field `layout.classFields`
+// returns, inherited ones included.
 @("place_value.isClassBodyComposable.falseForInheritedNonComposableField")
 unittest {
     auto classType = classTypeOf(
         q{
-            class Base { int* p; }
+            class Base { int[] p; }
             class Derived: Base { int x; }
         },
         "Derived",
@@ -905,22 +906,31 @@ unittest {
 }
 
 
-// One non-composable member (a pointer, here) refuses the WHOLE union,
-// exactly as one non-composable field refuses a whole class body
-// (`isClassBodyComposable`'s own inherited-field test) -- `writeValue`'s
-// union arm would otherwise recurse into that member via `writeUnionValue`
-// (were it ever the widest) or `readValue`'s union arm via `structValueAt`
-// (always, since every member is read), either of which would throw.
+// One non-composable member (a slice, here -- a pointer no longer
+// disqualifies a member, see `isPlaceComposable.trueForPointer`) refuses
+// the WHOLE union, exactly as one non-composable field refuses a whole
+// class body (`isClassBodyComposable`'s own inherited-field test) --
+// `writeValue`'s union arm would otherwise recurse into that member via
+// `writeUnionValue` (were it ever the widest) or `readValue`'s union arm
+// via `structValueAt` (always, since every member is read), either of
+// which would throw.
 @("place_value.isPlaceComposable.falseForUnionWithNonComposableMember")
 unittest {
-    auto unionType = structTypeOf(q{ union U { int x; int* p; } }, "U");
+    auto unionType = structTypeOf(q{ union U { int x; int[] p; } }, "U");
     isPlaceComposable(unionType).should == false;
 }
 
 
-@("place_value.isPlaceComposable.falseForPointer")
+// A pointer's own bytes ARE the host address (`ai/plans/value.md`
+// decision 15): the TYPE always composes as a leaf (`readValue`/
+// `writeValue`'s pointer arms), so `isPlaceComposable` -- a type-shape
+// question -- answers `true` unconditionally. `impl.d`'s `mirrorToFrame`/
+// `assertFrameMirror` still decline a VALUE that is not itself a host
+// address, through their own shared `placeShapeMatches` gate, not through
+// this predicate.
+@("place_value.isPlaceComposable.trueForPointer")
 unittest {
-    isPlaceComposable(Type.tint32.pointerTo).should == false;
+    isPlaceComposable(Type.tint32.pointerTo).should == true;
 }
 
 

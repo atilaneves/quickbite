@@ -965,16 +965,34 @@ in parallel and never blocks it.
        `isLocalPointer`'s allocation-id carrier, the struct-shaped
        `Pointer`, a function pointer's minted id — since none of those
        boxed-era stand-ins IS the address decision 15 requires, and this
-       codec has no address to invent for them. `isPlaceComposable`
-       still answers `false` for a pointer (a pinned characterization,
-       unchanged): making it `true` would make a pointer local
-       mirror-eligible, but `assertFrameMirror`'s comparison scratch
-       block is allocated `NativeBlock.Scan.no` unconditionally, which
-       is exactly wrong for a live GC address (the Containers contract
-       below: a block holding a pointer must be conservatively scanned,
-       never defaulted) — eligibility needs that scratch allocation's
-       scan policy threaded per-type instead of fixed, deferred to
-       whichever slice does that. A dynamic-array
+       codec has no address to invent for them. Every mirror-side scratch
+       allocation (`impl.d`'s `assertFrameMirror`/`assertClassFrameMirror`/
+       `assertClassReferenceMirror`) now chooses its scan policy
+       mechanically — `layout.typeHasPointers` over the type being
+       composed for the generic composable path, and an explicit
+       `Scan.conservative` (never derived, matching `object_table.
+       allocateBlock`'s own reasoning) for a class body's or a bare
+       reference's scratch, both of which always carry a pointer-shaped
+       fact regardless of one field's own type — so `isPlaceComposable`
+       now answers `true` for a pointer: the type-shape question is
+       unconditional, matching `readValue`/`writeValue`'s own leaf. The
+       VALUE-dependent refusal above still has to hold on both the mirror's
+       write and verify sides, and does, through one shared gate:
+       `impl.d`'s `placeShapeMatches` (already the single function both
+       `mirrorToFrame` and `assertFrameMirror` call before ever reaching
+       `writeValue`) gained a pointer arm repeating `writeValue`'s own
+       condition (`value.isNativePointer || value == Value.null_`) — so a
+       `value` this gate declines is skipped identically on both sides, for
+       a bare pointer local and for a pointer FIELD nested in an otherwise-
+       composable struct/union/array reached through the same recursive
+       check. A class body has no such shared gate (`writeClassBody` is
+       hand-written, not routed through `placeShapeMatches`), so
+       `impl.d` grew one: `classBodyShapeMatches`, calling `placeShapeMatches`
+       per `layout.classFields` entry, called identically by
+       `mirrorClassToFrame` and `assertClassFrameMirror` right after their
+       existing `isClassBodyComposable` check — closing, for a class's own
+       pointer field, the exact gap `placeShapeMatches` already closes
+       generically for a struct's. A dynamic-array
        local holds a real `{length, ptr}` slice header; a class
        variable holds a reference (address) to an object body owned by
        object identity and stored in `object_table.ObjectTable`, keyed
