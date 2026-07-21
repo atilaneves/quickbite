@@ -1618,10 +1618,7 @@ static foreach (backend; Matrix!(
 // `emplaceRef` must write through a scalar array-element reference. This also
 // ratchets the interpreter's real `core.internal.lifetime.emplaceRef` body;
 // no name-based interception is permitted.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "emplaceRef corrupts the destination array slice bounds"),
-)) {
+static foreach (backend; Matrix!()) {
     @("emplaceRefWritesArrayElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

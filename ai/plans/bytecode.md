@@ -388,10 +388,6 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `_data.arr` descriptor materialisation across `bigDataFun`'s nested call
   that gives `copySlice` a corrupt destination length; only then promote the
   row.
-- `cerealed.emplaceRefWritesArrayElement.Bytecode` is omitted because its
-  scalar array-element destination acquires corrupt slice bounds in the
-  machine. Preserve the destination descriptor through the generated
-  `emplaceRef` wrapper, then promote the row.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
@@ -406,19 +402,17 @@ changed:
    for `std.conv.text`'s `front(val)`, void-IIFE expression-statement
    inlining, then the stale `_data.arr` descriptor materialisation across
    `bigDataFun`'s nested call that corrupts `copySlice`'s destination length.
-2. `emplaceRefWritesArrayElement.Bytecode`: preserve the scalar array-element
-   destination descriptor through `emplaceRef`.
-3. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
+2. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
    `std.conv.text` dependency path over an exception message character array.
-4. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
+3. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
    lazy evaluation over a mutating struct-typed caller local. Its next blocker
    is `ulong <<=` compound assignment in `Reader.read64`.
-5. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
+4. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
-6. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
+5. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-7. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.

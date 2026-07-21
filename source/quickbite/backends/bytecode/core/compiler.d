@@ -12069,12 +12069,13 @@ private struct Compiler {
             rhs.type.toBasetype.ty != TY.Tarray)
             return false;
 
-        // Two immutable character arrays use their compact string descriptors
-        // and retain string diagnostics below. A mutable character array and a
-        // string literal instead compare as ordinary slices: materialising the
-        // literal into a heap-backed descriptor gives both operands the same
-        // native-layout representation.
-        if (isStringType(lhs.type) && isStringType(rhs.type))
+        // Two compact string descriptors retain their string diagnostics below.
+        // A cast may present a mutable array as a read-only character array, so
+        // preserve its native descriptor instead of classifying it by the cast
+        // type alone.
+        if (isStringType(lhs.type) && isStringType(rhs.type) &&
+            dynamicArrayDescriptorOrNull(lhs) is null &&
+            dynamicArrayDescriptorOrNull(rhs) is null)
             return false;
 
         const elementType = dynamicArrayElementType(lhs.type);
