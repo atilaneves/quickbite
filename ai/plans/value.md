@@ -417,8 +417,13 @@ change that makes them false, never prospectively.
 
 - `layout.d` is the only place the interpreter package reads DMD layout:
   `typeByteSize`, `fieldByteOffset`, `structFields`, `classFields`,
-  `staticArrayLength`. Every number is DMD's own, verbatim; the
-  interpreter must not grow a second set of D layout rules.
+  `staticArrayLength`, `classInstanceByteSize`. Every number is DMD's own,
+  verbatim; the interpreter must not grow a second set of D layout rules.
+  A class body's byte size is always `classInstanceByteSize` (DMD's own
+  `structsize`, including the vtable/monitor header and tail padding),
+  never a hand-summed `fieldByteOffset(field) + typeByteSize(field.type)`
+  over `classFields` — that sum omits the header and can under-count a
+  field-less class down to 0.
 - `structFields` forces struct layout (via `typeByteSize`) before reading
   fields — `sym.fields` and field offsets are meaningless before DMD's
   own `determineSize` has run. Class fields need no forcing (populated by

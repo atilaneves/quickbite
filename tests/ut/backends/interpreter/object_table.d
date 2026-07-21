@@ -40,8 +40,7 @@ unittest {
 // own field and the vtable/monitor header DMD lays down at the front of
 // every class object, comes from the host compiler's own `__traits
 // (classInstanceSize, ...)` for the identical hierarchy declared below --
-// not a hand-derived sum of field ends, which would omit that header (the
-// re-derivation `impl.d`'s boxed-era `promoteClassCell` still performs).
+// not a hand-derived sum of field ends, which would omit that header.
 class Base {
     int baseField;
 }

@@ -3814,14 +3814,19 @@ private struct Walker {
     // values. Narrow first slice: only a plain (non-dataseg) class-typed
     // local gets a cell; a dataseg variable, or a receiver whose boxed value
     // isn't a class object, is left untouched and keeps using the existing
-    // boxed `locals` path. The cell is sized by summing (offset +
-    // typeByteSize) over `layout.classFields`, not `class_.structsize`: this
-    // slice reads only facts already used elsewhere in this file
-    // (`fieldByteOffset`/`typeByteSize`, as `nativeClassFieldValue` already
-    // does for native exception fields), rather than introducing a new raw
-    // DMD field this codebase does not otherwise consult.
+    // boxed `locals` path. The cell is sized by `layout.classInstanceByteSize`
+    // -- DMD's own `structsize`, the same fact `object_table.ObjectTable`
+    // sizes its class bodies from -- not by summing (offset + typeByteSize)
+    // over `layout.classFields`: a field-end sum omits the vtable/monitor
+    // header at the front of every class object and any tail padding DMD adds
+    // after the last field, so it can under-size the cell (confirmed: a
+    // field-less class's field-end sum is 0). Every field write into this
+    // cell already goes through `layout.fieldByteOffset`, DMD's own
+    // header-inclusive offset, so a larger cell only adds unused bytes past
+    // the last field; nothing reads the cell's length as if it equalled the
+    // field-end sum.
     private void promoteClassCell(VarDeclaration variable) {
-        import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
+        import quickbite.backends.interpreter.layout: classInstanceByteSize;
 
         if (variable.isDataseg)
             return;
@@ -3849,13 +3854,7 @@ private struct Walker {
             return;
         }
 
-        size_t byteSize;
-        foreach (field; classFields(classType.sym)) {
-            const end = fieldByteOffset(field) + typeByteSize(field.type);
-            if (end > byteSize)
-                byteSize = end;
-        }
-
+        const byteSize = classInstanceByteSize(classType.sym);
         auto cell = NativeBlock.allocate(byteSize, NativeBlock.Scan.conservative);
         writeClassCellScalarFields(cell, classType.sym, current);
         classObjectCells[identity] = cell;
