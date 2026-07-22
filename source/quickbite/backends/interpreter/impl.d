@@ -241,6 +241,57 @@ private struct Walker {
     // parent's own cell may be refreshed in place or must be dropped too.
     private bool[VarDeclaration] classRebinds;
 
+    // Per-variable record of whether THIS activation's most recent
+    // `mirrorClassToFrame` write for `variable`'s CURRENT binding actually
+    // wrote real storage (a genuine `null` reference, or a resolved
+    // non-null one), rather than declining. Closes a write/verify TIME
+    // asymmetry: `assertClassFrameMirror` used to re-run
+    // `classBodyShapeMatches` (and this function's own `Value.null_`/
+    // `isClassObject`/`identity == 0`/`isClassBodyComposable` guards)
+    // independently at READ time, which can DISAGREE with what the WRITE
+    // actually did, because `classBodyShapeMatches` consults MUTABLE
+    // walker state (`classIdentityAliasedByAnotherBinding`'s `locals`
+    // scan, `classBodyShapeMatchesImpl`'s `classObjectCells` check) that
+    // can change between the write and a later read. Confirmed by
+    // instrumenting both functions directly: `p = new C(); p.x = seed;`
+    // (an unaliased, successful write -- `p`'s frame slot now holds a real
+    // object address) followed by `p = identity(y);` where `y` is another
+    // live binding of a DIFFERENT object -- `classIdentityAliasedByAnotherBinding`
+    // declines this write, so `p`'s frame slot keeps its OLD, unrelated
+    // address -- and then `y = null;` before a later read of `p`: the
+    // re-derived decision no longer declines (nothing aliases `y`'s former
+    // identity any more), so the OLD code went on to compare `p`'s stale,
+    // NON-zero frame slot against a freshly composed expectation for the
+    // NEW object -- a guaranteed "frame class reference mirror diverged
+    // from boxed local" `AssertError` on a correct guest program. Unlike
+    // the simpler "never written" case (an all-zero slot), that mismatch
+    // is not zero-fill-detectable, so `assertClassReferenceMirror`'s own
+    // all-zero skip cannot mask it.
+    //
+    // `mirrorClassToFrame` is the ONLY writer, setting this on every one of
+    // its own exits (`scope(exit)`, its own header comment) -- `true` only
+    // after an actual write (including the `Value.null_` arm), `false` on
+    // every decline. `assertClassFrameMirror` reads it FIRST and returns
+    // without asserting, or re-deriving anything, when it is absent or
+    // `false` -- trusting what the write already decided rather than a
+    // second, possibly-stale opinion.
+    //
+    // Needs no separate rebind invalidation: `locals[variable] = value` is
+    // written ONLY by `setLocal`, which calls `mirrorToFrame` (and, for a
+    // class-typed local, `mirrorClassToFrame`) with that SAME value
+    // immediately afterwards, for every write path this walker has --
+    // declaration, rebind, a loop's fresh binding, parameter binding, and
+    // a field mutation's read-modify-write reconstruction alike -- so this
+    // map is always freshly overwritten by the very write that changes
+    // `variable`'s current binding; there is no path that changes
+    // `locals[variable]` without `mirrorClassToFrame` running again right
+    // after. Not duped into a child frame by `forkPerFrameCellsInto`, for
+    // the identical reason `arrayRebinds`/`classRebinds` above are not
+    // (their own field comments): a fresh activation's frame slots start
+    // GC-zeroed and unwritten, so "not yet established" (absent, `false`
+    // by `get`'s default) is already the correct starting state.
+    private bool[VarDeclaration] classMirrorEstablished;
+
     // Authoritative native bytes for a struct local that has had one of its
     // `native_scalar.isNativeScalarType` fields address-taken, mirroring
     // `arrayCells` above: populated eagerly the moment `&s.field` is taken
@@ -1145,8 +1196,20 @@ private struct Walker {
 
         auto classType = variable.type.toBasetype.isTypeClass;
 
+        // `established` becomes `classMirrorEstablished[variable]` on every
+        // exit from this function (`scope(exit)` below) -- `false` unless
+        // explicitly set on the two paths that actually write real
+        // storage, so every decline (an early `return` above it) records
+        // itself as "not established" the same way a fresh, never-written
+        // frame slot already reads. See `classMirrorEstablished`'s own
+        // field comment for why this replaces `assertClassFrameMirror`'s
+        // old re-derivation of this same decision at READ time.
+        bool established = false;
+        scope(exit) classMirrorEstablished[variable] = established;
+
         if (value == Value.null_) {
             Place(mirrorAddress(variable), classType).storeReference(null);
+            established = true;
             return;
         }
 
@@ -1168,6 +1231,7 @@ private struct Walker {
         auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
         writeClassBody(Place(bodyAddress, classType), value, &resolveObjectBody);
         Place(mirrorAddress(variable), classType).storeReference(bodyAddress);
+        established = true;
     }
 
     // Whether `value`'s shape matches what `place_value.readValue`/
@@ -1649,7 +1713,8 @@ private struct Walker {
     // that is a dedicated recursive function rather than a call to
     // `place_value.writeClassBody` the way `mirrorClassToFrame` makes).
     private void assertClassFrameMirror(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place_value: isClassBodyComposable;
+        if (!classMirrorEstablished.get(variable, false))
+            return;
 
         auto classType = variable.type.toBasetype.isTypeClass;
 
@@ -1658,27 +1723,24 @@ private struct Walker {
             return;
         }
 
-        if (!value.isClassObject)
-            return;
-
         const identity = value.classIdentity;
-        if (identity == 0)
+
+        // `classMirrorEstablished[variable]` is only ever set `true` right
+        // after a real write (`mirrorClassToFrame`'s own header comment),
+        // and `value` here is bit-identical to the value that write ran
+        // with (`setLocal` is the sole writer of `locals`, and always calls
+        // `mirrorToFrame` with the SAME value immediately afterwards -- see
+        // `classMirrorEstablished`'s own field comment), so `identity`
+        // cannot be 0 and `classObjectTable.has(identity)` cannot be
+        // `false` here in practice: that write already resolved this exact
+        // identity through `storageFor`. Checked anyway, as a read-only
+        // decline rather than an unguarded `opIndex` -- a verify step must
+        // never risk a crash of its own (`RangeError` on a missing key) to
+        // save one `has` call.
+        if (!classObjectTable.has(identity))
             return;
 
-        if (!isClassBodyComposable(classType.sym))
-            return;
-
-        // Matches `mirrorClassToFrame`'s own identical check, in the same
-        // position -- see its header comment for why a TYPE-composable
-        // field is not enough once a pointer field can be one, and why it
-        // is also the gate that declines a cyclic object graph before
-        // either this function or `writeClassBody` ever reaches one.
-        if (!classBodyShapeMatches(variable, classType.sym, value))
-            return;
-
-        // Not `const`: `ObjectTable.storageFor`, `Place`'s constructor,
-        // and `assertClassReferenceMirror` all take a mutable `void*`.
-        auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
+        auto bodyAddress = (*classObjectTable)[identity].address;
         assertClassReferenceMirror(variable, classType, bodyAddress);
         assertClassBodyValue(classType, value, identity);
     }
@@ -1695,12 +1757,12 @@ private struct Walker {
     // then WRITES into it -- correct for `mirrorClassToFrame` (it is
     // supposed to mutate real storage), wrong for an assertion, which must
     // not mutate the very body it is comparing against. So a class-typed
-    // field here still consults `classObjectTable.storageFor` for the
-    // nested object's own stable address (the identical read
-    // `mirrorClassToFrame`/this function's own caller already performs for
-    // the TOP object), stores that reference into THIS level's scratch, and
-    // recurses into ANOTHER scratch-vs-real comparison one level down,
-    // rather than composing into the real nested body at all.
+    // field here reads the nested object's own stable address straight out
+    // of `classObjectTable` (`has`/`opIndex`, never `storageFor` --see
+    // their own use below for why this never allocates), stores that
+    // reference into THIS level's scratch, and recurses into ANOTHER
+    // scratch-vs-real comparison one level down, rather than composing
+    // into the real nested body at all.
     //
     // No cycle guard of its own: `classBodyShapeMatches`
     // (`assertClassFrameMirror`'s caller, immediately before this) has
@@ -1748,46 +1810,70 @@ private struct Walker {
             }
 
             const nestedIdentity = fieldValue.classIdentity;
-            auto nestedAddress = classObjectTable.storageFor(nestedIdentity, fieldClassType.sym);
+
+            // The verify-time counterpart of `classBodyShapeMatchesImpl`'s
+            // own identical nested decline (its own header comment): a
+            // nested field's identity can be promoted into
+            // `classObjectCells` -- and mutated through that SEPARATE,
+            // `classObjectTable`-independent storage, by a pointer write
+            // through a completely different alias -- strictly AFTER the
+            // owning variable's own mirror last established successfully
+            // (`classMirrorEstablished` freezes THAT decision at write
+            // time; it says nothing about a DIFFERENT alias's later
+            // action on a field this variable never itself rewrote).
+            // Unlike `classIdentityAliasedByAnotherBinding`
+            // (`classMirrorEstablished`'s own header comment explains why
+            // THAT one must stay pinned to write time), `identity in
+            // classObjectCells` is MONOTONIC: `classObjectCells` entries
+            // are never removed (only the per-variable `classCells` cache
+            // is, on rebind -- see its own field comment), so re-deriving
+            // this ONE condition here can only ADD a decline over what
+            // the write saw, never turn a genuine divergence into a false
+            // "match" -- safe to check fresh, and necessary to: found via
+            // `class.fieldObjectCopiedToLocalSharesAuthoritativeStorage`,
+            // whose own `&child.x` promotes exactly this identity, then
+            // writes through it, well after `parent`'s own mirror last
+            // established.
+            if (nestedIdentity in classObjectCells)
+                return;
+
+            // `has`/`opIndex`, never `storageFor`: a verify step must
+            // never allocate into the shared object table (`storageFor`'s
+            // own comment: an unrecognised identity there sizes and
+            // inserts a fresh block). Once the decline above does not
+            // apply, this nested identity is always already present --
+            // `mirrorClassToFrame`'s own successful write (the one that
+            // set `classMirrorEstablished[variable]`, this whole call
+            // chain's precondition -- see `assertClassFrameMirror`) ran
+            // `writeClassBody` over this SAME `value`, which resolves
+            // (and so allocates) every reachable nested identity via
+            // `resolveObjectBody`/`storageFor` before this function is
+            // ever called. `has` is still checked, not assumed: declining
+            // silently on a violated precondition is cheaper than an
+            // `opIndex` `RangeError` crashing the very thing this mirror
+            // must never be the reason for.
+            if (!classObjectTable.has(nestedIdentity))
+                return;
+
+            auto nestedAddress = (*classObjectTable)[nestedIdentity].address;
             fieldPlace.storeReference(nestedAddress);
             assertClassBodyValue(fieldClassType, fieldValue, nestedIdentity);
         }
 
         // `classObjectTable[identity]` (not the frame) is the actual body
         // -- `(*classObjectTable)` because the shared table is reached
-        // through a pointer (see its own field comment). The real body
-        // reading all-zero while `scratch` (this function's own composed
-        // expectation) is not is the class-BODY counterpart of
-        // `assertClassReferenceMirror`'s identical all-zero skip (its own
-        // header comment carries the full rationale): a body this
-        // identity's `storageFor` call two lines above the caller
-        // (`assertClassFrameMirror`) just allocated FRESH is GC-zeroed and
-        // never yet written by `mirrorClassToFrame`'s own successful
-        // write, the same "never established" state as an unwritten frame
-        // slot, not a divergence.
-        const actual = (*classObjectTable)[identity].bytes;
-        if (isZeroFilled(actual) && !isZeroFilled(scratch.bytes))
-            return;
-
+        // through a pointer (see its own field comment). No all-zero skip
+        // here (contrast the pre-`classMirrorEstablished` history of this
+        // function): `assertClassFrameMirror`'s own `classMirrorEstablished`
+        // check already guarantees this exact `value`'s own
+        // `mirrorClassToFrame` write ran `writeClassBody` over this same
+        // body, so `actual` genuinely reflects that write, not a
+        // never-touched GC-zeroed block -- comparing it for real is the
+        // whole point.
         assert(
-            actual == scratch.bytes,
+            (*classObjectTable)[identity].bytes == scratch.bytes,
             "class body mirror diverged from boxed local",
         );
-    }
-
-    // Shared by `assertClassBodyValue` above and `assertClassReferenceMirror`
-    // below: each compares one side that is REAL mirror storage (a frame
-    // slot, or an `ObjectTable` body) -- which starts GC-zeroed and stays
-    // that way until the FIRST successful `mirrorClassToFrame` write --
-    // against a scratch composed fresh from the CURRENT boxed value, so
-    // "all zero" is the one byte pattern common to both "never
-    // established" and "genuinely all-zero fields", the exact ambiguity
-    // each caller's own header comment resolves in favour of skipping
-    // rather than asserting.
-    private static bool isZeroFilled(in ubyte[] bytes) pure nothrow @safe {
-        import std.algorithm: all;
-
-        return bytes.all!(b => b == 0);
     }
 
     // The frame-slot reference comparison both `assertClassFrameMirror`
@@ -1820,35 +1906,14 @@ private struct Walker {
 
         const actual = frameBytesAt(mirrorAddress(variable), (void*).sizeof);
 
-        // A frame slot reading all-zero (`isZeroFilled`, shared with
-        // `assertClassBodyValue`'s identical skip above) while `expected`
-        // is a real (non-null) address is not a divergence to report: it
-        // is indistinguishable from "this variable's class mirror has
-        // never been established" -- every frame slot starts zeroed
-        // (`frame_block.FrameBlock.allocate`'s own `NativeBlock.allocate`,
-        // GC-zeroed memory), and the only thing that ever writes a
-        // non-zero reference into THIS slot is `mirrorClassToFrame`'s own
-        // successful write. `classBodyShapeMatches` (this function's
-        // caller `assertClassFrameMirror` calls it identically to
-        // `mirrorClassToFrame`) is TIME-VARYING:
-        // `classIdentityAliasedByAnotherBinding` can decline a variable's
-        // write while another binding still shares its identity, and stop
-        // declining once that binding is reassigned or nulled, so a
-        // variable whose every WRITE so far was declined can still reach
-        // a LATER read/verify where the SAME gate no longer declines --
-        // with a frame slot that was simply never written, not one that
-        // diverged. Reporting that as a divergence would make the mirror
-        // itself the reason a correct guest program dies
-        // (`ai/plans/value.md`'s own design rule), for a program
-        // `SystemLinker` runs without incident: exactly what a `Base`-
-        // typed local aliasing a `Derived`-typed one hits once
-        // `classBodyShapeMatches`'s static/dynamic decline (above) makes
-        // the `Base`-typed mirror decline where it used to succeed,
-        // delaying the `Derived`-typed alias's own first successful write
-        // past a read that runs before it.
-        if (expected !is null && isZeroFilled(actual))
-            return;
-
+        // No all-zero skip here (contrast the pre-`classMirrorEstablished`
+        // history of this function, when this ran off a RE-DERIVED
+        // decision that could disagree with what `mirrorClassToFrame`
+        // actually did): `assertClassFrameMirror`'s own
+        // `classMirrorEstablished` check already guarantees `variable`'s
+        // OWN last write genuinely stored a reference into this exact
+        // slot -- for this exact `value` -- so a real divergence is the
+        // only way `actual` can now disagree with `scratch`.
         assert(
             actual == scratch.bytes,
             "frame class reference mirror diverged from boxed local",

@@ -1261,25 +1261,61 @@ in parallel and never blocks it.
        mutate the body it is comparing against), so
        `assertClassBodyValue` builds one scratch per graph level and
        compares each against `classObjectTable`'s own entry instead.
-       Both `assertClassBodyValue` and `assertClassReferenceMirror`
-       (the frame slot's own stored-reference comparison) skip rather
-       than assert when the REAL storage they compare against — a
-       frame slot, or an `ObjectTable` body — reads all-zero while the
-       freshly composed expectation does not:
-       `classIdentityAliasedByAnotherBinding`'s decline (above) is
-       TIME-VARYING, so a variable whose every WRITE so far was
-       declined (another binding still shared its identity)
-       can reach a LATER read/verify where the same gate no longer
-       declines, once that binding is reassigned or nulled — with a
-       frame slot or body that was simply never written by
-       `mirrorClassToFrame`'s own successful write, not one that
-       diverged. Every such block starts GC-zeroed and only
-       `mirrorClassToFrame` ever writes a non-zero reference/body into
-       it, so all-zero is the one byte pattern shared by "never
-       established" and "genuinely all-zero fields"; resolving that
-       ambiguity by skipping (never by asserting) is what keeps a
-       correct guest program — `SystemLinker` runs it without incident
-       — from crashing on the mirror's own internal inconsistency.
+       CONTRACT — write/verify TIME symmetry: the verify side
+       (`assertClassFrameMirror`) must never re-derive a decline
+       condition that reads mutable walker state; it must be
+       conditioned on what the write side (`mirrorClassToFrame`)
+       actually did for the binding's CURRENT value, not on a fresh
+       re-run of the same predicate. A shared predicate is symmetric
+       with the write only at the INSTANT the write ran —
+       `classIdentityAliasedByAnotherBinding` is TIME-VARYING (another
+       binding's own later rebind or null can flip its verdict), so
+       re-running it at read time could proceed where the write
+       declined, comparing a frame slot or `ObjectTable` body
+       `mirrorClassToFrame` never wrote against a freshly composed
+       non-zero expectation — a guaranteed internal `AssertError` on a
+       correct guest program (found via a `Base`/`Derived` alias whose
+       OTHER binding is nulled between the write and a later read).
+       `impl.d`'s `classMirrorEstablished`, a per-variable flag only
+       `mirrorClassToFrame` ever writes (`true` right after an actual
+       write, including a `null` reference; `false` on every decline —
+       every one of its own exits, via `scope(exit)`), is what
+       `assertClassFrameMirror` now consults FIRST, trusting it instead
+       of re-deriving anything; it needs no separate rebind
+       invalidation, since `locals[variable] = value` is written only
+       by `setLocal`, which calls `mirrorClassToFrame` with that SAME
+       value immediately after for every write this walker has, so the
+       flag is always freshly overwritten by the very write that
+       changes a binding, and a fresh activation's own frame starts
+       with no entry — correctly "not yet established" — the same way
+       its frame slots start GC-zeroed. One decline condition is a
+       proven EXCEPTION to this contract, safe to re-derive at verify
+       time: `identity in classObjectCells` (`classBodyShapeMatchesImpl`'s
+       nested-field decline) is MONOTONIC — an identity, once
+       cell-promoted, never leaves `classObjectCells` (only the
+       per-variable `classCells` cache is dropped, on rebind) — so
+       re-checking it at verify time can only ADD a decline over what
+       the write saw, never accept a genuine divergence as a match.
+       `assertClassBodyValue`'s own nested-field recursion re-derives
+       exactly this one condition, closing a DIFFERENT staleness a
+       frozen top-level flag cannot see on its own: a nested field's
+       identity promoted into `classObjectCells` — and mutated through
+       that separate, `ObjectTable`-independent storage, by an entirely
+       different alias — strictly AFTER the owning variable's own
+       mirror last established (found via a `Parent`/`Child` fixture
+       whose `&child.x` promotes and mutates exactly such an identity).
+       This contract also retired the all-zero skip
+       (`isZeroFilled`, deleted) `assertClassBodyValue`/
+       `assertClassReferenceMirror` used to carry: once the verify side
+       trusts what the write already decided, the storage it goes on to
+       compare was genuinely written by that SAME write, so a real
+       divergence is the only way the two sides can still disagree —
+       the "never established, reads as zero" ambiguity the skip
+       existed to resolve cannot arise any more. The verify path itself
+       performs no writes of its own: it reads `ObjectTable` state with
+       `has`/`opIndex`, never `storageFor` (which allocates a fresh
+       block on a miss) — a verify step must never mutate the shared
+       table it is checking.
        Residual, NOT fixed by this slice (out of scope — authority stays
        boxed): the `classObjectCells`/
        `classIdentityAliasedByAnotherBinding` declines above only paper

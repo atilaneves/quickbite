@@ -786,13 +786,106 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// The class-typed-FIELD counterpart of the fixture above: `Holder.field`
-// is declared `Base` but references a `Derived` instance, so mirroring
-// `holder` itself walks into that field with `impl.d`'s
+// The reviewer-reported write/verify TIME asymmetry: `p`'s OWN mirror write
+// declines (`classIdentityAliasedByAnotherBinding`, `impl.d`) while `y`'s
+// object identity is still shared by another live binding, leaving `p`'s
+// frame slot holding its PRIOR, unrelated object's address (from the
+// earlier `p = new C(); p.x = seed;`, both unaliased at that point, so
+// that write succeeded) rather than the never-written zero bytes the
+// simpler "no other binding aliased it yet" case leaves behind. Nulling
+// every OTHER binding of `y`'s identity afterwards is what used to make
+// the interpreter's read of `p` re-derive a DIFFERENT (non-declining)
+// answer than the write saw: `assertClassFrameMirror` (`impl.d`) used to
+// re-run the same decline predicate at READ time, and by then nothing
+// aliases `y`'s identity any more, so it proceeded to compare `p`'s STALE,
+// NON-zero frame slot (still the prior object's address) against a freshly
+// composed expectation for `y`'s object -- a guaranteed "frame class
+// reference mirror diverged from boxed local" `AssertError` on a correct
+// guest program, and NOT masked by the all-zero skip
+// class.downcastFieldWriteAfterVirtualCallThroughWiderStaticType (above)
+// added (`isZeroFilled`, since removed): a stale non-null address is not
+// all-zero. `impl.d`'s `classMirrorEstablished` now records what
+// `mirrorClassToFrame` actually did for `p`'s CURRENT binding at write
+// time, and `assertClassFrameMirror` trusts that instead of re-deriving --
+// `p`'s write declined, so its later read never re-enters the mirror at
+// all, regardless of what happens to `y`/`keepAlive` afterwards.
+static foreach (backend; Matrix!()) {
+    @("class.declinedMirrorWriteStaysDeclinedAfterAliasIsNulled." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C { int x; }
+
+            C identity(C c) { return c; }
+
+            int run(int seed) {
+                auto p = new C();
+                p.x = seed;
+
+                auto y = new C();
+                y.x = seed + 1;
+                auto keepAlive = identity(y);
+                p = identity(y);
+                keepAlive = null;
+                y = null;
+
+                return p.x;
+            }
+
+            unittest {
+                assert(run(10) == 11);
+            }
+        });
+    }
+}
+
+// The rebind-invalidation counterpart of the fixture above, isolating the
+// write/rebind/read sequence on its own: `p`'s FIRST write (unaliased)
+// establishes its mirror, then `p`'s REBIND to `y`'s identity declines
+// (`keepAlive` still aliases it at that exact moment) and must leave `p`
+// with NO established mirror for its new binding -- catching a stale
+// "we already wrote it" flag that (wrongly) survived from the FIRST
+// binding, which `classMirrorEstablished` (`impl.d`) is keyed and
+// overwritten per write specifically to prevent (its own header comment).
+// Never nulls `y`/`keepAlive`, unlike the fixture above: a stale flag
+// would crash on THIS read already, with no need for the aliasing
+// binding to disappear first.
+static foreach (backend; Matrix!()) {
+    @("class.declinedRebindDoesNotInheritPriorBindingsEstablishedMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C { int x; }
+
+            C identity(C c) { return c; }
+
+            int run(int seed) {
+                auto p = new C();
+                p.x = seed;
+
+                auto other = new C();
+                other.x = seed + 1;
+                auto keepAlive = identity(other);
+                p = identity(other);
+
+                return p.x;
+            }
+
+            unittest {
+                assert(run(10) == 11);
+            }
+        });
+    }
+}
+
+// The class-typed-FIELD counterpart of
+// class.downcastFieldWriteAfterVirtualCallThroughWiderStaticType above:
+// `Holder.field` is declared `Base` but references a `Derived` instance, so
+// mirroring `holder` itself walks into that field with `impl.d`'s
 // `classBodyShapeMatchesImpl` -- its own header comment names this exact
 // nested-field decline (a class-typed field whose declared type
 // disagrees with the boxed value's own dynamic class), the recursive
-// sibling of the root-level decline the fixture above exercises.
+// sibling of that root-level decline.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed),
 )) {
