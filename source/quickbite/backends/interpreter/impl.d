@@ -9975,8 +9975,8 @@ private struct Walker {
             if (receiver.isLocalPointer) {
                 const targetValue = localPointerTarget(receiver);
                 writeLocation(dot.e1, targetValue.isClassObject
-                    ? targetValue.withClassField(classFieldIndex(dot, targetValue), value)
-                    : targetValue.withStructField(structFieldIndex(dot), value));
+                    ? AggregateValue.withClassField(targetValue, classFieldIndex(dot, targetValue), value)
+                    : AggregateValue.withStructField(targetValue, structFieldIndex(dot), value));
                 return;
             }
 
@@ -10003,7 +10003,7 @@ private struct Walker {
                 writeClassCellFieldIfPresent(dot.e1, fieldIndex, value);
                 writeLocation(
                     dot.e1,
-                    authoritative.withClassField(fieldIndex, value),
+                    AggregateValue.withClassField(authoritative, fieldIndex, value),
                     /* arrayRefWriteback */ false,
                     /* classFieldRefresh */ true,
                 );
@@ -10027,7 +10027,7 @@ private struct Walker {
             auto unionType = receiverStructType(dot.e1);
             const updated = unionType !is null && unionType.sym.isUnionDeclaration !is null
                 ? withUnionFieldWrite(receiver, unionType, fieldIndex, value)
-                : receiver.withStructField(fieldIndex, value);
+                : AggregateValue.withStructField(receiver, fieldIndex, value);
             writeLocation(dot.e1, updated);
             return;
         }
@@ -10425,7 +10425,7 @@ private struct Walker {
             return true;
         }
 
-        setLocal(*variable, current.withArrayElement(
+        setLocal(*variable, AggregateValue.withArrayElement(*current,
             cast(size_t) pointer.pointerElementOffset,
             value,
         ));
@@ -10497,7 +10497,7 @@ private struct Walker {
             value,
         );
         if (current !is null)
-            setLocal(variable, current.withStructField(fieldIndex, value));
+            setLocal(variable, AggregateValue.withStructField(*current, fieldIndex, value));
         structFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
         return true;
@@ -10546,8 +10546,9 @@ private struct Walker {
         writeScalar(arrayCell.elementType, arrayCell.element(elementIndex), value);
 
         if (current !is null) {
-            const updatedField = current.structFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
-            setLocal(*variable, current.withStructField(*fieldIndex, updatedField));
+            const updatedField = AggregateValue.withArrayElement(
+                AggregateValue.fieldAt(*current, *fieldIndex), elementIndex, value);
+            setLocal(*variable, AggregateValue.withStructField(*current, *fieldIndex, updatedField));
         }
         structArrayFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
@@ -10599,9 +10600,9 @@ private struct Walker {
             nestedCell.field(innerFieldIndex), value);
 
         if (current !is null) {
-            const updatedInner = current.structFieldAt(outerFieldIndex)
-                .withStructField(innerFieldIndex, value);
-            setLocal(variable, current.withStructField(outerFieldIndex, updatedInner));
+            const updatedInner = AggregateValue.withStructField(
+                AggregateValue.fieldAt(*current, outerFieldIndex), innerFieldIndex, value);
+            setLocal(variable, AggregateValue.withStructField(*current, outerFieldIndex, updatedInner));
         }
         nestedStructFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
@@ -10664,7 +10665,7 @@ private struct Walker {
         if (current !is null)
             if (auto currentCell = variable in classCells)
                 if (currentCell.bytes.ptr is cell.bytes.ptr)
-                    setLocal(variable, current.withClassField(fieldIndex, value));
+                    setLocal(variable, AggregateValue.withClassField(*current, fieldIndex, value));
         classFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
         return true;
@@ -10729,9 +10730,9 @@ private struct Walker {
             nestedCell.field(innerFieldIndex), value);
 
         if (current !is null) {
-            const updatedInner = current.classFieldAt(outerFieldIndex)
-                .withStructField(innerFieldIndex, value);
-            setLocal(variable, current.withClassField(outerFieldIndex, updatedInner));
+            const updatedInner = AggregateValue.withStructField(
+                AggregateValue.classFieldAt(*current, outerFieldIndex), innerFieldIndex, value);
+            setLocal(variable, AggregateValue.withClassField(*current, outerFieldIndex, updatedInner));
         }
         nestedClassStructFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
@@ -10800,8 +10801,9 @@ private struct Walker {
         writeScalar(elementType, arrayCell.element(elementIndex), value);
 
         if (current !is null) {
-            const updatedField = current.classFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
-            setLocal(*variable, current.withClassField(*fieldIndex, updatedField));
+            const updatedField = AggregateValue.withArrayElement(
+                AggregateValue.classFieldAt(*current, *fieldIndex), elementIndex, value);
+            setLocal(*variable, AggregateValue.withClassField(*current, *fieldIndex, updatedField));
         }
         classArrayFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
@@ -10899,11 +10901,11 @@ private struct Walker {
                 // arm closes -- re-derive from the shared cell before folding
                 // in this element's write.
                 const authoritative = classCellOverlaidValue(dot.e1, receiver);
-                const updatedArray = authoritative.classFieldAt(fieldIndex)
-                    .withArrayElement(arrayIndex, value);
+                const updatedArray = AggregateValue.withArrayElement(
+                    AggregateValue.classFieldAt(authoritative, fieldIndex), arrayIndex, value);
                 writeLocation(
                     dot.e1,
-                    authoritative.withClassField(fieldIndex, updatedArray),
+                    AggregateValue.withClassField(authoritative, fieldIndex, updatedArray),
                     /* arrayRefWriteback */ false,
                     /* classFieldRefresh */ true,
                 );
@@ -10912,9 +10914,9 @@ private struct Walker {
 
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpression(dot.e1);
-            const updatedArray = receiver.structFieldAt(fieldIndex)
-                .withArrayElement(arrayIndex, value);
-            writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
+            const updatedArray = AggregateValue.withArrayElement(
+                AggregateValue.fieldAt(receiver, fieldIndex), arrayIndex, value);
+            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
             if (dot.e1.isThisExp !is null)
                 writeThroughThisStructArrayFieldAlias(fieldIndex, arrayIndex, value);
             return;
@@ -10932,7 +10934,7 @@ private struct Walker {
         if (current is null)
             throw new Exception("Unsupported interpreter assignment target.");
 
-        setLocal(variable, current.withArrayElement(arrayIndex, value));
+        setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, value));
         writeThroughSliceAlias(variable, arrayIndex, value);
         writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
@@ -11009,7 +11011,7 @@ private struct Walker {
             isNativeScalarType, readScalar, writeScalar;
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
-        auto updated = receiver.withStructField(fieldIndex, value);
+        auto updated = AggregateValue.withStructField(receiver, fieldIndex, value);
 
         auto fields = structFields(unionType);
         if (fieldIndex >= fields.length)
@@ -11067,7 +11069,7 @@ private struct Walker {
                 continue;
 
             if (isNativeScalarType(sibling.type)) {
-                updated = updated.withStructField(siblingIndex,
+                updated = AggregateValue.withStructField(updated, siblingIndex,
                     readScalar(sibling.type, cell.field(siblingIndex)));
                 continue;
             }
@@ -11077,15 +11079,15 @@ private struct Walker {
                 if (!isNativeScalarType(siblingElementType))
                     continue;
 
-                auto siblingCurrent = updated.structFieldAt(siblingIndex);
+                auto siblingCurrent = AggregateValue.fieldAt(updated, siblingIndex);
                 if (!siblingCurrent.isArray)
                     continue;
 
                 auto siblingArrayCell = cell.arrayField(siblingIndex);
                 foreach (elementIndex; 0 .. siblingCurrent.length)
-                    siblingCurrent = siblingCurrent.withArrayElement(elementIndex,
+                    siblingCurrent = AggregateValue.withArrayElement(siblingCurrent, elementIndex,
                         readScalar(siblingElementType, siblingArrayCell.element(elementIndex)));
-                updated = updated.withStructField(siblingIndex, siblingCurrent);
+                updated = AggregateValue.withStructField(updated, siblingIndex, siblingCurrent);
                 continue;
             }
 
@@ -11093,12 +11095,12 @@ private struct Walker {
             if (siblingStructType is null || siblingStructType.sym.isUnionDeclaration !is null)
                 continue;
 
-            auto siblingCurrent = updated.structFieldAt(siblingIndex);
+            auto siblingCurrent = AggregateValue.fieldAt(updated, siblingIndex);
             if (!siblingCurrent.isStruct)
                 continue;
 
             auto siblingCell = cell.structField(siblingIndex);
-            updated = updated.withStructField(siblingIndex,
+            updated = AggregateValue.withStructField(updated, siblingIndex,
                 structValueFromCell(siblingCurrent, siblingCell));
         }
 
@@ -11189,15 +11191,15 @@ private struct Walker {
                 // arm closes -- re-derive from the shared cell before folding
                 // in this element's write.
                 const authoritative = classCellOverlaidValue(dot.e1, receiver);
-                const source = authoritative.classFieldAt(fieldIndex);
+                const source = AggregateValue.classFieldAt(authoritative, fieldIndex);
                 if (index.lengthVar !is null)
                     setLocal(index.lengthVar, Value(source.length));
                 const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
                 const value = runExpression(rhs);
-                const updatedArray = source.withArrayElement(arrayIndex, value);
+                const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
                 writeLocation(
                     dot.e1,
-                    authoritative.withClassField(fieldIndex, updatedArray),
+                    AggregateValue.withClassField(authoritative, fieldIndex, updatedArray),
                     /* arrayRefWriteback */ false,
                     /* classFieldRefresh */ true,
                 );
@@ -11213,13 +11215,13 @@ private struct Walker {
             // v` right after growing `h.arr` underflowed to size_t.max.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpression(dot.e1);
-            const source = receiver.structFieldAt(fieldIndex);
+            const source = AggregateValue.fieldAt(receiver, fieldIndex);
             if (index.lengthVar !is null)
                 setLocal(index.lengthVar, Value(source.length));
             const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
             const value = runExpression(rhs);
-            const updatedArray = source.withArrayElement(arrayIndex, value);
-            writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
+            const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
+            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
             return value;
         }
 
@@ -11239,7 +11241,7 @@ private struct Walker {
 
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
         const value = runExpression(rhs);
-        setLocal(variable, current.withArrayElement(arrayIndex, value));
+        setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, value));
         writeThroughSliceAlias(variable, arrayIndex, value);
         writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
@@ -11581,9 +11583,10 @@ private struct Walker {
         const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
         const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
         const value = runExpression(rhs);
-        setLocal(variable, current.withArrayElement(
+        setLocal(variable, AggregateValue.withArrayElement(*current,
             outerIndex,
-            (*current)[outerIndex].withArrayElement(innerIndex, value),
+            AggregateValue.withArrayElement(
+                AggregateValue.elementAt(*current, outerIndex), innerIndex, value),
         ));
         const updatedOuter = locals[variable][outerIndex];
         writeThroughArrayCell(variable, outerIndex, updatedOuter);
@@ -11797,7 +11800,7 @@ private struct Walker {
     ) {
         const fieldIndex = structFieldIndex(dot);
         const receiver = runExpression(dot.e1);
-        const current = receiver.structFieldAt(fieldIndex);
+        const current = AggregateValue.fieldAt(receiver, fieldIndex);
 
         const lower = slice.lwr is null
             ? 0
@@ -11815,7 +11818,7 @@ private struct Walker {
                 ? current[index]
                 : block ? copyArrayValue(value) : value[index - lower];
 
-        writeLocation(dot.e1, receiver.withStructField(
+        writeLocation(dot.e1, AggregateValue.withStructField(receiver,
             fieldIndex,
             Value.arrayValue(elements),
         ));
@@ -12057,9 +12060,9 @@ private struct Walker {
             throw new Exception("Unsupported interpreter array append target.");
 
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-        const appended = (*current)[arrayIndex]
-            .withAppendedArrayElement(runExpression(rhs));
-        setLocal(variable, current.withArrayElement(arrayIndex, appended));
+        const appended = AggregateValue.withAppendedArrayElement(
+            AggregateValue.elementAt(*current, arrayIndex), runExpression(rhs));
+        setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, appended));
         uninitializedLocals.remove(variable);
         return appended;
     }
@@ -12494,7 +12497,7 @@ private struct Walker {
             auto siblingCell = cell.arrayField(index);
             foreach (elementIndex; 0 .. siblingCell.length) {
                 auto elementCell = siblingCell.structElement(elementIndex);
-                value = value.withArrayElement(
+                value = AggregateValue.withArrayElement(value,
                     elementIndex,
                     structValueFromCell(value[elementIndex], elementCell),
                 );
@@ -13527,7 +13530,7 @@ private struct Walker {
                     throw new Exception(text(
                         "Unsupported eval expression: ", new_.op,
                     ));
-                structVal = structVal.withStructField(
+                structVal = AggregateValue.withStructField(structVal,
                     index,
                     runExpression(argument),
                 );
@@ -13843,14 +13846,16 @@ private struct Walker {
                             classValueFromCell(authoritativeSource, *cell, classType.sym);
                 }
 
-            const updatedField = alias_.isClassField
-                ? authoritativeSource.classFieldAt(alias_.fieldIndex)
-                    .withArrayElement(alias_.lower + index, value)
-                : authoritativeSource.structFieldAt(alias_.fieldIndex)
-                    .withArrayElement(alias_.lower + index, value);
+            const updatedField = AggregateValue.withArrayElement(
+                alias_.isClassField
+                    ? AggregateValue.classFieldAt(authoritativeSource, alias_.fieldIndex)
+                    : AggregateValue.fieldAt(authoritativeSource, alias_.fieldIndex),
+                alias_.lower + index,
+                value,
+            );
             const updatedOwner = alias_.isClassField
-                ? authoritativeSource.withClassField(alias_.fieldIndex, updatedField)
-                : authoritativeSource.withStructField(alias_.fieldIndex, updatedField);
+                ? AggregateValue.withClassField(authoritativeSource, alias_.fieldIndex, updatedField)
+                : AggregateValue.withStructField(authoritativeSource, alias_.fieldIndex, updatedField);
             // Struct-static-array-field foreach-ref case: `alias_.source`
             // (the struct owning the field) may
             // already have a `structCells` entry (an earlier `&s.arr[0]` in
@@ -13871,7 +13876,8 @@ private struct Walker {
             return;
         }
 
-        setLocal(alias_.source, source.withArrayElement(alias_.lower + index, value));
+        setLocal(alias_.source, AggregateValue.withArrayElement(
+            *source, alias_.lower + index, value));
         // A slice-expression parameter (bound
         // via `recordParameterSliceAlias`, which never calls
         // `promoteSliceArrayCell`) has no `arrayCells` entry of its own, but
@@ -13899,7 +13905,7 @@ private struct Walker {
         if (source is null)
             throw new Exception("Unsupported interpreter struct field alias target.");
 
-        setLocal(*sourceVariable, source.withArrayElement(index, value));
+        setLocal(*sourceVariable, AggregateValue.withArrayElement(*source, index, value));
         // Once `sourceVariable` has a
         // promoted `arrayCells` entry (needing no address-of at all --
         // `foreach (v; a)` promotes it via `promoteSliceArrayCell`), a
@@ -14274,7 +14280,8 @@ private struct Walker {
         if (source is null)
             throw new Exception("Unsupported interpreter array element alias target.");
 
-        setLocal(alias_.source, source.withArrayElement(alias_.index, value));
+        setLocal(alias_.source, AggregateValue.withArrayElement(
+            *source, alias_.index, value));
         auto sliceAlias = alias_.source in sliceAliases;
         if (sliceAlias is null || (sliceAlias.source in locals) !is null)
             writeThroughSliceAlias(alias_.source, alias_.index, value);
@@ -14332,8 +14339,8 @@ private struct Walker {
 
         if (source !is null)
             setLocal(alias_.source, alias_.isClass
-                ? source.withClassField(alias_.index, value)
-                : source.withStructField(alias_.index, value));
+                ? AggregateValue.withClassField(*source, alias_.index, value)
+                : AggregateValue.withStructField(*source, alias_.index, value));
         // A `ref` local bound directly to an
         // aggregate field (`ref int r = s.x;`, recorded via
         // `recordStructFieldAlias`) must also refresh `alias_.source`'s

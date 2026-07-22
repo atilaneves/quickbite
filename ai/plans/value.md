@@ -924,9 +924,9 @@ in parallel and never blocks it.
 
 3. Complete the interpreter-private `RuntimeValue` carrier's expression-only
    aggregate path before the authority switch. `AggregateValue` is the common
-   boxed aggregate boundary; migrate the remaining direct aggregate consumers
-   in mutation, cell, and writeback paths before changing its representation.
-   `RuntimeValue.Array` conflates static and dynamic
+   boxed aggregate boundary, so replace its implementation rather than adding
+   another aggregate consumer path. `RuntimeValue.Array` conflates static and
+   dynamic
    arrays, so category-by-category handle migration would recreate a second
    authority; preserve the no-two-world invariant by changing the one common
    boundary. Then replace that boundary's recursively boxed `Array`,

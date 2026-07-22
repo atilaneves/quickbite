@@ -129,6 +129,37 @@ public struct AggregateValue {
         return value[index];
     }
 
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value withArrayElement(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in size_t index,
+        in imported!"quickbite.backends.interpreter.runtime_value".Value element,
+    ) pure {
+        return value.withArrayElement(index, element);
+    }
+
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value withAppendedArrayElement(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in imported!"quickbite.backends.interpreter.runtime_value".Value element,
+    ) pure {
+        return value.withAppendedArrayElement(element);
+    }
+
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value withStructField(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in size_t index,
+        in imported!"quickbite.backends.interpreter.runtime_value".Value field,
+    ) pure {
+        return value.withStructField(index, field);
+    }
+
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value withClassField(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in size_t index,
+        in imported!"quickbite.backends.interpreter.runtime_value".Value field,
+    ) pure {
+        return value.withClassField(index, field);
+    }
+
     public static const(void)* nativeArrayAddress(
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     ) @safe pure {
