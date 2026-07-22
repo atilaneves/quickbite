@@ -2357,6 +2357,7 @@ private struct Compiler {
 
         ushort lvalueSlot;
         auto lvalueType = ScalarType.void_;
+        StructField* lvalueField;
 
         if (auto variable = post.e1.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration)
@@ -2369,6 +2370,7 @@ private struct Compiler {
             if (auto field = tryStructField(dot)) {
                 lvalueSlot = field.offset;
                 lvalueType = scalarType(field.type);
+                lvalueField = field;
             }
         }
 
@@ -2392,6 +2394,8 @@ private struct Compiler {
             ? (eightByte ? Op.subInt8 : Op.subInt4)
             : (eightByte ? Op.addInt8 : Op.addInt4);
         _code ~= Instruction(stepOp, lvalueSlot, lvalueSlot, increment.offset);
+        if (lvalueField !is null)
+            writeBackStructField(*lvalueField);
         return Operand(result, lvalueType);
     }
 
@@ -2649,6 +2653,11 @@ private struct Compiler {
                     *result = DynamicArrayLocal(
                         field.offset, dynamicArrayElementType(field.type),
                     );
+                    result.writeBackStructThroughFrame =
+                        field.writeBackThroughFrame;
+                    result.structOffset = field.structOffset;
+                    result.structFrameIndexOffset = field.frameIndexOffset;
+                    result.structSize = field.structSize;
                     return result;
                 }
 
@@ -4283,6 +4292,10 @@ private struct Compiler {
     private static struct StructField {
         ushort offset;
         Type type;
+        bool writeBackThroughFrame;
+        ushort structOffset;
+        ushort frameIndexOffset;
+        ushort structSize;
     }
 
     // Resolve `base.field` (a DotVarExp over a struct lvalue) to the field's
@@ -4292,6 +4305,34 @@ private struct Compiler {
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             return null;
+
+        // A nested function that reads its enclosing struct method's `this`
+        // receives the parent frame as its context. Materialise the native
+        // struct block before addressing the field, and retain the parent-frame
+        // index so every write through this field can be copied back.
+        if (_hasNestedContext)
+            if (auto this_ = dot.e1.isThisExp)
+                if (auto captured = this_.var in _capturedOffsets) {
+                    const structOffset = allocateStructBlock(dot.e1.type);
+                    const frameIndexOffset = capturedFrameIndex(*captured);
+                    const structSize = cast(ushort) staticArraySize(dot.e1.type);
+                    _code ~= Instruction(
+                        Op.frameLoad,
+                        structOffset,
+                        frameIndexOffset,
+                        structSize,
+                    );
+                    auto result = new StructField;
+                    *result = StructField(
+                        cast(ushort) (structOffset + field.offset),
+                        field.type,
+                        true,
+                        structOffset,
+                        frameIndexOffset,
+                        structSize,
+                    );
+                    return result;
+                }
 
         bool resolved;
         const base = structBaseOffsetOrMaterialise(dot.e1, resolved);
@@ -4311,6 +4352,18 @@ private struct Compiler {
             field.type,
         );
         return result;
+    }
+
+    private void writeBackStructField(in StructField field) {
+        if (!field.writeBackThroughFrame)
+            return;
+
+        _code ~= Instruction(
+            Op.frameStore,
+            field.structOffset,
+            field.frameIndexOffset,
+            field.structSize,
+        );
     }
 
     // The inline frame base of any struct-valued expression: a struct lvalue's
@@ -7467,6 +7520,7 @@ private struct Compiler {
                         destination,
                         cast(ushort) size(lvalueType),
                     );
+                writeBackStructField(*field);
                 return Operand(field.offset, lvalueType);
             }
 
@@ -8551,6 +8605,7 @@ private struct Compiler {
             compileDynamicArrayInto(
                 field.offset, dynamicArrayElementType(field.type), rhs,
             );
+            writeBackStructField(*field);
             auto descriptorResult = new Operand;
             *descriptorResult = Operand(field.offset, ScalarType.void_);
             return descriptorResult;
@@ -8562,6 +8617,7 @@ private struct Compiler {
         if (field.type.toBasetype.ty == TY.Tsarray) {
             if (auto literal = rhs.isArrayLiteralExp) {
                 compileStaticArrayLiteral(field.offset, field.type, literal);
+                writeBackStructField(*field);
                 auto arrayResult = new Operand;
                 *arrayResult = Operand(field.offset, ScalarType.void_);
                 return arrayResult;
@@ -8575,6 +8631,7 @@ private struct Compiler {
             _code ~= Instruction(
                 Op.copy, field.offset, value.offset, cast(ushort) size_t.sizeof,
             );
+            writeBackStructField(*field);
             auto pointerResult = new Operand;
             *pointerResult = Operand(
                 field.offset, ScalarType.ulong_, false, true,
@@ -8588,6 +8645,7 @@ private struct Compiler {
         _code ~= Instruction(
             Op.copy, field.offset, value.offset, cast(ushort) size(fieldScalar),
         );
+        writeBackStructField(*field);
         auto result = new Operand;
         *result = Operand(field.offset, fieldScalar);
         return result;
@@ -8717,6 +8775,14 @@ private struct Compiler {
                 descriptor.offset,
                 descriptor.frameIndexOffset,
                 cast(ushort) sliceDescriptorSize,
+            );
+
+        if (descriptor.writeBackStructThroughFrame)
+            _code ~= Instruction(
+                Op.frameStore,
+                descriptor.structOffset,
+                descriptor.structFrameIndexOffset,
+                descriptor.structSize,
             );
 
         if (!descriptor.writeBackThroughPointer)
@@ -13150,6 +13216,10 @@ private struct DynamicArrayLocal {
     ushort pointerOffset;
     bool writeBackThroughFrame;
     ushort frameIndexOffset;
+    bool writeBackStructThroughFrame;
+    ushort structOffset;
+    ushort structFrameIndexOffset;
+    ushort structSize;
     bool isStaticArrayView;
     ushort staticArrayOffset;
 }

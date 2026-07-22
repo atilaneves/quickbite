@@ -397,10 +397,9 @@ changed:
 1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-2. `file.createWriteRead.Bytecode`: lower field access through the captured
-   struct receiver in `std.array`'s trusted allocation IIFE; the nested frame
-   context identifies the outer receiver, but does not yet provide an lvalue
-   base for `this._data`.
+2. `file.createWriteRead.Bytecode`: lower the mutable `char[]` field of the
+   captured struct receiver in `std.array`'s trusted allocation IIFE; the
+   generic scalar-type lowering currently refuses it.
 3. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
