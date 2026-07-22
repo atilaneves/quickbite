@@ -2647,7 +2647,7 @@ private struct Walker {
             // (`defaultValue`).  `new S` of a struct with an array field passes
             // this literal as the field's initialiser.
             if (null_.type !is null && null_.type.toBasetype.ty == TY.Tarray)
-                return Value.arrayValue([]);
+                return AggregateValue.reconstructArray([]);
 
             return Value.null_;
         }
@@ -11898,7 +11898,7 @@ private struct Walker {
     }
 
     private Value runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
-        return Value.arrayValue(
+        return AggregateValue.reconstructArray(
             concatenationElements(cat.e1) ~ concatenationElements(cat.e2),
         );
     }
@@ -11913,8 +11913,8 @@ private struct Walker {
             return [value];
 
         Value[] elements;
-        foreach (index; 0 .. value.length)
-            elements ~= value[index];
+        foreach (index; 0 .. AggregateValue.elementCount(value))
+            elements ~= AggregateValue.elementAt(value, index);
 
         return elements;
     }
@@ -12014,7 +12014,7 @@ private struct Walker {
         imported!"dmd.expression".BinExp assign,
     ) {
         if (assign.e1.isDotVarExp !is null) {
-            const concatenated = Value.arrayValue(
+            const concatenated = AggregateValue.reconstructArray(
                 concatenationElements(assign.e1) ~
                     concatenationElements(assign.e2),
             );
@@ -12029,7 +12029,7 @@ private struct Walker {
                     "Unsupported interpreter array concatenate target.",
                 );
 
-            const concatenated = Value.arrayValue(
+            const concatenated = AggregateValue.reconstructArray(
                 concatenationElements(assign.e1) ~
                     concatenationElements(assign.e2),
             );
@@ -12343,7 +12343,7 @@ private struct Walker {
             foreach (element; *array.elements)
                 values ~= runExpression(element is null ? array.basis : element);
 
-        return Value.arrayValue(values);
+        return AggregateValue.reconstructArray(values);
     }
 
     private Value structLiteralValue(
@@ -12356,7 +12356,7 @@ private struct Walker {
                     ? structLiteralDefaultFieldValue(literal, index, fields)
                     : structLiteralFieldValue(literal, index, runExpression(element));
 
-        return Value.structValue(structLiteralName(literal), fields);
+        return AggregateValue.reconstructStruct(structLiteralName(literal), fields);
     }
 
     // DMD's `defaultInitLiteral` for a union only ever fills the FIRST
@@ -12642,7 +12642,7 @@ private struct Walker {
                         source,
                         index,
                     );
-                return Value.nativeArrayValue(
+                return AggregateValue.reconstructNativeArray(
                     elements,
                     cast(const(ubyte)*) source.asNativePointer + lower *
                         typeByteSize(slice.e1.type.toBasetype.nextOf),
@@ -12690,13 +12690,13 @@ private struct Walker {
         ) {
             import quickbite.backends.interpreter.layout: typeByteSize;
 
-            return Value.nativeArrayValueWithLength(
+            return AggregateValue.reconstructNativeArrayWithLength(
                 (upper - lower) *
                     typeByteSize(slice.e1.type.toBasetype.nextOf),
                 nativeAddress,
             );
         }
-        return source.arraySlice(lower, upper, nativeAddress);
+        return AggregateValue.slice(source, lower, upper, nativeAddress);
     }
 
     private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {

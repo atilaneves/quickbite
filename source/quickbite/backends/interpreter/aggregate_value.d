@@ -45,6 +45,15 @@ public struct AggregateValue {
         return Value.nativeArrayValueWithLength(length, address);
     }
 
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value slice(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in size_t lower,
+        in size_t upper,
+        const(void)* nativeAddress,
+    ) @safe pure {
+        return value.arraySlice(lower, upper, nativeAddress);
+    }
+
     public static imported!"quickbite.backends.interpreter.runtime_value".Value reconstructClass(
         in string typeName,
         in string[] typeNames,
