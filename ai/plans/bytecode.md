@@ -394,8 +394,9 @@ changed:
 1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-2. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
-   host-filesystem path.
+2. `file.createWriteRead.Bytecode`: capture the `std.stdio.File`
+   constructor's string parameter in `errnoEnforce`'s lazy-message closure,
+   then continue through the `std.file` host-filesystem path.
 3. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 

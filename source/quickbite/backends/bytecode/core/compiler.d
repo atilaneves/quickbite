@@ -3434,6 +3434,9 @@ private struct Compiler {
         _staticArrayLocals[variable] = offset;
         _capturedOffsets[variable] = offset;
 
+        if (totalSize == 0)
+            return;
+
         if (variable._init !is null &&
             variable._init.isVoidInitializer !is null)
             return;
