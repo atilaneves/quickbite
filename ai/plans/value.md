@@ -102,10 +102,13 @@ deletion (items 2-3).
    carrier for recursive expression results — the uniform D type returned
    by evaluating an expression: immediate scalar results, native
    aggregate handles, locations/references, callables, and interpreter
-   metadata. Its only data-pointer arm is a host address; function and
-   delegate handles are separate, non-data categories. That expression
-   currency is distinct from the authoritative storage of an addressable
-   guest value — it is a return type, never an authority (decision 15).
+   metadata. `RuntimeValue` has three interim data-pointer arms, coupled to
+   boxed-local authority. Their replacement by one host-address arm is one
+   atomic migration with local/frame/ref/capture/cross-frame authority, not a
+   preparatory carrier-only slice; function and delegate handles are separate,
+   non-data categories. That expression currency is distinct from the
+   authoritative storage of an addressable guest value — it is a return type,
+   never an authority (decision 15).
    The earlier claim that a boxed tagged union
    is "the natural form" for a tree walker was downgraded: it argues
    against *reimplementing* layout, not against *reusing* it. It is
@@ -240,11 +243,11 @@ deletion (items 2-3).
     reference it; they never participate in guest identity or address
     arithmetic. (A storage-identity-plus-offset coordinate system would
     recreate the provenance split that produced `isNativePointer`.)
-    The interpreter-private expression currency must have its one
-    host-address data-pointer arm before this storage rule can become
-    authoritative; function and delegate handles are separate non-data
-    categories. Boxed values survive only as transient rvalues
-    (decisions 7/11), never as storage authority.
+    The authority switch replaces the expression currency's three
+    data-pointer arms with its one host-address arm at the same time as it
+    makes this storage rule authoritative; function and delegate handles are
+    separate non-data categories. Boxed values survive only as transient
+    rvalues (decisions 7/11), never as storage authority.
 
     Rationale: simplicity motivates the design. Boxing earns its keep
     only where the frontend cannot type values (Lox, Python — the
@@ -347,17 +350,18 @@ deletion (items 2-3).
       ceiling → wait.
     - The **representation track** implements decision 15 in bounded,
       independently green preparation slices. Frame and place mirrors do
-      not make an authority switch ready: the coherent switch must move
-      boxed-local authority together with pointer identity and dereference,
-      `ref`/`out`/capture binding, and cross-frame writes. `scalarCells`
-      and alias maps cannot remain an authority behind native frame bytes.
-      Not a monolithic rewrite verified only at the end, and not per-shape
-      authority flips (mixed-shape values recreate the two-world coherence
-      seams this redesign exists to kill): replace the whole local-storage
-      path coherently, then delete the machinery it made dead. The track
-      rebases onto master as workingness PRs land and absorbs their fixtures
-      as its acceptance tests; the tracks converge when the native-layout
-      authority passes the working interpreter's matrix.
+      not make an authority switch ready: the one coherent switch must
+      replace all three data-pointer arms together with boxed-local
+      authority, pointer identity and dereference, `ref`/`out`/capture
+      binding, and cross-frame writes. `scalarCells` and alias maps cannot
+      remain an authority behind native frame bytes. Not a monolithic rewrite
+      verified only at the end, and not per-shape authority flips
+      (mixed-shape values recreate the two-world coherence seams this
+      redesign exists to kill): replace the whole local-storage path
+      coherently, then delete the machinery it made dead. The track rebases
+      onto master as workingness PRs land and absorbs their fixtures as its
+      acceptance tests; the tracks converge when the native-layout authority
+      passes the working interpreter's matrix.
 
     Activation storage: every activation allocates one frame block, including
     an activation whose layout has no slots. Contiguous activation storage is
@@ -907,15 +911,17 @@ in parallel and never blocks it.
    `void` result just to reuse the evaluator path.
 
 3. Reduce the interpreter-private `RuntimeValue` carrier to expression
-   execution only, then migrate every data-pointer producer and consumer to
-   its one host-address arm before the binding-authority switch; function and
-   delegate handles remain separate non-data categories. Do not retain its
-   display-oriented or recursive aggregate arms as a private replacement for
-   shared `Value`: expression results need immediate scalars, native handles,
-   locations, callables, and execution metadata only. Once no backend depends
-   on `quickbite.lang.Value` as a cross-backend type, delete the shared struct
-   and its unit tests together. This deletion is decision 15's completion
-   signal.
+   execution only. Its three data-pointer arms cannot be normalized while
+   boxed locals/cells remain authority: replace all three with its one
+   host-address arm in the same atomic migration that replaces local/frame,
+   `ref`/`out`/capture, pointer-dereference, and cross-frame-write authority,
+   then delete cells and aliases. Function and delegate handles remain
+   separate non-data categories. Do not retain display-oriented or recursive
+   aggregate arms as a private replacement for shared `Value`: expression
+   results need immediate scalars, native handles, locations, callables, and
+   execution metadata only. Once no backend depends on `quickbite.lang.Value`
+   as a cross-backend type, delete the shared struct and its unit tests
+   together. This deletion is decision 15's completion signal.
 
 4. **Workingness track (leads).** Keep the shipping boxed interpreter
    advancing toward the cerealed/dub goal: one language-surface fix plus
@@ -946,16 +952,14 @@ in parallel and never blocks it.
      assignment target and a `SymOffExp` naming a function; a
      captured-variable slot cannot resolve a relay through a
      non-referencing intermediate activation.
-   - The carrier's host-address migration in item 3 precedes the authority
-     switch: every data-pointer producer and consumer must use its one
-     host-address arm;
-     function/delegate handles stay separate non-data categories. Then move
-     the whole local-storage path together: pointer creation and dereference
-     must name frame bytes; `ref`/`out` and captured bindings must carry their
-     addresses; and cross-frame mutation must write those addresses directly.
-     Do not retain `scalarCells`, other cell families, or alias/reverse maps
-     as an authority behind the frames: a mirror plus any of those authorities
-     is still two storage worlds.
+   - The authority switch is item 3's one atomic migration: every
+     data-pointer producer and consumer changes to the carrier's one
+     host-address arm while pointer creation and dereference change to frame
+     bytes, `ref`/`out` and captured bindings carry addresses, and cross-frame
+     mutation writes those addresses directly. Function/delegate handles stay
+     separate non-data categories. Do not retain `scalarCells`, other cell
+     families, or alias/reverse maps as an authority behind the frames: a
+     mirror plus any of those authorities is still two storage worlds.
    - `object_table.ObjectTable` never evicts: every class identity the
      mirror touches keeps its body pinned for the whole execution,
      because liveness lives in `impl.d`'s boxed copies and nothing
