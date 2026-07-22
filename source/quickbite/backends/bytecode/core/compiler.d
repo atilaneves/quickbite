@@ -4309,6 +4309,18 @@ private struct Compiler {
             return *base;
         }
 
+        if (_hasNestedContext)
+            if (auto variable = expression.isVarExp)
+                if (auto declaration = variable.var.isVarDeclaration)
+                    if (declaration.type.toBasetype.ty == TY.Tstruct)
+                        if (auto captured = declaration in _capturedOffsets) {
+                            resolved = true;
+                            return loadCapturedLocal(
+                                declaration,
+                                *captured,
+                            ).offset;
+                        }
+
         // `outer.inner` where `inner` is itself a struct-typed field: the inner
         // block lives inline at `outerBase + inner.offset`.
         if (auto dot = expression.isDotVarExp)
@@ -4394,6 +4406,19 @@ private struct Compiler {
         VarDeclaration declaration,
         in ushort capturedOffset,
     ) {
+        import dmd.astenums: TY;
+
+        if (declaration.type.toBasetype.ty == TY.Tstruct) {
+            const destination = allocateStructBlock(declaration.type);
+            _code ~= Instruction(
+                Op.frameLoad,
+                destination,
+                capturedFrameIndex(capturedOffset),
+                cast(ushort) staticArraySize(declaration.type),
+            );
+            return Operand(destination, ScalarType.void_);
+        }
+
         const type = scalarType(declaration.type);
         const isString = isStringType(declaration.type);
         const valueSize = isString ? stringSliceSize : size(type);

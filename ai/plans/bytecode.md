@@ -397,9 +397,8 @@ changed:
 1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-2. `file.createWriteRead.Bytecode`: materialise the captured `GC.BlkInfo`
-   aggregate for `std.array`'s allocation IIFEs so their field accesses use an
-   inline block; retain caller-visible writes if that capture is mutated.
+2. `file.createWriteRead.Bytecode`: lower the `this` expression in
+   `std.array`'s trusted allocation IIFE.
 3. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
