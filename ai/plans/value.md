@@ -610,27 +610,27 @@ it (see the Contracts preamble).
   materialized current value is present in `locals`; seeding it from a
   default value would shadow its initializer and the extern data-symbol
   read/write paths. Promotion requested before materialization is a no-op.
-  - `object_table.ObjectTable`'s "stable identity ... minted once per boxed
-    class object" premise depends on `impl.d`'s `nextClassObjectId` counter
-    staying single-valued across every child `Walker` that mints an
-    identity with `++nextClassObjectId` -- a heap-struct constructor
-    (`runNewStructPointerExpression`), a destructor (`runDestructor`), and
-    a class constructor (`runNewClassExpression`) all run the constructed
-    type's body on a CHILD `Walker`, so the merge back into the CALLING
-    `Walker`'s own counter is not automatic: a merge missed on any path
-    (including a guest-level exception unwinding out of a constructor
-    body, which skips a merge written only after the call returns
-    normally) lets the caller's NEXT `new` re-mint an identity the child
-    already handed out. Two different objects then share one
-    `ObjectTable` key -- harmless aliasing in the boxed maps alone (the
-    pre-existing, silent failure mode on every boxed-authority path this
-    counter feeds), but `ObjectTable.storageFor`'s own defense-in-depth
-    size-mismatch check throws outright the instant the two instances
-    disagree on size, turning it into a guest-visible crash. All three
-    sites above merge `nextClassObjectId` back on every path that can mint
-    an identity, including the exception path.
   Slice-local promotion may initiate promotion after materialization;
   unsupported element shapes still remain on boxed aliasing paths.
+- `object_table.ObjectTable`'s "stable identity ... minted once per boxed
+  class object" premise depends on `impl.d`'s `nextClassObjectId` counter
+  staying single-valued across every child `Walker` that mints an identity
+  with `++nextClassObjectId` -- a heap-struct constructor
+  (`runNewStructPointerExpression`), a destructor (`runDestructor`), and a
+  class constructor (`runNewClassExpression`) all run the constructed
+  type's body on a CHILD `Walker`, so the merge back into the CALLING
+  `Walker`'s own counter is not automatic: a merge missed on any path
+  (including a guest-level exception unwinding out of a constructor body,
+  which skips a merge written only after the call returns normally) lets
+  the caller's NEXT `new` re-mint an identity the child already handed
+  out. Two different objects then share one `ObjectTable` key -- harmless
+  aliasing in the boxed maps alone (the pre-existing, silent failure mode
+  on every boxed-authority path this counter feeds), but
+  `ObjectTable.storageFor`'s own defense-in-depth size-mismatch check
+  throws outright the instant the two instances disagree on size, turning
+  it into a guest-visible crash. All three sites above merge
+  `nextClassObjectId` back on every path that can mint an identity,
+  including the exception path.
 - Fresh bindings (a declaration re-executed by a loop, recursion reusing
   the same AST `VarDeclaration`, parameter binding) must drop both the
   cell AND the pointer-id memo, so the next address-of mints a fresh id.
