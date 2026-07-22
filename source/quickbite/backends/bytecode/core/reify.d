@@ -3,9 +3,11 @@ module quickbite.backends.bytecode.core.reify;
 private:
 
 // Reifies raw result bytes into a Value using the static result type — the
-// only place the new core constructs a Value. A string result is a slice
-// descriptor (data offset and length) into the program's read-only data
-// segment, reconstructed here just as a debugger renders memory by type.
+// only place the new core constructs a Value. A dynamic-array result
+// (`string` included) is a native {ptr, length} descriptor; the pointer
+// resolves to either a heap block or, for a literal-initialised `string`,
+// the program's read-only data segment (see `resolveBlock`), reconstructed
+// here just as a debugger renders memory by type.
 package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     in ubyte[] bytes,
     in imported!"quickbite.backends.bytecode.core.program".ResultType type,
@@ -16,17 +18,6 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
 
     if (type.isUndisplayable)
         return Value.undisplayable;
-
-    if (type.isString) {
-        import quickbite.backends.bytecode.core.program: size;
-
-        const offset = scalar!uint(bytes);
-        const length = scalar!uint(bytes[uint.sizeof .. $]);
-        return reifyString(
-            data[offset .. offset + length * size(type.elementType)],
-            type.elementType,
-        );
-    }
 
     if (type.isArray)
         return reifyArray(bytes, type, data, heap);
@@ -68,7 +59,7 @@ private imported!"quickbite.lang".Value reifyArray(
         : scalar!size_t(bytes[size_t.sizeof .. $]);
     auto block = type.isStaticArray
         ? bytes
-        : heapBlock(scalar!size_t(bytes), heap);
+        : resolveBlock(scalar!size_t(bytes), heap, data);
     if (!type.arrayElementsAreArrays && !type.arrayElementsAreStructs &&
         type.elementEnumMembers.length == 0 &&
         isCharacter(type.elementType))
@@ -343,14 +334,28 @@ private ulong scalarKey(
     }
 }
 
-private const(ubyte)[] heapBlock(
+// Resolves a native descriptor pointer to its backing bytes: a VM-owned heap
+// block, or — for a literal-initialised `string`, whose pointer was built by
+// `Op.loadStringLiteral`/`Op.stringSliceToArray` from `program.data.ptr` plus
+// an offset — a view into the immutable program data segment. Addresses
+// never escape a process, so this classification only ever runs at the
+// reification boundary, never mid-compile.
+private const(ubyte)[] resolveBlock(
     in size_t pointer,
     in ubyte[][] heap,
+    in ubyte[] data,
 ) @safe pure {
     foreach (block; heap)
         if (blockPointer(block) == pointer)
             return block;
-    return null;
+    return dataBlock(pointer, data);
+}
+
+private const(ubyte)[] dataBlock(in size_t pointer, in ubyte[] data) @trusted pure {
+    const base = cast(size_t) data.ptr;
+    if (pointer < base || pointer > base + data.length)
+        return null;
+    return data[pointer - base .. $];
 }
 
 // Heap descriptors store native block pointers; comparing them requires taking

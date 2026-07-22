@@ -65,7 +65,6 @@ private struct Compiler {
     // frame space (and any `_frameOffset` rewind) never under-size the frame.
     private uint _peakFrameOffset;
     private ushort[VarDeclaration] _locals;
-    private bool[VarDeclaration] _stringLocals; // locals holding a string slice
     // Locals whose slot is a static array `T[N]` stored inline in the frame;
     // the value records the slot offset for indexing and block copies.
     private ushort[VarDeclaration] _staticArrayLocals;
@@ -211,7 +210,6 @@ private struct Compiler {
         auto function_ = _functions[index];
         _code = null;
         _locals = null;
-        _stringLocals = null;
         _staticArrayLocals = null;
         _dynamicArrayLocals = null;
         _pointerLocals = null;
@@ -287,11 +285,10 @@ private struct Compiler {
                     continue;
                 }
 
-                // A non-string dynamic-array parameter is a slice descriptor,
-                // tracked like a dynamic-array local rather than a scalar slot.
-                if (parameter.type.toBasetype.ty == TY.Tarray &&
-                    !isStringType(parameter.type))
-                {
+                // A dynamic-array parameter (including `string`) is a 16-byte
+                // slice descriptor, tracked like a dynamic-array local rather
+                // than a scalar slot.
+                if (parameter.type.toBasetype.ty == TY.Tarray) {
                     _dynamicArrayLocals[parameter] = DynamicArrayLocal(
                         offset, dynamicArrayElementType(parameter.type),
                     );
@@ -318,14 +315,6 @@ private struct Compiler {
                     _locals[parameter] = offset;
                     _classPointerLocals[parameter] =
                         parameter.type.toBasetype.isTypeClass.sym;
-                    continue;
-                }
-
-                // A `string` parameter holds an 8-byte slice descriptor, tracked
-                // like a string local so it reads back as a slice, not a scalar.
-                if (isStringType(parameter.type)) {
-                    _locals[parameter] = offset;
-                    _stringLocals[parameter] = true;
                     continue;
                 }
 
@@ -957,8 +946,7 @@ private struct Compiler {
             hasResult = true;
         } else if (return_.exp !is null &&
             !_currentReturnType.isUndisplayable &&
-            (_currentReturnType.isString ||
-                _currentReturnType.scalar != ScalarType.void_)) {
+            _currentReturnType.scalar != ScalarType.void_) {
             result = compileExpression(return_.exp).offset;
             hasResult = true;
         }
@@ -1577,8 +1565,19 @@ private struct Compiler {
             Op.loadConstant, result, constantIndex(cast(ulong) -1), 4,
         );
 
-        const selector =
-            compileExpression((*call.arguments)[0]); // the runtime string.
+        // The runtime switch value: a real descriptor (a `string` local, or
+        // any other source `dynamicArrayDescriptorOrNull` already resolves)
+        // compares against each case string's expanded native descriptor via
+        // the generic `sliceEqualOp`; a still-compact selector (a literal, a
+        // struct field) compares via `Op.stringSliceEqual`, matching how
+        // `compileEqualExpression` picks between the two for `s1 == s2`.
+        auto selectorExpression = (*call.arguments)[0];
+        Operand selector;
+        const realSelector = dynamicArrayDescriptorOrNull(selectorExpression);
+        if (realSelector is null)
+            selector = compileExpression(selectorExpression);
+        else
+            selector = Operand(realSelector.offset, ScalarType.void_);
 
         size_t[] matchedJumps;
         int index = 0;
@@ -1589,11 +1588,18 @@ private struct Compiler {
             if (caseString is null) // the leading element-type argument.
                 continue;
 
-            const literal = compileStringLiteral(caseString);
             const matches = allocate(ScalarType.bool_);
-            _code ~= Instruction(
-                Op.stringSliceEqual, matches, selector.offset, literal.offset,
-            );
+            if (realSelector is null) {
+                const literal = compileStringLiteral(caseString);
+                _code ~= Instruction(
+                    Op.stringSliceEqual, matches, selector.offset, literal.offset,
+                );
+            } else {
+                const literalOffset = compileStringLiteralPointer(caseString);
+                _code ~= Instruction(
+                    sliceEqualOp(1), matches, selector.offset, literalOffset,
+                );
+            }
             const skip = emitJumpIfFalse(Operand(matches, ScalarType.bool_));
             _code ~= Instruction(
                 Op.loadConstant, result, constantIndex(cast(ulong) index), 4,
@@ -1691,13 +1697,7 @@ private struct Compiler {
                     messageExpression.type !is null &&
                     isStringType(messageExpression.type))
                 {
-                    const message = compileExpression(messageExpression);
-                    if (!message.isString)
-                        throw new Exception(text(
-                            "Unsupported throw message in bytecode core: ",
-                            expressionChars(messageExpression),
-                        ));
-
+                    const message = compactStringOperand(messageExpression);
                     emitThrowString(message.offset, registerClass(class_));
                     const type = throwResultType(resultType);
                     return Operand(allocate(type), type);
@@ -1892,8 +1892,6 @@ private struct Compiler {
                             ),
                             compileSizeConstant(0),
                         );
-                    if (declaration in _stringLocals)
-                        return Operand(*existing, ScalarType.void_, true);
                     if (declaration in _complexDoubleLocals)
                         return Operand(
                             *existing,
@@ -2296,19 +2294,16 @@ private struct Compiler {
 
         if (auto slice = expression.isSliceExp) {
             // A string sliced from a compact string source (a data-segment
-            // literal or a `_stringLocals` local) stays in the compact
-            // {dataOffset, length} representation every other compact-string
-            // consumer (`.ptr`, `.length`, indexing, a `string` local's plain
-            // `Op.copy` initializer) expects; `compileSliceInto` below always
+            // literal or a struct field, the only sources still holding the
+            // compact {dataOffset, length} descriptor) stays compact, the
+            // representation every other compact-string consumer (`.ptr`,
+            // `.length`, indexing) expects; `compileSliceInto` below always
             // builds a real-pointer 16-byte descriptor, which is only correct
-            // when the destination is a genuine dynamic array. A heap-backed
-            // source (registered in `_dynamicArrayLocals`, e.g. from
-            // `.idup`/`.dup`) has no program-data-relative origin to stay
-            // compact around, so it falls through to the general dynamic-array
-            // path below and shares that source's real heap block instead. A
-            // string sliced from a pointer (`p[0 .. 3]`) has no compact source
-            // either and falls through the same way. Char strings only — see
-            // `isCharStringType`.
+            // when the source already has a real descriptor to share (a
+            // dynamic-array local — every `string` local included — or a
+            // `.idup`/`.dup`). A string sliced from a pointer (`p[0 .. 3]`)
+            // has no compact source either and falls through the same way.
+            // Char strings only — see `isCharStringType`.
             if (isCharStringType(slice.type) && isCharStringType(slice.e1.type) &&
                 !stringSourceIsHeapBacked(slice.e1)) {
                 const offset = allocateBytes(stringSliceSize, 4);
@@ -2361,13 +2356,9 @@ private struct Compiler {
             if (auto field = tryStructField(dot)) {
                 import dmd.astenums: TY;
 
-                // A string field's inline slot holds the same compact 8-byte
-                // {data offset, length} descriptor a string local holds (see
-                // the `_stringLocals` read above), not a plain scalar.
-                if (isStringType(field.type))
-                    return Operand(field.offset, ScalarType.void_, true);
-                if (field.type.toBasetype.ty == TY.Tarray &&
-                    !isStringType(field.type))
+                // A dynamic-array field (`string` included) holds a 16-byte
+                // slice descriptor in its inline slot, not a plain scalar.
+                if (field.type.toBasetype.ty == TY.Tarray)
                     return Operand(field.offset, ScalarType.void_);
                 if (field.type.toBasetype.ty == TY.Tstruct)
                     return Operand(field.offset, ScalarType.void_);
@@ -2742,9 +2733,7 @@ private struct Compiler {
             if (auto variable = expression.isVarExp)
                 if (auto declaration = variable.var.isVarDeclaration)
                     if (auto captured = declaration in _capturedOffsets)
-                        if (declaration.type.toBasetype.ty == TY.Tarray &&
-                            !isStringType(declaration.type))
-                        {
+                        if (declaration.type.toBasetype.ty == TY.Tarray) {
                             const offset = allocateBytes(
                                 sliceDescriptorSize, size_t.sizeof,
                             );
@@ -2777,20 +2766,12 @@ private struct Compiler {
             return result;
         }
 
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryExceptionStringField(dot)) {
-                auto result = new DynamicArrayLocal;
-                *result = DynamicArrayLocal(field.offset, ScalarType.char_);
-                return result;
-            }
-
         // `base.field` where the field is a dynamic array: its slice descriptor
         // lives at `base + field.offset`, so indexing, `.length`, element-assign
         // and append reuse the existing dynamic-array machinery on that slot.
         if (auto dot = expression.isDotVarExp)
             if (auto field = tryStructField(dot))
-                if (field.type.toBasetype.ty == TY.Tarray &&
-                    !isStringType(field.type)) {
+                if (field.type.toBasetype.ty == TY.Tarray) {
                     auto result = new DynamicArrayLocal;
                     *result = DynamicArrayLocal(
                         field.offset, dynamicArrayElementType(field.type),
@@ -2805,8 +2786,7 @@ private struct Compiler {
 
         if (auto dot = expression.isDotVarExp)
             if (auto field = tryStructPointerField(dot))
-                if (field.type.toBasetype.ty == TY.Tarray &&
-                    !isStringType(field.type)) {
+                if (field.type.toBasetype.ty == TY.Tarray) {
                     const pointer = structFieldAddress(*field);
                     const offset =
                         allocateBytes(sliceDescriptorSize, size_t.sizeof);
@@ -2842,9 +2822,13 @@ private struct Compiler {
             return result;
         }
 
-        // An array-returning call (`m.keys` / `m.values`): materialise its
-        // 16-byte slice-descriptor result into a fresh slot.
-        if (expression.isCallExp !is null && isDynamicArrayArgument(expression)) {
+        // An array-returning call (`m.keys` / `m.values`, or a `string`
+        // function): materialise its 16-byte slice-descriptor result into a
+        // fresh slot.
+        if (expression.isCallExp !is null &&
+            (isDynamicArrayArgument(expression) ||
+                (expression.type !is null && isStringType(expression.type))))
+        {
             const elementType = dynamicArrayElementType(expression.type);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileDynamicArrayInto(offset, elementType, expression);
@@ -2918,6 +2902,67 @@ private struct Compiler {
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         emitLoadStringLiteral(offset, string_);
         return offset;
+    }
+
+    // Condense a source that already denotes a real 16-byte {ptr, length}
+    // descriptor (a `string` local, now an ordinary dynamic-array local) into
+    // a fresh compact 8-byte {dataOffset, length} slot, for a consumer that
+    // still expects the compact form — an assert/throw message or a class
+    // `msg` field, both out of scope for this migration slice (see
+    // `bytecode.md`). See `Op.stringArrayToSlice`.
+    private ushort compileCondensedStringSlice(in ushort descriptorOffset) {
+        const offset = allocateBytes(stringSliceSize, 4);
+        _code ~= Instruction(Op.stringArrayToSlice, offset, descriptorOffset);
+        return offset;
+    }
+
+    // The compact string-slice operand for a source that must end up
+    // compact — an assert/throw message or a class `msg` field. A qualifier
+    // cast (`cast(const(char)[]) msg`, DMD's own assert-message lowering) is
+    // always unwrapped first, matching this call's only caller once
+    // (`messageSlice`, retired): `compileExpression` routes any cast whose
+    // source and target both map to `scalarType`'s `void_` through the
+    // generic scalar-cast path, which sizes the copy from `scalarType` and
+    // silently copies zero bytes. Callers verify the unwrapped source is
+    // genuinely string-shaped (`isGenuineCharString`) before calling this;
+    // once unwrapped, any shape `compileExpression` already renders compact
+    // (a literal, a struct field) passes through unchanged, and a
+    // real-descriptor source (a `string` local) is condensed.
+    private Operand compactStringOperand(Expression expression) {
+        if (auto cast_ = expression.isCastExp)
+            return compactStringOperand(cast_.e1);
+
+        const value = compileExpression(expression);
+        return value.isString
+            ? value
+            : Operand(
+                compileCondensedStringSlice(value.offset), ScalarType.void_,
+                true,
+            );
+    }
+
+    // Whether `expression`, after stripping any qualifier casts, is
+    // genuinely `string`-typed — a `string` value, not a mutable array
+    // (e.g. `char[]`) merely viewed through a `const`/`immutable` cast for a
+    // comparison. `wstring`/`dstring` are excluded, matching every other
+    // byte-stride-1 compact-descriptor consumer (see `isCharStringType`):
+    // the outer (possibly cast) type alone cannot tell the two apart, since
+    // DMD's own comparison/assert lowering casts a `char[]` operand to
+    // `const(char)[]` just as it would a genuine `string`.
+    private bool isGenuineCharString(Expression expression) {
+        if (auto cast_ = expression.isCastExp)
+            return isGenuineCharString(cast_.e1);
+
+        // A `VarExp` node's own `.type` can be narrowed to a `const` view at
+        // the reference site (DMD's `_d_assert_fail` argument passing does
+        // this for a mutable `char[]`, with no wrapping `CastExp` to unwrap)
+        // without touching the declaration's own type; consult that instead
+        // of the expression's.
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return isCharStringType(declaration.type);
+
+        return isCharStringType(expression.type);
     }
 
     // Emit a string literal's bytes into the data segment and an
@@ -3174,10 +3219,11 @@ private struct Compiler {
             return;
         }
 
-        // A non-string dynamic array `T[]` holds a 16-byte slice descriptor
-        // {ptr, length}; its backing memory lives on the VM-owned heap.
-        if (variable.type.toBasetype.ty == TY.Tarray &&
-            !isStringType(variable.type)) {
+        // A dynamic array `T[]` (including `string`) holds a 16-byte slice
+        // descriptor {ptr, length}; its backing memory lives on the VM-owned
+        // heap, or — for a literal-initialised `string` — the immutable
+        // program data segment.
+        if (variable.type.toBasetype.ty == TY.Tarray) {
             compileDynamicArrayDeclaration(variable);
             return;
         }
@@ -3214,43 +3260,10 @@ private struct Compiler {
             return;
         }
 
-        // A `string` local holds an 8-byte slice descriptor (data offset and
-        // length), not a scalar; allocate the descriptor width and copy the
-        // initializer's slice into it.
-        const isString = isStringType(variable.type);
-
-        // A `string`/`wstring`/`dstring` initialised from a heap-backed
-        // source (`.idup`/`.dup`, a sub-slice of a heap-backed string, or a
-        // direct reference to one) is not a read-only data-segment slice but
-        // a 16-byte {ptr, length} heap descriptor like an ordinary dynamic
-        // array. Store it as a dynamic-array local (char/wchar/dchar element)
-        // so its code units read back through the slice machinery; `_aApply*`
-        // UTF iteration over such a string then reads the source as a normal
-        // slice descriptor.
-        if (isString && variable._init !is null)
-            if (auto expInit = variable._init.isExpInitializer)
-                if (stringSourceIsHeapBacked(
-                        initializerExpression(expInit.exp))) {
-                    const heapElement =
-                        dynamicArrayElementType(variable.type);
-                    const heapOffset =
-                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                    _dynamicArrayLocals[variable] =
-                        DynamicArrayLocal(heapOffset, heapElement);
-                    compileDynamicArrayInto(
-                        heapOffset, heapElement,
-                        initializerExpression(expInit.exp),
-                    );
-                    return;
-                }
-
-        const type = isString ? ScalarType.void_ : scalarType(variable.type);
-        const slotSize = isString ? stringSliceSize : size(type);
-        const offset = allocateBytes(slotSize, isString ? 4 : size(type));
+        const type = scalarType(variable.type);
+        const offset = allocateBytes(size(type), size(type));
         _locals[variable] = offset;
         _capturedOffsets[variable] = offset;
-        if (isString)
-            _stringLocals[variable] = true;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -3259,7 +3272,7 @@ private struct Compiler {
                 Op.loadConstant,
                 offset,
                 constantIndex(0),
-                cast(ushort) slotSize,
+                cast(ushort) size(type),
             );
             return;
         }
@@ -3270,18 +3283,23 @@ private struct Compiler {
             Op.copy,
             offset,
             operand.offset,
-            cast(ushort) slotSize,
+            cast(ushort) size(type),
         );
     }
 
-    // A string-typed source expression whose value is a heap-backed 16-byte
-    // {ptr, length} descriptor rather than the compact 8-byte {dataOffset,
-    // length} form: a `.idup`/`.dup` duplication, a sub-slice of one, a cast
-    // of one, or a direct reference to a local already registered in
-    // `_dynamicArrayLocals`. This deliberately does not delegate to the
-    // general `dynamicArrayDescriptorOrNull`: that function's `IndexExp`
-    // branch treats any array-typed element (including a `string` element of
-    // a `string[]`, since `string`'s own basetype is `Tarray`) as a nested
+    // A string-typed source expression whose value is a real 16-byte {ptr,
+    // length} descriptor rather than the compact 8-byte {dataOffset, length}
+    // form: a `.idup`/`.dup` duplication, a `new char[](n)` allocation, a
+    // sub-slice or cast of one, or a direct reference to a dynamic-array
+    // local (every `string` local, since locals no longer have a compact
+    // form). Only a data-segment literal or a struct field's compact slot
+    // (out of scope for this migration slice — see `bytecode.md`) answers
+    // false. Deliberately a pure predicate, not delegating to the general
+    // `dynamicArrayDescriptorOrNull`: that function compiles nested
+    // sub-expressions as a side effect, which would double-evaluate a
+    // side-effecting source when a caller classifies before compiling; it
+    // also treats any array-typed element (including a `string` element of a
+    // `string[]`, since `string`'s own basetype is `Tarray`) as a nested
     // array-of-arrays descriptor, which would misclassify an ordinary
     // compact-shaped `string[N]`/`string[]` element read as heap-backed.
     private bool stringSourceIsHeapBacked(Expression source) {
@@ -4062,27 +4080,9 @@ private struct Compiler {
                 continue;
             }
 
-            if (fieldType.toBasetype.ty == TY.Tarray &&
-                !isStringType(fieldType)) {
+            if (fieldType.toBasetype.ty == TY.Tarray) {
                 compileDynamicArrayInto(
                     fieldOffset, dynamicArrayElementType(fieldType), element,
-                );
-                continue;
-            }
-
-            // A string field's inline slot holds the compact 8-byte {data
-            // offset, length} descriptor a string local holds, not a plain
-            // scalar; the generic branch below copies `size(scalarType(...))`
-            // bytes, which is 0 for a string (`scalarType` maps it to
-            // `void_`) and would leave the field's bytes at whatever the
-            // block's initial zeroing left them.
-            if (isStringType(fieldType)) {
-                const value = compileExpression(element);
-                _code ~= Instruction(
-                    Op.copy,
-                    fieldOffset,
-                    value.offset,
-                    cast(ushort) stringSliceSize,
                 );
                 continue;
             }
@@ -4685,16 +4685,15 @@ private struct Compiler {
         }
 
         const type = scalarType(declaration.type);
-        const isString = isStringType(declaration.type);
-        const valueSize = isString ? stringSliceSize : size(type);
-        const destination = allocateBytes(valueSize, isString ? 4 : valueSize);
+        const valueSize = size(type);
+        const destination = allocateBytes(valueSize, valueSize);
         _code ~= Instruction(
             Op.frameLoad,
             destination,
             capturedFrameIndex(capturedOffset),
             cast(ushort) valueSize,
         );
-        return Operand(destination, type, isString);
+        return Operand(destination, type);
     }
 
     private void storeCapturedLocal(
@@ -4702,10 +4701,7 @@ private struct Compiler {
         in ushort capturedOffset,
         in Operand value,
     ) {
-        const type = scalarType(declaration.type);
-        const valueSize = isStringType(declaration.type)
-            ? stringSliceSize
-            : size(type);
+        const valueSize = size(scalarType(declaration.type));
         _code ~= Instruction(
             Op.frameStore,
             value.offset,
@@ -5101,7 +5097,9 @@ private struct Compiler {
         VarDeclaration field,
         Expression valueExpression,
     ) {
-        const value = compileExpression(valueExpression);
+        const value = isStringType(field.type)
+            ? compactStringOperand(valueExpression)
+            : compileExpression(valueExpression);
         const fieldPointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         const offset = compileSizeConstant(field.offset);
@@ -5137,8 +5135,7 @@ private struct Compiler {
                 break;
             auto field = structDeclaration.fields[index];
             const fieldOffset = cast(ushort) (base + field.offset);
-            if (field.type.toBasetype.ty == TY.Tarray &&
-                !isStringType(field.type)) {
+            if (field.type.toBasetype.ty == TY.Tarray) {
                 compileDynamicArrayInto(
                     fieldOffset,
                     dynamicArrayElementType(field.type),
@@ -5389,9 +5386,10 @@ private struct Compiler {
                 return;
             }
 
-        // A string uses the compact {data offset, length} descriptor while a
-        // `const(char)[]` view needs a native pointer. Preserve the view over
-        // the program data rather than copying its bytes.
+        // A `const(char)[]` view of a still-compact string source (a
+        // data-segment literal or a struct field) needs a native pointer,
+        // not the compact {dataOffset, length} descriptor `compileExpression`
+        // would otherwise hand back for it.
         if (auto cast_ = source.isCastExp)
             if (isStringType(cast_.e1.type)) {
                 if (auto literal = cast_.e1.isStringExp)
@@ -5402,6 +5400,19 @@ private struct Compiler {
                         destination,
                         compileExpression(cast_.e1).offset,
                     );
+                return;
+            }
+
+        // A bare string literal (`string s = "hi";`, no cast) initialising a
+        // `string`/`wstring`/`dstring` destination: point the descriptor
+        // directly at the data segment, matching the cast form above,
+        // instead of falling to the generic array-literal path below
+        // (`compileStringBytesArrayInto`), which heap-copies each code unit
+        // — correct only for the mutable `char[]` destination DMD retypes an
+        // initialising literal to.
+        if (auto literal = source.isStringExp)
+            if (isStringType(literal.type)) {
+                emitLoadStringLiteral(destination, literal);
                 return;
             }
 
@@ -5483,6 +5494,20 @@ private struct Compiler {
                 destination,
                 value.offset,
                 cast(ushort) sliceDescriptorSize,
+            );
+            return;
+        }
+
+        // Any other still-compact string source reaching this far (a runtime
+        // `object.classinfo.name`, a caught exception's message field): none
+        // of the dedicated cases above matched, so expand it via the general
+        // compile-then-expand path, the same one the cast form near the top
+        // of this function uses for a non-literal compact source.
+        if (isStringType(source.type)) {
+            _code ~= Instruction(
+                Op.stringSliceToArray,
+                destination,
+                compileExpression(source).offset,
             );
             return;
         }
@@ -8114,7 +8139,9 @@ private struct Compiler {
         // (matching the constructor-less class-init path in `storeClassField`).
         if (auto dot = assign.e1.isDotVarExp)
             if (auto field = tryClassPointerField(dot)) {
-                const value = compileExpression(assign.e2);
+                const value = isStringType(field.type)
+                    ? compactStringOperand(assign.e2)
+                    : compileExpression(assign.e2);
                 const fieldScalar = scalarType(field.type);
                 if (value.type != fieldScalar)
                     throw new Exception(text(
@@ -8134,7 +8161,13 @@ private struct Compiler {
                 return Operand(value.offset, fieldScalar);
             }
 
-        if (isDynamicArrayArgument(assign.e1))
+        // A `string` local reassignment (`s = rhs;`) is a dynamic-array
+        // reassignment like any other `T[]`: `isDynamicArrayArgument` itself
+        // still excludes strings (it also gates non-local consumers that stay
+        // compact), so a `string`-typed `VarExp` lvalue is admitted alongside
+        // it explicitly.
+        if (isDynamicArrayArgument(assign.e1) ||
+            (assign.e1.isVarExp !is null && isStringType(assign.e1.type)))
             if (auto descriptor = dynamicArrayDescriptorOrNull(assign.e1)) {
                 compileDynamicArrayInto(
                     descriptor.offset,
@@ -8226,56 +8259,11 @@ private struct Compiler {
                 expressionChars(assign),
             ));
 
-        // A compact-declared `string` local's slot is only `stringSliceSize`
-        // (8) bytes wide, but a heap-backed source (`.idup`/`.dup`, a
-        // sub-slice of one, or another heap-backed string) carries a real
-        // 16-byte {ptr, length} descriptor that would overrun it. Rebind the
-        // local onto a fresh 16-byte slot and route it through the same
-        // dynamic-array local map a genuine `T[]` uses, instead of truncating
-        // the copy into the old slot. Every already-compiled read of this
-        // local targets its old compact slot address, so the rebind is only
-        // sound when this assignment provably dominates every later read in
-        // the current function: unconditional straight-line code (not inside
-        // an `if`/`else`, loop, `switch`, `try`/`catch`/`finally`, or `with`
-        // body) in a function with no `label:`/`goto` (a backward goto could
-        // re-enter code compiled before the rebind). Refuse otherwise rather
-        // than let a skipped or repeated execution read stale or zero-init
-        // data through the old slot.
-        if (isStringType(declaration.type) &&
-            stringSourceIsHeapBacked(assign.e2)) {
-            if (_controlFlowDepth != 0 || _functionHasLabels)
-                throw new Exception(text(
-                    "Unsupported assignment in bytecode core: ",
-                    expressionChars(assign),
-                ));
-
-            const heapOffset =
-                allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.copy, heapOffset, rhs.offset,
-                cast(ushort) sliceDescriptorSize,
-            );
-            _dynamicArrayLocals[declaration] = DynamicArrayLocal(
-                heapOffset, dynamicArrayElementType(declaration.type),
-            );
-            _locals.remove(declaration);
-            _stringLocals.remove(declaration);
-            return Operand(heapOffset, ScalarType.void_);
-        }
-
-        // A `string` local's slot holds the compact {dataOffset, length}
-        // descriptor, not a scalar; `scalarType` maps it to `void_`/size 0, so
-        // sizing the copy from `type` (as every other local does) would copy
-        // nothing. Copy the descriptor width instead, matching how a `string`
-        // declaration's own initializer copy is sized.
-        const copySize = isStringType(declaration.type)
-            ? stringSliceSize
-            : size(type);
         _code ~= Instruction(
             Op.copy,
             *slot,
             rhs.offset,
-            cast(ushort) copySize,
+            cast(ushort) size(type),
         );
         return Operand(*slot, type);
     }
@@ -9699,11 +9687,12 @@ private struct Compiler {
 
         auto elementType = arrayType.toBasetype.nextOf;
 
-        // A string element (`string[2]`) uses the compact 8-byte
-        // {data offset, length} descriptor, not the 16-byte native slice
-        // descriptor a real dynamic-array element uses; check it before the
-        // general Tarray case below, whose element basetype a string also
-        // matches.
+        // A string element (`string[2]`) is checked before the general
+        // Tarray case below, whose element basetype a string also matches:
+        // each element must be a literal (`stringLiteralOf` throws
+        // otherwise), expanded directly into the native {ptr, length}
+        // descriptor its 16-byte slot holds, the same width every other
+        // dynamic-array element uses.
         if (isStringType(elementType)) {
             const elementSize = cast(uint) staticArraySize(elementType);
             foreach (elementIndex; 0 .. literal.elements.length) {
@@ -9714,12 +9703,8 @@ private struct Compiler {
                         expressionChars(literal),
                     ));
 
-                const value = compileStringLiteral(string_);
-                _code ~= Instruction(
-                    Op.copy,
-                    cast(ushort) (offset + elementIndex * elementSize),
-                    value.offset,
-                    cast(ushort) stringSliceSize,
+                emitLoadStringLiteral(
+                    cast(ushort) (offset + elementIndex * elementSize), string_,
                 );
             }
             return;
@@ -10257,7 +10242,7 @@ private struct Compiler {
 
         const returnType = _program.functions[index].returnType;
         const destination =
-            (!returnType.isString && !returnType.isArray &&
+            (!returnType.isArray &&
                 !returnType.isStruct &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
@@ -10310,7 +10295,7 @@ private struct Compiler {
             return Operand(
                 destination, ScalarType.ulong_, false, true, ScalarType.void_,
             );
-        return Operand(destination, returnType.scalar, returnType.isString);
+        return Operand(destination, returnType.scalar);
     }
 
     // A null return always falls through to the call site's unconditional
@@ -10756,7 +10741,7 @@ private struct Compiler {
 
         const returnType = resultType(call.type);
         const destination =
-            (!returnType.isString && !returnType.isArray &&
+            (!returnType.isArray &&
                 !returnType.isStruct &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
@@ -10764,7 +10749,7 @@ private struct Compiler {
         _code ~= Instruction(
             Op.callIndirect, delegateOffset, argumentArea, destination,
         );
-        return Operand(destination, returnType.scalar, returnType.isString);
+        return Operand(destination, returnType.scalar);
     }
 
     private void emitLazyCallArgument(
@@ -10860,7 +10845,7 @@ private struct Compiler {
         const index = registerFunction(delegateLocal.function_);
         const returnType = _program.functions[index].returnType;
         const destination =
-            (!returnType.isString && !returnType.isArray &&
+            (!returnType.isArray &&
                 !returnType.isStruct &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
@@ -10868,7 +10853,7 @@ private struct Compiler {
         _code ~= Instruction(
             Op.callIndirect, delegateLocal.offset, argumentArea, destination,
         );
-        return Operand(destination, returnType.scalar, returnType.isString);
+        return Operand(destination, returnType.scalar);
     }
 
     private Operand* tryStaticDelegateAssocArrayCall(CallExp call) {
@@ -10950,7 +10935,7 @@ private struct Compiler {
         const argumentArea = allocateBytes(0, 8);
 
         const destination =
-            (!returnType.isString && !returnType.isArray &&
+            (!returnType.isArray &&
                 !returnType.isStruct &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
@@ -10958,7 +10943,7 @@ private struct Compiler {
         _code ~= Instruction(
             Op.callIndirect, pointer.offset, argumentArea, destination,
         );
-        return Operand(destination, returnType.scalar, returnType.isString);
+        return Operand(destination, returnType.scalar);
     }
 
     private Operand* compileEmplace(CallExp call) {
@@ -11245,7 +11230,8 @@ private struct Compiler {
             return;
         }
 
-        if (isDynamicArrayArgument(argument)) {
+        if (isDynamicArrayArgument(argument) ||
+            (argument.type !is null && isStringType(argument.type))) {
             // A static-array whole slice passed to a callee aliases its frame
             // storage. Keep the general materialisation path below for result
             // values, whose bytes must outlive this VM invocation.
@@ -11276,16 +11262,6 @@ private struct Compiler {
                 slot,
                 descriptor,
                 cast(ushort) sliceDescriptorSize,
-            );
-            return;
-        }
-
-        // A `string` argument is an 8-byte slice descriptor; copy the whole
-        // descriptor, not a single scalar byte.
-        if (argument.type !is null && isStringType(argument.type)) {
-            const operand = compileExpression(argument);
-            _code ~= Instruction(
-                Op.copy, slot, operand.offset, stringSliceSize,
             );
             return;
         }
@@ -12181,12 +12157,13 @@ private struct Compiler {
 
     // `assert(cond, message)` with an explicit string message that is neither
     // a `_d_assert_fail` call nor the verbatim-logical-expression form: throw
-    // the message string itself on failure. The message is either a `StringExp`
-    // literal (`assert(1 == 2, "oops")`, folded to `assert(false, "oops")`) or a
-    // (cast-wrapped) `VarExp` over a `string` local whose slot already holds the
-    // slice descriptor. A compile-time-false condition (`assert(false, msg)`)
-    // throws unconditionally; otherwise the condition is compiled and the throw
-    // is skipped when it holds.
+    // the message string itself on failure. `compactStringOperand` resolves
+    // the message to `Op.throwString`'s compact form regardless of source —
+    // a `StringExp` literal (`assert(1 == 2, "oops")`, folded to
+    // `assert(false, "oops")`), a struct field, or a real-descriptor source
+    // (a `string` local, condensed). A compile-time-false condition
+    // (`assert(false, msg)`) throws unconditionally; otherwise the condition
+    // is compiled and the throw is skipped when it holds.
     private bool compileExplicitMessageAssert(AssertExp assert_) {
         if (assert_.msg is null)
             return false;
@@ -12200,10 +12177,7 @@ private struct Compiler {
         if (integer !is null && integer.toInteger == 0) {
             if (!isStringType(assert_.msg.type))
                 return false;
-            auto message = messageSlice(assert_.msg);
-            const slice = message is null
-                ? compileExpression(assert_.msg)
-                : *message;
+            const slice = compactStringOperand(assert_.msg);
             _code ~= Instruction(
                 Op.throwString,
                 slice.offset,
@@ -12213,13 +12187,12 @@ private struct Compiler {
             return true;
         }
 
-        auto message = messageSlice(assert_.msg);
-        if (message is null)
+        if (!isStringType(assert_.msg.type))
             return false;
+        const slice = compactStringOperand(assert_.msg);
 
         const condition = compileExpression(assert_.e1);
         const skipJump = emitJumpIfTrue(condition);
-        const slice = *message;
         _code ~= Instruction(
             Op.throwString,
             slice.offset,
@@ -12228,33 +12201,6 @@ private struct Compiler {
         );
         patchJump(skipJump);
         return true;
-    }
-
-    // The string-slice operand for an explicit assert message, or null if the
-    // expression is not an explicit string message. A `StringExp` literal lands
-    // in the data segment via compileStringLiteral; a (cast-wrapped) `VarExp`
-    // over a `string` local reuses the local's slice slot.
-    private Operand* messageSlice(Expression expression) {
-        if (auto cast_ = expression.isCastExp)
-            return messageSlice(cast_.e1);
-
-        if (auto string_ = expression.isStringExp) {
-            auto slice = new Operand;
-            *slice = compileStringLiteral(string_);
-            return slice;
-        }
-
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryExceptionStringField(dot))
-                return new Operand(field.offset, ScalarType.void_, true);
-
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (declaration in _stringLocals)
-                    if (auto existing = declaration in _locals)
-                        return new Operand(*existing, ScalarType.void_, true);
-
-        return null;
     }
 
     // DMD with -checkaction=context rewrites `assert(a == b)` into an
@@ -12455,8 +12401,12 @@ private struct Compiler {
         if (!isStringOperand(lhsExpression) || !isStringOperand(rhsExpression))
             return false;
 
-        const lhs = compileExpression(lhsExpression);
-        const rhs = compileExpression(rhsExpression);
+        // `Op.stringSliceEqual` and the diagnostic's rendered operands both
+        // read the compact {dataOffset, length} form; `compactStringOperand`
+        // condenses a real-descriptor source (a `string` local or a
+        // string-returning call, now the ordinary shape) into it.
+        const lhs = compactStringOperand(lhsExpression);
+        const rhs = compactStringOperand(rhsExpression);
         const condition = allocate(ScalarType.bool_);
         _code ~= Instruction(Op.stringSliceEqual, condition, lhs.offset, rhs.offset);
         if (op == "!=")
@@ -12475,7 +12425,7 @@ private struct Compiler {
     }
 
     private bool isStringOperand(Expression expression) {
-        if (isStringType(expression.type))
+        if (isGenuineCharString(expression))
             return true;
 
         if (auto dot = expression.isDotVarExp)
@@ -12674,13 +12624,13 @@ private struct Compiler {
             rhs.type.toBasetype.ty != TY.Tarray)
             return false;
 
-        // Two compact string descriptors retain their string diagnostics below.
-        // A cast may present a mutable array as a read-only character array, so
-        // preserve its native descriptor instead of classifying it by the cast
-        // type alone.
-        if (isStringType(lhs.type) && isStringType(rhs.type) &&
-            dynamicArrayDescriptorOrNull(lhs) is null &&
-            dynamicArrayDescriptorOrNull(rhs) is null)
+        // A genuine `string` comparison renders as a quoted string
+        // (`tryStringComparisonAssert`), not `[e0, e1, ...]`; a mutable
+        // `char[]` merely cast to a `const`/`immutable` view for the
+        // comparison (`isGenuineCharString` sees through the cast) stays on
+        // this generic path, and so does `wstring`/`dstring`
+        // (`Op.stringSliceEqual` is char-only — see `isCharStringType`).
+        if (isGenuineCharString(lhs) && isGenuineCharString(rhs))
             return false;
 
         const elementType = dynamicArrayElementType(lhs.type);
@@ -12967,8 +12917,7 @@ private struct Compiler {
                     (parameter.storageClass &
                         (STC.ref_ | STC.out_ | STC.auto_)) != STC.none;
 
-                if (parameter.type.toBasetype.ty == TY.Tarray &&
-                    !isStringType(parameter.type)) {
+                if (parameter.type.toBasetype.ty == TY.Tarray) {
                     enum descriptorAlign = cast(uint) size_t.sizeof;
                     layout.blockSize = (layout.blockSize +
                         descriptorAlign - 1) & ~(descriptorAlign - 1);
@@ -12980,15 +12929,6 @@ private struct Compiler {
                             sliceDescriptorSize,
                         );
                     layout.blockSize += sliceDescriptorSize;
-                    continue;
-                }
-
-                if (isStringType(parameter.type)) {
-                    layout.blockSize =
-                        (layout.blockSize + 3) & ~3u;
-                    layout.offsets ~= cast(ushort) layout.blockSize;
-                    layout.isReference ~= false;
-                    layout.blockSize += stringSliceSize;
                     continue;
                 }
 
@@ -13039,14 +12979,13 @@ private struct Compiler {
                 continue;
             }
 
-            // A non-string dynamic-array `T[]` parameter holds a 16-byte slice
-            // descriptor in the callee frame. By value the caller copies the
-            // descriptor in; a `ref T[]` instead passes the caller-frame offset
-            // and writes the (possibly reallocated) descriptor back on return,
-            // so an append inside the callee is visible to the caller.
-            if (parameter.type.toBasetype.ty == TY.Tarray &&
-                !isStringType(parameter.type))
-            {
+            // A dynamic-array `T[]` parameter (`string` included) holds a
+            // 16-byte slice descriptor in the callee frame. By value the
+            // caller copies the descriptor in; a `ref T[]` instead passes the
+            // caller-frame offset and writes the (possibly reallocated)
+            // descriptor back on return, so an append inside the callee is
+            // visible to the caller.
+            if (parameter.type.toBasetype.ty == TY.Tarray) {
                 enum descriptorAlign = cast(uint) size_t.sizeof;
                 layout.blockSize =
                     (layout.blockSize + descriptorAlign - 1) & ~(descriptorAlign - 1);
@@ -13057,17 +12996,6 @@ private struct Compiler {
                         cast(ushort) layout.blockSize, sliceDescriptorSize,
                     );
                 layout.blockSize += sliceDescriptorSize;
-                continue;
-            }
-
-            // A `string` parameter holds an 8-byte slice descriptor in the
-            // callee frame; the caller copies the descriptor in by value.
-            if (isStringType(parameter.type)) {
-                layout.blockSize =
-                    (layout.blockSize + 3) & ~3u;
-                layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= false;
-                layout.blockSize += stringSliceSize;
                 continue;
             }
 
@@ -13158,24 +13086,18 @@ private struct Compiler {
         return ((*parameters)[index].storageClass & STC.lazy_) != STC.none;
     }
 
-    // A function result is either a scalar or a string slice. Only the string
-    // case is non-scalar today (the leading edge of arrays); everything else
-    // routes through the scalar path.
+    // A function result is either a scalar or a dynamic-array slice
+    // descriptor (`string` included); every other shape routes through the
+    // scalar path.
     private ResultType resultType(Type type) {
         import dmd.astenums: TY;
 
-        if (isStringType(type))
-            return ResultType(
-                ScalarType.void_, true, false, dynamicArrayElementType(type),
-            );
-
-        // A non-string dynamic array `T[]` result is a 16-byte slice
-        // descriptor; `elementType` gives the element size for indexing the
-        // returned descriptor.
+        // A dynamic array `T[]` result — `string` included, its basetype is
+        // also `Tarray` — is a 16-byte slice descriptor; `elementType` gives
+        // the element size for indexing the returned descriptor.
         if (type.toBasetype.ty == TY.Tarray) {
             auto result = ResultType(
                 ScalarType.void_,
-                false,
                 true,
                 dynamicArrayElementType(type),
                 arrayElementIsArray(type),
@@ -13194,14 +13116,14 @@ private struct Compiler {
 
         if (type.toBasetype.ty == TY.Tsarray && arrayElementIsString(type))
             return ResultType(
-                ScalarType.void_, false, true, dynamicArrayElementType(type),
+                ScalarType.void_, true, dynamicArrayElementType(type),
                 arrayElementIsArray(type), false, cast(uint) staticArraySize(type),
                 false, true, staticArrayLength(type), arrayElementIsString(type),
             );
 
         if (type.toBasetype.ty == TY.Tsarray)
             return ResultType(
-                ScalarType.void_, false, false, ScalarType.void_,
+                ScalarType.void_, false, ScalarType.void_,
                 false, true, cast(uint) staticArraySize(type),
             );
 
@@ -13210,7 +13132,7 @@ private struct Compiler {
         // block; field access then resolves against that destination's base.
         if (type.toBasetype.ty == TY.Tstruct) {
             auto result = ResultType(
-                ScalarType.void_, false, false, ScalarType.void_,
+                ScalarType.void_, false, ScalarType.void_,
                 false, true, cast(uint) staticArraySize(type),
             );
             populateStructDisplay(result, type);
@@ -13219,12 +13141,12 @@ private struct Compiler {
 
         if (isUndisplayableType(type))
             return ResultType(
-                ScalarType.void_, false, false, ScalarType.void_,
+                ScalarType.void_, false, ScalarType.void_,
                 false, false, 0, true,
             );
 
         if (isPointerType(type))
-            return ResultType(ScalarType.ulong_, false);
+            return ResultType(ScalarType.ulong_);
 
         return ResultType.scalarResult(
             scalarType(type),
@@ -13263,7 +13185,7 @@ private struct Compiler {
             return;
 
         auto elementResult = ResultType(
-            ScalarType.void_, false, false, ScalarType.void_,
+            ScalarType.void_, false, ScalarType.void_,
             false, true, cast(uint) staticArraySize(element),
         );
         populateStructDisplay(elementResult, element);
@@ -13349,7 +13271,7 @@ private struct Compiler {
     // returns void; every other function uses its declared return type.
     private ResultType functionResultType(FuncDeclaration function_) {
         if (function_.isCtorDeclaration !is null)
-            return ResultType(ScalarType.void_, false);
+            return ResultType(ScalarType.void_);
         return resultType(returnType(function_));
     }
 

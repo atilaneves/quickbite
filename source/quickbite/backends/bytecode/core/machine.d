@@ -249,6 +249,32 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case stringArrayToSlice: {
+                // Only ever reached for a literal-backed `string`, whose
+                // pointer is always `data.ptr` plus some in-range offset,
+                // making the subtraction exact; a heap-backed source has no
+                // data-segment-relative origin, so this is a best-effort
+                // condensation for the same already-accepted "an
+                // unrecognised string-source shape... defaults to the
+                // compact path and misreads" gap every other compact-only
+                // consumer (the exceptions subsystem's class `msg` field)
+                // has always tolerated, not a new one.
+                const pointer = scalarValue!size_t(stack, base + instruction.b);
+                const length = scalarValue!size_t(
+                    stack, base + instruction.b + size_t.sizeof,
+                );
+                const dataBase = cast(size_t) program.data.ptr;
+                stack[
+                    base + instruction.a .. base + instruction.a + uint.sizeof
+                ] = scalarBytes(cast(uint) (pointer - dataBase));
+                stack[
+                    base + instruction.a + uint.sizeof
+                    .. base + instruction.a + 2 * uint.sizeof
+                ] = scalarBytes(cast(uint) length);
+                ++ip;
+                break;
+            }
+
             case stringSubSlice:
                 const sourceDataOffset = scalarValue!uint(
                     stack, base + instruction.b,

@@ -55,16 +55,17 @@ package(quickbite.backends.bytecode) struct StructDisplayField {
     string[ulong] enumMembers;
 }
 
-// The static type of a function result: a scalar, a string, a dynamic array,
-// or a by-value struct. A string result is a slice descriptor (byte offset and
-// length into Program.data); a dynamic-array result is a 16-byte {ptr, length}
-// descriptor (its backing memory stays alive through the machine's `heap`
-// root), with `elementType` giving the element scalar. A struct result is an
-// inline block of `structSize` bytes copied back to the caller's destination on
-// return (NRVO-style), just like any other frame block.
+// The static type of a function result: a scalar, a dynamic array (`string`
+// included, its basetype is also `Tarray`), or a by-value struct. A
+// dynamic-array result is a 16-byte {ptr, length} descriptor — for a
+// literal-initialised `string`, pointing into the immutable program data
+// segment; otherwise into the machine's `heap` root, which keeps its backing
+// memory alive — with `elementType` giving the element scalar. A struct
+// result is an inline block of `structSize` bytes copied back to the
+// caller's destination on return (NRVO-style), just like any other frame
+// block.
 package(quickbite.backends.bytecode) struct ResultType {
     ScalarType scalar;
-    bool isString;
     bool isArray;
     ScalarType elementType;
     bool arrayElementsAreArrays;
@@ -143,7 +144,7 @@ package(quickbite.backends.bytecode) uint size(in ResultType type)
         return type.structSize;
     if (type.isArray)
         return sliceDescriptorSize;
-    return type.isString ? stringSliceSize : size(type.scalar);
+    return size(type.scalar);
 }
 
 package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
@@ -222,6 +223,16 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // compile-time constants, so no compact descriptor is written to a frame
     // slot merely to be immediately re-expanded by its one consumer.
     loadStringLiteral,
+    // The reverse of `stringSliceToArray`: condense a native {ptr, length}
+    // descriptor at frame offset b back into a compact {dataOffset, length}
+    // descriptor at frame offset a, `dataOffset` being `ptr - data.ptr`, for a
+    // consumer that still expects the compact form (an assert/throw message,
+    // a class `msg` field). Exact for a literal-backed `string` local, whose
+    // pointer is always `data.ptr` plus some in-range offset; a heap-backed
+    // source has no data-segment-relative origin, so this is a best-effort
+    // condensation for that already-accepted "unrecognised string-source
+    // shape... defaults to the compact path and misreads" gap, not a new one.
+    stringArrayToSlice,
     // Form a sub-slice of a compact string descriptor without ever expanding it
     // to a native pointer: a: destination compact descriptor offset, b: source
     // compact descriptor offset, c: offset of an adjacent {lo, hi} pair of
