@@ -39,9 +39,9 @@ private:
 // unchanged across the gap and certify the new, unrelated body as the one
 // the snapshot was taken of. Both failures are silent.
 //
-// So this belongs with the class-heap-identity lifetime work `value.md`
-// defers, and it largely dissolves there: once a native block IS the object
-// rather than a shadow of one (decision 15/17's authority switch), its
+// So this is carried to the authority switch (`value.md`'s remaining-work
+// item 5, which lists it), where it dissolves: once a native block IS the
+// object rather than a shadow of one (decision 15/17's authority switch), its
 // lifetime is the collector's and no identity-keyed pin exists to leak.
 public struct ObjectTable {
     import quickbite.backends.interpreter.native_block: NativeBlock;

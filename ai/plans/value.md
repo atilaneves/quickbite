@@ -900,9 +900,11 @@ in parallel and never blocks it.
    bounded, independently green slices, then one small authority switch
    (decision 17):
    - Preparation is done: per-activation frame blocks; lvalue places
-     composing through a variable, `this`, fields, indexing, pointer/
-     class dereference, and address-of; `ref`/`out` and
-     captured-variable reference slots; and load/store through places
+     composing through a variable, fields, indexing, pointer/class
+     dereference, and address-of — `this` has an arm but no reachable
+     caller, since DMD slots `vthis` as neither a parameter nor a body
+     local and `resolveBase` therefore always declines it; `ref`/`out`
+     and captured-variable reference slots; and load/store through places
      for scalars, enums, pointers, `real`, structs, unions, slices,
      class object bodies, and dataseg storage, each verified against
      the still-authoritative boxed value on write. Composition gaps
@@ -910,6 +912,14 @@ in parallel and never blocks it.
      assignment target and a `SymOffExp` naming a function; a
      captured-variable slot cannot resolve a relay through a
      non-referencing intermediate activation.
+   - `object_table.ObjectTable` never evicts: every class identity the
+     mirror touches keeps its body pinned for the whole execution,
+     because liveness lives in `impl.d`'s boxed copies and nothing
+     reports it back, and a wrong eviction silently splits one object
+     into two bodies. Nothing to do before the switch, which dissolves
+     the question instead of answering it: once a native block IS the
+     object, its lifetime is the collector's and no identity-keyed pin
+     exists.
    - The authority switch: native storage becomes the sole authority
      for all bindings. Merge gate: no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/
