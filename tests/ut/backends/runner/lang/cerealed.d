@@ -1504,20 +1504,20 @@ static foreach (backend; Matrix!(
 // `VarDeclaration`) before the OUTER `f` forces its own `c` via `return c`.
 // The class-mirror bookkeeping captured for the outer binding
 // (`lazyArgumentClassMirrorEstablished`/`...Generations`, see `impl.d`'s
-// `bindLazyFunctionParameter`) must survive the inner call/return unharmed:
-// a prior version of the fix wholesale-absorbed those maps upward on every
-// call return, which could migrate a pointer captured for the intermediate
-// `g` activation into the outer `f` activation after `g` -- and the pointee
-// -- had already returned, corrupting native stack memory the next time
-// `return c` forces the outer binding. `first` gates the reentry so the
-// program terminates instead of recursing forever.
+// `bindLazyFunctionParameter`) belongs to the activation that captured it
+// and must not migrate: absorbing those maps upward on a call return hands
+// the outer `f` activation a pointer captured for the intermediate `g`
+// activation, after `g` -- and the pointee -- has already returned, so
+// forcing the outer binding reads native stack memory that is no longer
+// live. `first` gates the reentry so the program terminates instead of
+// recursing forever.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed),
-    // Pre-existing gap, independent of the class-mirror absorb fix above
-    // (confirmed identical before and after it): a lazy class argument
-    // re-forced after an intermediate reentrant call does not preserve the
-    // caller's original object identity. No crash either way -- only the
-    // returned identity diverges from the oracle.
+    // A lazy class argument re-forced after an intermediate reentrant call
+    // does not preserve the caller's original object identity. Pinned on
+    // Interpreter by `lazyClassArgumentReentrantCallReturnLosesIdentity`
+    // below, which is what keeps the divergence a wrong identity rather
+    // than a crash.
     Omit!(Interpreter, Because.diverges,
         "lazy class argument loses caller identity across reentrant call/return"),
 )) {
@@ -1543,6 +1543,44 @@ static foreach (backend; Matrix!(
                 assert(result is c1);
             }
         });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes: Interpreter's own
+// actual answer for the same program, hand-listed because no
+// `SystemLinker`-oracle expectation applies to it (`SystemLinker` passes).
+// The identity the caller passed in is replaced by the one the intermediate
+// `g` activation bound, so the returned object carries `g`'s field value
+// instead of the caller's -- asserted on the FIELD rather than on `is`,
+// since an identity mismatch renders the snippet's own module name, which
+// is not stable across test orderings. The guest program runs to completion
+// and fails its own assert the ordinary way, so a regression that lets the
+// lazy binding's captured pointer migrate out of its own activation fails
+// here too, with an interpreter-level crash instead of this value.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("lazyClassArgumentReentrantCallReturnLosesIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int val;
+            }
+
+            C f(lazy C c, bool first) {
+                if (first)
+                    g();
+                return c;
+            }
+
+            void g() { f(new C(), false); }
+
+            unittest {
+                auto c1 = new C();
+                c1.val = 5;
+                auto result = f(c1, true);
+                assert(result.val == 5);
+            }
+        }).shouldThrowWithMessage("0 != 5");
     }
 }
 
@@ -1844,3 +1882,4 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+

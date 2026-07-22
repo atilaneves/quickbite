@@ -3249,6 +3249,40 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The `Because.diverges` pin the fixture above owes, and the only place its
+// own "does not crash" property is actually executed on the backend that has
+// the mirror: Interpreter runs the guest program to completion and fails its
+// OWN `assert(parent.child.x == 5)` with the stale boxed value, rather than
+// dying inside the interpreter with a mirror-verify `AssertError`. Hand-
+// listed because no `SystemLinker`-oracle expectation applies to it
+// (`SystemLinker` passes).
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedNestedBodyRewrittenBySiblingBindingReadsStale." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                auto child = new Child();
+                auto parent = new Parent();
+                parent.child = child;
+
+                child.x = 5;
+
+                assert(parent.child.x == 5);
+            }
+        }).shouldThrowWithMessage("0 != 5");
+    }
+}
+
 // The `DotVarExp`-alias counterpart of the fixture above: `c` aliases
 // `parent.child`'s own identity through a non-`VarExp` source, so it gets no
 // promoted cell of its own (`classIdentityAliasedByAnotherBinding`'s own
@@ -3287,6 +3321,37 @@ static foreach (backend; Matrix!(
                 assert(parent.child.x == 7);
             }
         });
+    }
+}
+
+// The `Because.diverges` pin the alias fixture above owes, and the only
+// place its own "does not crash" property is executed on the backend that
+// has the mirror: the same stale boxed read, reached through the alias
+// instead of a plain top-level variable.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedNestedBodyRewrittenByDotVarAliasReadsStale." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+
+                Child c = parent.child;
+                c.x = 7;
+
+                assert(parent.child.x == 7);
+            }
+        }).shouldThrowWithMessage("0 != 7");
     }
 }
 
@@ -3332,6 +3397,41 @@ static foreach (backend; Matrix!(
                 assert(parent.child.x == 7);
             }
         });
+    }
+}
+
+// The `Because.diverges` pin the cross-activation fixture above owes, and
+// the only place its own "does not crash" property is executed on the
+// backend that has the mirror: the caller's boxed copy still holds the
+// pre-call 6 the callee's mirror write replaced.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedNestedBodyRewrittenAcrossActivationReadsStale." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            void bump(Child c) {
+                c.x = c.x + 1;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+                parent.child.x = 6;
+
+                bump(parent.child);
+
+                assert(parent.child.x == 7);
+            }
+        }).shouldThrowWithMessage("6 != 7");
     }
 }
 
