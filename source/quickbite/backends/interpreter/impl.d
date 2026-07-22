@@ -1160,7 +1160,7 @@ private struct Walker {
     private void* mirrorAddress(VarDeclaration variable) {
         return variable.isDataseg
             ? moduleTable.storageFor(variable)
-            : _activationFrame.slotAddress(variable);
+            : _activationFrame.bindingAddress(variable);
     }
 
     // The mirror `Place` for a place-composable local's own storage --

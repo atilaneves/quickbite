@@ -914,8 +914,9 @@ in parallel and never blocks it.
    bounded, independently green slices, then replace boxed local authority
    coherently (decision 17):
    - Frame and place mirrors exist: per-activation frame blocks whose binding
-     address decoder, including the frame-backed `Place` constructor, is the
-     single mechanical boundary between inline and reference slots; lvalue
+     address decoder is the single mechanical boundary between inline and
+     reference slots, including frame-backed `Place` construction and mirror
+     storage routing; lvalue
      places
      composing through a variable, fields, indexing, pointer/class
      dereference, and address-of — `this` has an arm but no reachable
