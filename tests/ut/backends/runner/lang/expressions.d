@@ -3437,6 +3437,61 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The destructor sibling of the same contract: a destructor that mints a
+// class identity and then THROWS must still merge `nextClassObjectId` back
+// into the caller. A destructor runs as an ordinary member call (`impl.d`'s
+// `isDtorExpStatement` arm evaluates a plain `CallExp`), so it merges
+// through `writeBackMemberFunctionState`'s existing `InterpretedException`
+// path rather than through a `new`-expression site of its own -- this
+// fixture pins that the scope-exit route really does share that path.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classIdentity.throwingDestructorIdentityDoesNotCollideWithCallersNext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            class D {
+                long a, b;
+            }
+
+            struct S {
+                int unused;
+
+                ~this() {
+                    C c = new C();
+                    c.x = 1;
+                    throw new Exception("boom");
+                }
+            }
+
+            unittest {
+                bool caught;
+
+                try {
+                    {
+                        S s = S(0);
+                    }
+                } catch (Exception) {
+                    caught = true;
+                }
+
+                assert(caught);
+
+                D d = new D();
+                d.a = 2;
+
+                assert(d.a == 2);
+            }
+        });
+    }
+}
+
 // A class-typed field reassigned to a NEW object must observe the new
 // object's own fields afterward, not retain the old object's -- ordinary
 // class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
