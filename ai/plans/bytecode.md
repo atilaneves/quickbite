@@ -569,6 +569,9 @@ and Cerealed gate no longer expose earlier gaps.
 - The VM selects a handler or unwinds the frame on throw and assert failure. D
   exceptions must not propagate silently through every interpreter frame.
 - Thrown objects are real `Throwable` instances on the host heap.
+- At the evaluator boundary, every uncaught D `Throwable` becomes the
+  observable diagnostic message; `Error` subclasses are unittest failures,
+  not host-harness escapes.
 
 ## Debug Information
 
