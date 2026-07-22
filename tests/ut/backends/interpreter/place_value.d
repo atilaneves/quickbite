@@ -1518,3 +1518,115 @@ unittest {
     }, "S");
     isPlaceComposable(type).should == false;
 }
+
+
+// A `real` union member is one no boxed union write path re-derives from a
+// sibling's bytes, so a union carrying one can hold entries that contradict
+// each other: after `u.l = 42`, `impl.d`'s `withUnionFieldWrite` leaves
+// `r` on its own default, `real.nan`. `real` being the wider member,
+// writing it would splat NaN's bytes over the `l` the guest just assigned
+// -- and the verify side, recomputing through the same `writeValue`, would
+// land on the identical wrong bytes and see nothing. So the whole union
+// declines instead.
+@("place_value.isPlaceComposable.falseForUnionWithRealMember")
+unittest {
+    auto unionType = structTypeOf(q{ union U { real r; long l; } }, "U");
+    isPlaceComposable(unionType).should == false;
+}
+
+
+// The pointer sibling of the case above: a pointer member is not
+// re-derived either, and at the same width as `long` the first-declared
+// tie-break picks it, storing `null` over the just-written `l`.
+@("place_value.isPlaceComposable.falseForUnionWithPointerMember")
+unittest {
+    auto unionType = structTypeOf(q{ union U { int* p; long l; } }, "U");
+    isPlaceComposable(unionType).should == false;
+}
+
+
+// A nested union member is skipped by `withUnionFieldWrite`'s sibling
+// re-derivation exactly like `real` and a pointer are, so the outer union
+// declines for the same reason -- and would anyway, since writing a nested
+// union covers only ITS own widest member, not the outer union's extent.
+@("place_value.isPlaceComposable.falseForUnionWithNestedUnionMember")
+unittest {
+    auto unionType = structTypeOf(q{
+        union Inner { int i; short s; }
+        union U { Inner inner; long l; }
+    }, "U");
+    isPlaceComposable(unionType).should == false;
+}
+
+
+// The widest member must cover every byte a sibling reads: `S` is 16 bytes
+// with 7 of padding after `b`, so composing it field by field never touches
+// bytes 9..15 -- which `x` reads as live data. The tie at 16 goes to the
+// first-declared `S`, so this is not a case a different tie-break rescues.
+@("place_value.isPlaceComposable.falseForUnionWhoseWidestMemberIsPadded")
+unittest {
+    auto unionType = structTypeOf(q{
+        struct S { long l; byte b; }
+        union U { S s; ubyte[16] x; }
+    }, "U");
+    isPlaceComposable(unionType).should == false;
+}
+
+
+// The same union with the padding removed composes: `S`'s two fields tile
+// its whole 8 bytes, so writing `S` writes every byte `l` reads back.
+@("place_value.isPlaceComposable.trueForUnionWhoseWidestMemberTilesItsExtent")
+unittest {
+    auto unionType = structTypeOf(q{
+        struct S { int a; int b; }
+        union U { S s; long l; }
+    }, "U");
+    isPlaceComposable(unionType).should == true;
+}
+
+
+// `union U {}` is legal D. It has no member for the single-member write to
+// pick, so it declines -- rather than indexing an empty member list, which
+// used to kill the whole interpreter with a `core.exception.ArrayIndexError`
+// (an `Error`) the first time a guest program declared one.
+@("place_value.isPlaceComposable.falseForEmptyUnion")
+unittest {
+    auto unionType = structTypeOf(q{ union U {} }, "U");
+    isPlaceComposable(unionType).should == false;
+}
+
+
+// `writeValue` must agree with `isPlaceComposable` exactly, so a declined
+// union is refused rather than half-written -- and refused with a plain
+// `Exception`, the module's own decline shape, never an `Error`.
+@("place_value.writeValue.declinesEmptyUnion")
+unittest {
+    auto unionType = structTypeOf(q{ union U {} }, "U");
+    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
+    auto root = placeAt(block, unionType);
+
+    writeValue(root, Value.structValue("U", [])).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place_value.writeValue: union place "
+        ~ "whose single widest-member write cannot stand in for the whole union",
+    );
+}
+
+
+// The write-side half of `falseForUnionWithRealMember`: reached directly
+// (not through `impl.d`'s gate), the writer declines the same shape the
+// predicate does instead of writing `real.nan`'s bytes over `l`'s 42.
+@("place_value.writeValue.declinesUnionWithRealMember")
+unittest {
+    auto unionType = structTypeOf(q{ union U { real r; long l; } }, "U");
+    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
+    auto root = placeAt(block, unionType);
+
+    long writtenL = 21;
+    writtenL = writtenL * 2;
+
+    writeValue(root, Value.structValue("U", [Value(real.nan), Value(writtenL)]))
+        .shouldThrowWithMessage(
+            "quickbite.backends.interpreter.place_value.writeValue: union place "
+            ~ "whose single widest-member write cannot stand in for the whole union",
+        );
+}

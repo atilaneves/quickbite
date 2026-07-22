@@ -1082,17 +1082,19 @@ private struct Walker {
     // caller, is simply never invoked for one.
     //
     // A composable union local writes through `place_value.writeValue`'s
-    // union arm exactly like every other arm here -- no extra gating needed
-    // even though that arm only writes ONE (the widest) member's bytes
-    // (`writeUnionValue`'s own header comment): `assertFrameMirror` below
-    // recomputes its own "expected bytes" by calling this SAME `writeValue`
-    // on this SAME `value` (never on some independently-derived expectation
-    // of what a union "should" contain), so the two sides can never disagree
-    // with each other, whatever `value`'s own fields say -- the boxed
-    // walker's own correctness (e.g. `impl.d`'s still-untouched union
-    // default-value gap noted in `value.md`'s Unions section) is a separate
-    // question from whether the mirror agrees with the boxed value it was
-    // given, which is all this assert ever checks.
+    // union arm exactly like every other arm here, and needs no extra
+    // gating of its own even though that arm writes only ONE (the widest)
+    // member's bytes: `place_value.isPlaceComposable`'s union arm
+    // (`isComposableUnion`) already declines every union that single write
+    // cannot stand in for, and this function calls it before `writeValue`
+    // just as `assertFrameMirror` does. That gate is where the union
+    // question is settled, deliberately NOT in the byte assertion below --
+    // `assertFrameMirror` recomputes its expected bytes through this SAME
+    // `writeValue` on this SAME `value`, so a union whose entries
+    // contradict each other produces the identical wrong bytes on both
+    // sides and passes the assertion while still being wrong. A divergence
+    // both sides compute the same way is invisible to a byte comparison;
+    // only declining the shape catches it.
     private void mirrorToFrame(VarDeclaration variable, in Value value) {
         import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
 

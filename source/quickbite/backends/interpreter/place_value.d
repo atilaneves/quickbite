@@ -384,8 +384,9 @@ private imported!"quickbite.lang".Value structValueAt(
 // already-allocated body's OWN fields (once its address is known) is
 // `writeClassBody` below, the write-side counterpart of `readValue`'s class
 // arm. A union-typed place writes ONE member's bytes rather than recursing
-// every field the way a non-union struct does -- see `writeUnionValue`'s
-// own header comment for why, and for the limits of that choice. A
+// every field the way a non-union struct does, and refuses outright the
+// unions that single write cannot honestly stand in for -- see
+// `writeUnionValue`/`isComposableUnion`'s own header comments. A
 // pointer-typed place composes symmetrically with `readValue`'s pointer
 // arm -- but its refusal, unlike every type-shape refusal above, is
 // VALUE-dependent, not type-shape-dependent: the type itself (a pointer)
@@ -562,57 +563,207 @@ private void writeSliceValue(
 
 
 // `value` is `structValueAt`'s own shape for a union -- one entry per
-// declared member, built by independently reinterpreting the SAME
-// underlying bytes at each member's own type (`readValue`'s union arm), or
-// (from the boxed walker) `impl.d`'s `withUnionFieldWrite`, which
-// re-derives every sibling from the just-written member's bytes before
-// this is ever reached. Either source already has every entry agreeing
-// bit-for-bit as reinterpretations of one another, over each entry's own
-// byte width -- there is no OTHER way to construct a union-shaped `Value`
-// in this codebase. Writing every entry back, field by field, the way the
+// declared member -- and this writes exactly ONE of those entries: the
+// WIDEST declared member's own bytes, leaving every other entry
+// unconsulted. Writing every entry back field by field, the way the
 // non-union struct arm of `writeValue` does, would make the LAST declared
-// member win regardless of which one the caller actually meant, and worse,
-// a member narrower than a later sibling would leave that sibling's own
+// member win regardless of which one the caller actually meant, and a
+// member narrower than a later sibling would leave that sibling's own
 // trailing bytes as whatever was already at `place` rather than what
-// `value` says they should be.
+// `value` says they should be. Ties are broken by picking the first
+// declared member at the max width, an arbitrary but deterministic choice.
 //
-// The honest single-write semantics: write the WIDEST declared member's
-// own bytes (`layout.typeByteSize`). A D union's own storage is exactly
-// its widest member's size (plus any trailing padding no member ever
-// reads), so writing the widest member in one shot covers the union's
-// entire live extent -- every narrower sibling then reads back correctly
-// by reinterpreting a subrange of those same bytes, with nothing left
-// over to reconcile. This is exact, not approximate, given the
-// bit-for-bit agreement above; ties are broken by picking the first
-// declared member at the max width, an arbitrary but deterministic choice
-// (agreement makes any tied member's own bytes identical to write).
-//
-// The one thing this does NOT attempt: a `value` whose entries were
-// assembled to deliberately disagree has no well-defined union byte
-// pattern in the first place -- compiled D has no such value, a union
-// assignment is always one physical block of bytes -- so this picks ONE
-// member's bytes and leaves every other entry in `value` unconsulted,
-// rather than guessing at a reconciliation this module has no basis for.
+// Writing one member and ignoring the rest is only HONEST when both halves
+// of `isComposableUnion` below hold -- every other entry is genuinely a
+// reinterpretation of the written member's bytes, and the written member
+// covers every byte any member reads. That predicate is `isPlaceComposable`'s
+// own union arm, so a union this declines is never written by
+// `impl.d`'s mirror and never verified by it either; the assertion below
+// pins that agreement for a direct caller, and it throws (a decline, an
+// `Exception`) rather than indexing an empty member list the way an
+// earlier version of this function did for `union U {}`, which killed the
+// whole interpreter with an `ArrayIndexError` -- an `Error`, on an
+// ordinary D program the mirror is only supposed to shadow.
 private void writeUnionValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeStruct unionType,
     in imported!"quickbite.lang".Value value,
 ) @safe {
+    import quickbite.backends.interpreter.layout: structFields;
+
+    if (!isComposableUnion(unionType))
+        throw new Exception(
+            "quickbite.backends.interpreter.place_value.writeValue: "
+            ~ "union place whose single widest-member write cannot stand "
+            ~ "in for the whole union",
+        );
+
+    const widestIndex = widestUnionFieldIndex(unionType);
+    writeValue(
+        place.field(structFields(unionType)[widestIndex]),
+        value.structFieldAt(widestIndex),
+    );
+}
+
+
+// Which of `unionType`'s own `layout.structFields` `writeUnionValue`
+// writes: the first declared member of maximum `layout.typeByteSize`.
+// `-1` when there are none at all -- `union U {}` is legal D, and a union
+// with no member has no byte pattern for a single-member write to stand in
+// for, so `isComposableUnion` declines it rather than letting the write
+// index a member that does not exist.
+private ptrdiff_t widestUnionFieldIndex(
+    imported!"dmd.mtype".TypeStruct unionType,
+) @safe {
     import quickbite.backends.interpreter.layout: structFields, declaredType, typeByteSize;
 
-    auto fields = structFields(unionType);
-
-    size_t widestIndex = 0;
+    ptrdiff_t widestIndex = -1;
     size_t widestSize = 0;
-    foreach (index, field; fields) {
+    foreach (index, field; structFields(unionType)) {
         const size = typeByteSize(declaredType(field));
-        if (size > widestSize) {
+        if (widestIndex < 0 || size > widestSize) {
             widestSize = size;
             widestIndex = index;
         }
     }
 
-    writeValue(place.field(fields[widestIndex]), value.structFieldAt(widestIndex));
+    return widestIndex;
+}
+
+
+// Whether `writeUnionValue`'s "write the widest member, ignore every other
+// entry" semantics is actually equivalent to writing the union -- the
+// shared gate `isPlaceComposable`'s union arm and `writeUnionValue` itself
+// both ask, so a declined union is neither written nor verified. Three
+// conditions, each closing a way the single write silently loses bytes the
+// boxed `Value` claims:
+//
+// - There IS a widest member (`widestUnionFieldIndex >= 0`).
+// - Every member is one both boxed union writers keep a faithful
+//   reinterpretation of its siblings (`isUnionMemberReDerivable`). Without
+//   this the ignored entries are not redundant, they are contradictory:
+//   `union U { real r; long l; }` after `u.l = 42` carries `r = real.nan`
+//   (nothing re-derives a `real` sibling), and `real` being the wider
+//   member, the write would splat NaN's bytes over the `l` the guest just
+//   assigned.
+// - The widest member's own `writeValue` covers every byte of its type
+//   (`writeCoversWholeType`). Without this a padded widest member leaves
+//   bytes a same-width sibling reads as live data untouched:
+//   `union U { S s; ubyte[16] x; }` with `struct S { long l; byte b; }`
+//   ties at 16, `s` wins, and its field-by-field write never touches bytes
+//   9..15 -- which are `x[9 .. 16]`.
+//
+// A union this declines is one whose boxed value stays the sole authority,
+// costing mirror coverage and nothing else. The alternative -- writing the
+// widest member anyway -- is invisible to the verified mirror's byte
+// assertion, since the verify side recomputes through this same function
+// and lands on the identical wrong bytes, and becomes a wrong answer the
+// moment native storage becomes the authority.
+private bool isComposableUnion(imported!"dmd.mtype".TypeStruct unionType) @safe {
+    import quickbite.backends.interpreter.layout: structFields, declaredType;
+
+    const widestIndex = widestUnionFieldIndex(unionType);
+    if (widestIndex < 0)
+        return false;
+
+    auto fields = structFields(unionType);
+    foreach (field; fields)
+        if (!isUnionMemberReDerivable(declaredType(field)))
+            return false;
+
+    return writeCoversWholeType(declaredType(fields[widestIndex]));
+}
+
+
+// Whether a union member of `type` is one every boxed union write path in
+// this codebase re-derives from the union's own bytes, so that the boxed
+// `Value`'s entry for it can never contradict its siblings. The set is
+// deliberately a strict subset of `isPlaceComposable`'s (so a member
+// answering `true` here always composes): a native scalar, a static array
+// of native scalars, or a non-union struct built recursively from those.
+//
+// The excluded shapes are excluded because `impl.d`'s `withUnionFieldWrite`
+// -- the walker's only union field-write path -- re-derives exactly a
+// native-scalar, non-union-struct, or scalar-element-static-array sibling
+// and leaves every other member on its own prior boxed value. `real` is
+// deliberately not `native_scalar.isNativeScalarType` (that module's own
+// header comment), a pointer is not a scalar at all, and a nested union is
+// skipped explicitly there -- so all three keep a stale entry across a
+// sibling's write. `impl.d`'s union DEFAULT path
+// (`unionSiblingDefaultFieldValue`) declines the same shapes and defaults
+// them independently, which is how `union U { real r; long l; }` gets a
+// `real.nan` entry beside a zero `long` one before any write at all.
+private bool isUnionMemberReDerivable(imported!"dmd.mtype".Type type) @safe {
+    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+    import quickbite.backends.interpreter.layout: structFields, declaredType;
+
+    if (isNativeScalarType(type))
+        return true;
+
+    auto arrayType = type.isTypeSArray;
+    if (arrayType !is null)
+        return isNativeScalarType(arrayType.next);
+
+    auto structType = nonUnionStructOf(type);
+    if (structType is null)
+        return false;
+
+    foreach (field; structFields(structType))
+        if (!isUnionMemberReDerivable(declaredType(field)))
+            return false;
+
+    return true;
+}
+
+
+// Whether `writeValue` at a place of `type` writes every one of
+// `layout.typeByteSize(type)` bytes -- a fact about THIS module's own
+// writer, recursing the identical dispatch `writeValue` does so the two
+// cannot drift. Only the union arm needs it (see `isComposableUnion`):
+// everywhere else a byte no field or element owns is padding nothing reads,
+// and both the mirror slot and `assertFrameMirror`'s comparison scratch
+// start out zeroed (`NativeBlock.allocate`'s own contract), so untouched
+// padding compares equal on both sides.
+//
+// A native scalar, a `real`, and a pointer each write exactly their own
+// `typeByteSize` (`native_scalar.writeScalar`, `writeRealBits`,
+// `Place.storeReference`). A static array's elements tile its whole extent,
+// D's own rule that a static array's size is exactly its length times its
+// element size, so only the element type is in question. A non-union struct
+// covers its extent only when its fields leave no gap: DMD's own
+// `layout.fieldByteOffset`s must run consecutively from 0 and the last one
+// must end at the struct's own size, which alignment padding (interior or
+// trailing) breaks. Every other shape -- a union, a slice, a class --
+// answers `false`.
+private bool writeCoversWholeType(imported!"dmd.mtype".Type type) @safe {
+    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+    import quickbite.backends.interpreter.layout:
+        structFields, declaredType, fieldByteOffset, typeByteSize;
+
+    if (isNativeScalarType(type) || isRealType(type) || type.isTypePointer !is null)
+        return true;
+
+    auto arrayType = type.isTypeSArray;
+    if (arrayType !is null)
+        return writeCoversWholeType(arrayType.next);
+
+    auto structType = nonUnionStructOf(type);
+    if (structType is null)
+        return false;
+
+    size_t covered = 0;
+    foreach (field; structFields(structType)) {
+        if (fieldByteOffset(field) != covered)
+            return false;
+
+        auto fieldType = declaredType(field);
+        if (!writeCoversWholeType(fieldType))
+            return false;
+
+        covered += typeByteSize(fieldType);
+    }
+
+    return covered == typeByteSize(structType);
 }
 
 
@@ -729,20 +880,26 @@ private void writeClassBodyImpl(
 // `isRealType`/`readRealBits`/`writeRealBits` -- see `readValue`'s own
 // header comment for why it is not `native_scalar.isNativeScalarType`); a
 // non-union struct all of whose `layout.structFields` field types are
-// themselves place-composable; a union all of whose declared members are
-// themselves place-composable (`allFieldsComposable`, shared with the
-// struct case immediately above -- a union's own fields are exactly as
-// composable as a struct's, since `readValue`/`writeValue`'s union arms
-// recurse the identical per-field composition); a static array whose
+// themselves place-composable; a union `isComposableUnion` accepts (its own
+// header comment -- a stricter question than "are its members composable",
+// because `writeValue`'s union arm writes ONE member's bytes rather than
+// recursing every field, and that stands in for the whole union only under
+// conditions a union's own member types decide); a static array whose
 // element type (`.next`) is place-composable; or a pointer. Recurses the
 // identical dispatch `readValue`/`writeValue` use (`isNativeScalarType`,
 // `isRealType`, `nonUnionStructOf`, `unionStructOf`, `isTypeSArray`,
 // `isTypePointer`) so this predicate can never drift from what those two
-// actually accept for the shapes it DOES claim -- false only for a class
-// or slice/dynamic array, the same set their own header comment gives; a
-// union with ANY such member (a slice or class field) answers `false` for
-// the WHOLE union, exactly like `isClassBodyComposable` declining a whole
-// class body over one non-composable field.
+// actually accept for the shapes it DOES claim -- false for a class, a
+// slice/dynamic array, a floating-base enum (`isFloatingBaseEnum`), and a
+// union `isComposableUnion` declines.
+//
+// The union arm is the one place this predicate is deliberately narrower
+// than `readValue` alone: `readValue` composes a declined union perfectly
+// well (every member is just its own reinterpretation of the same bytes),
+// it is the single-member WRITE that cannot stand in for it. Both mirror
+// sides gate on this predicate, so the narrowing costs coverage
+// symmetrically and never leaves one side writing what the other will not
+// verify.
 //
 // A pointer answers `true` unconditionally here (a TYPE-shape question,
 // the only kind this predicate asks), even though `writeValue`'s own
@@ -781,7 +938,7 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
 
     auto unionType = unionStructOf(type);
     if (unionType !is null)
-        return allFieldsComposable(unionType);
+        return isComposableUnion(unionType);
 
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null)
@@ -795,11 +952,11 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
 
 
 // Whether every one of `structType`'s own `layout.structFields` (in
-// declaration order, base struct or union alike -- `layout.structFields`
-// does not distinguish) is itself `isPlaceComposable` -- the one place
-// `isPlaceComposable`'s own struct and union arms both recurse through, so
-// the two cannot drift from each other any more than `isClassBodyComposable`
-// can drift from `isPlaceComposable` itself.
+// declaration order) is itself `isPlaceComposable` -- what
+// `isPlaceComposable`'s struct arm asks, which is exactly what
+// `writeValue`'s own struct arm needs, since it recurses once per field.
+// A union asks the stricter `isComposableUnion` instead, for the reason
+// that function's header gives.
 private bool allFieldsComposable(imported!"dmd.mtype".TypeStruct structType) @safe {
     import quickbite.backends.interpreter.layout: structFields, declaredType;
 

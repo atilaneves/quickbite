@@ -3086,3 +3086,127 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+
+// An empty union is legal D: `U u;` declares a one-byte local with no
+// member to read. The interpreter's native-layout mirror used to pick a
+// "widest member" out of an empty member list and index it, killing the
+// whole interpreter with a `core.exception.RangeError` on a perfectly
+// ordinary program -- the mirror is a verified shadow of the boxed value
+// and must never be the reason a program dies.
+static foreach (backend; Matrix!()) {
+    @("union.emptyUnionLocalRunsToCompletion." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {}
+
+            int twice(int i) {
+                U u;
+                return i * 2;
+            }
+
+            unittest {
+                int three = 3;
+                assert(twice(three) == 6);
+            }
+        });
+    }
+}
+
+
+// A `real` union member is one no boxed union write path re-derives from a
+// sibling's bytes (`real` is deliberately not `native_scalar.
+// isNativeScalarType`), so the boxed `Value` for `u` carries `r = real.nan`
+// alongside `l = 42` -- two entries that cannot both describe the same
+// bytes. Reading `l` back must still give the value just written.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped field"),
+)) {
+    @("union.writeThroughLongMemberSurvivesRealSibling." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                real r;
+                long l;
+            }
+
+            unittest {
+                U u;
+                long bits = 42;
+                u.l = bits;
+                assert(u.l == 42);
+            }
+        });
+    }
+}
+
+
+// The pointer sibling of the fixture above: a pointer union member is not
+// re-derived from a sibling's bytes either, so `p` stays `null` in the
+// boxed `Value` after `u.l` is written. `p` and `l` are the same width, so
+// a "widest member wins" native write would break the tie in `p`'s favour
+// and zero the bytes `l` was just given.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped field"),
+)) {
+    @("union.writeThroughLongMemberSurvivesPointerSibling." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int* p;
+                long l;
+            }
+
+            unittest {
+                U u;
+                long bits = 42;
+                u.l = bits;
+                assert(u.l == 42);
+            }
+        });
+    }
+}
+
+
+// The padded-widest-member shape: `S` is 16 bytes with 7 bytes of padding
+// after `b`, so a native write that composes `S` field by field never
+// touches bytes 9..15 -- bytes the same-width sibling `x` reads as live
+// data.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped field"),
+)) {
+    @("union.writeThroughPaddedStructMemberLeavesArraySiblingTailIntact." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long l;
+                byte b;
+            }
+
+            union U {
+                S s;
+                ubyte[16] x;
+            }
+
+            unittest {
+                U u;
+                ubyte marker = 0xFF;
+                u.x[12] = marker;
+                long bits = 42;
+                u.s.l = bits;
+                assert(u.x[12] == 0xFF);
+            }
+        });
+    }
+}
