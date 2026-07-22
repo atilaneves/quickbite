@@ -42,8 +42,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.moduleTable = new ModuleTable;
             walker.inUnitTest = function_.isUnitTestDeclaration !is null;
             auto layout = cachedFrameLayout(function_);
-            if (layout.byteLength > 0)
-                walker._activationFrame = FrameBlock.allocate(layout);
+            walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(function_.fbody);
             return EvalResult(displayString(walker.result, function_));
         } catch (Exception exception) {
@@ -65,8 +64,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.moduleTable = new ModuleTable;
             walker.inUnitTest = true;
             auto layout = cachedFrameLayout(unitTest);
-            if (layout.byteLength > 0)
-                walker._activationFrame = FrameBlock.allocate(layout);
+            walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(unitTest.fbody);
             return EvalResult("");
         } catch (Exception exception) {
@@ -85,8 +83,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.classObjectTable = new ObjectTable;
             walker.moduleTable = new ModuleTable;
             auto layout = cachedFrameLayout(function_);
-            if (layout.byteLength > 0)
-                walker._activationFrame = FrameBlock.allocate(layout);
+            walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(function_.fbody);
             return EvalResult(walker.result.asCharArrayString);
         } catch (Exception exception) {
@@ -3594,8 +3591,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = call.f;
         auto layout = cachedFrameLayout(call.f);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
         child.result = Value(false);
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
@@ -7149,8 +7145,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = (captureLocals || function_.isNested)
             ? locals.dup
@@ -7213,8 +7208,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = locals.dup;
         forkPerFrameCellsInto(child);
@@ -10379,8 +10373,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
         child.result = Value(false);
@@ -10460,8 +10453,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = call.f;
         auto layout = cachedFrameLayout(call.f);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
         child.result = Value(false);
@@ -13733,8 +13725,7 @@ private struct Walker {
             child.runningCalledFunction = true;
             child.currentFunction = new_.member;
             auto layout = cachedFrameLayout(new_.member);
-            if (layout.byteLength > 0)
-                child._activationFrame = FrameBlock.allocate(layout);
+            child._activationFrame = FrameBlock.allocate(layout);
             child.result = Value(false);
             child.thisValue = structVal;
             child.hasThis = true;
@@ -13873,8 +13864,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = new_.member;
         auto layout = cachedFrameLayout(new_.member);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = locals.dup;
         forkPerFrameCellsInto(child);

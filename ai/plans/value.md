@@ -355,8 +355,9 @@ deletion (items 2-3).
       tracks converge when the native-layout authority passes the
       working interpreter's matrix.
 
-    Activation storage: one frame block per activation. Contiguous
-    activation storage is field-universal (CPython's fast-locals
+    Activation storage: every activation allocates one frame block, including
+    an activation whose layout has no slots. Contiguous activation storage is
+    field-universal (CPython's fast-locals
     array, JVM/CLR frames, Lua's value stack), and the oracle compiler
     itself is precedent — DMD allocates one GC-heap closure frame per
     activation for captured locals. Per-local blocks are the fallback
