@@ -6669,11 +6669,21 @@ private struct Compiler {
                 pointedType = declaration.type;
             }
         } else if (auto dot = target.isDotVarExp) {
-            auto field = tryStructField(dot);
-            if (field is null)
+            if (auto field = tryStructField(dot)) {
+                slot = field.offset;
+                pointedType = field.type;
+            } else if (auto field = tryClassPointerField(dot)) {
+                auto result = new Operand;
+                *result = Operand(
+                    classFieldAddress(*field),
+                    ScalarType.ulong_,
+                    false,
+                    true,
+                    pointerElementScalar(address.type),
+                );
+                return result;
+            } else
                 return null;
-            slot = field.offset;
-            pointedType = field.type;
         } else
             return null;
 

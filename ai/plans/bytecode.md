@@ -399,10 +399,9 @@ changed:
    instead of compiling the rewritten source body.
 2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
    `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
-   `registryLock`'s `new Mutex` reaches the constructor's `&this.m_hndl`.
-   Lower addresses of class fields, then the host-backed synchronisation
-   primitive, without treating single-threaded VM execution as permission to
-   elide its compiled-D initialisation semantics.
+   `registryLock`'s `new Mutex` reaches its `MonitorProxy` field. Support the
+   host-backed synchronisation primitive without treating single-threaded VM
+   execution as permission to elide its compiled-D initialisation semantics.
 
 This list is a starting order, not a substitute for repository discovery.
 After it is empty, search all backend matrices and characterization pins for
