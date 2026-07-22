@@ -1119,6 +1119,12 @@ private struct Walker {
     //   side ever calls `writeClassBody`'s own cycle-throwing recursion in
     //   the first place (see `writeClassBody`'s own header comment on why
     //   IT still carries a cycle guard despite this).
+    //   `classBodyShapeMatches` also declines whenever `variable`'s own
+    //   identity is currently boxed by ANOTHER live variable
+    //   (`classIdentityAliasedByAnotherBinding`, its own header comment) --
+    //   the pre-existing boxed-authority gap where a write through one
+    //   alias never refreshes another alias's own `locals[]` copy of the
+    //   same identity (`ai/plans/value.md`'s Cell coherence "Known gaps").
     //
     // `Value.null_` DOES mirror, unlike the declines above: a null
     // reference is cheap and verifiable -- a plain `null` pointer written
@@ -1154,7 +1160,7 @@ private struct Walker {
         if (!isClassBodyComposable(classType.sym))
             return;
 
-        if (!classBodyShapeMatches(classType.sym, value))
+        if (!classBodyShapeMatches(variable, classType.sym, value))
             return;
 
         // Not `const`: `Place`'s constructor and `storeReference` both
@@ -1291,11 +1297,65 @@ private struct Walker {
     // own recursion (this codebase avoids exceptions for control flow; see
     // AGENTS.md). Not `static` any more: the promoted-cell check below
     // needs `this.classObjectCells`.
+    //
+    // `variable` adds the TOP-level counterpart of the nested "identity in
+    // classObjectCells" decline `classBodyShapeMatchesImpl` already makes
+    // for a class-typed FIELD: `classIdentityAliasedByAnotherBinding` below
+    // catches the shape that decline cannot, because it is a decline about
+    // `variable` ITSELF, not about one of its fields (own header comment).
     private bool classBodyShapeMatches(
+        VarDeclaration variable,
         imported!"dmd.dclass".ClassDeclaration class_,
         in Value value,
     ) {
+        if (classIdentityAliasedByAnotherBinding(variable, value.classIdentity))
+            return false;
+
         return classBodyShapeMatchesImpl(class_, value, null);
+    }
+
+    // The top-level sibling of `classBodyShapeMatchesImpl`'s own nested
+    // `identity in classObjectCells` decline: that check catches a
+    // class-typed FIELD whose identity some OTHER alias has independently
+    // promoted to a cell, but a plain top-level class LOCAL aliased through
+    // a non-`VarExp` source (`auto aliasLeaf = mid.leaf;` -- a `DotVarExp`,
+    // not the bare `VarExp` `registerClassAliasIfPlainVar` requires) never
+    // gets a cell at all, so `classObjectCells` stays empty for it. The
+    // fault this guards is the same known, pre-existing boxed-authority gap
+    // either way (`ai/plans/value.md`'s Cell coherence "Known gaps" list): a
+    // deep field-chain write reached through ONE binding (`mid.leaf.value =
+    // ...`) refreshes the shared identity-keyed object body
+    // (`classObjectTable`) but never touches another binding's own
+    // per-variable `locals[]` copy of the same identity, so that other
+    // binding's boxed value silently goes stale.
+    //
+    // Scanning `locals` for another live variable currently boxing the
+    // identical identity is the cheapest signal actually available for
+    // this shape -- there is no cell, promoted or otherwise, to consult.
+    // It is also a coarse, over-eager one: it declines a SHARED identity
+    // outright, whether or not a stale write has actually happened yet, and
+    // whether or not the other binding will ever be mutated through. That
+    // is the intended trade, not an approximation to tighten later: an
+    // unmirrored/unverified local costs nothing today, since `locals[]`
+    // remains what every read actually returns regardless of whether the
+    // mirror or its assert ever run -- while the failure mode this
+    // prevents is an internal `AssertError` (`assertClassBodyValue`/
+    // `assertClassReferenceMirror`'s own asserts) turning a pre-existing
+    // WRONG ANSWER into a crashed interpreter on a program that used to run
+    // at all. Declining too often is always the cheaper mistake here.
+    private bool classIdentityAliasedByAnotherBinding(
+        VarDeclaration variable,
+        size_t identity,
+    ) {
+        foreach (other, otherValue; locals) {
+            if (other is variable)
+                continue;
+
+            if (otherValue.isClassObject && otherValue.classIdentity == identity)
+                return true;
+        }
+
+        return false;
     }
 
     // `classBodyShapeMatches`'s own recursion, threading `visiting` -- the
@@ -1537,7 +1597,7 @@ private struct Walker {
         // field is not enough once a pointer field can be one, and why it
         // is also the gate that declines a cyclic object graph before
         // either this function or `writeClassBody` ever reaches one.
-        if (!classBodyShapeMatches(classType.sym, value))
+        if (!classBodyShapeMatches(variable, classType.sym, value))
             return;
 
         // Not `const`: `ObjectTable.storageFor`, `Place`'s constructor,

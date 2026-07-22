@@ -6526,29 +6526,30 @@ static foreach (backend; Matrix!()) {
 // `impl.d`'s `mirrorClassToFrame`/`writeClassBody`) -- but `aliasLeaf`'s OWN
 // boxed local (`locals[]`, keyed per VARIABLE, not per identity) is never
 // refreshed, since only a var's own promoted cell or direct write path
-// touches its `locals[]` entry. Reading `aliasLeaf` afterward hits the
-// generic unpromoted-local path (`assertFrameMirror`), whose own invariant
-// check then finds the boxed local disagreeing with the (correct) mirrored
-// object body and throws `AssertError: "class body mirror diverged from
-// boxed local"` -- so today this crashes the interpreter outright rather
-// than silently returning a wrong value, but the fault is in the boxed
-// AUTHORITY itself (the stale `locals[]` copy), not in the mirror, which is
-// what actually caught it. Closing this generally needs every class-typed
-// local's read to consult identity-keyed storage instead of its own
-// per-variable boxed copy -- exactly the native-layout authority switch
-// (`ai/plans/value.md` decision 15/17), so it is frozen new
-// representation-ceiling machinery, not a correctness fix to existing boxed
-// machinery. `Bytecode` omitted per the omit-don't-pin convention
-// (unconfirmed for this shape, matching the other object-graph fixtures'
-// own backend set).
+// touches its `locals[]` entry. `impl.d`'s `classIdentityAliasedByAnotherBinding`
+// now declines to mirror or verify a class local whenever another live
+// binding boxes the identical identity (own header comment), so reading
+// `aliasLeaf` afterward hits the generic unpromoted-local path
+// (`assertFrameMirror`), finds no mirror slot to check, and returns
+// `aliasLeaf`'s own stale boxed value unmodified -- an ordinary WRONG VALUE
+// (`aliasLeaf.value == 0`, not `mark(1)`) rather than the internal
+// `AssertError: "class body mirror diverged from boxed local"` this used to
+// throw. The fault is still in the boxed AUTHORITY itself (the stale
+// `locals[]` copy); the mirror merely no longer crashes trying to verify
+// against it. Closing this generally needs every class-typed local's read
+// to consult identity-keyed storage instead of its own per-variable boxed
+// copy -- exactly the native-layout authority switch (`ai/plans/value.md`
+// decision 15/17), so it is frozen new representation-ceiling machinery,
+// not a correctness fix to existing boxed machinery. `Bytecode` omitted per
+// the omit-don't-pin convention (unconfirmed for this shape, matching the
+// other object-graph fixtures' own backend set).
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed-authority staleness: a deep field-chain write through one " ~
         "alias does not refresh another alias's own cached copy of the " ~
-        "same object identity; throws AssertError(\"class body mirror " ~
-        "diverged from boxed local\") instead of silently returning a " ~
-        "wrong value -- see ai/plans/value.md's Cell coherence known gaps"),
+        "same object identity, so aliasLeaf.value reads back 0 instead of " ~
+        "mark(1) -- see ai/plans/value.md's Cell coherence known gaps"),
 )) {
     @("classField.deepChainWriteThroughOneAliasVisibleThroughAnother." ~
         backend.stringof)
@@ -6579,6 +6580,56 @@ static foreach (backend; Matrix!(
                 assert(aliasLeaf.value == mark(1));
             }
         });
+    }
+}
+
+// The Interpreter counterpart of the gap fixture above, proving the DECLINE
+// rather than the crash it replaced: `impl.d`'s
+// `classIdentityAliasedByAnotherBinding` (`mirrorClassToFrame`'s and
+// `assertClassFrameMirror`'s shared gate, via `classBodyShapeMatches`) now
+// sees `leaf` and `aliasLeaf` as two live top-level bindings to the same
+// identity and declines to mirror or verify either one, so reading
+// `aliasLeaf` afterward hits the generic unpromoted-local path with no
+// mirror slot to check at all, rather than reaching `assertClassBodyValue`'s
+// own byte-comparison assert. The interpreted guest program therefore runs
+// to completion and fails its OWN `assert(aliasLeaf.value == mark(1))` the
+// ordinary way (`0 != 10`, `throwOnTestFailure`'s plain `Exception`) instead
+// of dying with `core.exception.AssertError: "class body mirror diverged
+// from boxed local"`. Not a `Matrix!()` member (no `SystemLinker`-oracle
+// comparison is possible here -- `SystemLinker` passes cleanly, so a
+// Matrix fixture would only ever restate the known gap above): a hand-
+// written `AliasSeq!(Interpreter)` pin of Interpreter's own actual, still-
+// divergent behaviour, per AGENTS.md's characterization-pin convention.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("classField.deepChainWriteThroughOneAliasVisibleThroughAnotherDeclinesRatherThanAsserts." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Leaf {
+                int value;
+            }
+
+            class Mid {
+                Leaf leaf;
+            }
+
+            int mark(int seed) {
+                return seed * 7 + 3;
+            }
+
+            unittest {
+                auto leaf = new Leaf();
+                auto mid = new Mid();
+                mid.leaf = leaf;
+
+                auto aliasLeaf = mid.leaf;
+
+                mid.leaf.value = mark(1);
+
+                assert(aliasLeaf.value == mark(1));
+            }
+        }).shouldThrowWithMessage("0 != 10");
     }
 }
 

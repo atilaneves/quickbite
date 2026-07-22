@@ -679,12 +679,15 @@ they die with the machinery at the authority switch:
 - A class-typed local's own `locals[]` copy is never refreshed when a
   shared object identity is mutated through a different alias or a
   deep field-chain write (`a.b.c.value = x`) reached via another
-  variable, so reading the stale alias currently crashes with
-  `AssertError("class body mirror diverged from boxed local")` rather
-  than returning a value at all — a real bug in the boxed authority
-  itself, not the mirror that catches it; closing it generally needs
-  every class-typed read to consult identity-keyed storage instead of
-  a per-variable copy, i.e. the authority switch itself
+  variable, so reading the stale alias returns the WRONG boxed value —
+  a real bug in the boxed authority itself. The frame mirror
+  (`classIdentityAliasedByAnotherBinding`, `impl.d`) declines to mirror
+  or verify a class local whenever another live binding boxes the same
+  identity, so this surfaces as an ordinary wrong-value divergence
+  rather than the mirror's own internal assert; closing the underlying
+  staleness generally needs every class-typed read to consult
+  identity-keyed storage instead of a per-variable copy, i.e. the
+  authority switch itself
   (`classField.deepChainWriteThroughOneAliasVisibleThroughAnother`).
 - Union residuals: aggregate members beyond plain structs, promotion
   for unions with non-scalar members, and default-init first members or
@@ -1196,24 +1199,41 @@ in parallel and never blocks it.
        caller-level guard already skips this exact staleness for a
        DIRECTLY promoted variable (`variable in classCells`); a
        class-typed field has no variable of its own to gate on, so
-       this repeats that protection one level down. The mirror's own
-       object-body comparison (`impl.d`'s `assertClassBodyValue`) is a
-       DEDICATED recursive function, not a call to `writeClassBody`:
-       `writeClassBody`'s resolver writes into the REAL nested body
-       (correct for `mirrorClassToFrame`, wrong for an assertion, which
-       must never mutate the body it is comparing against), so
+       this repeats that protection one level down. A plain top-level
+       class LOCAL has the same gap one level UP: `auto aliasLeaf =
+       mid.leaf;` aliases through a `DotVarExp`, not the bare `VarExp`
+       `registerClassAliasIfPlainVar` requires to promote a cell, so
+       `classObjectCells` never learns about it either.
+       `classBodyShapeMatches` therefore also declines whenever
+       `variable`'s own identity is currently boxed by ANOTHER live
+       variable (`impl.d`'s `classIdentityAliasedByAnotherBinding`,
+       scanning `locals` for a match) — the top-level counterpart of
+       the nested-field decline, evaluated by the same shared gate so
+       `mirrorClassToFrame` and `assertClassFrameMirror` stay
+       symmetric. Both declines are deliberately coarse — an unmirrored
+       local costs nothing while authority stays boxed, while a false
+       negative here would re-crash the interpreter — so each declines
+       a shared identity outright rather than proving a stale read is
+       actually imminent. The mirror's own object-body comparison
+       (`impl.d`'s `assertClassBodyValue`) is a DEDICATED recursive
+       function, not a call to `writeClassBody`: `writeClassBody`'s
+       resolver writes into the REAL nested body (correct for
+       `mirrorClassToFrame`, wrong for an assertion, which must never
+       mutate the body it is comparing against), so
        `assertClassBodyValue` builds one scratch per graph level and
        compares each against `classObjectTable`'s own entry instead.
        Residual, NOT fixed by this slice (out of scope — authority
-       stays boxed): the `classObjectCells` decline above only papers
-       over the symptom for the mirror; the underlying boxed-authority
-       staleness (a write through one alias of a shared object graph
-       not propagating into every other alias's own cached copy) is a
-       real, pre-existing gap in `locals[]` itself, found while adding
-       this slice's own Matrix fixtures (mutating a linked-list node
-       through a SEPARATE local aliasing an interior node, then
-       reading it back through a DIFFERENT root reference, reads
-       stale). A union composes as what it
+       stays boxed): the two declines above only paper over the
+       symptom for the mirror — an internal assert must never be the
+       reason a program that used to run instead crashes — not the
+       underlying boxed-authority staleness itself (a write through
+       one alias of a shared object graph not propagating into every
+       other alias's own cached copy), a real, pre-existing gap in
+       `locals[]` found while adding this slice's own Matrix fixtures
+       (mutating a linked-list node through a SEPARATE local aliasing
+       an interior node, or a deep field-chain write through one
+       top-level alias, then reading it back through a DIFFERENT
+       binding, reads stale). A union composes as what it
        actually is: overlapping bytes at DMD's own offsets, with no
        union-specific arithmetic anywhere. `readValue`/`writeValue`
        recurse a union's `layout.structFields` exactly as they do a
