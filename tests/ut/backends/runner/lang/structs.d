@@ -2635,6 +2635,48 @@ static foreach (backend; Matrix!(
     }
 }
 
+// DMD flattens an ANONYMOUS union's members into the enclosing struct's own
+// `fields` at OVERLAPPING offsets (`ai/plans/value.md`'s Unions section: the
+// offsets are the aliasing truth). The enclosing declaration is still a
+// plain struct, so treating its fields as independent, non-overlapping
+// storage writes both members in declaration order over the same bytes and
+// lets the last one win. `real` and `long` never re-derive each other, so
+// after `s.l = 42` the boxed `r` is still NaN while the bytes read `42` --
+// two members whose snapshots genuinely contradict, which is exactly what
+// an explicit union's own stricter gate exists to refuse.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped anonymous-union field"),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("union.anonymousUnionInStructSurvivesRefBindToOverlappingMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                union {
+                    real r;
+                    long l;
+                }
+            }
+
+            real observe(ref real x) {
+                return x;
+            }
+
+            unittest {
+                S s;
+                s.l = 42;
+                observe(s.r);
+                assert(s.l == 42);
+            }
+        });
+    }
+}
+
+
 // An untouched plain-struct sibling reads the same first-member default bits
 // as a scalar sibling. The struct's scalar field spans the first float's NaN
 // representation, so independently defaulting the struct would incorrectly

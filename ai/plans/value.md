@@ -714,9 +714,11 @@ Durable DMD facts:
 - DMD reports a union as a `TypeStruct` whose `sym` is a
   `UnionDeclaration`; every top-level member's offset is 0, and an
   anonymous union's members are flattened into the parent's fields at
-  overlapping offsets. The offsets themselves are the aliasing truth;
-  DMD's `overlapped` flag is a derived fact about them, not a second
-  source of truth to consume.
+  overlapping offsets — so a plain `StructDeclaration`'s (or a class's)
+  own fields are not necessarily disjoint, and any path that walks them
+  "one field each, in declaration order" must first check that they are.
+  The offsets themselves are the aliasing truth; DMD's `overlapped` flag
+  is a derived fact about them, not a second source of truth to consume.
 - D zero-initializes a union from its FIRST declared member's default
   value: the whole block carries the first member's bits, and an
   untouched sibling reads those bits reinterpreted. Computing each

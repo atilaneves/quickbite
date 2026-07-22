@@ -1031,12 +1031,69 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
 // `writeValue`'s own struct arm needs, since it recurses once per field.
 // A union asks the stricter `isComposableUnion` instead, for the reason
 // that function's header gives.
+//
+// "In declaration order, one field each" is only true while those fields
+// occupy DISJOINT bytes, so `fieldsAreDisjoint` gates the whole walk: DMD
+// flattens an ANONYMOUS union's members into the enclosing struct's own
+// `structFields` at OVERLAPPING offsets (`value.md`'s Unions section --
+// and it is the offsets that are consulted here, never `overlapped`, since
+// that flag is a derived fact about them, not a second source of truth).
+// The enclosing declaration is still a plain `StructDeclaration`, so
+// without this check the struct arm would treat the flattened members as
+// independent storage, write every one of them over the same bytes in
+// declaration order, and let the last win -- while the boxed `Value` keeps
+// one entry per member, entries that for `union { real r; long l; }` after
+// `s.l = 42` genuinely contradict each other (nothing re-derives a `real`
+// sibling). A later `ref` bind composed into that storage then verifies a
+// DIFFERENT member's snapshot against those bytes and asserts on a program
+// the oracle runs.
 private bool allFieldsComposable(imported!"dmd.mtype".TypeStruct structType) @safe {
     import quickbite.backends.interpreter.layout: structFields, declaredType;
 
-    foreach (field; structFields(structType))
+    auto fields = structFields(structType);
+    if (!fieldsAreDisjoint(fields))
+        return false;
+
+    foreach (field; fields)
         if (!isPlaceComposable(declaredType(field)))
             return false;
+
+    return true;
+}
+
+
+// Whether no two of `fields` share a byte -- each field's own
+// `layout.fieldByteOffset` plus its declared type's own
+// `layout.typeByteSize`, DMD's numbers verbatim, compared pairwise.
+// Answering `false` is a decline, and a deliberately over-eager one: any
+// overlap at all refuses the whole enclosing type rather than trying to
+// group the overlapping members back into the anonymous union DMD
+// flattened and asking `isComposableUnion` of that group. An unmirrored
+// local costs only coverage of storage nothing reads yet, while getting
+// the grouping wrong crashes a correct program -- and the group that
+// would most often pass such a gate is the one `writeValue` has no place
+// to write through anyway, since a flattened member has no union-typed
+// `Place` of its own. A true union's own `structFields` all sit at offset
+// 0 and would fail this outright, which is why only the plain-struct and
+// class-body arms ask it; a union asks `isComposableUnion`.
+private bool fieldsAreDisjoint(
+    imported!"dmd.declaration".VarDeclaration[] fields,
+) @safe {
+    import quickbite.backends.interpreter.layout:
+        declaredType, fieldByteOffset, typeByteSize;
+
+    foreach (i, field; fields) {
+        const start = fieldByteOffset(field);
+        const end = start + typeByteSize(declaredType(field));
+
+        foreach (other; fields[i + 1 .. $]) {
+            const otherStart = fieldByteOffset(other);
+            const otherEnd = otherStart + typeByteSize(declaredType(other));
+
+            if (start < otherEnd && otherStart < end)
+                return false;
+        }
+    }
 
     return true;
 }
@@ -1077,7 +1134,16 @@ public bool isClassBodyComposable(
 ) @safe {
     import quickbite.backends.interpreter.layout: classFields, declaredType;
 
-    foreach (field; classFields(class_)) {
+    auto fields = classFields(class_);
+
+    // The class-body sibling of `allFieldsComposable`'s own identical gate
+    // (its header comment): a class can declare an anonymous union too, and
+    // DMD flattens its members into `classFields` at overlapping offsets
+    // exactly as it does into a struct's.
+    if (!fieldsAreDisjoint(fields))
+        return false;
+
+    foreach (field; fields) {
         auto fieldType = declaredType(field);
         if (fieldType.isTypeClass !is null)
             continue;
