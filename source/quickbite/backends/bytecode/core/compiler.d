@@ -1135,6 +1135,7 @@ private struct Compiler {
             msgOffset == noCatchObjectField
                 ? cast(ushort) size_t.sizeof
                 : msgOffset,
+            nativeClassTypeInfo(class_),
         );
         if (classInfoName(class_) == "core.exception.RangeError")
             _program.rangeErrorClass = index;
@@ -1143,6 +1144,19 @@ private struct Compiler {
                 _program.classes[baseClass].virtualFunctions.dup;
         registerVirtualFunctions(class_, _program.classes[index]);
         return index;
+    }
+
+    // A VM class object stores its VM class index in its leading word, whereas
+    // D `typeid` exposes a real TypeInfo object. Keep one host TypeInfo_Class
+    // mirror per VM class so TypeInfo's native virtual methods retain their
+    // ordinary compiled-D semantics (notably equality by class name).
+    private size_t nativeClassTypeInfo(ClassDeclaration class_) {
+        import object: TypeInfo, TypeInfo_Class;
+
+        auto result = new TypeInfo_Class;
+        result.name = classInfoName(class_);
+        _program.nativeTypeInfos ~= cast(TypeInfo) result;
+        return cast(size_t) cast(void*) result;
     }
 
     private void registerVirtualFunctions(
@@ -2993,13 +3007,8 @@ private struct Compiler {
                 ),
             );
             const offset = allocate(ScalarType.ulong_);
-            _code ~= Instruction(
-                Op.pointerLoad8,
-                offset,
-                object.offset,
-                compileSizeConstant(0),
-            );
-            return Operand(offset, ScalarType.ulong_);
+            _code ~= Instruction(Op.classTypeInfo, offset, object.offset);
+            return Operand(offset, ScalarType.ulong_, false, true);
         }
 
         auto type = cast(Type) typeid_.obj;
@@ -10039,6 +10048,9 @@ private struct Compiler {
                 expressionChars(call),
             ));
 
+        if (auto native = tryCompileNativeTypeInfoCall(call, function_))
+            return *native;
+
         const layout = parameterLayout(function_);
         if (function_.fbody is null && !layout.hasClassThis)
             if (auto native = tryCompileNativeCall(call, function_, layout))
@@ -10336,6 +10348,62 @@ private struct Compiler {
         );
     }
 
+    // A VM class object is not an ABI class object, so ordinary VM method calls
+    // must stay in bytecode. `typeid(classExpr)` is deliberately different: it
+    // materialises the host TypeInfo mirror above, and its member calls can use
+    // the FFI's existing native class-member ABI path.
+    private Operand* tryCompileNativeTypeInfoCall(
+        CallExp call,
+        FuncDeclaration function_,
+    ) {
+        import dmd.astenums: TY;
+
+        auto dot = call.e1.isDotVarExp;
+        if (dot is null || dot.e1.isTypeidExp is null ||
+            dot.e1.type is null)
+            return null;
+
+        auto receiverType = dot.e1.type.toBasetype.isTypeClass;
+        if (receiverType is null)
+            return null;
+
+        // D evaluates the receiver before explicit arguments. `typeid(expr)`
+        // normally only reads a class reference, but keep that ordering for a
+        // receiver expression with side effects.
+        const receiver = compileTypeidExpression(dot.e1.isTypeidExp);
+        const argumentCount = call.arguments is null ? 0 : call.arguments.length;
+        const argumentArea = allocateNativeArgumentArea(argumentCount);
+        auto argumentTypes = new Type[argumentCount];
+        auto outParameterOffsets = new ushort[argumentCount];
+        foreach (index; 0 .. argumentCount) {
+            auto argument = (*call.arguments)[index];
+            if (argument.type is null)
+                return null;
+            const argumentTy = argument.type.toBasetype.ty;
+            if (argumentTy != TY.Tclass && argumentTy != TY.Tbool &&
+                argumentTy != TY.Tint32 && argumentTy != TY.Tint64 &&
+                argumentTy != TY.Tuns64)
+                return null;
+
+            argumentTypes[index] = argument.type.toBasetype;
+            outParameterOffsets[index] = noOutParameterOffset;
+            emitCallArgument(
+                cast(ushort) (argumentArea + index * nativeArgumentSlotSize),
+                false,
+                argument,
+            );
+        }
+
+        return emitNativeCall(
+            function_,
+            argumentTypes,
+            argumentArea,
+            outParameterOffsets,
+            receiver.offset,
+            receiverType,
+        );
+    }
+
     private ushort* addressOfLocalOffset(Expression argument) {
         auto target = argument;
         while (auto cast_ = target.isCastExp)
@@ -10407,6 +10475,8 @@ private struct Compiler {
         Type[] argumentTypes,
         in ushort argumentArea,
         in ushort[] outParameterOffsets,
+        in ushort nativeClassReceiverOffset = noOutParameterOffset,
+        imported!"dmd.mtype".TypeClass nativeClassReceiverType = null,
     ) {
         import dmd.astenums: TY;
 
@@ -10435,7 +10505,13 @@ private struct Compiler {
                 : allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
         _program.nativeCalls ~=
-            NativeCall(function_, argumentTypes, outParameterOffsets.dup);
+            NativeCall(
+                function_,
+                argumentTypes,
+                outParameterOffsets.dup,
+                nativeClassReceiverOffset,
+                nativeClassReceiverType,
+            );
         _code ~= Instruction(
             Op.nativeCall,
             cast(ushort) nativeIndex,

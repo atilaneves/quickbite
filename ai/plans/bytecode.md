@@ -398,10 +398,10 @@ changed:
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
 2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
-   `std.concurrency`'s module-held scheduler reference, this reaches
-   `object.opEquals`'s `typeid(lhs).opEquals(typeid(rhs))`. Lower compiled-D
-   TypeInfo equality before continuing through the non-root Phobos class
-   construction it reaches.
+   `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
+   this reaches `registryLock`'s `new Mutex`. Lower class construction for the
+   host-backed synchronisation primitive without treating single-threaded VM
+   execution as permission to elide its compiled-D initialisation semantics.
 
 This list is a starting order, not a substitute for repository discovery.
 After it is empty, search all backend matrices and characterization pins for

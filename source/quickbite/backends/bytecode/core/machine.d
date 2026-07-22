@@ -1542,6 +1542,24 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case classTypeInfo:
+                const typeInfoObject = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const typeInfoClass = typeInfoObject == 0
+                    ? noExceptionClass
+                    : objectClassIndex(typeInfoObject);
+                const nativeTypeInfo = typeInfoClass < program.classes.length
+                    ? program.classes[typeInfoClass].nativeTypeInfo
+                    : 0;
+                writeScalar!size_t(
+                    stack,
+                    base + instruction.a,
+                    nativeTypeInfo,
+                );
+                ++ip;
+                break;
+
             case throwIfNullClassReference:
                 if (scalarValue!size_t(stack, base + instruction.a) == 0)
                     throw new Exception(stringFromData(
@@ -1611,7 +1629,7 @@ package(quickbite.backends.bytecode) RunResult run(
             case nativeCall:
                 import quickbite.frontend.dmd.functions:
                     noAvailableSourceMessage;
-                import quickbite.ffi: callNative;
+                import quickbite.ffi: callNative, callNativeClassMember;
 
                 auto native = program.nativeCalls[instruction.a];
                 auto marshaller = new BytecodeNativeMarshaller(
@@ -1620,18 +1638,24 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.c,
                     base,
                     native.outParameterOffsets,
+                    native.nativeClassReceiverOffset,
                 );
                 bool[] addressOfLocalArguments;
                 addressOfLocalArguments.length = native.outParameterOffsets.length;
                 foreach (index, offset; native.outParameterOffsets)
                     addressOfLocalArguments[index] =
                         offset != noOutParameterOffset;
-                if (!callNative(
-                    native.function_,
-                    marshaller,
-                    native.argumentTypes,
-                    addressOfLocalArguments,
-                ))
+                const called = native.nativeClassReceiverType is null
+                    ? callNative(
+                        native.function_, marshaller, native.argumentTypes,
+                        addressOfLocalArguments,
+                    )
+                    : callNativeClassMember(
+                        native.function_, native.nativeClassReceiverType,
+                        marshaller, native.argumentTypes,
+                        addressOfLocalArguments,
+                    );
+                if (!called)
                     throw new Exception(noAvailableSourceMessage(
                         native.function_,
                     ));
@@ -3181,6 +3205,7 @@ private final class BytecodeNativeMarshaller:
     private size_t _destination;
     private size_t _base;
     private const(ushort)[] _outParameterOffsets;
+    private ushort _nativeClassReceiverOffset;
 
     public this(
         ubyte[] stack,
@@ -3188,12 +3213,14 @@ private final class BytecodeNativeMarshaller:
         in size_t destination,
         in size_t base,
         in ushort[] outParameterOffsets,
+        in ushort nativeClassReceiverOffset,
     ) {
         _stack = stack;
         _argument = argument;
         _destination = destination;
         _base = base;
         _outParameterOffsets = outParameterOffsets;
+        _nativeClassReceiverOffset = nativeClassReceiverOffset;
     }
 
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
@@ -3399,7 +3426,13 @@ private final class BytecodeNativeMarshaller:
     }
 
     public const(void)* receiverObjectPointer() {
-        return null;
+        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
+
+        if (_nativeClassReceiverOffset == noOutParameterOffset)
+            return null;
+        return cast(const(void)*) scalarValue!size_t(
+            _stack, _base + _nativeClassReceiverOffset,
+        );
     }
 
     public void invokeClosure(in size_t argumentIndex, Type returnType,
