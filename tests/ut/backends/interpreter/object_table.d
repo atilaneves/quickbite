@@ -140,3 +140,31 @@ unittest {
 
     readScalar(field.type, bytes).asLong.should == written;
 }
+
+
+// `generation` answers "has anyone rewritten this body since I last looked"
+// (`impl.d`'s `classMirrorGenerations`/`assertClassBodyValue`), so every
+// call that hands an address out has to bump it -- a second mirror write for
+// a SHARED identity is exactly what the consumer needs to hear about. A call
+// that THROWS handed nothing out and wrote nothing, so it must stay silent:
+// bumping there tells every other binding its snapshot is stale on the
+// strength of a call that did nothing at all.
+@("ObjectTable.generation.bumpsForEveryCallThatHandsAnAddressOutButNotForARefusedOne")
+unittest {
+    auto baseType = classTypeOf(classHierarchySource, "Base");
+    auto derivedType = classTypeOf(classHierarchySource, "Derived");
+    ObjectTable table;
+
+    table.generation(1).should == 0;
+
+    table.storageFor(1, baseType.sym);
+    const afterAllocation = table.generation(1);
+    (afterAllocation > 0).should == true;
+
+    table.storageFor(1, baseType.sym);
+    table.generation(1).should == afterAllocation + 1;
+
+    const beforeRefusal = table.generation(1);
+    table.storageFor(1, derivedType.sym).shouldThrow!Exception;
+    table.generation(1).should == beforeRefusal;
+}
