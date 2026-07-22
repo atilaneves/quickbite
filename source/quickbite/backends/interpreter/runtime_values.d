@@ -165,6 +165,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value defaultValu
     imported!"dmd.mtype".Type variableType,
 ) {
     import dmd.astenums: TY;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     // `auto` because DMD's static array accessors are not const-callable
@@ -211,7 +212,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value defaultValu
         case Tstruct:
             return structDefaultValue(type.isTypeStruct);
         case Tarray:
-            return Value.arrayValue([]);
+            return AggregateValue.reconstructArray([]);
         case Taarray:
             return Value.assocArrayValue([], []);
         case Tvoid:
@@ -246,6 +247,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value defaultValu
 private imported!"quickbite.backends.interpreter.runtime_value".Value staticArrayDefaultValue(
     imported!"dmd.mtype".TypeSArray staticArray,
 ) {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     const length = cast(size_t) staticArray.dim.toInteger;
@@ -254,12 +256,13 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value staticArra
     foreach (_; 0 .. length)
         elements ~= defaultValue(staticArray.nextOf);
 
-    return Value.arrayValue(elements);
+    return AggregateValue.reconstructArray(elements);
 }
 
 private imported!"quickbite.backends.interpreter.runtime_value".Value structDefaultValue(
     imported!"dmd.mtype".TypeStruct structType,
 ) {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     if (structType is null || structType.sym is null)
@@ -273,7 +276,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value structDefa
     foreach (field; structType.sym.fields)
         fields ~= defaultValue(field.type);
 
-    return Value.structValue(typeName, fields);
+    return AggregateValue.reconstructStruct(typeName, fields);
 }
 
 private imported!"quickbite.backends.interpreter.runtime_value".Value scalarDefaultValue(

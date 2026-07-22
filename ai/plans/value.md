@@ -923,15 +923,11 @@ in parallel and never blocks it.
    `void` result just to reuse the evaluator path.
 
 3. Complete the interpreter-private `RuntimeValue` carrier's expression-only
-   aggregate path before the authority switch. First extract its recursive
-   aggregate visitor/reconstruction behaviour and the direct consumer boundary
-   that constructs and consumes boxed aggregates, without reversing the
-   existing `place`/`place_value` -> `RuntimeValue` dependency. The boundary
-   exposes boxed aggregate reconstruction and visits for struct, array, and
-   class fields. Migrate the remaining direct aggregate consumers in `impl`'s
-   evaluator and cell/writeback paths before changing the boundary's
-   representation. `RuntimeValue.Array` conflates static and dynamic arrays,
-   so category-by-category handle migration would recreate a second
+   aggregate path before the authority switch. `AggregateValue` is the common
+   boxed aggregate boundary; migrate the remaining direct aggregate consumers
+   in `impl`, evaluator reconstruction before cell/writeback, before changing
+   its representation. `RuntimeValue.Array` conflates static and dynamic
+   arrays, so category-by-category handle migration would recreate a second
    authority; preserve the no-two-world invariant by changing the one common
    boundary. Then replace that boundary's recursively boxed `Array`,
    `Struct`, and `ClassObject` rvalues with native aggregate handles and
