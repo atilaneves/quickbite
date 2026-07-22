@@ -106,22 +106,18 @@ deletion (items 2-3).
    `ClassObject` expression aggregates remain recursive boxed trees.
    `AggregateValue` is their complete common visitor/reconstruction and
    mutation boundary, consumed by every aggregate operation in `impl` and
-   `ffi_marshal`; its signatures are still `RuntimeValue`-typed. The next
-   valid operation is one atomic carrier-boundary migration: change every
-   `AggregateValue` consumer and its signatures to native typed-address
-   aggregate handles, including whole-value reconstruction. A handle with no
-   consumer is equally speculative. `RuntimeValue.Array` owns recursive
-   elements for both static and dynamic arrays; its `nativeAddress` is an FFI
-   shortcut, not a category boundary. Static/dynamic slicing of this migration
-   is forbidden because it would create a second authority. The common
-   boundary preserves the no-two-world invariant while its representation
-   changes.
-   This is a prerequisite to, not part of, the one atomic migration of the
-   carrier's three interim data-pointer arms and local/frame/ref/capture/
-   cross-frame authority to one host-address arm. Function and delegate
-   handles are separate, non-data categories. That expression currency is
-   distinct from the authoritative storage of an addressable guest value — it
-   is a return type, never an authority (decision 15).
+   `ffi_marshal`; its signatures are still `RuntimeValue`-typed. Native
+   typed-address aggregate handles can land only in the authority switch:
+   change every `AggregateValue` consumer and signature, including whole-value
+   reconstruction, while replacing the carrier's data-pointer arms and all
+   local/frame/ref/capture/cross-frame authority with host addresses. A handle
+   with no consumer is speculative, and retaining boxed locals would require
+   parallel aggregate copies — a second authority. `NativeArray`'s FFI address
+   is dynamic-array-only, so it cannot be promoted into that general carrier.
+   `RuntimeValue.Array` owns recursive elements for both static and dynamic
+   arrays; neither may be split from the combined switch. Function and
+   delegate handles remain separate non-data categories. The expression
+   currency is a return type, never an authority (decision 15).
    The earlier claim that a boxed tagged union
    is "the natural form" for a tree walker was downgraded: it argues
    against *reimplementing* layout, not against *reusing* it. It is
@@ -256,9 +252,12 @@ deletion (items 2-3).
     reference it; they never participate in guest identity or address
     arithmetic. (A storage-identity-plus-offset coordinate system would
     recreate the provenance split that produced `isNativePointer`.)
-    The authority switch replaces the expression currency's three
-    data-pointer arms with its one host-address arm at the same time as it
-    makes this storage rule authoritative; function and delegate handles are
+    The authority switch makes this storage rule authoritative while replacing
+    the expression currency's data-pointer arms and recursive aggregate
+    carriers with host-address handles. It changes every aggregate boundary
+    consumer, local/frame/ref/capture/cross-frame authority, and whole-value
+    reconstruction in that one switch; boxed locals cannot coexist as an
+    authority without parallel copies. Function and delegate handles are
     separate non-data categories. Boxed values survive only as transient
     rvalues (decisions 7/11), never as storage authority.
 
@@ -363,11 +362,12 @@ deletion (items 2-3).
       ceiling → wait.
     - The **representation track** implements decision 15 in bounded,
       independently green preparation slices. Frame and place mirrors do
-      not make an authority switch ready: the one coherent switch must
-      replace all three data-pointer arms together with boxed-local
-      authority, pointer identity and dereference, `ref`/`out`/capture
-      binding, and cross-frame writes. `scalarCells` and alias maps cannot
-      remain an authority behind native frame bytes. Not a monolithic rewrite
+      not make an authority switch ready: the one coherent switch must replace
+      the recursive aggregate carrier and all data-pointer arms together with
+      boxed-local authority, pointer identity and dereference,
+      `ref`/`out`/capture binding, and cross-frame writes. `scalarCells` and
+      alias maps cannot remain an authority behind native frame bytes. Not a
+      monolithic rewrite
       verified only at the end, and not per-shape authority flips
       (mixed-shape values recreate the two-world coherence seams this
       redesign exists to kill): replace the whole local-storage path
@@ -923,20 +923,16 @@ in parallel and never blocks it.
    consumes its returned string. Do not retain `Value` or render a dummy
    `void` result just to reuse the evaluator path.
 
-3. Complete the interpreter-private `RuntimeValue` carrier's expression-only
-   aggregate path before the authority switch. The common `AggregateValue`
-   boundary is complete but remains `RuntimeValue`-typed. Its next operation
-   is atomic: migrate every consumer and boundary signature to native
-   typed-address aggregate handles and supply their whole-value reconstruction
-   APIs. Do not introduce a handle separately, retain a `Value` aggregate path,
-   or split static from dynamic arrays: `RuntimeValue.Array` owns recursive
-   elements for both, and `nativeAddress` is only an FFI shortcut. The one
-   migration replaces the boundary's recursively boxed `Array`, `Struct`, and
-   `ClassObject` rvalues without relaxing the no-two-world invariant. Then
-   replace its three data-pointer arms with one host-address
-   arm in the same atomic migration that replaces local/frame,
-   `ref`/`out`/capture, pointer-dereference, and cross-frame-write authority,
-   and delete cells and aliases. Function and delegate handles remain separate
+3. Make the authority switch. The complete `AggregateValue` boundary remains
+   `RuntimeValue`-typed until this one operation changes every consumer and
+   signature, including whole-value reconstruction, to host-address aggregate
+   handles. In the same operation, native storage becomes local/frame,
+   `ref`/`out`/capture, pointer-dereference, and cross-frame-write authority;
+   all data-pointer arms become the one host-address arm; and cells and aliases
+   are deleted. Do not introduce a handle separately, retain boxed locals, or
+   split static from dynamic arrays: the former needs parallel copies and the
+   latter leaves a second authority; `NativeArray`'s FFI address is only a
+   dynamic-array shortcut. Function and delegate handles remain separate
    non-data categories. Expression results need immediate scalars, native
    handles, locations, callables, and execution metadata only. Once no backend
    depends on `quickbite.lang.Value` as a cross-backend type, delete the shared
@@ -972,14 +968,13 @@ in parallel and never blocks it.
      assignment target and a `SymOffExp` naming a function; a
      captured-variable slot cannot resolve a relay through a
      non-referencing intermediate activation.
-   - The authority switch is item 3's one atomic migration: every
-     data-pointer producer and consumer changes to the carrier's one
-     host-address arm while pointer creation and dereference change to frame
-     bytes, `ref`/`out` and captured bindings carry addresses, and cross-frame
-     mutation writes those addresses directly. Function/delegate handles stay
-     separate non-data categories. Do not retain `scalarCells`, other cell
-     families, or alias/reverse maps as an authority behind the frames: a
-     mirror plus any of those authorities is still two storage worlds.
+   - Item 3's authority switch is the combined carrier and storage migration:
+     aggregate consumers and whole-value reconstruction take host-address
+     handles while pointer creation/dereference, `ref`/`out`, captures, and
+     cross-frame mutation use frame addresses directly. Function/delegate
+     handles stay separate non-data categories. Do not retain `scalarCells`,
+     other cell families, or alias/reverse maps as an authority behind the
+     frames: a mirror plus any of those authorities is still two storage worlds.
    - `object_table.ObjectTable` never evicts: every class identity the
      mirror touches keeps its body pinned for the whole execution,
      because liveness lives in `impl.d`'s boxed copies and nothing
