@@ -77,9 +77,8 @@ This is the load-bearing decision; everything else follows from it.
   a descriptor crossing the bridge unswapped (`int[]*`, a struct with a slice
   field passed by reference) reads ptr-as-length on the native side. The flip
   touches every descriptor read/write site (`subSlice*`, `indexLoad*`, bounds
-  checks), needs a bridge round-trip test of a struct containing a slice
-  field, and sequences with the string-descriptor retirement below, which
-  touches the same sites.
+  checks) and needs a bridge round-trip test of a struct containing a slice
+  field.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
@@ -93,7 +92,7 @@ This is the load-bearing decision; everything else follows from it.
 
 ### Strings are ordinary arrays
 
-A `string`-typed frame slot must be a normal 16-byte native-order slice
+A `string`-typed frame slot is a normal 16-byte native-order slice
 descriptor, identical to every other `T[]`. What is special about strings is
 only their backing storage: literal content lives in the immutable program
 data segment (the VM's `.rodata`), stored at the declared element width
@@ -106,35 +105,19 @@ asymmetry compiled D gives string literals (`.rodata` placement, merged and
 deduped, with no descriptor-shape difference).
 
 Consequences, all by construction: sub-slices, indexing, `.ptr`, assignment,
-bounds checks, and copying reuse the generic dynamic-array paths with zero
+bounds checks, copying, and truthiness (`if (s)` / `assert(s)` compile as the
+ordinary `ptr !is null` pointer test — `null` and `""` are distinguishable by
+the pointer word) reuse the generic dynamic-array paths with zero
 string-specific opcodes; heap-backed strings (`.idup`, appends) are not a
 second representation, just a different pointee, so no provenance predicate
-or compile-time rebinding exists; `null` and `""` are distinguishable by the
-pointer word, giving real string truthiness; `wstring`/`dstring` need no
-gates because storage matches stride. Type never selects a representation;
-nothing inspects a value's origin to decide its shape.
+or compile-time rebinding exists; `wstring`/`dstring` need no gates because
+storage matches stride. Type never selects a representation; nothing
+inspects a value's origin to decide its shape.
 
-The implementation matches this contract, with one exception: truthiness.
-Literal storage is width-faithful (`Op.loadStringLiteral` expands a literal
-straight to a native descriptor at load time); locals, struct/class fields,
-indexing, sub-slicing, `.ptr`, `.length`, equality, assert/throw
-diagnostics, and the exceptions subsystem's `msg` field all resolve through
-the same generic dynamic-array machinery as `int[]`, with zero
-string-specific opcodes and no provenance predicate anywhere in the
-compiler. `resultType`/`reify` carry a `string` function result as the
-ordinary array descriptor too, the reifier classifying a literal's pointer
-back into a data-segment offset at the boundary (`reify.resolveBlock`).
-
-Remaining: `if (s)` / `assert(s)` should compile as the ordinary pointer
-test (`null` and `""` distinguishable by the pointer word), but
-`compileBoolCondition`'s fallback for a string source
-`dynamicArrayDescriptorOrNull` cannot resolve (e.g. a conditional) is not
-yet that test, and a message-less `assert(s)`/`assert(!s)` still refuses
-rather than mis-fire (`compilePlainAssert`). Not in scope: value
-interning — D strings are slices with observable `.ptr` identity and
-memory-sharing sub-slices, so canonical-object interning contradicts the
-compiled-D oracle; deduplicating identical literal bytes inside the data
-segment is storage-side, invisible, and compatible.
+Not in scope: value interning — D strings are slices with observable `.ptr`
+identity and memory-sharing sub-slices, so canonical-object interning
+contradicts the compiled-D oracle; deduplicating identical literal bytes
+inside the data segment is storage-side, invisible, and compatible.
 
 ### Runtime type metadata
 Native-layout memory is not enough for the druntime leaves; they also
@@ -654,9 +637,6 @@ behaviour.
   requires multiple simultaneous threads. Host runtime calls and single-thread
   concurrency state already reached by existing rows are not covered by that
   deferral.
-- Strings violate the "Strings are ordinary arrays" contract (see Core
-  Architecture) only in truthiness (`if (s)` / `assert(s)` not yet the
-  ordinary pointer test).
 - `std.array.array` on a narrow string autodecodes to `dstring`/`dchar[]`
   by default; compiling that path
   (`ut.backends.runner.lang.cerealed.stdConvTextRendersCharArrayExpressionRaw`)

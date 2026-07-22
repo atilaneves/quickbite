@@ -743,7 +743,7 @@ private struct Compiler {
                 declaration.ident.toString != name)
                 continue;
             if (auto element = declaration in _pointerLocals)
-                return Operand(offset, ScalarType.ulong_, false, true, *element);
+                return Operand(offset, ScalarType.ulong_, true, *element);
             throw new Exception(text("Unsupported inline asm pointer operand: ", name));
         }
         throw new Exception(text("Unsupported inline asm pointer operand: ", name));
@@ -1829,7 +1829,6 @@ private struct Compiler {
                 return Operand(
                     _classThisOffset,
                     ScalarType.ulong_,
-                    false,
                     true,
                     ScalarType.void_,
                 );
@@ -1856,7 +1855,6 @@ private struct Compiler {
                     return Operand(
                         pointer,
                         ScalarType.ulong_,
-                        false,
                         true,
                         ScalarType.void_,
                     );
@@ -1868,7 +1866,6 @@ private struct Compiler {
                         return Operand(
                             *existing,
                             ScalarType.ulong_,
-                            false,
                             true,
                             ScalarType.void_,
                         );
@@ -1877,7 +1874,6 @@ private struct Compiler {
                             Operand(
                                 *existing,
                                 ScalarType.ulong_,
-                                false,
                                 true,
                                 *element,
                             ),
@@ -1888,7 +1884,6 @@ private struct Compiler {
                             *existing,
                             ScalarType.void_,
                             false,
-                            false,
                             ScalarType.void_,
                             true,
                         );
@@ -1896,13 +1891,12 @@ private struct Compiler {
                         return Operand(
                             *existing,
                             ScalarType.ulong_,
-                            false,
                             true,
                             ScalarType.void_,
                         );
                     if (auto element = declaration in _pointerLocals)
                         return Operand(
-                            *existing, ScalarType.ulong_, false, true, *element,
+                            *existing, ScalarType.ulong_, true, *element,
                         );
                     return Operand(*existing, scalarType(declaration.type));
                 }
@@ -1917,7 +1911,7 @@ private struct Compiler {
                         allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
                     _code ~= Instruction(Op.frameAddress, offset, *existing);
                     return Operand(
-                        offset, ScalarType.ulong_, false, true,
+                        offset, ScalarType.ulong_, true,
                         ScalarType.void_,
                     );
                 }
@@ -1936,7 +1930,6 @@ private struct Compiler {
                         return Operand(
                             offset,
                             ScalarType.ulong_,
-                            false,
                             true,
                             ScalarType.void_,
                         );
@@ -2037,7 +2030,7 @@ private struct Compiler {
                 cast(ushort) size_t.sizeof,
             );
             return Operand(
-                offset, ScalarType.ulong_, false, true, ScalarType.int_,
+                offset, ScalarType.ulong_, true, ScalarType.int_,
             );
         }
 
@@ -2340,7 +2333,7 @@ private struct Compiler {
                     return Operand(field.offset, ScalarType.ulong_);
                 if (isPointerType(field.type))
                     return Operand(
-                        field.offset, ScalarType.ulong_, false, true,
+                        field.offset, ScalarType.ulong_, true,
                         pointerElementScalar(field.type),
                     );
                 return Operand(field.offset, scalarType(field.type));
@@ -2604,7 +2597,7 @@ private struct Compiler {
             ? Operand(offset, ScalarType.void_)
             : isPointerType(resultType)
             ? Operand(
-                offset, ScalarType.ulong_, false, true,
+                offset, ScalarType.ulong_, true,
                 pointerElementScalar(resultType),
             )
             : Operand(offset, elementType);
@@ -3000,7 +2993,7 @@ private struct Compiler {
             );
             const offset = allocate(ScalarType.ulong_);
             _code ~= Instruction(Op.classTypeInfo, offset, object.offset);
-            return Operand(offset, ScalarType.ulong_, false, true);
+            return Operand(offset, ScalarType.ulong_, true);
         }
 
         auto type = cast(Type) typeid_.obj;
@@ -3018,7 +3011,6 @@ private struct Compiler {
                 return Operand(
                     offset,
                     ScalarType.ulong_,
-                    false,
                     true,
                     ScalarType.void_,
                 );
@@ -3496,7 +3488,6 @@ private struct Compiler {
             *result = Operand(
                 delegateLocal.offset,
                 ScalarType.ulong_,
-                false,
                 true,
                 ScalarType.void_,
             );
@@ -3508,7 +3499,6 @@ private struct Compiler {
             *result = Operand(
                 cast(ushort) (delegateLocal.offset + size_t.sizeof),
                 ScalarType.ulong_,
-                false,
                 true,
                 ScalarType.void_,
             );
@@ -4295,7 +4285,6 @@ private struct Compiler {
             return Operand(
                 _classThisOffset,
                 ScalarType.ulong_,
-                false,
                 true,
                 ScalarType.void_,
             );
@@ -4756,7 +4745,6 @@ private struct Compiler {
             return Operand(
                 destination,
                 ScalarType.ulong_,
-                false,
                 true,
                 pointerElementScalar(field.type),
             );
@@ -4862,7 +4850,7 @@ private struct Compiler {
         );
 
         auto result = new Operand;
-        *result = Operand(pointer, ScalarType.ulong_, false, true, elementType);
+        *result = Operand(pointer, ScalarType.ulong_, true, elementType);
         return result;
     }
 
@@ -4892,7 +4880,7 @@ private struct Compiler {
 
         auto result = new Operand;
         *result = Operand(
-            pointer, ScalarType.ulong_, false, true, ScalarType.void_,
+            pointer, ScalarType.ulong_, true, ScalarType.void_,
         );
         return result;
     }
@@ -4923,7 +4911,7 @@ private struct Compiler {
 
         auto result = new Operand;
         *result = Operand(
-            pointer, ScalarType.ulong_, false, true, ScalarType.void_,
+            pointer, ScalarType.ulong_, true, ScalarType.void_,
         );
         return result;
     }
@@ -5987,7 +5975,7 @@ private struct Compiler {
             const pointer = compileExpression(cast_.e1);
             if (pointer.isPointer)
                 return Operand(
-                    pointer.offset, ScalarType.ulong_, false, true,
+                    pointer.offset, ScalarType.ulong_, true,
                     pointerElementScalar(cast_.to),
                 );
 
@@ -6211,7 +6199,7 @@ private struct Compiler {
         _code ~= Instruction(Op.frameAddress, basePointer, baseOffset);
 
         const basePointerOperand = Operand(
-            basePointer, ScalarType.ulong_, false, true, ScalarType.void_,
+            basePointer, ScalarType.ulong_, true, ScalarType.void_,
         );
         return advanceStaticArrayPointer(
             basePointerOperand, indexExpression, elementType, lengthSlot,
@@ -6252,7 +6240,7 @@ private struct Compiler {
             ty == TY.Tarray
                 ? ScalarType.void_
                 : scalarType(elementType);
-        return Operand(pointer, ScalarType.ulong_, false, true, pointerElement);
+        return Operand(pointer, ScalarType.ulong_, true, pointerElement);
     }
 
     // The runtime address of a static-array location: a static-array local's
@@ -6297,7 +6285,7 @@ private struct Compiler {
         _code ~= Instruction(Op.frameAddress, pointer, offset);
         auto result = new Operand;
         *result =
-            Operand(pointer, ScalarType.ulong_, false, true, ScalarType.void_);
+            Operand(pointer, ScalarType.ulong_, true, ScalarType.void_);
         return result;
     }
 
@@ -6407,7 +6395,6 @@ private struct Compiler {
             *result = Operand(
                 pointer,
                 ScalarType.ulong_,
-                false,
                 true,
                 moduleVariable.type,
             );
@@ -6426,7 +6413,7 @@ private struct Compiler {
         _code ~= Instruction(Op.frameAddress, pointer, slot);
         auto result = new Operand;
         *result = Operand(
-            pointer, ScalarType.ulong_, false, true,
+            pointer, ScalarType.ulong_, true,
             dynamicArray !is null
                 ? ScalarType.void_
                 : struct_ is null
@@ -6453,7 +6440,7 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
         return Operand(
-            offset, ScalarType.ulong_, false, true, ScalarType.void_,
+            offset, ScalarType.ulong_, true, ScalarType.void_,
         );
     }
 
@@ -6494,7 +6481,6 @@ private struct Compiler {
                     *result = Operand(
                         pointer,
                         ScalarType.ulong_,
-                        false,
                         true,
                         moduleVariable.type,
                     );
@@ -6523,7 +6509,6 @@ private struct Compiler {
                 *result = Operand(
                     classFieldAddress(*field),
                     ScalarType.ulong_,
-                    false,
                     true,
                     pointerElementScalar(address.type),
                 );
@@ -6539,7 +6524,6 @@ private struct Compiler {
         *result = Operand(
             pointer,
             ScalarType.ulong_,
-            false,
             true,
             pointerElementScalar(address.type),
         );
@@ -6561,7 +6545,6 @@ private struct Compiler {
         *result = Operand(
             pointer,
             ScalarType.ulong_,
-            false,
             true,
             scalarType(pointedType),
         );
@@ -6595,7 +6578,7 @@ private struct Compiler {
         _code ~= Instruction(Op.mulInt8, scaled, indexSlot, stride);
         const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.addInt8, result, pointerOffset, scaled);
-        return Operand(result, ScalarType.ulong_, false, true, elementType);
+        return Operand(result, ScalarType.ulong_, true, elementType);
     }
 
     // `*p`: read the element the pointer addresses (index 0), yielding a scalar
@@ -6704,7 +6687,7 @@ private struct Compiler {
         const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.addInt8, result, pointer.offset, offset.offset);
         return Operand(
-            result, ScalarType.ulong_, false, true, pointer.pointerElement,
+            result, ScalarType.ulong_, true, pointer.pointerElement,
         );
     }
 
@@ -7008,7 +6991,7 @@ private struct Compiler {
             Op.subInt8, result, pointer.offset, offset.offset,
         );
         return Operand(
-            result, ScalarType.ulong_, false, true, pointer.pointerElement,
+            result, ScalarType.ulong_, true, pointer.pointerElement,
         );
     }
 
@@ -7129,7 +7112,6 @@ private struct Compiler {
         return Operand(
             result,
             typeSource.type,
-            typeSource.isString,
             typeSource.isPointer,
             typeSource.pointerElement,
         );
@@ -7152,32 +7134,26 @@ private struct Compiler {
     }
 
     // Normalise an expression to a one-byte bool condition. Dynamic-array
-    // truthiness is `ptr !is null` (D's actual rule: a non-null zero-length
-    // slice is still true), so the descriptor's pointer word — not its
-    // length — feeds `compileTruthValue`'s pointer branch. Every other
-    // operand goes through `compileTruthValue` directly.
+    // truthiness (strings included — a `string` is just a `T[]`) is `ptr !is
+    // null` (D's actual rule: a non-null zero-length slice is still true), so
+    // the descriptor's pointer word — not its length — feeds
+    // `compileTruthValue`'s pointer branch. `dynamicArrayDescriptorOrNull`
+    // resolves a local, literal, struct field, or `.msg` directly to that
+    // word's offset; any other shape (e.g. a conditional) is compiled first,
+    // which for every `T[]`/string source yields the same {ptr, length}
+    // descriptor at its result offset (`compileExpression`'s dynamic-array and
+    // conditional-expression paths), so the pointer word is still at that
+    // offset. Every other operand goes through `compileTruthValue` directly.
     private Operand compileBoolCondition(Expression expression) {
-        // A known string source (`dynamicArrayDescriptorOrNull` resolves a
-        // local, literal, struct field, or `.msg`) shares the ordinary
-        // dynamic-array descriptor's pointer-word truthiness. Any other shape
-        // (e.g. a conditional) falls through to `compileExpression`, which is
-        // not yet a faithful `is null` test for every string source — full
-        // string truthiness is separate migration work (see `bytecode.md`),
-        // not fixed here.
-        if (isStringType(expression.type)) {
+        if (isStringType(expression.type) || isDynamicArrayArgument(expression)) {
             if (auto descriptor = dynamicArrayDescriptorOrNull(expression))
                 return compileTruthValue(
-                    Operand(descriptor.offset, ScalarType.void_, false, true),
+                    Operand(descriptor.offset, ScalarType.void_, true),
                 );
 
-            const string_ = compileExpression(expression);
-            return compileTruthValue(Operand(string_.offset, ScalarType.uint_));
-        }
-
-        if (isDynamicArrayArgument(expression)) {
-            const descriptor = dynamicArrayDescriptor(expression);
+            const array = compileExpression(expression);
             return compileTruthValue(
-                Operand(descriptor.offset, ScalarType.void_, false, true),
+                Operand(array.offset, ScalarType.void_, true),
             );
         }
 
@@ -7483,7 +7459,7 @@ private struct Compiler {
                 if (auto slot = compoundAssignLocalSlot(declaration)) {
                     const rhs = compileExpression(addAssign.e2);
                     _code ~= Instruction(Op.addInt8, *slot, *slot, rhs.offset);
-                    return Operand(*slot, ScalarType.ulong_, false, true, *element);
+                    return Operand(*slot, ScalarType.ulong_, true, *element);
                 }
 
         // `base.field += rhs` on an inline struct field (e.g. a `with (subject)`
@@ -8003,7 +7979,6 @@ private struct Compiler {
                     Operand(
                         *slot,
                         ScalarType.ulong_,
-                        false,
                         true,
                         *element,
                     ),
@@ -8407,7 +8382,7 @@ private struct Compiler {
         _code ~= Instruction(Op.frameAddress, pointer, slot);
         auto result = new Operand;
         *result = Operand(
-            pointer, ScalarType.ulong_, false, true, scalarType(parameter.type),
+            pointer, ScalarType.ulong_, true, scalarType(parameter.type),
         );
         return result;
     }
@@ -8656,7 +8631,7 @@ private struct Compiler {
             writeBackStructField(*field);
             auto pointerResult = new Operand;
             *pointerResult = Operand(
-                field.offset, ScalarType.ulong_, false, true,
+                field.offset, ScalarType.ulong_, true,
                 pointerElementScalar(field.type),
             );
             return pointerResult;
@@ -10016,7 +9991,7 @@ private struct Compiler {
             );
         if (isPointerType(call.type))
             return Operand(
-                destination, ScalarType.ulong_, false, true,
+                destination, ScalarType.ulong_, true,
                 pointerElementScalar(call.type),
             );
         // A class-typed return (e.g. `Throwable.next`'s getter, called from
@@ -10026,7 +10001,7 @@ private struct Compiler {
         // target's own declared type, not from this operand.
         if (call.type !is null && call.type.toBasetype.ty == TY.Tclass)
             return Operand(
-                destination, ScalarType.ulong_, false, true, ScalarType.void_,
+                destination, ScalarType.ulong_, true, ScalarType.void_,
             );
         return Operand(destination, returnType.scalar);
     }
@@ -10313,7 +10288,7 @@ private struct Compiler {
         // `compilePointerDeclaration` and pointer comparisons treat it as one.
         if (returnType.toBasetype.ty == TY.Tpointer)
             return new Operand(
-                destination, ScalarType.ulong_, false, true,
+                destination, ScalarType.ulong_, true,
                 pointerElementScalar(returnType),
             );
         return new Operand(destination, returnScalar);
@@ -11151,7 +11126,7 @@ private struct Compiler {
         const offset =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         return Operand(
-            offset, ScalarType.ulong_, false, true, ScalarType.int_,
+            offset, ScalarType.ulong_, true, ScalarType.int_,
         );
     }
 
@@ -11185,7 +11160,7 @@ private struct Compiler {
                     Op.aaGetRvalue, offset, handle, key.offset,
                 );
                 return Operand(
-                    offset, ScalarType.ulong_, false, true, ScalarType.int_,
+                    offset, ScalarType.ulong_, true, ScalarType.int_,
                 );
             }
 
@@ -11199,7 +11174,7 @@ private struct Compiler {
                 );
                 _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
                 return Operand(
-                    offset, ScalarType.ulong_, false, true, ScalarType.int_,
+                    offset, ScalarType.ulong_, true, ScalarType.int_,
                 );
             }
 
@@ -11358,7 +11333,7 @@ private struct Compiler {
         _code ~= Instruction(Op.aaInsert, handle, key.offset, key.offset);
         _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
         return Operand(
-            offset, ScalarType.ulong_, false, true, ScalarType.int_,
+            offset, ScalarType.ulong_, true, ScalarType.int_,
         );
     }
 
@@ -11825,13 +11800,6 @@ private struct Compiler {
     // it's false.
     private bool compilePlainAssert(AssertExp assert_) {
         if (assert_.msg !is null)
-            return false;
-
-        // `compileBoolCondition`'s fall-through (an unresolved string source,
-        // e.g. a conditional) is not yet a faithful `is null` test — see its
-        // comment. Refuse rather than mis-fire; string truthiness is out of
-        // scope here.
-        if (isStringType(assert_.e1.type))
             return false;
 
         const condition = compileBoolCondition(assert_.e1);
@@ -13019,7 +12987,7 @@ private struct Compiler {
         compileDynamicArrayInto(
             offset, elementType, array, arrayElementIsArray(array.type),
         );
-        return Operand(offset, ScalarType.void_, false, false, elementType);
+        return Operand(offset, ScalarType.void_, false, elementType);
     }
 
     private uint dynamicArrayElementSize(
@@ -13167,7 +13135,6 @@ private struct ParameterLayout {
 private struct Operand {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
-    bool isString; // when set, `offset` holds a string-slice descriptor
     // When set, `offset` holds a raw `size_t` pointer value (8 bytes) into
     // VM-owned heap memory; `pointerElement` selects scalar load/store opcodes.
     bool isPointer;
@@ -14148,7 +14115,6 @@ private Operand complexDoubleOperand(in ushort offset) @safe @nogc nothrow pure 
     return Operand(
         offset,
         ScalarType.void_,
-        false,
         false,
         ScalarType.void_,
         true,
