@@ -2838,10 +2838,7 @@ static foreach (backend; Matrix!()) {
 // alias the SAME storage a later direct field write updates. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there), matching
 // the struct fixture's own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2883,10 +2880,7 @@ static foreach (backend; Matrix!(
 // `pointer.addressOfStructFieldWriteThroughUpdatesField`. Other backends
 // omitted per the omit-don't-pin convention, matching the direct-write class
 // fixture's own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classFieldWriteThroughPointerUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2929,10 +2923,7 @@ static foreach (backend; Matrix!(
 // `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller`. Other
 // backends omitted per the omit-don't-pin convention, matching the other
 // class fixtures' own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3675,9 +3666,7 @@ static foreach (backend; Matrix!(
 // returning normally, and the collision it otherwise leaves behind makes
 // `ObjectTable.storageFor` throw on the caller's next differently-sized
 // `new`.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classIdentity.throwingStructConstructorIdentityDoesNotCollideWithCallersNext." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3729,9 +3718,7 @@ static foreach (backend; Matrix!(
 // differently-sized `new` re-mints the identity the constructor's own `new
 // C()` already handed out and `ObjectTable.storageFor` throws on the size
 // disagreement.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classIdentity.throwingClassConstructorIdentityDoesNotCollideWithCallersNext." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3780,9 +3767,7 @@ static foreach (backend; Matrix!(
 // through `writeBackMemberFunctionState`'s existing `InterpretedException`
 // path rather than through a `new`-expression site of its own -- this
 // fixture pins that the scope-exit route really does share that path.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classIdentity.throwingDestructorIdentityDoesNotCollideWithCallersNext." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3988,10 +3973,7 @@ static foreach (backend; Matrix!(
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,
 // rather than copy the stale boxed mirror into the callee.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class field"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.wholeValueArgumentReadsAuthoritativeCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4546,10 +4528,7 @@ static foreach (backend; Matrix!()) {
 // to reach it. Rebinding that variable must therefore leave the pointer
 // attached to the old object while subsequent field access follows the new
 // reference.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class field"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.fieldPointerSurvivesReferenceRebind." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4978,10 +4957,7 @@ static foreach (backend; Matrix!()) {
 // Interpreter returned 100100 -- depth 0's own value corrupting depth 1's
 // read twice over. SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveClassDeclarationDropsStaleClassCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6515,10 +6491,7 @@ static foreach (backend; Matrix!()) {
 // not only for an indexed element read. Passing the array onward after a
 // pointer write must therefore reconstruct its struct elements from the cell
 // instead of copying the stale boxed mirror into the callee.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support storing a whole struct through a pointer"),
-)) {
+static foreach (backend; Matrix!()) {
     @("array.wholeStructArrayArgumentReadsAuthoritativeCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -6609,8 +6582,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "DMD CTFE rejects the nested static-array element pointer cast"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking a nested static-array element address"),
 )) {
     @("pointer.nestedStaticArrayLocalDirectWriteIsVisibleThroughEarlierPointer." ~
         backend.stringof)

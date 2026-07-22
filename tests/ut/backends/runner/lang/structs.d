@@ -1321,10 +1321,7 @@ static foreach (backend; Matrix!()) {
 // on the captured-local read rather than producing a wrong value: no closure
 // environment is built for a function claimed as this-receiver-shaped, so `x`
 // never resolves.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws \"Unsupported variable in bytecode core: x\" for the captured local read"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.nestedFunctionReadsCapturedLocalAndThisField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2645,7 +2642,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped anonymous-union field"),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("union.anonymousUnionInStructSurvivesRefBindToOverlappingMember." ~
         backend.stringof)
@@ -2721,8 +2717,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped struct field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this union struct initializer"),
 )) {
     @("union.untouchedStructSiblingDefaultsFromFirstMemberBits." ~
         backend.stringof)
@@ -2753,8 +2747,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped static-array field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this union static-array-of-struct initializer"),
 )) {
     @("union.untouchedStructArraySiblingDefaultsFromFirstMemberBits." ~
         backend.stringof)
@@ -2785,8 +2777,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped nested-union field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this nested-union initializer"),
 )) {
     @("union.untouchedNestedUnionSiblingDefaultsFromFirstMemberBits." ~
         backend.stringof)
@@ -2818,8 +2808,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped scalar field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this nested-union initializer"),
 )) {
     @("union.untouchedSiblingDefaultsFromNestedUnionFirstMemberBits." ~
         backend.stringof)
@@ -2943,8 +2931,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped static-array field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this union static-array initializer"),
 )) {
     @("union.untouchedArraySiblingDefaultsFromFirstMemberBits." ~
         backend.stringof)
@@ -2971,8 +2957,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped nested static-array field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this union nested-static-array initializer"),
 )) {
     @("union.untouchedNestedArraySiblingDefaultsFromFirstMemberBits." ~
         backend.stringof)
@@ -3234,8 +3218,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped scalar field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this static-array union initializer"),
 )) {
     @("union.untouchedSiblingDefaultsFromArrayFirstMemberBits." ~
         backend.stringof)

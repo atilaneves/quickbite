@@ -430,8 +430,10 @@ row reaches them:
   remain unchecked.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
-- Struct aliases and whole-local assignment do not yet cover all heap fields,
-  pointer receivers, captured structs, postblits, and `opAssign` semantics.
+- Struct aliases and whole-local assignment do not yet cover a static-array
+  whole-object pointer receiver, a class/struct array-field-element pointer
+  receiver, repeated/aliased ref-argument address identity, captured structs,
+  postblits, or `opAssign` semantics.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
@@ -634,17 +636,14 @@ lifetime as the dependency bytecode cache.
 - The captured-parent materialisation is only for such nested functions. A
   nested struct method's own `this` remains its current receiver, even when
   that receiver also carries a context pointer.
-- `capturedThisStructDeclaration` is keyed only on `vthis` plus the enclosing
-  parent being a (non-nested) struct method, so a nested function that reads
-  BOTH an enclosing local and `this.field` is also claimed by this
-  `this`-receiver shape, even though its true DMD context is a frame/closure
-  environment covering the local, not the struct receiver. This is safe
-  rather than silently wrong: claiming the shape skips building a captured-
-  locals environment for the function, so the local's own read never
-  resolves and throws its own "Unsupported variable" diagnostic before any
-  receiver value is used (`struct.nestedFunctionReadsCapturedLocalAndThisField`
-  pins this). A pure-local capture (no `this` use at all) inside a struct
-  method throws the identical diagnostic for the same reason.
+- `capturedThisStructDeclaration` declines the `this`-receiver shape whenever
+  the nested function also has a captured local (`hasCapturedOuterLocal`),
+  even though `vthis` is set: the function instead gets an ordinary nested
+  frame/closure context, and `vthis` is registered into that same captured-
+  offsets map alongside the captured locals, so `this.field` resolves through
+  the closure environment like any other captured variable. This covers both
+  a nested function that reads an enclosing local and `this.field` together
+  and a pure-local capture with no `this` use at all.
 
 The compiled-D exposing behaviour is:
 
