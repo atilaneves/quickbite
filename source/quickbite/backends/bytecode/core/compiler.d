@@ -391,7 +391,7 @@ private struct Compiler {
         }
 
         if (auto asm_ = statement.isCompoundAsmStatement) {
-            compileUnsignedMultiplyAsm(asm_);
+            compileInlineAsm(asm_);
             return;
         }
 
@@ -546,10 +546,100 @@ private struct Compiler {
         --_controlFlowDepth;
     }
 
+    // Decode only the full inline-asm instruction sequences the VM knows. The
+    // frontend preserves every token before DMD consumes the asm statements;
+    // every other sequence remains explicitly unsupported.
+    private void compileInlineAsm(
+        imported!"dmd.statement".CompoundAsmStatement compound,
+    ) {
+        if (tryCompileAtomicLoadAsm(compound))
+            return;
+        compileUnsignedMultiplyAsm(compound);
+    }
+
+    // `core.internal.atomic.atomicLoad` for an 8-byte value on x86_64 uses a
+    // locked compare-and-exchange to read `src`, then writes RAX through
+    // `resultValuePtr`. This is accepted only as the complete token sequence;
+    // it lowers to one host atomic read rather than pretending an ordinary
+    // pointer load has the same memory-order semantics.
+    private bool tryCompileAtomicLoadAsm(
+        imported!"dmd.statement".CompoundAsmStatement compound,
+    ) {
+        import quickbite.frontend.dmd.functions: inlineAsmInstructions;
+
+        const instructions = inlineAsmInstructions(compound);
+        if (instructions.length != 10 ||
+            !isAsmIdentifier(instructions[0], 0, "push") ||
+            !isAsmIdentifier(instructions[0], 1, "RBX") ||
+            instructions[0].length != 2 ||
+            !isAsmIdentifier(instructions[1], 0, "mov") ||
+            !isAsmIdentifier(instructions[1], 1, "RDX") ||
+            !isAsmPunctuation(instructions[1], 2, ",") ||
+            !isAsmInteger(instructions[1], 3, "0") ||
+            instructions[1].length != 4 ||
+            !isAsmIdentifier(instructions[2], 0, "mov") ||
+            !isAsmIdentifier(instructions[2], 1, "RAX") ||
+            !isAsmPunctuation(instructions[2], 2, ",") ||
+            !isAsmInteger(instructions[2], 3, "0") ||
+            instructions[2].length != 4 ||
+            !isAsmIdentifier(instructions[3], 0, "mov") ||
+            !isAsmIdentifier(instructions[3], 1, "RCX") ||
+            !isAsmPunctuation(instructions[3], 2, ",") ||
+            !isAsmIdentifier(instructions[3], 3, "src") ||
+            instructions[3].length != 4 ||
+            !isAsmIdentifier(instructions[4], 0, "lock") ||
+            instructions[4].length != 1 ||
+            !isAsmIdentifier(instructions[5], 0, "cmpxchg") ||
+            !isAsmPunctuation(instructions[5], 1, "[") ||
+            !isAsmIdentifier(instructions[5], 2, "RCX") ||
+            !isAsmPunctuation(instructions[5], 3, "]") ||
+            !isAsmPunctuation(instructions[5], 4, ",") ||
+            !isAsmIdentifier(instructions[5], 5, "RDX") ||
+            instructions[5].length != 6 ||
+            !isAsmIdentifier(instructions[6], 0, "lea") ||
+            !isAsmIdentifier(instructions[6], 1, "RBX") ||
+            !isAsmPunctuation(instructions[6], 2, ",") ||
+            !isAsmIdentifier(instructions[6], 3, "resultValuePtr") ||
+            instructions[6].length != 4 ||
+            !isAsmIdentifier(instructions[7], 0, "mov") ||
+            !isAsmIdentifier(instructions[7], 1, "RBX") ||
+            !isAsmPunctuation(instructions[7], 2, ",") ||
+            !isAsmPunctuation(instructions[7], 3, "[") ||
+            !isAsmIdentifier(instructions[7], 4, "RBX") ||
+            !isAsmPunctuation(instructions[7], 5, "]") ||
+            instructions[7].length != 6 ||
+            !isAsmIdentifier(instructions[8], 0, "mov") ||
+            !isAsmPunctuation(instructions[8], 1, "[") ||
+            !isAsmIdentifier(instructions[8], 2, "RBX") ||
+            !isAsmPunctuation(instructions[8], 3, "]") ||
+            !isAsmPunctuation(instructions[8], 4, ",") ||
+            !isAsmIdentifier(instructions[8], 5, "RAX") ||
+            instructions[8].length != 6 ||
+            !isAsmIdentifier(instructions[9], 0, "pop") ||
+            !isAsmIdentifier(instructions[9], 1, "RBX") ||
+            instructions[9].length != 2)
+            return false;
+
+        const source = asmPointerLocal("src");
+        const result = asmPointerLocal("resultValuePtr");
+        if (source.pointerElement != ScalarType.ulong_ ||
+            result.pointerElement != ScalarType.ulong_)
+            throw new Exception("Unsupported inline asm atomic-load operand.");
+
+        const loaded = allocate(ScalarType.ulong_);
+        const zero = compileSizeConstant(0);
+        _code ~= Instruction(
+            Op.atomicLoad8,
+            loaded,
+            source.offset,
+            zero,
+        );
+        _code ~= Instruction(Op.pointerStore8, loaded, result.offset, zero);
+        return true;
+    }
+
     // Decode the unsigned checked-multiply instruction shape used by portable
-    // D source with an x86 runtime fast path. The frontend preserves these
-    // operands before DMD consumes its asm statements; every other instruction
-    // sequence remains explicitly unsupported.
+    // D source with an x86 runtime fast path.
     private void compileUnsignedMultiplyAsm(
         imported!"dmd.statement".CompoundAsmStatement compound,
     ) {
@@ -641,6 +731,29 @@ private struct Compiler {
     ) @safe pure nothrow @nogc {
         return index < tokens.length && tokens[index].kind == spelling &&
             tokens[index].spelling == spelling;
+    }
+
+    private static bool isAsmInteger(
+        in imported!"quickbite.frontend.dmd.functions".InlineAsmToken[] tokens,
+        in size_t index,
+        in string spelling,
+    ) @safe pure nothrow @nogc {
+        return index < tokens.length && tokens[index].kind == "int32v" &&
+            tokens[index].spelling == spelling;
+    }
+
+    private Operand asmPointerLocal(in string name) {
+        import std.conv: text;
+
+        foreach (declaration, offset; _locals) {
+            if (declaration.ident is null ||
+                declaration.ident.toString != name)
+                continue;
+            if (auto element = declaration in _pointerLocals)
+                return Operand(offset, ScalarType.ulong_, false, true, *element);
+            throw new Exception(text("Unsupported inline asm pointer operand: ", name));
+        }
+        throw new Exception(text("Unsupported inline asm pointer operand: ", name));
     }
 
     private Operand asmLocal(in string name) {

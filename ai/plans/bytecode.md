@@ -397,11 +397,10 @@ changed:
 1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-2. `concurrency.thisTid.Bytecode`: the single-threaded atomic load path for
-   `std.concurrency`'s module-held scheduler reference. Decode the fully
-   preserved `core.internal.atomic` x86 `lock; cmpxchg [RCX], RDX` sequence
-   (including its `RBX` result-value writeback) and lower only its
-   same-machine semantics; then continue through the non-root Phobos class
+2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
+   `std.concurrency`'s module-held scheduler reference, this reaches
+   `object.opEquals`'s `typeid(lhs).opEquals(typeid(rhs))`. Lower compiled-D
+   TypeInfo equality before continuing through the non-root Phobos class
    construction it reaches.
 
 This list is a starting order, not a substitute for repository discovery.

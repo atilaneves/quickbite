@@ -328,6 +328,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     pointerLoad4,
     pointerLoad8,
     pointerLoad16,
+    // Atomically read the 8-byte element at `[pointer + index * 8]` into the
+    // slot at frame offset a. The atomic-load inline-asm lowering uses this
+    // only after exact whole-sequence validation.
+    atomicLoad8,
     // Write the 1- or 4-byte slot at frame offset a to `[pointer + index *
     // elementSize]`, where the raw `size_t` pointer value is at frame offset b
     // and the `size_t` index at frame offset c. Backs `*p = v` (index 0) and
