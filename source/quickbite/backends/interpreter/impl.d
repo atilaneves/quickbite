@@ -8136,6 +8136,7 @@ private struct Walker {
 
         child.runStatement(function_.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
+        nextClassObjectId = child.nextClassObjectId;
         allocationCount = child.allocationCount;
         mergePerFrameCellsFrom(child);
         writeBackGlobals(child);
@@ -13567,6 +13568,7 @@ private struct Walker {
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
+            nextClassObjectId = child.nextClassObjectId;
             mergePerFrameCellsFrom(child);
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
@@ -13679,7 +13681,32 @@ private struct Walker {
         child.thisValue = object;
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
-        child.runStatement(new_.member.fbody);
+        try {
+            child.runStatement(new_.member.fbody);
+        } catch (InterpretedException exception) {
+            mergeNewClassExpressionState(child);
+            throw exception;
+        }
+        mergeNewClassExpressionState(child);
+        return child.thisValue;
+    }
+
+    // `runNewClassExpression`'s own constructor-call merge, shared between
+    // its success path and its `InterpretedException` (guest-level throw
+    // during construction) path: `nextClassObjectId` (and every other
+    // counter/map merged here) is only ever advanced on the CHILD `Walker`
+    // constructing the object, so a merge that runs on the success path
+    // only leaves this activation's own copy stale whenever the
+    // constructor's body throws a guest exception instead of returning --
+    // silently re-minting an identity `child` already handed out (`object`,
+    // this function's own top-level identity, or one a nested `new`
+    // allocated during construction) the NEXT time this activation mints
+    // one. Two different objects then share one `object_table.ObjectTable`
+    // identity: harmless aliasing in the boxed maps alone, but
+    // `ObjectTable.storageFor` throws outright the moment the two
+    // instances disagree on size (its own defense-in-depth check, see
+    // `value.md`'s class-mirror contract).
+    private void mergeNewClassExpressionState(ref Walker child) {
         nextLocalPointerId = child.nextLocalPointerId;
         nextFunctionPointerId = child.nextFunctionPointerId;
         nextClassObjectId = child.nextClassObjectId;
@@ -13692,7 +13719,6 @@ private struct Walker {
         lazyArgumentClassMirrorEstablished = child.lazyArgumentClassMirrorEstablished;
         lazyArgumentClassMirrorGenerations = child.lazyArgumentClassMirrorGenerations;
         mergePerFrameCellsFrom(child);
-        return child.thisValue;
     }
 
     private Value newArrayValue(

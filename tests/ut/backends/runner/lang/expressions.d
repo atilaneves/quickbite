@@ -3297,6 +3297,54 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A heap struct's own constructor runs on a CHILD `Walker` (`impl.d`'s
+// `runNewStructPointerExpression`), which mints its own class identities
+// (`++nextClassObjectId`) for any `new` it evaluates -- the constructed
+// `C` here. That counter must be merged back into the caller once the
+// constructor returns, or the caller's own NEXT `new` (`new D()` below)
+// re-mints the SAME identity the constructor already handed out, giving
+// two live, differently-sized objects the SAME `object_table.ObjectTable`
+// key. SystemLinker runs this fine (real heap addresses never collide);
+// the interpreter's own `ObjectTable` throws outright the moment the two
+// disagree on size, converting a pre-existing (harmless-until-now) boxed
+// identity aliasing into a guest-visible crash.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classIdentity.structConstructorIdentityDoesNotCollideWithCallersNext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            class D {
+                long a, b;
+            }
+
+            struct S {
+                C c;
+
+                this(int _) {
+                    c = new C();
+                }
+            }
+
+            unittest {
+                auto s = new S(1);
+                D d = new D();
+                d = null;
+
+                C e = s.c;
+
+                assert(e.x == 0);
+            }
+        });
+    }
+}
+
 // A class-typed field reassigned to a NEW object must observe the new
 // object's own fields afterward, not retain the old object's -- ordinary
 // class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
@@ -7040,5 +7088,4 @@ static foreach (backend; AliasSeq!(Interpreter)) {
         }).shouldThrowWithMessage("0 != 10");
     }
 }
-
 
