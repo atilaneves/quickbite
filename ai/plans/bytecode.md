@@ -371,6 +371,9 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `Because.unconfirmed` omission. This matrix promotion is pre-approved.
   Observe the concrete red failure, implement the smallest general D semantic
   that makes the row pass, verify the suite, and repeat.
+- The rethrow and cerealed exception-message rows remain paused until their
+  wrong-result causes are isolated; do not re-enable either on presumed
+  exception or formatting support.
 - Phobos, druntime, `File`, `Random`, `Concurrency`, lazy structs,
   archive-backed imports, and FFI are normal ways arbitrary D unittest code
   reaches the VM. Unsupported constructs on those paths are expected VM work.
