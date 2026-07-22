@@ -1083,8 +1083,6 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed,
-        "std.conv.text reaches unsupported ref argument `front(val)`"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("arrayTooShortExceptionMessageIncludesBytes." ~ backend.stringof)
@@ -1128,7 +1126,6 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.unconfirmed,
         "std.conv.text slices past the char array's allocated block"),
     Omit!(LLVMJit, Because.unconfirmed),
@@ -1336,7 +1333,6 @@ static foreach (backend; Matrix!(
 // closure-over-the-caller-frame semantics.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("decodeLazyForwardedRangeErrorSeesReaderState." ~ backend.stringof)

@@ -328,6 +328,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     pointerLoad4,
     pointerLoad8,
     pointerLoad16,
+    // Atomically read the 8-byte element at `[pointer + index * 8]` into the
+    // slot at frame offset a. The atomic-load inline-asm lowering uses this
+    // only after exact whole-sequence validation.
+    atomicLoad8,
     // Write the 1- or 4-byte slot at frame offset a to `[pointer + index *
     // elementSize]`, where the raw `size_t` pointer value is at frame offset b
     // and the `size_t` index at frame offset c. Backs `*p = v` (index 0) and
@@ -355,10 +359,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     greaterOrEqualUnsigned8,
     copy, // a: destination frame offset, b: source frame offset, c: size
     // Copy `c` bytes from the mutable module-data segment at offset b into
-    // frame offset a. Backs reads of scalar module-level variables.
+    // frame offset a. Backs reads of scalar and default-null class references.
     loadModule,
     // Copy `c` bytes from frame offset a into the mutable module-data segment
-    // at offset b. Backs writes to scalar module-level variables.
+    // at offset b. Backs writes to scalar and default-null class references.
     storeModule,
     // Write the native address of mutable module-data offset b as a raw `size_t`
     // word into frame offset a. Backs `&moduleScalar`.
@@ -520,6 +524,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // selected function index. Looks up the object's dynamic class and writes
     // the overriding function index, or c when no override is registered.
     classVirtualFunction,
+    // a: destination size_t slot, b: class-object pointer slot. Reads the
+    // object's dynamic VM class and writes its host TypeInfo mirror.
+    classTypeInfo,
     // a: class-object pointer slot, b: diagnostic data offset, c: data length.
     throwIfNullClassReference,
     nativeCall, // a: native-call index, b: argument area, c: destination
@@ -628,6 +635,10 @@ package(quickbite.backends.bytecode) struct NativeCall {
     // argument (e.g. strtod's `&endptr`); `noOutParameterOffset` marks an
     // argument that is not one.
     ushort[] outParameterOffsets;
+    // A host class receiver crosses the FFI boundary as its raw object pointer.
+    // `nativeClassReceiverType` is null for an ordinary native function call.
+    ushort nativeClassReceiverOffset = noOutParameterOffset;
+    imported!"dmd.mtype".TypeClass nativeClassReceiverType;
 }
 
 // Sentinel `NativeCall.outParameterOffsets` entry for an argument that is not
@@ -657,6 +668,7 @@ package(quickbite.backends.bytecode) struct VirtualFunction {
 package(quickbite.backends.bytecode) struct ClassInfo {
     ushort baseClass = noExceptionClass;
     ushort msgOffset = ushort.max;
+    size_t nativeTypeInfo;
     VirtualFunction[] virtualFunctions;
 }
 
@@ -677,5 +689,8 @@ package(quickbite.backends.bytecode) struct Program {
     AssertDiagnostic[] assertDiagnostics;
     NativeCall[] nativeCalls;
     ClassInfo[] classes;
+    // Roots the host TypeInfo mirrors used by `typeid` on VM class objects.
+    imported!"object".TypeInfo[] nativeTypeInfos;
+    ushort rangeErrorClass = noExceptionClass;
     CatchClause[] catchClauses;
 }

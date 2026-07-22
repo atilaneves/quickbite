@@ -22,6 +22,7 @@ package(quickbite.backends.bytecode) RunResult run(
     ref imported!"quickbite.backends.bytecode.core.program".Program program,
     scope CompileFunction compileFunction,
 ) {
+    import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo, Op, noCatchObjectField, noExceptionClass,
         noOutParameterOffset, size, sliceDescriptorSize, stringSliceSize;
@@ -59,10 +60,11 @@ package(quickbite.backends.bytecode) RunResult run(
     size_t ip;
 
     while (true) {
-        if (frames.length != 0)
-            synchronizeRefAliases(stack, frames[$ - 1], base);
-        const instruction = program.functions[functionIndex].code[ip];
-        final switch (instruction.op) with (Op) {
+        try {
+            if (frames.length != 0)
+                synchronizeRefAliases(stack, frames[$ - 1], base);
+            const instruction = program.functions[functionIndex].code[ip];
+            final switch (instruction.op) with (Op) {
             case loadConstant:
                 const ubyte[ulong.sizeof] bytes =
                     scalarBytes(program.constants[instruction.b]);
@@ -426,6 +428,21 @@ package(quickbite.backends.bytecode) RunResult run(
                     ],
                     cast(const(ubyte)*) pointerLoadAddress,
                 );
+                ++ip;
+                break;
+
+            case atomicLoad8:
+                const atomicLoadAddress =
+                    scalarValue!size_t(stack, base + instruction.b) +
+                    scalarValue!size_t(stack, base + instruction.c) *
+                        ulong.sizeof;
+                const ubyte[ulong.sizeof] atomicLoadValue = scalarBytes(
+                    atomicLoadWord(cast(const(ubyte)*) atomicLoadAddress),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + ulong.sizeof
+                ] = atomicLoadValue;
                 ++ip;
                 break;
 
@@ -1525,6 +1542,24 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case classTypeInfo:
+                const typeInfoObject = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const typeInfoClass = typeInfoObject == 0
+                    ? noExceptionClass
+                    : objectClassIndex(typeInfoObject);
+                const nativeTypeInfo = typeInfoClass < program.classes.length
+                    ? program.classes[typeInfoClass].nativeTypeInfo
+                    : 0;
+                writeScalar!size_t(
+                    stack,
+                    base + instruction.a,
+                    nativeTypeInfo,
+                );
+                ++ip;
+                break;
+
             case throwIfNullClassReference:
                 if (scalarValue!size_t(stack, base + instruction.a) == 0)
                     throw new Exception(stringFromData(
@@ -1594,7 +1629,7 @@ package(quickbite.backends.bytecode) RunResult run(
             case nativeCall:
                 import quickbite.frontend.dmd.functions:
                     noAvailableSourceMessage;
-                import quickbite.ffi: callNative;
+                import quickbite.ffi: callNative, callNativeClassMember;
 
                 auto native = program.nativeCalls[instruction.a];
                 auto marshaller = new BytecodeNativeMarshaller(
@@ -1603,18 +1638,24 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.c,
                     base,
                     native.outParameterOffsets,
+                    native.nativeClassReceiverOffset,
                 );
                 bool[] addressOfLocalArguments;
                 addressOfLocalArguments.length = native.outParameterOffsets.length;
                 foreach (index, offset; native.outParameterOffsets)
                     addressOfLocalArguments[index] =
                         offset != noOutParameterOffset;
-                if (!callNative(
-                    native.function_,
-                    marshaller,
-                    native.argumentTypes,
-                    addressOfLocalArguments,
-                ))
+                const called = native.nativeClassReceiverType is null
+                    ? callNative(
+                        native.function_, marshaller, native.argumentTypes,
+                        addressOfLocalArguments,
+                    )
+                    : callNativeClassMember(
+                        native.function_, native.nativeClassReceiverType,
+                        marshaller, native.argumentTypes,
+                        addressOfLocalArguments,
+                    );
+                if (!called)
                     throw new Exception(noAvailableSourceMessage(
                         native.function_,
                     ));
@@ -1924,6 +1965,25 @@ package(quickbite.backends.bytecode) RunResult run(
                 base = frame.base;
                 ip = frame.ip;
                 break;
+            }
+        } catch (RangeError error) {
+            const selected = selectHandler(
+                handlers,
+                program.catchClauses,
+                program.classes,
+                program.rangeErrorClass,
+            );
+            if (!selected.matched)
+                throw error;
+
+            const handler = selected.handler;
+            const clause = selected.clause;
+            if (clause.objectOffset != noCatchObjectField)
+                throw error;
+            writeBackUnwoundFrames(stack, frames, base, handler.frameDepth);
+            functionIndex = handler.functionIndex;
+            base = handler.base;
+            ip = clause.handlerIp;
         }
     }
 }
@@ -2705,13 +2765,10 @@ private void applyArrayAddAssign4(
 // and `Op.checkStaticArrayIndex` (static-array indexing) both call, so every
 // bounds failure raises byte-for-byte the same diagnostic.
 private void enforceIndexInBounds(in size_t index, in size_t length) @safe pure {
-    import std.conv: text;
+    import core.exception: ArrayIndexError;
 
     if (index >= length)
-        throw new Exception(text(
-            "index [", index, "] is out of bounds for array of length ",
-            length,
-        ));
+        throw new ArrayIndexError(index, length);
 }
 
 // The native address of element `index` within the slice descriptor at
@@ -2733,6 +2790,15 @@ private void readHeapElement(ubyte[] destination, in ubyte* element)
     @trusted
 {
     destination[] = element[0 .. destination.length];
+}
+
+// @trusted: `atomicLoad` reads exactly one aligned machine word from the raw
+// address produced by VM pointer operations; the recognised inline-asm source
+// has already restricted this use to an 8-byte atomic load.
+private ulong atomicLoadWord(in const(ubyte)* address) @trusted {
+    import core.atomic: atomicLoad;
+
+    return cast(ulong) atomicLoad(*cast(shared(ulong)*) address);
 }
 
 private void writeHeapElement(ubyte* element, in ubyte[] source) @trusted {
@@ -3139,6 +3205,7 @@ private final class BytecodeNativeMarshaller:
     private size_t _destination;
     private size_t _base;
     private const(ushort)[] _outParameterOffsets;
+    private ushort _nativeClassReceiverOffset;
 
     public this(
         ubyte[] stack,
@@ -3146,12 +3213,14 @@ private final class BytecodeNativeMarshaller:
         in size_t destination,
         in size_t base,
         in ushort[] outParameterOffsets,
+        in ushort nativeClassReceiverOffset,
     ) {
         _stack = stack;
         _argument = argument;
         _destination = destination;
         _base = base;
         _outParameterOffsets = outParameterOffsets;
+        _nativeClassReceiverOffset = nativeClassReceiverOffset;
     }
 
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
@@ -3357,7 +3426,13 @@ private final class BytecodeNativeMarshaller:
     }
 
     public const(void)* receiverObjectPointer() {
-        return null;
+        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
+
+        if (_nativeClassReceiverOffset == noOutParameterOffset)
+            return null;
+        return cast(const(void)*) scalarValue!size_t(
+            _stack, _base + _nativeClassReceiverOffset,
+        );
     }
 
     public void invokeClosure(in size_t argumentIndex, Type returnType,

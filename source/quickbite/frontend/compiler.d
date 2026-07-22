@@ -458,9 +458,9 @@ final class Compiler {
         runDeferredSemantic;
         foreach (m; modules) m.semantic2(null);
         runDeferredSemantic2;
-        snapshotInlineAsmInstructions;
         foreach (m; modules) m.semantic3(null);
         runDeferredSemantic3;
+        snapshotInlineAsmInstructions;
         if (global.errors != 0)
             throw new Exception(diagnosticMessageWithLocations);
 
@@ -669,9 +669,9 @@ final class Compiler {
         runDeferredSemantic;
         module_.semantic2(null);
         runDeferredSemantic2;
-        snapshotInlineAsmInstructions;
         module_.semantic3(null);
         runDeferredSemantic3;
+        snapshotInlineAsmInstructions;
     }
 
     private string cacheKey(

@@ -158,8 +158,8 @@ public EvalResult displayEvalResult(
 ) {
     try
         return EvalResult(displayString(produceValue(), function_));
-    catch (Exception exception)
-        return EvalResult(EvalResult.Diagnostic(exception.msg));
+    catch (Throwable throwable)
+        return EvalResult(EvalResult.Diagnostic(throwable.msg));
 }
 
 // Renders a backend-reified `Value` to its display string at the

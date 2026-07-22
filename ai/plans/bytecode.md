@@ -381,13 +381,9 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `bin/ut --random` runs must be green and stable. An order-dependent crash or
   hang is a blocker to reproduce with the reported seed and fix; it is not
   acceptable handoff noise.
-- `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is omitted
-  while `std.conv.text` reaches the unsupported ref argument `front(val)`.
-  The remaining dependency sequence is general ref binding for that path,
-  void-IIFE expression-statement inlining, then the specific stale
-  `_data.arr` descriptor materialisation across `bigDataFun`'s nested call
-  that gives `copySlice` a corrupt destination length; only then promote the
-  row.
+- A regression in an enabled row blocks the next promotion. Diagnose it from
+  the semantic AST shape and restore the general compiler path before taking
+  another queue item.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
@@ -398,22 +394,14 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `arrayTooShortExceptionMessageIncludesBytes.Bytecode`: general ref binding
-   for `std.conv.text`'s `front(val)`, void-IIFE expression-statement
-   inlining, then the stale `_data.arr` descriptor materialisation across
-   `bigDataFun`'s nested call that corrupts `copySlice`'s destination length.
-2. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
-   `std.conv.text` dependency path over an exception message character array.
-3. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
-   lazy evaluation over a mutating struct-typed caller local. Its next blocker
-   is `ulong <<=` compound assignment in `Reader.read64`.
-4. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
-   the separately compiled archive symbol instead of compiling the rewritten
-   source body.
-5. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
-   host-filesystem path.
-6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
-   host concurrency/runtime path reached by `thisTid`.
+1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
+   the separately compiled archive symbol through the bytecode native bridge,
+   instead of compiling the rewritten source body.
+2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
+   `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
+   `registryLock`'s `new Mutex` reaches its `MonitorProxy` field. Support the
+   host-backed synchronisation primitive without treating single-threaded VM
+   execution as permission to elide its compiled-D initialisation semantics.
 
 This list is a starting order, not a substitute for repository discovery.
 After it is empty, search all backend matrices and characterization pins for
@@ -581,6 +569,9 @@ and Cerealed gate no longer expose earlier gaps.
 - The VM selects a handler or unwinds the frame on throw and assert failure. D
   exceptions must not propagate silently through every interpreter frame.
 - Thrown objects are real `Throwable` instances on the host heap.
+- At the evaluator boundary, every uncaught D `Throwable` becomes the
+  observable diagnostic message; `Error` subclasses are unittest failures,
+  not host-harness escapes.
 
 ## Debug Information
 
@@ -631,6 +622,9 @@ lifetime as the dependency bytecode cache.
   lambda whose body is a single expression statement can avoid needing that
   environment by inlining the statement into the caller the same way a
   single-`return`-expression IIFE already inlines.
+- The captured-parent materialisation is only for such nested functions. A
+  nested struct method's own `this` remains its current receiver, even when
+  that receiver also carries a context pointer.
 - `capturedThisStructDeclaration` is keyed only on `vthis` plus the enclosing
   parent being a (non-nested) struct method, so a nested function that reads
   BOTH an enclosing local and `this.field` is also claimed by this
@@ -680,5 +674,4 @@ behaviour.
   string-source shape (e.g. a ternary with a heap-backed arm) still defaults
   to the compact path and misreads; `s.idup` where `s` is already a `string`
   and `string s = p[lo .. hi];` from a pointer source refuse or misread;
-  string truthiness (`if (s)`) is refused; `wstring`/`dstring` sub-slices
-  are refused.
+  `wstring`/`dstring` sub-slices are refused.
