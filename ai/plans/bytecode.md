@@ -398,9 +398,11 @@ changed:
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
 2. `concurrency.thisTid.Bytecode`: the single-threaded atomic load path for
-   `std.concurrency`'s module-held scheduler reference. It must lower ordinary
-   same-machine atomic reads without entering druntime's x86 inline-asm body;
-   then continue through the non-root Phobos class construction it reaches.
+   `std.concurrency`'s module-held scheduler reference. Decode the fully
+   preserved `core.internal.atomic` x86 `lock; cmpxchg [RCX], RDX` sequence
+   (including its `RBX` result-value writeback) and lower only its
+   same-machine semantics; then continue through the non-root Phobos class
+   construction it reaches.
 
 This list is a starting order, not a substitute for repository discovery.
 After it is empty, search all backend matrices and characterization pins for

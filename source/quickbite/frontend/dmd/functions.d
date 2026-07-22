@@ -34,11 +34,9 @@ public string noAvailableSourceMessage(
     );
 }
 
-// DMD consumes the individual statements inside a CompoundAsmStatement during
-// semantic3 and keeps their lowered representation in backend-private data.
-// Preserve every token before that boundary so non-native backends can
-// recognise only the exact instruction subsets they implement without
-// importing DMD backend internals.
+// The inline-asm shim preserves semantic `AsmStatement` tokens by source
+// location, so snapshot them from the post-semantic AST. This includes AST
+// bodies materialized by mixins, without reparsing source text.
 public struct InlineAsmToken {
     public string kind;
     public string spelling;
@@ -47,16 +45,6 @@ public struct InlineAsmToken {
 private InlineAsmToken[][][
     imported!"dmd.statement".CompoundAsmStatement
 ] _inlineAsmInstructions;
-private InlineAsmToken[][][InlineAsmSourceLocation]
-    _inlineAsmInstructionsByLocation;
-private bool[imported!"dmd.dmodule".Module] _inlineAsmReparsedModules;
-
-private struct InlineAsmSourceLocation {
-    string filename;
-    uint line;
-    uint column;
-    uint fileOffset;
-}
 
 public void snapshotInlineAsmInstructions() {
     import dmd.dmodule: Module;
@@ -64,7 +52,6 @@ public void snapshotInlineAsmInstructions() {
     bool[imported!"dmd.dsymbol".Dsymbol] visited;
     foreach (index; 0 .. Module.amodules.length) {
         auto module_ = Module.amodules[index];
-        reparseInlineAsmInstructions(module_);
         snapshotSymbols(module_.members, visited);
     }
 }
@@ -73,11 +60,7 @@ public const(InlineAsmToken[][]) inlineAsmInstructions(
     imported!"dmd.statement".CompoundAsmStatement statement,
 ) {
     const saved = statement in _inlineAsmInstructions;
-    if (saved !is null)
-        return *saved;
-    const byLocation = inlineAsmSourceLocation(statement) in
-        _inlineAsmInstructionsByLocation;
-    return byLocation is null ? null : *byLocation;
+    return saved is null ? null : *saved;
 }
 
 private void snapshotSymbols(
@@ -103,95 +86,26 @@ private void snapshotSymbols(
     }
 }
 
-// Imported modules can be loaded and have template bodies consumed entirely
-// within one deferred-semantic pass. Reparse each retained source buffer once
-// as syntax only, indexing asm by source location; instantiated syntax copies
-// retain that location and therefore find the preserved instruction stream.
-private void reparseInlineAsmInstructions(
-    imported!"dmd.dmodule".Module module_,
-) {
-    import dmd.errorsink: ErrorSinkNull;
-    import dmd.globals: global;
-    import dmd.lexer: Lexer;
-    import dmd.tokens: TOK;
-
-    if (module_ is null || module_.src.length == 0 ||
-        (module_ in _inlineAsmReparsedModules) !is null)
-        return;
-    _inlineAsmReparsedModules[module_] = true;
-
-    auto errorSink = new ErrorSinkNull;
-    const rawSource = cast(const(char)[]) module_.src;
-    const source = rawSource[$ - 1] == '\0'
-        ? rawSource
-        : rawSource ~ '\0';
-    scope lexer = new Lexer(
-        module_.srcfile.toChars,
-        source.ptr,
-        0,
-        source.length - 1,
-        false,
-        false,
-        errorSink,
-        &global.compileEnv,
-    );
-
-    auto token = lexer.nextToken;
-    while (token != TOK.endOfFile) {
-        if (token != TOK.asm_) {
-            token = lexer.nextToken;
-            continue;
-        }
-
-        const location = inlineAsmSourceLocation(lexer.token.loc);
-        token = lexer.nextToken;
-        while (token != TOK.leftCurly && token != TOK.endOfFile)
-            token = lexer.nextToken;
-        if (token == TOK.endOfFile)
-            break;
-
-        InlineAsmToken[][] instructions;
-        InlineAsmToken[] instruction;
-        for (token = lexer.nextToken;
-                token != TOK.rightCurly && token != TOK.endOfFile;
-                token = lexer.nextToken) {
-            if (token == TOK.semicolon) {
-                if (instruction.length != 0)
-                    instructions ~= instruction;
-                instruction = null;
-            } else
-                instruction ~= inlineAsmToken(lexer.token);
-        }
-        if (instruction.length != 0)
-            instructions ~= instruction;
-        if (instructions.length != 0)
-            _inlineAsmInstructionsByLocation[location] = instructions;
-        if (token != TOK.endOfFile)
-            token = lexer.nextToken;
-    }
-}
-
 private void snapshotStatement(imported!"dmd.statement".Statement statement) {
     if (statement is null)
         return;
 
     if (auto asm_ = statement.isCompoundAsmStatement) {
+        import dmd.iasm: inlineAsmTokens;
+
         InlineAsmToken[][] instructions;
         foreach (child; *asm_.statements) {
-            auto instruction = child is null ? null : child.isAsmStatement;
-            if (instruction is null)
+            auto tokens = child is null ? null : inlineAsmTokens(child.loc);
+            if (tokens is null)
                 continue;
-            InlineAsmToken[] tokens;
-            for (auto token = instruction.tokens;
+            InlineAsmToken[] instruction;
+            for (auto token = tokens;
                     token !is null; token = token.next)
-                tokens ~= inlineAsmToken(*token);
-            instructions ~= tokens;
+                instruction ~= inlineAsmToken(*token);
+            instructions ~= instruction;
         }
-        if (instructions.length != 0) {
+        if (instructions.length != 0)
             _inlineAsmInstructions[asm_] = instructions;
-            _inlineAsmInstructionsByLocation[inlineAsmSourceLocation(asm_)] =
-                instructions;
-        }
         return;
     }
 
@@ -261,25 +175,5 @@ private InlineAsmToken inlineAsmToken(
     return InlineAsmToken(
         Token.toString(token.value).idup,
         token.toString.idup,
-    );
-}
-
-private InlineAsmSourceLocation inlineAsmSourceLocation(
-    imported!"dmd.statement".CompoundAsmStatement statement,
-) {
-    return inlineAsmSourceLocation(statement.loc);
-}
-
-private InlineAsmSourceLocation inlineAsmSourceLocation(
-    imported!"dmd.location".Loc location,
-) {
-    import dmd.location: SourceLoc;
-
-    const source = SourceLoc(location);
-    return InlineAsmSourceLocation(
-        source.filename.idup,
-        source.line,
-        source.column,
-        source.fileOffset,
     );
 }

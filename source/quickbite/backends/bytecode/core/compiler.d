@@ -9835,8 +9835,8 @@ private struct Compiler {
             import quickbite.frontend.dmd.functions:
                 snapshotInlineAsmInstructions;
 
-            snapshotInlineAsmInstructions;
             functionSemantic3(function_);
+            snapshotInlineAsmInstructions;
         }
 
         if (auto expression = immediateLambdaReturn(call))
