@@ -102,9 +102,11 @@ deletion (items 2-3).
    carrier for recursive expression results — the uniform D type returned
    by evaluating an expression: immediate scalar results, native
    aggregate handles, locations/references, callables, and interpreter
-   metadata. That expression currency is distinct from the authoritative
-   storage of an addressable guest value — it is a return type, never an
-   authority (decision 15). The earlier claim that a boxed tagged union
+   metadata. Its only data-pointer arm is a host address; function and
+   delegate handles are separate, non-data categories. That expression
+   currency is distinct from the authoritative storage of an addressable
+   guest value — it is a return type, never an authority (decision 15).
+   The earlier claim that a boxed tagged union
    is "the natural form" for a tree walker was downgraded: it argues
    against *reimplementing* layout, not against *reusing* it. It is
    **recursive aggregate boxing** (`Struct = Value[] fields`,
@@ -238,8 +240,11 @@ deletion (items 2-3).
     reference it; they never participate in guest identity or address
     arithmetic. (A storage-identity-plus-offset coordinate system would
     recreate the provenance split that produced `isNativePointer`.)
-    Boxed values survive only as the walker's transient rvalue
-    expression currency (decisions 7/11), never as storage authority.
+    The interpreter-private expression currency must have its one
+    host-address data-pointer arm before this storage rule can become
+    authoritative; function and delegate handles are separate non-data
+    categories. Boxed values survive only as transient rvalues
+    (decisions 7/11), never as storage authority.
 
     Rationale: simplicity motivates the design. Boxing earns its keep
     only where the frontend cannot type values (Lox, Python — the
@@ -901,15 +906,18 @@ in parallel and never blocks it.
    consumes its returned string. Do not retain `Value` or render a dummy
    `void` result just to reuse the evaluator path.
 
-3. Remove the *shared* `quickbite.lang.Value` (decision 7): once no
-   backend depends on it as a cross-backend type, relocate the tree-
-   walking interpreter's execution-result carrier to its package, then
-   delete the shared struct and its unit tests together. Do not reproduce
-   a display-oriented general-purpose `Value` privately: the carrier
-   exists only for recursive expression/function execution and uses
-   immediate scalar results plus the native handles, locations,
-   callables, and metadata that execution actually requires. This
-   deletion is decision 15's completion signal.
+3. Extract the tree walker's execution-result carrier into its package,
+   independently of the shared type's final deletion. Migrate every
+   data-pointer producer and consumer to its one host-address arm before
+   the binding-authority switch; function and delegate handles remain
+   separate non-data categories. Do not reproduce a display-oriented
+   general-purpose `Value` privately: the carrier exists only for
+   recursive expression/function execution and uses immediate scalar
+   results plus the native handles, locations, callables, and metadata
+   that execution actually requires. Once no backend depends on
+   `quickbite.lang.Value` as a cross-backend type, delete the shared struct
+   and its unit tests together. This deletion is decision 15's completion
+   signal.
 
 4. **Workingness track (leads).** Keep the shipping boxed interpreter
    advancing toward the cerealed/dub goal: one language-surface fix plus
@@ -940,13 +948,15 @@ in parallel and never blocks it.
      assignment target and a `SymOffExp` naming a function; a
      captured-variable slot cannot resolve a relay through a
      non-referencing intermediate activation.
-   - Before native frame bytes become local authority, move the whole
-     local-storage path together: pointer creation and dereference must name
-     those bytes; `ref`/`out` and captured bindings must carry their addresses;
-     and cross-frame mutation must write those addresses directly. Do not
-     retain `scalarCells`, other cell families, or alias/reverse maps as an
-     authority behind the frames: a mirror plus any of those authorities is
-     still two storage worlds.
+   - The carrier extraction in item 3 precedes the authority switch: every
+     data-pointer producer and consumer must use its one host-address arm;
+     function/delegate handles stay separate non-data categories. Then move
+     the whole local-storage path together: pointer creation and dereference
+     must name frame bytes; `ref`/`out` and captured bindings must carry their
+     addresses; and cross-frame mutation must write those addresses directly.
+     Do not retain `scalarCells`, other cell families, or alias/reverse maps
+     as an authority behind the frames: a mirror plus any of those authorities
+     is still two storage worlds.
    - `object_table.ObjectTable` never evicts: every class identity the
      mirror touches keeps its body pinned for the whole execution,
      because liveness lives in `impl.d`'s boxed copies and nothing
