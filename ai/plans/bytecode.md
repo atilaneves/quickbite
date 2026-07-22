@@ -688,3 +688,10 @@ behaviour.
   Compiling that shape anyway writes a heap pointer into a compact slot,
   whose reader adds its low 32 bits to `data.ptr` and hands the guest a wild
   address — the shape must stay refused until the migration lands.
+  `std.array.array` on a narrow string autodecodes to `dstring`/`dchar[]` by
+  default; compiling that path
+  (`ut.backends.runner.lang.cerealed.stdConvTextRendersCharArrayExpressionRaw`)
+  reaches both a `scalarType` refusal for a bare `dchar[]` local and, past
+  that, a machine.d `readHeapElement` crash inside `Appender!dstring`'s
+  growth path — `dchar[]` support is not a char-only-gate patch, it needs
+  the migration itself.

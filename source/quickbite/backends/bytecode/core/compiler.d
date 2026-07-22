@@ -6105,11 +6105,17 @@ private struct Compiler {
         // `cast(T*)arr` / `arr.ptr`: yield the dynamic-array descriptor's
         // pointer word. `cast(U*)p` repaints an existing pointer value with the
         // target element type without changing the raw address. A string's
-        // basetype is also `Tarray`, but it stores the compact {data offset,
-        // length} descriptor, not a native pointer, so it is checked first
-        // via `compileStringPointer`; `isDynamicArrayArgument` already
-        // excludes strings, so either order is correct, but checking the
-        // narrower string case first matches this file's convention.
+        // basetype is also `Tarray`, but a read-only one stores the compact
+        // {data offset, length} descriptor, not a native pointer, so it is
+        // checked first via `compileStringPointer`; `isDynamicArrayArgument`
+        // already excludes strings, so either order would otherwise be
+        // correct, but checking the narrower string case first matches this
+        // file's convention. A heap-backed string (`.dup`/`.idup`, matching
+        // `stringSourceIsHeapBacked`, the same guard `compileSliceInto` uses)
+        // already holds the ordinary 16-byte {ptr, length} descriptor, so it
+        // takes the `compileArrayPointer` path instead: reading it through
+        // `compileStringPointer`'s `Op.stringSliceToArray` would misread the
+        // descriptor's own pointer word as a data-segment offset.
         // `compileStringPointer` only ever stores UTF-8 bytes
         // (`compileStringLiteral`), so it is restricted to `char`-element
         // strings; `wstring`/`dstring` fall through to the generic pointer
@@ -6117,10 +6123,13 @@ private struct Compiler {
         // pointer and `isDynamicArrayArgument` excludes strings), rather than
         // silently reinterpreting UTF-8 bytes as UTF-16/32 code units.
         if (isPointerType(cast_.to)) {
-            if (isCharStringType(cast_.e1.type))
+            if (isCharStringType(cast_.e1.type) &&
+                !stringSourceIsHeapBacked(cast_.e1))
                 return compileStringPointer(cast_);
 
-            if (isDynamicArrayArgument(cast_.e1))
+            if (isDynamicArrayArgument(cast_.e1) ||
+                (isCharStringType(cast_.e1.type) &&
+                    stringSourceIsHeapBacked(cast_.e1)))
                 return compileArrayPointer(cast_);
 
             const pointer = compileExpression(cast_.e1);
@@ -14222,11 +14231,22 @@ private bool isArrayBoundsCall(
         function_.ident.toString.startsWith("_d_arraybounds");
 }
 
+// `_d_newarrayUPureNothrow` is `core.internal.array.construction`'s
+// attribute-stripping wrapper: its body calls `_d_newarrayU` indirectly
+// through a `cast(PureType)&_d_newarrayU!T` function pointer, which
+// `_dup`'s POD path (`core.internal.array.duplication._dup`, the shared
+// implementation behind `.dup`/`.idup`) calls directly. Matching it here
+// alongside `_d_newarrayU` means both the ordinary dynamic-array allocation
+// path and `stringSourceIsHeapBacked` (below) recognise the wrapper as an
+// allocation without compiling its body, instead of falling through to the
+// compact 8-byte string-descriptor path (`compileStringPointer` /
+// `Op.stringSliceToArray`) that only literal/data-segment strings use.
 private bool isNewArrayRuntimeCall(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     return function_.ident !is null &&
         (function_.ident.toString == "_d_newarrayU" ||
+            function_.ident.toString == "_d_newarrayUPureNothrow" ||
             function_.ident.toString == "arrayAllocImpl" ||
             function_.ident.toString == "uninitializedArray");
 }
