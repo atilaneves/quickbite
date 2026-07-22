@@ -5704,73 +5704,8 @@ private struct Walker {
             return loadNativePointerElement(pointer.e1.type, value, 0);
 
         if (!value.isLocalPointer) {
-            // Byte-level authority for an array element: once `&a[i]` has
-            // promoted an
-            // `arrayCells` entry for the variable this pointer points into,
-            // its bytes -- not `value`'s own boxed element snapshot taken
-            // at address-of time -- are the true value, so a direct write
-            // to the array (`writeIndexLocation`) after the pointer was
-            // taken is visible here. Every other array pointer (no
-            // promoted cell -- a non-scalar element type, a static array,
-            // or a `&s.field` snapshot) keeps the existing boxed
-            // `pointerTarget` fallback.
             Value cellValue;
-            if (arrayPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a struct-field pointer: once `&s.field`
-            // has promoted a
-            // `structCells` entry, its bytes -- not the boxed field snapshot
-            // `addressOfExpression` took -- are the true value, so a direct
-            // field write (`writeLocation`'s `DotVarExp` arm) after the
-            // pointer was taken is visible here. Every other struct-field
-            // pointer (no promoted cell, a non-scalar field) keeps the
-            // existing boxed `pointerTarget` fallback.
-            if (structFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a struct-static-array-field pointer:
-            // once `&s.arr[i]` has promoted a `structCells` entry, mirroring the
-            // two checks above for the scalar-field and plain-array cases.
-            if (structArrayFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a nested-struct-field pointer: once
-            // `&s.inner.x` has promoted a `structCells` entry, mirroring the
-            // three checks above for the array-element, scalar-field, and
-            // static-array-field cases.
-            if (nestedStructFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for an array-element/nested-struct-field
-            // pointer: once `&a[i].inner.x` has promoted an
-            // `arrayCells` entry, mirroring the nested-struct-field check
-            // above, composed with the array-element case's own
-            // `NativeArray.structElement` view.
-            if (arrayNestedStructFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a class-field pointer: once `&c.field`
-            // has promoted a
-            // `classCells` entry, mirroring `structFieldPointerCellValue`
-            // above for the struct case.
-            if (classFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a nested-class-struct-field pointer
-            // (aggregate composition): once `&c.inner.x` has promoted a
-            // `classCells` entry, mirroring
-            // `nestedStructFieldPointerCellValue` above for the struct-
-            // receiver case.
-            if (nestedClassStructFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a class-static-array-field pointer
-            // (the other aggregate-composition shape): once `&c.arr[i]` has
-            // promoted a
-            // `classCells` entry, mirroring `structArrayFieldPointerCellValue`
-            // above for the struct-receiver case.
-            if (classArrayFieldPointerCellValue(value, cellValue))
+            if (pointerCellValue(value, cellValue))
                 return cellValue;
 
             // A plain LOCAL static array (`int[3] a;`) never gets an
@@ -13103,6 +13038,20 @@ private struct Walker {
         return true;
     }
 
+    // The single ordered route through promoted boxed-pointer cells. Both
+    // direct dereference and compound-assignment/atomic reads use this gate,
+    // so they cannot disagree about which interim mirror is authoritative.
+    private bool pointerCellValue(in Value pointer, out Value value) {
+        return arrayPointerCellValue(pointer, value) ||
+            structFieldPointerCellValue(pointer, value) ||
+            structArrayFieldPointerCellValue(pointer, value) ||
+            nestedStructFieldPointerCellValue(pointer, value) ||
+            arrayNestedStructFieldPointerCellValue(pointer, value) ||
+            classFieldPointerCellValue(pointer, value) ||
+            nestedClassStructFieldPointerCellValue(pointer, value) ||
+            classArrayFieldPointerCellValue(pointer, value);
+    }
+
     // Byte-level authority for a struct-field pointer:
     // once `&s.field` has promoted a `structCells`
     // entry for the struct variable a non-local pointer points into, its
@@ -13392,21 +13341,7 @@ private struct Walker {
         }
 
         Value cellValue;
-        if (arrayPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (structFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (structArrayFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (nestedStructFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (arrayNestedStructFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (classFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (nestedClassStructFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (classArrayFieldPointerCellValue(pointer, cellValue))
+        if (pointerCellValue(pointer, cellValue))
             return cellValue;
 
         return pointer.pointerTarget;
