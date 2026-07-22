@@ -176,6 +176,28 @@ unittest {
 }
 
 
+// A frame binding resolves to the inline slot for an ordinary parameter and
+// through the stored caller address for a `ref` parameter. The decoder is
+// mechanical only: it does not allocate or choose either storage world.
+@("FrameBlock.bindingAddress.resolvesOwningAndReferenceSlots")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbiteFrameBlockBindingAddress(int a, ref int b) {} },
+        "quickbiteFrameBlockBindingAddress",
+    );
+    auto layout = computeFrameLayout(function_);
+    auto frame = FrameBlock.allocate(layout);
+    auto a = (*function_.parameters)[0];
+    auto b = (*function_.parameters)[1];
+
+    int target = 42;
+    frame.setReferenceSlot(b, &target);
+
+    frame.bindingAddress(a).should == frame.slotAddress(a);
+    frame.bindingAddress(b).should == &target;
+}
+
+
 @("FrameBlock.allocate.zeroSlotFunctionYieldsZeroByteLengthBlock")
 unittest {
     auto function_ = parseFunction(

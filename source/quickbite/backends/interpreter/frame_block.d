@@ -120,6 +120,25 @@ public struct FrameBlock {
         return *cast(void**) slotAddress(variable);
     }
 
+    // The address to which `variable` is bound in this activation. An
+    // OWNING slot binds directly to its inline storage; a REFERENCE slot
+    // binds to the caller address it holds. This is intentionally only a
+    // mechanical decoding of the frame's existing slot representation: it
+    // neither owns storage nor decides which representation is authoritative.
+    // A caller with no slot is refused rather than inventing an address.
+    public void* bindingAddress(VarDeclaration variable) @trusted {
+        if (hasOwningSlot(variable))
+            return slotAddress(variable);
+
+        if (hasReferenceSlot(variable))
+            return referenceSlotValue(variable);
+
+        throw new Exception(
+            "quickbite.backends.interpreter.frame_block.FrameBlock."
+            ~ "bindingAddress: variable has no frame slot",
+        );
+    }
+
     // The write side of `referenceSlotValue` above: stores `address` as
     // the caller-supplied address `variable`'s own reference slot binds
     // to. Same `@trusted` boundary, and the same throw for the same reason

@@ -8539,7 +8539,7 @@ private struct Walker {
 
             return variable.isDataseg
                 ? moduleTable.storageFor(variable)
-                : callerFrame.slotAddress(variable);
+                : callerFrame.bindingAddress(variable);
         }
 
         if (callerFrame.hasReferenceSlot(variable)) {
@@ -8556,7 +8556,7 @@ private struct Walker {
             // this codebase ever composes deliberately. Reading THAT back
             // as if it were resolved would hand a caller `0x0` to
             // dereference; decline exactly like "no slot at all" instead.
-            auto forwarded = callerFrame.referenceSlotValue(variable);
+            auto forwarded = callerFrame.bindingAddress(variable);
             if (forwarded !is null) {
                 bindNotVerifiable = true;
                 return forwarded;
