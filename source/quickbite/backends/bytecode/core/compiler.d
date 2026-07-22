@@ -348,6 +348,10 @@ private struct Compiler {
         if (auto existing = function_ in _functionIndices)
             return cast(ushort) *existing;
 
+        import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
+
+        ensureFunctionBodySemantic(function_);
+
         if (_program is null)
         {
             _program = new Program;
@@ -9952,14 +9956,6 @@ private struct Compiler {
         import std.conv: text;
 
         auto function_ = callFunction(call);
-        if (function_ !is null && function_.parameters is null) {
-            import dmd.funcsem: functionSemantic3;
-            import quickbite.frontend.dmd.functions:
-                snapshotInlineAsmInstructions;
-
-            functionSemantic3(function_);
-            snapshotInlineAsmInstructions;
-        }
 
         if (auto expression = immediateLambdaReturn(call))
             return compileExpression(expression);
