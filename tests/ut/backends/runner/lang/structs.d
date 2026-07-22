@@ -3254,3 +3254,86 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+
+// A union whose members are all place-composable in isolation but one of
+// which is a floating-base enum: the mirror's union arm writes only the
+// widest member, and `E` ties with `long` at 8 bytes so first-declared `E`
+// wins the tie -- a write `place_value.writeValue` refuses for a
+// floating-base enum. Declaring `u` at all takes that path, so the union
+// gate must decline this shape rather than let the refusal escape as an
+// exception out of the mirror.
+static foreach (backend; Matrix!()) {
+    @("union.floatingBaseEnumMemberDoesNotEscapeTheMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E : double { a = 1.5 }
+
+            union U {
+                E e;
+                long l;
+            }
+
+            unittest {
+                U u;
+                assert(u.e == E.a);
+            }
+        });
+    }
+}
+
+
+// The same shape one level down through a static array: `E[2]` ties with
+// `long[2]` at 16 bytes and wins the tie, so the widest-member write
+// composes down to a floating-base enum element.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported static-array struct field in bytecode core: [1.5, 1.5]"),
+)) {
+    @("union.floatingBaseEnumArrayMemberDoesNotEscapeTheMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E : double { a = 1.5 }
+
+            union U {
+                E[2] e;
+                long[2] l;
+            }
+
+            unittest {
+                U u;
+                assert(u.e[0] == E.a);
+            }
+        });
+    }
+}
+
+
+// And one level down through a struct field: `S` ties with `long` at 8
+// bytes and wins the tie, so the widest-member write composes down to a
+// floating-base enum field.
+static foreach (backend; Matrix!()) {
+    @("union.floatingBaseEnumStructMemberDoesNotEscapeTheMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E : double { a = 1.5 }
+
+            struct S {
+                E e;
+            }
+
+            union U {
+                S s;
+                long l;
+            }
+
+            unittest {
+                U u;
+                assert(u.s.e == E.a);
+            }
+        });
+    }
+}

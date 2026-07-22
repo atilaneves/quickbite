@@ -318,6 +318,21 @@ private bool isFloatingBaseEnum(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
+// The scalar leaf `writeValue` actually writes: `native_scalar.
+// isNativeScalarType` dispatches on an enum's BASE type, so it answers
+// `true` for `enum E : double` -- a type `writeValue` refuses
+// (`isFloatingBaseEnum` above). Every predicate that wants "a leaf this
+// module's writer can land on" must ask this one rather than
+// `isNativeScalarType` directly, which is how `isUnionMemberReDerivable`
+// stays inside `isPlaceComposable`'s own accepted set instead of admitting
+// a member `writeValue` will then throw on.
+private bool isWritableNativeScalar(imported!"dmd.mtype".Type type) @safe {
+    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+    return isNativeScalarType(type) && !isFloatingBaseEnum(type);
+}
+
+
 // Reads `length` bytes at `address` back as a `real` -- the inverse of
 // `writeRealBits` below. An x87 extended-precision LOAD only reads the
 // significant bytes (10 of them on this host); it never inspects the
@@ -725,9 +740,13 @@ private bool isComposableUnion(imported!"dmd.mtype".TypeStruct unionType) @safe 
 // Whether a union member of `type` is one every boxed union write path in
 // this codebase re-derives from the union's own bytes, so that the boxed
 // `Value`'s entry for it can never contradict its siblings. The set is
-// deliberately a strict subset of `isPlaceComposable`'s (so a member
-// answering `true` here always composes): a native scalar, a static array
-// of native scalars, or a non-union struct built recursively from those.
+// deliberately a subset of `isPlaceComposable`'s -- a member answering
+// `true` here always composes, which the `out` contract below checks
+// rather than leaving it as a claim two functions must independently
+// honour: a native scalar `writeValue` writes (`isWritableNativeScalar`,
+// NOT `isNativeScalarType`, which admits the floating-base enums
+// `writeValue` refuses), a static array of those, or a non-union struct
+// built recursively from them.
 //
 // The excluded shapes are excluded because `impl.d`'s `withUnionFieldWrite`
 // -- the walker's only union field-write path -- re-derives exactly a
@@ -740,16 +759,17 @@ private bool isComposableUnion(imported!"dmd.mtype".TypeStruct unionType) @safe 
 // (`unionSiblingDefaultFieldValue`) declines the same shapes and defaults
 // them independently, which is how `union U { real r; long l; }` gets a
 // `real.nan` entry beside a zero `long` one before any write at all.
-private bool isUnionMemberReDerivable(imported!"dmd.mtype".Type type) @safe {
-    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+private bool isUnionMemberReDerivable(imported!"dmd.mtype".Type type) @safe
+out (result; !result || isPlaceComposable(type))
+{
     import quickbite.backends.interpreter.layout: structFields, declaredType;
 
-    if (isNativeScalarType(type))
+    if (isWritableNativeScalar(type))
         return true;
 
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null)
-        return isNativeScalarType(arrayType.next);
+        return isWritableNativeScalar(arrayType.next);
 
     auto structType = nonUnionStructOf(type);
     if (structType is null)
@@ -781,13 +801,18 @@ private bool isUnionMemberReDerivable(imported!"dmd.mtype".Type type) @safe {
 // `layout.fieldByteOffset`s must run consecutively from 0 and the last one
 // must end at the struct's own size, which alignment padding (interior or
 // trailing) breaks. Every other shape -- a union, a slice, a class --
-// answers `false`.
+// answers `false` -- including a floating-base enum, which both
+// `isNativeScalarType` and `isRealType` answer `true` for (they dispatch on
+// the enum's base type) but `writeValue` refuses outright, so it writes no
+// bytes at all rather than all of them.
 private bool writeCoversWholeType(imported!"dmd.mtype".Type type) @safe {
-    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         structFields, declaredType, fieldByteOffset, typeByteSize;
 
-    if (isNativeScalarType(type) || isRealType(type) || type.isTypePointer !is null)
+    if (isFloatingBaseEnum(type))
+        return false;
+
+    if (isWritableNativeScalar(type) || isRealType(type) || type.isTypePointer !is null)
         return true;
 
     auto arrayType = type.isTypeSArray;
