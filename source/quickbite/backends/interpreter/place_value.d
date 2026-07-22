@@ -296,6 +296,82 @@ public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
+// Whether `value` has exactly the recursive boxed shape `writeValue` can
+// encode at `type`: a native scalar, `real`, struct/union, static array, or
+// host-address pointer. This is the value-side counterpart to
+// `isPlaceComposable`'s type-side gate, and deliberately calls it itself so
+// mirror writers and scratch verifiers cannot disagree about whether a
+// `writeValue` call is safe. A mismatch is ordinary control flow for the
+// boxed-era mirror: callers leave the shadow untouched rather than relying on
+// `writeValue` to throw after a partial recursive write.
+public bool valueMatchesPlace(
+    imported!"dmd.mtype".Type type,
+    in imported!"quickbite.lang".Value value,
+) @safe {
+    if (!isPlaceComposable(type))
+        return false;
+
+    return valueMatchesComposablePlace(type, value);
+}
+
+
+// `valueMatchesPlace` has already established that `type` is composable.
+// Keeping that type-side recursion outside this value-side recursion avoids
+// re-walking every nested aggregate at each leaf.
+private bool valueMatchesComposablePlace(
+    imported!"dmd.mtype".Type type,
+    in imported!"quickbite.lang".Value value,
+) @safe {
+    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+    import quickbite.backends.interpreter.layout:
+        declaredType, staticArrayLength, structFields;
+    import quickbite.lang: Value;
+
+    if (isNativeScalarType(type))
+        return value.isNumericScalar || value.isCharacter;
+
+    // `real` is `isPlaceComposable` but not a native scalar. Its boxed
+    // representation is always numeric (never character), matching
+    // `writeValue`'s `writeRealBits` arm.
+    if (isRealType(type))
+        return value.isNumericScalar;
+
+    auto structType = type.isTypeStruct;
+    if (structType !is null) {
+        if (!value.isStruct)
+            return false;
+
+        auto fields = structFields(structType);
+        if (value.structFieldCount != fields.length)
+            return false;
+
+        foreach (index, field; fields)
+            if (!valueMatchesComposablePlace(declaredType(field), value.structFieldAt(index)))
+                return false;
+
+        return true;
+    }
+
+    if (type.isTypePointer !is null)
+        return value.isNativePointer || value == Value.null_;
+
+    auto arrayType = type.isTypeSArray;
+    assert(arrayType !is null, "valueMatchesPlace: composable type");
+    if (!value.isArray)
+        return false;
+
+    const length = staticArrayLength(arrayType);
+    if (value.length != length)
+        return false;
+
+    foreach (i; 0 .. length)
+        if (!valueMatchesComposablePlace(arrayType.next, value[i]))
+            return false;
+
+    return true;
+}
+
+
 // True for an enum whose base type is a floating one -- `enum E : double`
 // and `enum E : real` are both legal D, and both are shapes this module
 // composes in ONE direction only. `writeValue` would happily write them

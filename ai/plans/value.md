@@ -446,6 +446,10 @@ change that makes them false, never prospectively.
   `writeRealBits`); a write composes into a zero-initialised local and
   copies the WHOLE slot, making `real`'s padding deterministic for the
   verified mirror's raw-byte comparison.
+- `place_value.valueMatchesPlace` is the recursive gate for whether a
+  boxed execution value can enter the place writer. It includes both
+  type composability and value shape, so mirror writes and scratch-byte
+  verification cannot route a type/value pair differently.
 - Integer offsetting of a native pointer preserves the native-pointer carrier
   and applies the byte delta already scaled from the expression's static
   pointer type. Do not route it through the boxed pointer's allocation id or

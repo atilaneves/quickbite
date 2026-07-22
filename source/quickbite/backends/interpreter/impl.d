@@ -285,7 +285,7 @@ private struct Walker {
     //   follows a stored reference out of a slot for a class base
     //   (`Place.deref`) or a pointer base alike, and a pointer local whose
     //   mirror declined (a boxed-era carrier with no host address --
-    //   `placeShapeMatches`'s pointer arm) leaves a slot exactly as
+    //   `valueMatchesPlace`'s pointer arm) leaves a slot exactly as
     //   unusable as a declined class local's does.
     //
     // Needs no separate rebind invalidation: `locals[variable] = value` is
@@ -1062,9 +1062,10 @@ private struct Walker {
     // fails a write it cannot perform cleanly, it simply skips it -- a
     // local with no mirror slot at all (aliasing `ref`/`out`/`lazy`), a
     // type `place_value` does not compose, or a value that does not itself
-    // match that type's own shape (e.g. still `void`, a struct/array local
-    // mid-construction holding a transient boxed value of the wrong shape,
-    // or -- a pointer's own value-dependent case, see `placeShapeMatches`'s
+    // match `place_value.valueMatchesPlace` (e.g. still `void`, a
+    // struct/array local mid-construction holding a transient boxed value
+    // of the wrong shape,
+    // or -- a pointer's own value-dependent case, see `valueMatchesPlace`'s
     // pointer arm -- a boxed-era pointer carrier with no host address of
     // its own) is left unmirrored rather than risking `writeValue`
     // throwing; a later matching write re-syncs it.
@@ -1093,7 +1094,7 @@ private struct Walker {
     // both sides compute the same way is invisible to a byte comparison;
     // only declining the shape catches it.
     private void mirrorToFrame(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
+        import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
 
         // `established` becomes `mirrorEstablished[variable]` on every exit
         // from this function (`scope(exit)` below) -- `false` unless an arm
@@ -1117,10 +1118,7 @@ private struct Walker {
             return;
         }
 
-        if (!isPlaceComposable(variable.type))
-            return;
-
-        if (!placeShapeMatches(variable.type, value))
+        if (!valueMatchesPlace(variable.type, value))
             return;
 
         writeValue(mirrorPlace(variable), value);
@@ -1192,7 +1190,7 @@ private struct Walker {
     //   here, is the authority for it, matching `assertFrameMirror`'s own
     //   identical exclusion.
     // - a boxed value that is not (yet) `isArray` (still `void`, or mid-
-    //   construction), matching `placeShapeMatches`'s equivalent guard for
+    //   construction), matching `valueMatchesPlace`'s equivalent guard for
     //   the composable shapes above.
     // - a non-empty slice whose `arrayNativeAddress` is `null`: a boxed
     //   `Value[]` tree assembled with no backing native block (e.g. a slice
@@ -1247,7 +1245,7 @@ private struct Walker {
     //
     // - a boxed value that is not (yet) `isClassObject`, and not `Value.
     //   null_` either (still `void`) -- the same "not yet this shape" gap
-    //   `placeShapeMatches` guards for the composable shapes above.
+    //   `valueMatchesPlace` guards for the composable shapes above.
     // - a `classIdentity` of 0: `place_value.readValue`'s own class arm
     //   never mints one for a null reference (it reads back `Value.
     //   null_` instead, handled separately below), so an `isClassObject`
@@ -1262,12 +1260,12 @@ private struct Walker {
     // - a class that IS `isClassBodyComposable` (a TYPE-shape question)
     //   but whose current field VALUES do not themselves match
     //   (`classBodyShapeMatches`, the class-body counterpart of
-    //   `placeShapeMatches` above) -- the case a pointer field adds now
+    //   `valueMatchesPlace` above) -- the case a pointer field adds now
     //   that `place_value.isPlaceComposable` accepts a pointer type:
     //   `isClassBodyComposable` says the field's TYPE composes, but
     //   `writeClassBody`'s recursive `writeValue` still refuses a boxed
     //   pointer carrier with no host address (`isLocalPointer`, ...),
-    //   exactly the VALUE-dependent case `placeShapeMatches`'s own pointer
+    //   exactly the VALUE-dependent case `valueMatchesPlace`'s own pointer
     //   arm exists to catch. Without this second check, a class with an
     //   `int*` field pointing at a local (a routine, valid program) would
     //   throw here instead of leaving the local unmirrored.
@@ -1385,96 +1383,7 @@ private struct Walker {
         }
     }
 
-    // Whether `value`'s shape matches what `place_value.readValue`/
-    // `writeValue` compose for `type` at EVERY depth, not only the top
-    // level: a concrete scalar (`isNumericScalar`/`isCharacter`) for a
-    // native scalar type; a concrete numeric scalar (`isNumericScalar`
-    // alone -- `real` is never `isCharacter`) for `real`, its own leaf
-    // shape (`place_value.isRealType`); `value.isStruct` AND a field count
-    // matching `layout.structFields.length` AND every field's boxed value
-    // itself matching that field's own declared type, for a struct OR
-    // union type (`type.isTypeStruct` does not distinguish them, and
-    // neither does this check -- a union's `Value` is shaped exactly like
-    // a struct's, see `place_value.writeUnionValue`'s own header comment);
-    // `value.isArray` AND a length matching `layout.staticArrayLength` AND
-    // every element's boxed value itself matching the element type, for a
-    // static-array type. A mismatch at any depth fails the whole check --
-    // `writeValue` recurses by position with no bounds check of its own
-    // (`value[i]`, `value.structFieldAt(index)`), so a boxed value shorter
-    // than the type it is being written into would index out of range.
-    // Callers gate this on `isPlaceComposable(type)` first, so `type` is
-    // always one of exactly those FOUR shapes here.
-    private static bool placeShapeMatches(imported!"dmd.mtype".Type type, in Value value) {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-        import quickbite.backends.interpreter.place_value: isRealType;
-        import quickbite.backends.interpreter.layout: structFields, staticArrayLength, declaredType;
-
-        if (isNativeScalarType(type))
-            return value.isNumericScalar || value.isCharacter;
-
-        // `real` is `place_value.isPlaceComposable` but not `native_scalar.
-        // isNativeScalarType` (its own leaf codec -- see `place_value.
-        // readValue`'s header comment): a boxed `real` `Value` is always
-        // `isNumericScalar` (never `isCharacter`, unlike an integral/`bool`
-        // native scalar), so this repeats only the half of the check above
-        // that actually applies.
-        if (isRealType(type))
-            return value.isNumericScalar;
-
-        auto structType = type.isTypeStruct;
-        if (structType !is null) {
-            if (!value.isStruct)
-                return false;
-
-            auto fields = structFields(structType);
-            if (value.structFieldCount != fields.length)
-                return false;
-
-            foreach (index, field; fields)
-                if (!placeShapeMatches(declaredType(field), value.structFieldAt(index)))
-                    return false;
-
-            return true;
-        }
-
-        // A pointer's shape match is VALUE-dependent, unlike every arm
-        // above: the type is always accepted (`isPlaceComposable` now says
-        // so unconditionally for a pointer type), but `place_value.
-        // writeValue`'s own pointer arm still refuses a `value` that is not
-        // itself a host address -- `isLocalPointer`'s allocation-id
-        // carrier, the struct-shaped `Pointer`, a function pointer's
-        // minted id -- since none of those boxed-era stand-ins IS the
-        // address decision 15 requires. Repeating that EXACT condition
-        // here, rather than a shape check of our own, is what keeps
-        // `mirrorToFrame` and `assertFrameMirror` symmetric: both call
-        // this same function before touching `writeValue`, so a `value`
-        // this declines is skipped identically on both sides, and a
-        // `value` this accepts is one `writeValue`'s own arm has already
-        // agreed to accept.
-        if (type.isTypePointer !is null)
-            return value.isNativePointer || value == Value.null_;
-
-        // Reachable only for a composable type (caller gates on
-        // `isPlaceComposable`), which past the scalar, `real`, struct, and
-        // pointer arms leaves exactly a static array -- so `isTypeSArray`
-        // is non-null here.
-        auto arrayType = type.isTypeSArray;
-        assert(arrayType !is null, "placeShapeMatches: non-composable type");
-        if (!value.isArray)
-            return false;
-
-        const length = staticArrayLength(arrayType);
-        if (value.length != length)
-            return false;
-
-        foreach (i; 0 .. length)
-            if (!placeShapeMatches(arrayType.next, value[i]))
-                return false;
-
-        return true;
-    }
-
-    // The class-body counterpart of `placeShapeMatches` above, for
+    // The class-body counterpart of `place_value.valueMatchesPlace`, for
     // exactly the reason a pointer field needs one: `place_value.
     // isClassBodyComposable` only answers whether `class_`'s own field
     // TYPES compose (recursing `isPlaceComposable`, a type-shape
@@ -1486,7 +1395,7 @@ private struct Walker {
     // still refuses a pointer field whose current VALUE is a boxed-era
     // carrier with no host address, exactly like `writeValue`'s own
     // top-level pointer arm. Checking every field's value against its own
-    // declared type through `placeShapeMatches` (recursing into a nested
+    // declared type through `valueMatchesPlace` (recursing into a nested
     // struct/array/pointer field exactly as it already does for the
     // generic composable path) catches that case -- and every other
     // "value does not yet match this field's shape" case a struct/array/
@@ -1494,7 +1403,7 @@ private struct Walker {
     // already checks for a non-class local. `mirrorClassToFrame` and
     // `assertClassFrameMirror` both call this identically, right after
     // their own `isClassBodyComposable` check, so the two stay symmetric
-    // the same way `placeShapeMatches` itself keeps the generic path
+    // the same way `valueMatchesPlace` itself keeps the generic path
     // symmetric: neither side can compose a field value the other
     // declined.
     //
@@ -1649,7 +1558,7 @@ private struct Walker {
     // so it can decline a cycle without ever calling `writeClassBody` at
     // all. Keyed by `Value.classIdentity`, not an address: this function
     // never resolves one (unlike `place_value`'s own guards), it only walks
-    // the boxed VALUE tree, exactly as `placeShapeMatches` already does for
+    // the boxed VALUE tree, exactly as `valueMatchesPlace` already does for
     // every other shape.
     //
     // `visiting` is a "seen ANYWHERE in this graph" set, not the DFS
@@ -1706,7 +1615,8 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout:
             classFields, declaredType, classQualifiedName;
-        import quickbite.backends.interpreter.place_value: isClassBodyComposable;
+        import quickbite.backends.interpreter.place_value:
+            isClassBodyComposable, valueMatchesPlace;
 
         foreach (index, field; classFields(class_)) {
             auto fieldType = declaredType(field);
@@ -1714,7 +1624,7 @@ private struct Walker {
 
             auto fieldClassType = fieldType.isTypeClass;
             if (fieldClassType is null) {
-                if (!placeShapeMatches(fieldType, fieldValue))
+                if (!valueMatchesPlace(fieldType, fieldValue))
                     return false;
                 continue;
             }
@@ -1767,7 +1677,7 @@ private struct Walker {
     // reading -- IEEE NaN, and an enum's `EnumValue` boxing against the plain
     // integral `readScalar` returns for its base type.
     private void assertFrameMirror(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
+        import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
         import quickbite.backends.interpreter.place: placeAt;
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
@@ -1791,10 +1701,7 @@ private struct Walker {
             return;
         }
 
-        if (!isPlaceComposable(variable.type))
-            return;
-
-        if (!placeShapeMatches(variable.type, value))
+        if (!valueMatchesPlace(variable.type, value))
             return;
 
         // The expected bytes: `value` written through the identical
@@ -8667,7 +8574,7 @@ private struct Walker {
     // Declines the same way `assertFrameMirror`'s own composable arm does:
     // silently, for a `value` that is not (yet) `isPlaceComposable`'s
     // shape for `parameter.type`, or does not itself match that shape
-    // (`placeShapeMatches`) -- e.g. a still-`void` argument, or a slice-
+    // (`valueMatchesPlace`) -- e.g. a still-`void` argument, or a slice-
     // or class-typed `ref` parameter (neither is `isPlaceComposable`, so
     // this never asserts on either; `bindReferenceSlot` above still fills
     // the reference slot for one, just without this verification).
@@ -8676,15 +8583,12 @@ private struct Walker {
         void* address,
         in Value value,
     ) {
-        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
+        import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
         import quickbite.backends.interpreter.place: placeAt;
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
 
-        if (!isPlaceComposable(parameter.type))
-            return;
-
-        if (!placeShapeMatches(parameter.type, value))
+        if (!valueMatchesPlace(parameter.type, value))
             return;
 
         const length = typeByteSize(parameter.type);
