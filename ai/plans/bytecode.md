@@ -622,6 +622,9 @@ lifetime as the dependency bytecode cache.
   lambda whose body is a single expression statement can avoid needing that
   environment by inlining the statement into the caller the same way a
   single-`return`-expression IIFE already inlines.
+- The captured-parent materialisation is only for such nested functions. A
+  nested struct method's own `this` remains its current receiver, even when
+  that receiver also carries a context pointer.
 - `capturedThisStructDeclaration` is keyed only on `vthis` plus the enclosing
   parent being a (non-nested) struct method, so a nested function that reads
   BOTH an enclosing local and `this.field` is also claimed by this

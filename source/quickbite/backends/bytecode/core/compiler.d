@@ -4443,7 +4443,7 @@ private struct Compiler {
         // receives the parent frame as its context. Materialise the native
         // struct block before addressing the field, and retain the parent-frame
         // index so every write through this field can be copied back.
-        if (_hasNestedContext)
+        if (_hasNestedContext && !_hasThis)
             if (auto this_ = dot.e1.isThisExp)
                 if (auto captured = this_.var in _capturedOffsets) {
                     const structOffset = allocateStructBlock(dot.e1.type);
