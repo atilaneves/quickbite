@@ -559,7 +559,7 @@ unittest {
 // address across repeated calls for the same identity" contract, exercised
 // here through `writeClassBody`'s resolver rather than directly. Unlike the
 // round-trip fixture above, the shared identity is an arbitrary
-// caller-chosen number (boxed-era style), not itself an address, so this
+// caller-chosen number, not itself an address, so this
 // also proves it is the RESOLVER's job to mint/look up the real address,
 // not this module's own arithmetic.
 @("place_value.writeClassBody.readValue.twoFieldsReferencingSameObjectShareOneBodyAddress")
@@ -1311,7 +1311,7 @@ unittest {
 
 
 // Unlike a native pointer or `Value.null_`, a boxed pointer carrier with no
-// host address of its own (here, `Value.localPointerValue`, the boxed-era
+// host address of its own (here, `Value.localPointerValue`, the
 // allocation-id carrier) has nothing `writeValue` can store -- it must
 // refuse the write, value-dependently, and leave `place`'s existing
 // address untouched rather than fabricate one.
@@ -1612,8 +1612,8 @@ unittest {
 
 // `union U {}` is legal D. It has no member for the single-member write to
 // pick, so it declines -- rather than indexing an empty member list, which
-// used to kill the whole interpreter with a `core.exception.ArrayIndexError`
-// (an `Error`) the first time a guest program declared one.
+// kills the whole interpreter with a `core.exception.ArrayIndexError` (an
+// `Error`) the first time a guest program declares one.
 @("place_value.isPlaceComposable.falseForEmptyUnion")
 unittest {
     auto unionType = structTypeOf(q{ union U {} }, "U");
@@ -1705,8 +1705,8 @@ unittest {
 
 
 // A boxed null slice is a length of zero, not an error. `Value.length`
-// itself throws "Expected array." for `Value.null_`, which used to make
-// `writeValue` refuse a value the read side hands straight back: a
+// itself throws "Expected array." for `Value.null_`, which would otherwise
+// make `writeValue` refuse a value the read side hands straight back: a
 // `{ 0, null }` header reads as an empty array, never as `Value.null_`.
 @("place_value.writeValue.readValue.nullSliceWritesAnEmptySlice")
 unittest {

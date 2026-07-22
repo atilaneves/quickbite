@@ -727,23 +727,22 @@ static foreach (backend; Matrix!()) {
 // that `Base` reference (dynamic dispatch must still reach
 // `Derived.score`), a downcast to a `Derived`-typed local,
 // the `Base` reference then nulled, and a field write through the downcast
-// local that only `Derived` declares. Before the fix, the SAME object
-// identity mirrored through two DIFFERENT static types (`Base`, then
-// `Derived`) -- `object_table.ObjectTable.storageFor` sized the identity's
-// body from whichever mirrors first (`Base`, narrower), so the later
-// `Derived`-typed write went through a too-small block with no bounds
-// check of its own (`place.Place` has none): silent GC-heap corruption in
-// a release build. `impl.d`'s `classBodyShapeMatches` now declines a class
+// local that only `Derived` declares. The danger in this shape is one
+// object identity reached through two DIFFERENT static types (`Base`, then
+// `Derived`): `object_table.ObjectTable.storageFor` sizes the identity's
+// body from whichever mirrors first (`Base`, narrower), so a later
+// `Derived`-typed write would go through a too-small block with no bounds
+// check of its own (`place.Place` has none) -- silent GC-heap corruption in
+// a release build. `impl.d`'s `classBodyShapeMatches` declines a class
 // mirror outright whenever a static type's name disagrees with the boxed
 // value's own dynamic one (own header comment), so `Base b`'s own mirror
-// never allocates the too-narrow body in the first place. Verifying this
-// exact shape under `assert` (as this suite runs) also surfaced a SEPARATE,
-// pre-existing gap this fixture pins too: declining `d`'s write while `b`
-// still aliased it, then no longer declining once `b` is null, left `d`'s
-// frame slot read/verified before its OWN first successful write ever ran
-// -- `assertClassReferenceMirror`/`assertClassBodyValue`'s own header
-// comments cover the fix (skip rather than assert on an all-zero,
-// never-established slot/body).
+// never allocates the too-narrow body at all. The fixture pins a second
+// property alongside it: declining `d`'s write while `b` still aliases it,
+// then no longer declining once `b` is null, leaves `d`'s frame slot
+// read/verified before its OWN first successful write ever ran, and
+// `assertClassReferenceMirror`/`assertClassBodyValue` must skip rather than
+// assert on such an all-zero, never-established slot/body (their own header
+// comments).
 static foreach (backend; Matrix!()) {
     @("class.downcastFieldWriteAfterVirtualCallThroughWiderStaticType." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -786,29 +785,26 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// The reviewer-reported write/verify TIME asymmetry: `p`'s OWN mirror write
-// declines (`classIdentityAliasedByAnotherBinding`, `impl.d`) while `y`'s
-// object identity is still shared by another live binding, leaving `p`'s
-// frame slot holding its PRIOR, unrelated object's address (from the
-// earlier `p = new C(); p.x = seed;`, both unaliased at that point, so
-// that write succeeded) rather than the never-written zero bytes the
-// simpler "no other binding aliased it yet" case leaves behind. Nulling
-// every OTHER binding of `y`'s identity afterwards is what used to make
-// the interpreter's read of `p` re-derive a DIFFERENT (non-declining)
-// answer than the write saw: `assertClassFrameMirror` (`impl.d`) used to
-// re-run the same decline predicate at READ time, and by then nothing
-// aliases `y`'s identity any more, so it proceeded to compare `p`'s STALE,
+// The write/verify TIME asymmetry: `p`'s OWN mirror write declines
+// (`classIdentityAliasedByAnotherBinding`, `impl.d`) while `y`'s object
+// identity is still shared by another live binding, leaving `p`'s frame
+// slot holding its PRIOR, unrelated object's address (from the earlier `p =
+// new C(); p.x = seed;`, both unaliased at that point, so that write
+// succeeded) rather than the never-written zero bytes the simpler "no other
+// binding aliased it yet" case leaves behind. Nulling every OTHER binding
+// of `y`'s identity afterwards is what makes the read side able to
+// re-derive a DIFFERENT (non-declining) answer than the write saw: a
+// verify step that re-runs the decline predicate at READ time finds nothing
+// aliasing `y`'s identity any more, and goes on to compare `p`'s STALE,
 // NON-zero frame slot (still the prior object's address) against a freshly
 // composed expectation for `y`'s object -- a guaranteed "frame class
 // reference mirror diverged from boxed local" `AssertError` on a correct
-// guest program, and NOT masked by the all-zero skip
-// class.downcastFieldWriteAfterVirtualCallThroughWiderStaticType (above)
-// added (`isZeroFilled`, since removed): a stale non-null address is not
-// all-zero. `impl.d`'s `classMirrorEstablished` now records what
-// `mirrorClassToFrame` actually did for `p`'s CURRENT binding at write
-// time, and `assertClassFrameMirror` trusts that instead of re-deriving --
-// `p`'s write declined, so its later read never re-enters the mirror at
-// all, regardless of what happens to `y`/`keepAlive` afterwards.
+// guest program, and one no all-zero-slot skip can mask, since a stale
+// non-null address is not all-zero. So `impl.d`'s `classMirrorEstablished`
+// records what `mirrorClassToFrame` actually did for `p`'s CURRENT binding
+// at write time and `assertClassFrameMirror` trusts that instead of
+// re-deriving: `p`'s write declined, so its later read never re-enters the
+// mirror at all, regardless of what happens to `y`/`keepAlive` afterwards.
 static foreach (backend; Matrix!()) {
     @("class.declinedMirrorWriteStaysDeclinedAfterAliasIsNulled." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -184,10 +184,9 @@ unittest {
 
 // Oracle: `Empty`'s instance size is the vtable/monitor header alone --
 // `__traits(classInstanceSize, ...)` for the identical class declared
-// below. A "sum the field ends" implementation (`impl.d`'s boxed-era
-// `promoteClassCell` before it was routed through `classInstanceByteSize`)
-// has no fields to sum and would give 0, under-sizing the object down to
-// nothing rather than the header every class instance actually carries.
+// below. A "sum the field ends" implementation has no fields to sum here
+// and gives 0, under-sizing the object down to nothing rather than the
+// header every class instance actually carries.
 class Empty {
 }
 

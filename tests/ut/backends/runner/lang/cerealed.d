@@ -1468,9 +1468,8 @@ static foreach (backend; Matrix!(
 // stale bookkeeping recorded before the call instead of the decision the
 // thunk's own `setLocal` actually made. `v = w` aliases two live class
 // identities, which makes `mirrorClassToFrame` DECLINE to mirror -- so a
-// desynced flag used to crash the interpreter (a stale-true decision
-// compared against a slot the write never touched) rather than merely
-// diverge in value.
+// desynced flag is not merely a wrong value here but an interpreter crash:
+// a stale-true decision compared against a slot the write never touched.
 static foreach (backend; Matrix!(
     // Same bytecode-core gap as the fixture above, over a class reference
     // instead of a bare scalar.

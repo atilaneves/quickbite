@@ -74,11 +74,11 @@ unittest {
 
 // The bug this defense-in-depth guard closes: `storageFor` sizes an
 // identity's body block from whichever caller's `class_` shows up FIRST
-// (`Base`, here), and used to hand that same block back UNCHANGED to a
-// later caller passing a WIDER class (`Derived`) for the SAME identity --
-// silently, since `place.Place` has no bounds check of its own and
-// `writeClassBody` would go on to write `Derived`'s wider field layout
-// through it. `impl.d`'s `classBodyShapeMatches` is the actual gate that
+// (`Base`, here), and without the guard would hand that same block back
+// UNCHANGED to a later caller passing a WIDER class (`Derived`) for the
+// SAME identity -- silently, since `place.Place` has no bounds check of its
+// own and `writeClassBody` would go on to write `Derived`'s wider field
+// layout through it. `impl.d`'s `classBodyShapeMatches` is the actual gate that
 // keeps this from happening in the real mirror pipeline (it declines
 // whenever a static type's name disagrees with the boxed value's own
 // dynamic one, before either mirror direction ever reaches `storageFor`);

@@ -3133,11 +3133,11 @@ static foreach (backend; Matrix!(
 
 
 // An empty union is legal D: `U u;` declares a one-byte local with no
-// member to read. The interpreter's native-layout mirror used to pick a
-// "widest member" out of an empty member list and index it, killing the
-// whole interpreter with a `core.exception.RangeError` on a perfectly
-// ordinary program -- the mirror is a verified shadow of the boxed value
-// and must never be the reason a program dies.
+// member to read. Picking a "widest member" out of an empty member list
+// and indexing it kills the whole interpreter with a
+// `core.exception.RangeError` on a perfectly ordinary program -- the
+// native-layout mirror is a verified shadow of the boxed value and must
+// never be the reason a program dies.
 static foreach (backend; Matrix!()) {
     @("union.emptyUnionLocalRunsToCompletion." ~ backend.stringof)
     @Tags(backend.stringof)
