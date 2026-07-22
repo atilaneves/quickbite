@@ -39,5 +39,7 @@ unittest {
     AggregateValue.elementCount(nativeLengthOnlyArray).should == 2;
     AggregateValue.nativeArrayAddress(nativeLengthOnlyArray).should == cast(const(void)*) 0x5678;
     AggregateValue.isClass(classValue).should == true;
+    AggregateValue.classIdentity(classValue).should == 7;
+    AggregateValue.classTypeName(classValue).should == "Box";
     AggregateValue.classFieldAt(classValue, 0).should == arrayValue;
 }

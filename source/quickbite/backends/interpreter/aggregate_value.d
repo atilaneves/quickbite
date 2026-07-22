@@ -75,6 +75,18 @@ public struct AggregateValue {
         return value.isClassObject;
     }
 
+    public static size_t classIdentity(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    ) @safe pure {
+        return value.classIdentity;
+    }
+
+    public static string classTypeName(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    ) @safe pure {
+        return value.classTypeName;
+    }
+
     public static size_t fieldCount(
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     ) @safe pure {

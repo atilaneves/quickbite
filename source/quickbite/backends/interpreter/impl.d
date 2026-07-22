@@ -175,6 +175,7 @@ private string statementLabel(imported!"dmd.identifier".Identifier identifier) {
 }
 
 private struct Walker {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.declaration: VarDeclaration;
     import dmd.expression: DivExp, Expression, ModExp;
     import dmd.func: FuncDeclaration;
@@ -1233,16 +1234,16 @@ private struct Walker {
         if (variable in arrayCells)
             return false;
 
-        if (!value.isArray)
+        if (!AggregateValue.isArray(value))
             return false;
 
-        const nativeAddress = value.arrayNativeAddress;
-        if (nativeAddress is null && value.length != 0)
+        const nativeAddress = AggregateValue.nativeArrayAddress(value);
+        if (nativeAddress is null && AggregateValue.elementCount(value) != 0)
             return false;
 
         auto arrayType = variable.type.toBasetype.isTypeDArray;
         auto array = NativeArray.borrow(
-            arrayType.next, cast(void*) nativeAddress, value.length);
+            arrayType.next, cast(void*) nativeAddress, AggregateValue.elementCount(value));
 
         array.writeSliceHeader(mirrorAddress(variable));
         return true;
@@ -1332,10 +1333,10 @@ private struct Walker {
             return true;
         }
 
-        if (!value.isClassObject)
+        if (!AggregateValue.isClass(value))
             return false;
 
-        const identity = value.classIdentity;
+        const identity = AggregateValue.classIdentity(value);
         if (identity == 0)
             return false;
 
@@ -1386,11 +1387,11 @@ private struct Walker {
             if (fieldClassType is null)
                 continue;
 
-            auto fieldValue = value.classFieldAt(index);
+            auto fieldValue = AggregateValue.classFieldAt(value, index);
             if (fieldValue == Value.null_)
                 continue;
 
-            const nestedIdentity = fieldValue.classIdentity;
+            const nestedIdentity = AggregateValue.classIdentity(fieldValue);
             if (nestedIdentity in classMirrorGenerations[variable])
                 continue;
 
@@ -1510,13 +1511,14 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: classQualifiedName;
 
-        if (classIdentityAliasedByAnotherBinding(variable, value.classIdentity))
+        if (classIdentityAliasedByAnotherBinding(
+            variable, AggregateValue.classIdentity(value)))
             return false;
 
-        if (value.classTypeName != classQualifiedName(class_))
+        if (AggregateValue.classTypeName(value) != classQualifiedName(class_))
             return false;
 
-        bool[size_t] visiting = [value.classIdentity: true];
+        bool[size_t] visiting = [AggregateValue.classIdentity(value): true];
         return classBodyShapeMatchesImpl(class_, value, visiting);
     }
 
@@ -1557,7 +1559,10 @@ private struct Walker {
             if (other is variable)
                 continue;
 
-            if (otherValue.isClassObject && otherValue.classIdentity == identity)
+            if (
+                AggregateValue.isClass(otherValue)
+                    && AggregateValue.classIdentity(otherValue) == identity
+            )
                 return true;
         }
 
@@ -1636,7 +1641,7 @@ private struct Walker {
 
         foreach (index, field; classFields(class_)) {
             auto fieldType = declaredType(field);
-            auto fieldValue = value.classFieldAt(index);
+            auto fieldValue = AggregateValue.classFieldAt(value, index);
 
             auto fieldClassType = fieldType.isTypeClass;
             if (fieldClassType is null) {
@@ -1648,7 +1653,7 @@ private struct Walker {
             if (fieldValue == Value.null_)
                 continue;
 
-            if (!fieldValue.isClassObject)
+            if (!AggregateValue.isClass(fieldValue))
                 return false;
 
             // The nested-field counterpart of `classBodyShapeMatches`'s own
@@ -1657,10 +1662,11 @@ private struct Walker {
             // narrower than the object it currently references would reach
             // `resolveObjectBody`/`storageFor` with the SAME
             // too-narrow-`class_` hazard the root check exists to close.
-            if (fieldValue.classTypeName != classQualifiedName(fieldClassType.sym))
+            if (AggregateValue.classTypeName(fieldValue)
+                != classQualifiedName(fieldClassType.sym))
                 return false;
 
-            const identity = fieldValue.classIdentity;
+            const identity = AggregateValue.classIdentity(fieldValue);
             if (identity == 0 || (identity in visiting) || (identity in classObjectCells))
                 return false;
 
@@ -1764,16 +1770,16 @@ private struct Walker {
     private void assertFrameSliceMirror(VarDeclaration variable, in Value value) {
         import quickbite.backends.interpreter.native_array: NativeArray;
 
-        if (!value.isArray)
+        if (!AggregateValue.isArray(value))
             return;
 
-        const nativeAddress = value.arrayNativeAddress;
-        if (nativeAddress is null && value.length != 0)
+        const nativeAddress = AggregateValue.nativeArrayAddress(value);
+        if (nativeAddress is null && AggregateValue.elementCount(value) != 0)
             return;
 
         auto arrayType = variable.type.toBasetype.isTypeDArray;
         auto array = NativeArray.borrow(
-            arrayType.next, cast(void*) nativeAddress, value.length);
+            arrayType.next, cast(void*) nativeAddress, AggregateValue.elementCount(value));
 
         // `Scan.conservative`, unconditionally, rather than reusing the
         // composable path's `Scan.no` scratch above: unlike a composable
@@ -1818,7 +1824,7 @@ private struct Walker {
             return;
         }
 
-        const identity = value.classIdentity;
+        const identity = AggregateValue.classIdentity(value);
 
         // `mirrorEstablished[variable]` is only ever set `true` right
         // after a real write (`mirrorClassToFrame`'s own header comment),
@@ -1917,7 +1923,7 @@ private struct Walker {
 
         foreach (index, field; classFields(classType.sym)) {
             auto fieldPlace = scratchPlace.field(field);
-            auto fieldValue = value.classFieldAt(index);
+            auto fieldValue = AggregateValue.classFieldAt(value, index);
             auto fieldClassType = fieldPlace.type.isTypeClass;
 
             if (fieldClassType is null) {
@@ -1930,7 +1936,7 @@ private struct Walker {
                 continue;
             }
 
-            const nestedIdentity = fieldValue.classIdentity;
+            const nestedIdentity = AggregateValue.classIdentity(fieldValue);
 
             // The verify-time counterpart of `classBodyShapeMatchesImpl`'s
             // own identical nested decline (its own header comment): a
