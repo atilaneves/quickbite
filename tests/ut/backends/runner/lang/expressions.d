@@ -3387,6 +3387,87 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+// One object reachable twice from ONE composed graph -- a DAG, not a cycle:
+// both of `parent`'s own class-typed fields reference the identical `Child`
+// identity. Writing through one field (`parent.left.x = 5`) refreshes the
+// shared `object_table.ObjectTable` body, but leaves the OTHER field's own
+// boxed snapshot inside `parent`'s `locals[]` copy stale -- the same
+// pre-existing boxed-authority gap the fixtures above exercise across
+// bindings, here reached entirely within a single value. The two snapshots
+// then genuinely contradict each other, so a mirror that writes the shared
+// body once per sibling (last snapshot wins) and verifies each sibling
+// against its own snapshot must decline the shape outright rather than
+// turn that contradiction into an internal `AssertError`.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
+        "Known gaps): the write through parent.left refreshes the shared " ~
+        "object body, but parent's own boxed copy of the right field is " ~
+        "never refreshed, so parent.right.x reads back stale"),
+)) {
+    @("class.sharedSiblingFieldsWithDifferentSnapshotsDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child left;
+                Child right;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.left = new Child();
+                parent.right = parent.left;
+
+                parent.left.x = 5;
+
+                assert(parent.right.x == 5);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the shared-sibling fixture above owes, and the
+// only place its own "does not crash" property is executed on the backend
+// that has the mirror: Interpreter runs the guest program to completion and
+// fails its OWN assertion with the stale boxed value rather than dying
+// inside the interpreter with a mirror-verify `AssertError`. Hand-listed
+// because no `SystemLinker`-oracle expectation applies to it
+// (`SystemLinker` passes).
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedSiblingFieldsWithDifferentSnapshotsReadsStale." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child left;
+                Child right;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.left = new Child();
+                parent.right = parent.left;
+
+                parent.left.x = 5;
+
+                assert(parent.right.x == 5);
+            }
+        }).shouldThrowWithMessage("0 != 5");
+    }
+}
+
 // The cross-activation counterpart: a callee's own parameter mirror
 // (`bump`'s own `c`) rewrites the shared body strictly after the caller's
 // `parent` established its own mirror -- the callee's per-walker

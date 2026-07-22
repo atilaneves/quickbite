@@ -658,7 +658,12 @@ it (see the Contracts preamble).
   can assert on bytes the write never wrote. It must never mutate the
   shared object table either: a per-write generation snapshot, not a
   fresh read, detects a later write to the same identity from a
-  different binding.
+  different binding. It also declines any object identity reachable more
+  than once from one composed graph (sibling fields, cousins, a cycle
+  alike): `locals[]` snapshots one boxed copy per REFERENCE, so those
+  copies can legitimately contradict each other, and one shared body
+  written once per reference then makes the byte comparison assert on a
+  program the oracle runs.
 
 Known gaps in this interim machinery — recorded so `interpreter.md` §8
 triage recognizes them instead of re-investigating each as a new bug;

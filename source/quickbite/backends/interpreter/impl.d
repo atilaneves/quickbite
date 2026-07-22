@@ -1652,11 +1652,32 @@ private struct Walker {
     // all. Keyed by `Value.classIdentity`, not an address: this function
     // never resolves one (unlike `place_value`'s own guards), it only walks
     // the boxed VALUE tree, exactly as `placeShapeMatches` already does for
-    // every other shape. An identity is removed once its own subtree
-    // finishes (`scope(exit)`), so two SIBLING fields referencing the SAME
-    // object (a DAG, not a cycle) each still get checked independently --
-    // matching `writeClassBody`'s own "two fields, one address" case, not a
-    // reason to decline.
+    // every other shape.
+    //
+    // `visiting` is a "seen ANYWHERE in this graph" set, not the DFS
+    // in-progress set its name suggests: an identity is added and never
+    // removed, so a shared DAG -- the same object reached twice from one
+    // composed value, whether through sibling fields, cousins, or a
+    // grandchild -- declines exactly like a cycle. Sibling sharing used to
+    // be allowed on the grounds that `writeClassBody` handles "two fields,
+    // one address" fine; it does, but the BOXED value does not. `locals[]`
+    // caches one snapshot per REFERENCE, so `parent.left.x = 5` on a
+    // `Parent { Child left; Child right; }` whose two fields hold one child
+    // refreshes `left`'s snapshot and leaves `right`'s stale (the
+    // pre-existing boxed-authority gap `value.md`'s Cell coherence "Known
+    // gaps" already records). The write then composes that one shared body
+    // once per sibling and the LAST snapshot wins, while the generation
+    // snapshot records that final generation for BOTH, so the verify walks
+    // in and compares the FIRST sibling's snapshot against bytes written
+    // from the second -- an `AssertError` on a program `SystemLinker` runs
+    // fine. No byte comparison can catch that: both sides would compose the
+    // same contradictory value, so the shape belongs in this gate rather
+    // than in the assert. Declining costs only mirror coverage of storage
+    // nothing reads yet, and this deliberately over-declines: it refuses
+    // every repeated identity, whether or not the snapshots have actually
+    // diverged yet, exactly as `classIdentityAliasedByAnotherBinding` does
+    // one level up (its own header comment on why declining too often is
+    // always the cheaper mistake here).
     //
     // A nested identity present in `classObjectCells` is a THIRD decline
     // condition, and the one closing a real gap found empirically (a
@@ -1723,7 +1744,6 @@ private struct Walker {
                 return false;
 
             visiting[identity] = true;
-            scope(exit) visiting.remove(identity);
 
             if (!classBodyShapeMatchesImpl(fieldClassType.sym, fieldValue, visiting))
                 return false;
