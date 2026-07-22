@@ -922,10 +922,12 @@ in parallel and never blocks it.
    aggregate path before the authority switch. First extract its recursive
    aggregate visitor/reconstruction behaviour and the direct consumer boundary
    that constructs and consumes boxed aggregates, without reversing the
-   existing `place`/`place_value` -> `RuntimeValue` dependency. Then replace
-   that boundary's recursively boxed `Array`, `Struct`, and `ClassObject`
-   rvalues with native aggregate handles, provide their whole-value
-   reconstruction APIs, and make every consumer, including FFI, use them. A
+   existing `place`/`place_value` -> `RuntimeValue` dependency. The boundary
+   exposes boxed aggregate reconstruction and visits for struct, array, and
+   class fields; the next slice migrates its direct consumers, including FFI,
+   before changing its representation. Then replace that boundary's
+   recursively boxed `Array`, `Struct`, and `ClassObject` rvalues with native
+   aggregate handles and provide their whole-value reconstruction APIs. A
    handle is introduced only with that consumer migration. This is a
    prerequisite, not a second storage authority. Then replace its three
    data-pointer arms with one host-address arm in the same atomic migration

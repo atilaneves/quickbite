@@ -72,6 +72,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         staticArrayLength, enumMemberQualifiedName, typeByteSize;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     auto type = place.type;
@@ -124,7 +125,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
         foreach (i; 0 .. staticArrayLength(arrayType))
             elements ~= readValue(place.index(i), identityOfObjectBody);
 
-        return Value.arrayValue(elements);
+        return AggregateValue.reconstructArray(elements);
     }
 
     auto sliceType = type.isTypeDArray;
@@ -139,7 +140,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
         foreach (i; 0 .. header.length)
             elements ~= readValue(place.index(i), identityOfObjectBody);
 
-        return Value.arrayValue(elements);
+        return AggregateValue.reconstructArray(elements);
     }
 
     // A class-typed FIELD is itself a stored reference (identical shape to
@@ -211,6 +212,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value readClassV
 ) @safe {
     import quickbite.backends.interpreter.layout:
         classFields, classQualifiedName, classHierarchyNames, fieldName;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     // `place.deref` follows this place's own stored reference and keeps
@@ -266,7 +268,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value readClassV
     // identity `classBodyShapeMatches` checks) would carry a name that
     // undersells the object's real class and wrongly MATCH where the gate
     // should decline.
-    return Value.classValue(
+    return AggregateValue.reconstructClass(
         classQualifiedName(classType.sym),
         classHierarchyNames(classType.sym),
         fieldNames,
@@ -325,6 +327,7 @@ private bool valueMatchesComposablePlace(
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         declaredType, staticArrayLength, structFields;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     if (isNativeScalarType(type))
@@ -338,15 +341,18 @@ private bool valueMatchesComposablePlace(
 
     auto structType = type.isTypeStruct;
     if (structType !is null) {
-        if (!value.isStruct)
+        if (!AggregateValue.isStruct(value))
             return false;
 
         auto fields = structFields(structType);
-        if (value.structFieldCount != fields.length)
+        if (AggregateValue.fieldCount(value) != fields.length)
             return false;
 
         foreach (index, field; fields)
-            if (!valueMatchesComposablePlace(declaredType(field), value.structFieldAt(index)))
+            if (!valueMatchesComposablePlace(
+                declaredType(field),
+                AggregateValue.fieldAt(value, index),
+            ))
                 return false;
 
         return true;
@@ -357,15 +363,15 @@ private bool valueMatchesComposablePlace(
 
     auto arrayType = type.isTypeSArray;
     assert(arrayType !is null, "valueMatchesPlace: composable type");
-    if (!value.isArray)
+    if (!AggregateValue.isArray(value))
         return false;
 
     const length = staticArrayLength(arrayType);
-    if (value.length != length)
+    if (AggregateValue.elementCount(value) != length)
         return false;
 
     foreach (i; 0 .. length)
-        if (!valueMatchesComposablePlace(arrayType.next, value[i]))
+        if (!valueMatchesComposablePlace(arrayType.next, AggregateValue.elementAt(value, i)))
             return false;
 
     return true;
@@ -482,13 +488,14 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value structValu
     size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
 ) @safe {
     import quickbite.backends.interpreter.layout: structFields;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     Value[] fields;
     foreach (field; structFields(structType))
         fields ~= readValue(place.field(field), identityOfObjectBody);
 
-    return Value.structValue(structTypeName(structType), fields);
+    return AggregateValue.reconstructStruct(structTypeName(structType), fields);
 }
 
 
@@ -539,6 +546,7 @@ public void writeValue(
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         structFields, staticArrayLength, typeByteSize;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     auto type = place.type;
@@ -568,7 +576,7 @@ public void writeValue(
     auto structType = nonUnionStructOf(type);
     if (structType !is null) {
         foreach (index, field; structFields(structType))
-            writeValue(place.field(field), value.structFieldAt(index));
+            writeValue(place.field(field), AggregateValue.fieldAt(value, index));
         return;
     }
 
@@ -581,7 +589,7 @@ public void writeValue(
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null) {
         foreach (i; 0 .. staticArrayLength(arrayType))
-            writeValue(place.index(i), value[i]);
+            writeValue(place.index(i), AggregateValue.elementAt(value, i));
         return;
     }
 
@@ -683,9 +691,10 @@ private void writeSliceValue(
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
-    const length = value == Value.null_ ? 0 : value.length;
+    const length = value == Value.null_ ? 0 : AggregateValue.elementCount(value);
 
     auto elementType = sliceType.next;
     auto array = NativeArray.allocate(elementType, length);
@@ -696,7 +705,7 @@ private void writeSliceValue(
     auto elements = Place(scratchHeader.address, sliceType);
 
     foreach (i; 0 .. length)
-        writeValue(elements.index(i), value[i]);
+        writeValue(elements.index(i), AggregateValue.elementAt(value, i));
 
     array.writeSliceHeader(place.address);
 }
@@ -729,6 +738,7 @@ private void writeUnionValue(
     imported!"dmd.mtype".TypeStruct unionType,
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: structFields;
 
     if (!isComposableUnion(unionType))
@@ -741,7 +751,7 @@ private void writeUnionValue(
     const widestIndex = widestUnionFieldIndex(unionType);
     writeValue(
         place.field(structFields(unionType)[widestIndex]),
-        value.structFieldAt(widestIndex),
+        AggregateValue.fieldAt(value, widestIndex),
     );
 }
 
@@ -991,6 +1001,7 @@ private void writeClassBodyImpl(
 ) @safe {
     import quickbite.backends.interpreter.layout: classFields;
     import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     auto classType = bodyPlace.type.isTypeClass;
@@ -1011,7 +1022,7 @@ private void writeClassBodyImpl(
 
     foreach (index, field; classFields(classType.sym)) {
         auto fieldPlace = bodyPlace.field(field);
-        auto fieldValue = value.classFieldAt(index);
+        auto fieldValue = AggregateValue.classFieldAt(value, index);
 
         if (fieldPlace.type.isTypeClass is null) {
             writeValue(fieldPlace, fieldValue);
@@ -1023,7 +1034,7 @@ private void writeClassBodyImpl(
             continue;
         }
 
-        if (!fieldValue.isClassObject || fieldValue.classIdentity == 0)
+        if (!AggregateValue.isClass(fieldValue) || fieldValue.classIdentity == 0)
             throw new Exception(
                 "quickbite.backends.interpreter.place_value.writeClassBody: "
                 ~ "class-typed field requires a Value holding a class "
