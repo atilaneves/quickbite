@@ -359,19 +359,21 @@ in (length == real.sizeof)
 
 // Writes `value` into `length` bytes at `address`, with the padding bytes
 // (6 of them on this host, past the 10 significant ones) DETERMINISTIC --
-// always zero -- rather than whatever an x87 extended-precision STORE
-// happens to leave behind. Verified empirically on this host with both
-// `dmd` and `ldc2`: a store instruction for `real` (`local = value;`)
-// touches only the significant bytes, never the trailing padding, so
-// zeroing a local FIRST and assigning `value` into it SECOND leaves that
-// padding zero, deterministically, no matter what `value` is. This is the
-// exact property the verified frame mirror's whole-slot RAW BYTE
-// comparison depends on (`ai/plans/value.md`'s Layout authority contract):
-// two writes of the same value must produce identical bytes, padding
-// included, or `impl.d`'s `assertFrameMirror` fires as a hard failure --
-// the reason this codec zeroes explicitly rather than trusting whatever
-// was already at `address`. `@trusted` and the `in` contract: the same
-// reasoning as `readRealBits` above, mirrored for the write side.
+// always zero -- rather than whatever was already at `address`. The
+// verified frame mirror compares whole slots RAW BYTE by raw byte
+// (`ai/plans/value.md`'s Layout authority contract), so two writes of the
+// same `real` must produce identical bytes, padding included, or `impl.d`'s
+// `assertFrameMirror` fires as a hard failure. What guarantees that is
+// composing the bytes in a fresh LOCAL and copying the whole local over,
+// never assigning into the destination in place: `place_value.d`'s own
+// `writeRealBits` unit test writes the same value into two destinations
+// pre-filled with different non-zero patterns and asserts the padding is
+// zero in both, which is what would fail if any byte of the destination
+// survived a write. The `memset` is belt and braces on top of that: on this
+// host `bits = value` already emits a full 16-byte copy, so it leaves
+// nothing of `bits` uninitialised -- but nothing in the language promises
+// that, and the `memset` costs nothing. `@trusted` and the `in` contract:
+// the same reasoning as `readRealBits` above, mirrored for the write side.
 private void writeRealBits(void* address, in size_t length, in real value) @trusted
 in (length == real.sizeof)
 {
