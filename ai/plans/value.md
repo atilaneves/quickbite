@@ -443,9 +443,9 @@ change that makes them false, never prospectively.
   shares that codec for its exact-size scalar arms, and widening it would
   change shipping FFI behaviour. `real` IS otherwise `place_value.
   isPlaceComposable` via its own leaf codec (`readRealBits`/
-  `writeRealBits`); an x87 store touches only the significant bytes, so
-  a write must zero the whole slot first, or the verified mirror
-  asserts on nondeterministic trailing bytes.
+  `writeRealBits`); a write composes into a zero-initialised local and
+  copies the WHOLE slot, making `real`'s padding deterministic for the
+  verified mirror's raw-byte comparison.
 - Integer offsetting of a native pointer preserves the native-pointer carrier
   and applies the byte delta already scaled from the expression's static
   pointer type. Do not route it through the boxed pointer's allocation id or
