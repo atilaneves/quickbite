@@ -606,12 +606,14 @@ it (see the Contracts preamble).
   unsupported element shapes still remain on boxed aliasing paths.
 - `object_table.ObjectTable`'s "stable identity ... minted once per
   boxed class object" premise needs `impl.d`'s `nextClassObjectId`
-  counter single-valued across every child `Walker` that mints one — a
-  heap-struct constructor, a destructor, and a class constructor each
-  run the constructed type's body on a CHILD `Walker`, so all three
-  merge the counter back into the caller on every path, including an
-  exception unwinding out of the body, or the caller's next `new` can
-  re-mint an identity the child already handed out.
+  counter single-valued across every child `Walker` that mints one. A
+  heap-struct constructor and a class constructor each run the
+  constructed type's body on a CHILD `Walker` of their own; a
+  destructor is an ordinary member call and rides that call's own
+  write-back. All of them merge the counter back into the caller on
+  every path, an exception unwinding out of the body included, or the
+  caller's next `new` can re-mint an identity the child already handed
+  out.
   `storageFor` sizes a body from whichever caller's class reaches an
   identity first and reuses that block after, so every caller sharing
   an identity must agree on its dynamic class or corrupt memory writing
