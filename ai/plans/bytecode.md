@@ -391,9 +391,9 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
-   the separately compiled archive symbol instead of compiling the rewritten
-   source body.
+1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
+   the separately compiled archive symbol through the bytecode native bridge,
+   instead of compiling the rewritten source body.
 2. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
 3. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the

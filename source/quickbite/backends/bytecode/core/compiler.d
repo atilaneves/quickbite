@@ -1995,6 +1995,14 @@ private struct Compiler {
                 "Unsupported compound assignment in bytecode core: ",
             );
 
+        if (auto andAssign = expression.isAndAssignExp)
+            return compileLocalIntegerCompoundAssign(
+                andAssign,
+                Op.bitAndInt4,
+                Op.bitAndInt8,
+                "Unsupported compound assignment in bytecode core: ",
+            );
+
         if (auto xorAssign = expression.isXorAssignExp)
             return compileLocalIntegerCompoundAssign(
                 xorAssign,
@@ -7282,8 +7290,12 @@ private struct Compiler {
         // `arr[i] += rhs` on a dynamic-array element (e.g. a destructor's
         // `this.sink[0] += 3`): load the element, add the rhs, and store it back
         // through the descriptor.
-        if (auto index = addAssign.e1.isIndexExp)
-            if (auto element = tryDynamicArrayElementAddAssign(index, addAssign.e2))
+        if (auto index = compoundAssignIndex(addAssign.e1))
+            if (auto element = tryDynamicArrayElementAddAssign(
+                    index,
+                    addAssign.e2,
+                    scalarType(addAssign.e1.type),
+                ))
                 return *element;
 
         // `p.field += rhs` through a heap struct pointer: load the field, add the
@@ -7617,6 +7629,13 @@ private struct Compiler {
             return compoundAssignDotVar(cast_.e1);
 
         return lvalue.isDotVarExp;
+    }
+
+    private IndexExp compoundAssignIndex(Expression lvalue) {
+        if (auto cast_ = lvalue.isCastExp)
+            return compoundAssignIndex(cast_.e1);
+
+        return lvalue.isIndexExp;
     }
 
     private Operand integerOperationOperand(
@@ -8916,7 +8935,10 @@ private struct Compiler {
     private Operand* tryDynamicArrayElementAddAssign(
         IndexExp index,
         Expression rhs,
+        in ScalarType operationType,
     ) {
+        import std.conv: text;
+
         auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
         if (descriptor is null)
             return null;
@@ -8931,10 +8953,38 @@ private struct Compiler {
         );
 
         const rhsValue = compileExpression(rhs);
-        const addOp = isEightByteInteger(elementType)
-            ? Op.addInt8
-            : Op.addInt4;
-        _code ~= Instruction(addOp, current, current, rhsValue.offset);
+        if (!isCompoundIntegerScalar(elementType) ||
+            !isCompoundIntegerScalar(rhsValue.type) ||
+            !isCompoundIntegerScalar(operationType) ||
+            isEightByteInteger(operationType) !=
+                isEightByteInteger(rhsValue.type) ||
+            (isEightByteInteger(operationType) &&
+                rhsValue.type != operationType))
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(index),
+            ));
+
+        const lhs = integerOperationOperand(
+            Operand(current, elementType), operationType,
+        );
+        const right = integerOperationOperand(rhsValue, operationType);
+        const destination = elementSize == size(operationType)
+            ? current
+            : allocate(operationType);
+        _code ~= Instruction(
+            isEightByteInteger(operationType) ? Op.addInt8 : Op.addInt4,
+            destination,
+            lhs.offset,
+            right.offset,
+        );
+        if (destination != current)
+            _code ~= Instruction(
+                Op.copy,
+                current,
+                destination,
+                cast(ushort) elementSize,
+            );
 
         _code ~= Instruction(
             indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
@@ -9391,10 +9441,18 @@ private struct Compiler {
                 equal.op == EXP.notEqual,
             );
 
+        const bothCompactStrings = isStringType(equal.e1.type) &&
+            isStringType(equal.e2.type) &&
+            dynamicArrayDescriptorOrNull(equal.e1) is null &&
+            dynamicArrayDescriptorOrNull(equal.e2) is null;
+        const bothCharArrays = dynamicArrayElementType(equal.e1.type) ==
+            ScalarType.char_ &&
+            dynamicArrayElementType(equal.e2.type) == ScalarType.char_;
         if (equal.e1.type.toBasetype.ty == TY.Tarray &&
             equal.e2.type.toBasetype.ty == TY.Tarray &&
-            !isStringType(equal.e1.type) &&
-            !isStringType(equal.e2.type)) {
+            !bothCompactStrings &&
+            (!isStringType(equal.e1.type) && !isStringType(equal.e2.type) ||
+                bothCharArrays)) {
             const elementType = dynamicArrayElementType(equal.e1.type);
             const left =
                 arrayDescriptorOffset(elementType, equal.e1);
@@ -10812,7 +10870,7 @@ private struct Compiler {
         if (type is null || !type.isRef || call.arguments is null)
             return false;
 
-        auto returned = singleReturnExpression(function_.fbody);
+        auto returned = provenFinalReturnExpression(function_.fbody);
         auto index = returned is null ? null : returned.isIndexExp;
         auto variable = index is null ? null : index.e1.isVarExp;
         auto parameter = variable is null ? null : variable.var.isVarDeclaration;
