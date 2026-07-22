@@ -13696,10 +13696,14 @@ private struct Walker {
             child.hasThis = true;
             forkPerFrameCellsInto(child);
             child.bindFunctionParameters(new_.member, arguments);
-            child.runStatement(new_.member.fbody);
+            try {
+                child.runStatement(new_.member.fbody);
+            } catch (InterpretedException exception) {
+                mergeNewStructConstructorState(child);
+                throw exception;
+            }
             structVal = child.thisValue;
-            nextClassObjectId = child.nextClassObjectId;
-            mergePerFrameCellsFrom(child);
+            mergeNewStructConstructorState(child);
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             import quickbite.backends.interpreter.layout: structFields;
@@ -13723,6 +13727,28 @@ private struct Walker {
         // heap addresses; `Value.pointerValue` alone leaves allocation/offset at
         // their zero default, so unrelated `new` results collide on identity.
         return Value.arrayPointerValue([structVal], ++allocationCount, 0);
+    }
+
+    // `runNewStructPointerExpression`'s own constructor-call merge, the heap
+    // struct sibling of `mergeNewClassExpressionState` and shared with its
+    // `InterpretedException` path for the same reason: `nextClassObjectId`
+    // only ever advances on the CHILD, so a constructor that mints a class
+    // identity and then throws a guest exception the caller catches leaves
+    // this activation free to re-mint an identity the child already handed
+    // out, and `object_table.ObjectTable.storageFor` throws outright the
+    // moment the two objects sharing it disagree on size.
+    //
+    // `writeBackGlobals` belongs here for the same reason it belongs in
+    // every other call site's write-back: a dataseg variable the
+    // constructor assigns to lands in the ONE `module_table.ModuleTable`
+    // block every frame resolves through (`forkPerFrameCellsInto` shares it
+    // by pointer), so leaving this activation's boxed copy at the pre-call
+    // value does not merely answer staler -- the next read of that global
+    // compares the two and asserts.
+    private void mergeNewStructConstructorState(ref Walker child) {
+        nextClassObjectId = child.nextClassObjectId;
+        mergePerFrameCellsFrom(child);
+        writeBackGlobals(child);
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct

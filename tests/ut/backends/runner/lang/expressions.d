@@ -2224,6 +2224,44 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A heap struct's own constructor runs on a CHILD `Walker` (`impl.d`'s
+// `runNewStructPointerExpression`), and a dataseg write it performs lands
+// in the ONE shared `module_table.ModuleTable` block every frame resolves
+// through -- so the caller must write the child's boxed dataseg values
+// back (`writeBackGlobals`) exactly as an ordinary call does, or its own
+// boxed copy stays at the pre-call value while the shared mirror already
+// holds the constructor's, and the caller's next read of the global
+// asserts on the divergence instead of merely answering staler. `Ctfe`
+// cannot read or write dataseg storage at all (compile-time execution has
+// no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.heapStructConstructorGlobalWriteVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDatasegCtorWrite;
+
+            struct S {
+                this(int _) {
+                    quickbiteDatasegCtorWrite = 7;
+                }
+            }
+
+            unittest {
+                quickbiteDatasegCtorWrite = 1;
+
+                auto p = new S(0);
+
+                assert(quickbiteDatasegCtorWrite == 7);
+            }
+        });
+    }
+}
+
 // The same `__gshared` global read from two different call frames (the
 // top-level unittest body's own root frame, and a called function's own
 // forked child frame) resolves to ONE mirror block -- `impl.d`'s
@@ -3340,6 +3378,60 @@ static foreach (backend; Matrix!(
                 C e = s.c;
 
                 assert(e.x == 0);
+            }
+        });
+    }
+}
+
+// The exception-path sibling of the fixture above: a struct constructor
+// that mints a class identity and then THROWS out of its own body must
+// still merge `nextClassObjectId` back into the caller (`impl.d`'s
+// `runNewStructPointerExpression`) -- unwinding through a guest exception
+// the caller catches is not a different path for the counter than
+// returning normally, and the collision it otherwise leaves behind makes
+// `ObjectTable.storageFor` throw on the caller's next differently-sized
+// `new`.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classIdentity.throwingStructConstructorIdentityDoesNotCollideWithCallersNext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            class D {
+                long a, b;
+            }
+
+            struct S {
+                int unused;
+
+                this(int _) {
+                    C c = new C();
+                    c.x = 1;
+                    throw new Exception("boom");
+                }
+            }
+
+            unittest {
+                bool caught;
+
+                try {
+                    auto s = new S(1);
+                } catch (Exception) {
+                    caught = true;
+                }
+
+                assert(caught);
+
+                D d = new D();
+                d.a = 2;
+
+                assert(d.a == 2);
             }
         });
     }
