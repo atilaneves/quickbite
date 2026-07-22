@@ -108,15 +108,19 @@ deletion (items 2-3).
    visitor/reconstruction behaviour and its direct consumer boundary from
    `RuntimeValue`: `place` and `place_value` already depend on
    `RuntimeValue`, so reversing that direction to thread a handle through
-   their current API would make a cycle. A handle with no consumer is equally
-   speculative. Only that extracted boundary and FFI may then migrate to
-   native handles and their reconstruction APIs. This is a prerequisite to,
-   not part of, the one atomic migration of the carrier's three interim
-   data-pointer arms and local/frame/ref/capture/cross-frame authority to one
-   host-address arm. Function and delegate handles are separate, non-data
-   categories. That expression currency is distinct from the authoritative
-   storage of an addressable guest value — it is a return type, never an
-   authority (decision 15).
+   their current API would make a cycle. Before a native aggregate-handle
+   rvalue exists, `AggregateValue` must become the common consumer boundary:
+   all aggregate operations in `impl` and `ffi_marshal` consume it. A handle
+   with no consumer is equally speculative. `RuntimeValue.Array` currently
+   conflates static and dynamic arrays, so migrating categories through
+   separate handle paths would create a second authority. The common boundary
+   preserves the no-two-world invariant while its representation changes.
+   This is a prerequisite to, not part of, the one atomic migration of the
+   carrier's three interim data-pointer arms and local/frame/ref/capture/
+   cross-frame authority to one host-address arm. Function and delegate
+   handles are separate, non-data categories. That expression currency is
+   distinct from the authoritative storage of an addressable guest value — it
+   is a return type, never an authority (decision 15).
    The earlier claim that a boxed tagged union
    is "the natural form" for a tree walker was downgraded: it argues
    against *reimplementing* layout, not against *reusing* it. It is
@@ -924,14 +928,17 @@ in parallel and never blocks it.
    that constructs and consumes boxed aggregates, without reversing the
    existing `place`/`place_value` -> `RuntimeValue` dependency. The boundary
    exposes boxed aggregate reconstruction and visits for struct, array, and
-   class fields; the next slice migrates its direct consumers, including FFI,
-   before changing its representation. Then replace that boundary's
-   recursively boxed `Array`, `Struct`, and `ClassObject` rvalues with native
-   aggregate handles and provide their whole-value reconstruction APIs. A
-   handle is introduced only with that consumer migration. This is a
-   prerequisite, not a second storage authority. Then replace its three
-   data-pointer arms with one host-address arm in the same atomic migration
-   that replaces local/frame,
+   class fields. Make `AggregateValue` the common consumer boundary for every
+   aggregate operation in `impl` and `ffi_marshal` before changing its
+   representation. `RuntimeValue.Array` conflates static and dynamic arrays,
+   so category-by-category handle migration would recreate a second
+   authority; preserve the no-two-world invariant by changing the one common
+   boundary. Then replace that boundary's recursively boxed `Array`,
+   `Struct`, and `ClassObject` rvalues with native aggregate handles and
+   provide their whole-value reconstruction APIs. A handle is introduced only
+   with that consumer migration. This is a prerequisite, not a second storage
+   authority. Then replace its three data-pointer arms with one host-address
+   arm in the same atomic migration that replaces local/frame,
    `ref`/`out`/capture, pointer-dereference, and cross-frame-write authority,
    and delete cells and aliases. Function and delegate handles remain separate
    non-data categories. Expression results need immediate scalars, native
