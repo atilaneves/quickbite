@@ -262,6 +262,8 @@ private struct Compiler {
             _thisLocal = StructLocal(
                 layout.thisOffset, thisStructDeclaration(function_),
             );
+            if (function_.vthis !is null)
+                _capturedOffsets[function_.vthis] = layout.thisOffset;
             _hasNestedContext = _thisLocal.declaration !is null &&
                 _thisLocal.declaration.isNested;
         }
@@ -1681,7 +1683,23 @@ private struct Compiler {
         if (auto typeid_ = expression.isTypeidExp)
             return compileTypeidExpression(typeid_);
 
-        if (expression.isThisExp !is null || expression.isSuperExp !is null)
+        if (expression.isThisExp !is null || expression.isSuperExp !is null) {
+            if (_hasThis) {
+                const offset = allocateStructBlock(expression.type);
+                _code ~= Instruction(
+                    Op.copy,
+                    offset,
+                    _thisLocal.offset,
+                    cast(ushort) staticArraySize(expression.type),
+                );
+                return Operand(offset, ScalarType.void_);
+            }
+
+            if (_hasNestedContext)
+                if (auto this_ = expression.isThisExp)
+                    if (auto captured = this_.var in _capturedOffsets)
+                        return loadCapturedLocal(this_.var, *captured);
+
             if (_hasClassThis)
                 return Operand(
                     _classThisOffset,
@@ -1690,6 +1708,7 @@ private struct Compiler {
                     true,
                     ScalarType.void_,
                 );
+        }
 
         if (auto negate = expression.isNegExp)
             return compileNegateExpression(negate);
