@@ -2430,6 +2430,17 @@ private struct Compiler {
         import dmd.tokens: EXP;
         import std.conv: text;
 
+        // `x++` where `x` is an outer local captured into this function (a
+        // `lazy` argument's thunk, or any nested closure): its slot lives in
+        // the enclosing frame, not this function's `_locals`.
+        if (auto variable = post.e1.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration !in _locals && _hasNestedContext)
+                    if (auto captured = declaration in _capturedOffsets)
+                        return compileCapturedPostIncrement(
+                            declaration, *captured, post,
+                        );
+
         if (auto deref = post.e1.isPtrExp) {
             const pointer = compileExpression(deref.e1);
             if (pointer.isPointer && isIntegerScalar(pointer.pointerElement)) {
@@ -2498,6 +2509,43 @@ private struct Compiler {
         _code ~= Instruction(stepOp, lvalueSlot, lvalueSlot, increment.offset);
         if (lvalueField !is null)
             writeBackStructField(*lvalueField);
+        return Operand(result, lvalueType);
+    }
+
+    // `x++` for an outer local `x` captured by this function: read/step/write
+    // through the captured-local frame ops instead of an in-place local-slot
+    // update, since `x`'s slot is the enclosing frame's, not this one's.
+    private Operand compileCapturedPostIncrement(
+        VarDeclaration declaration,
+        in ushort capturedOffset,
+        PostExp post,
+    ) {
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        const lvalueType = scalarType(declaration.type);
+        if (!isIntegerScalar(lvalueType))
+            throw new Exception(text(
+                "Unsupported post-increment in bytecode core: ",
+                expressionChars(post),
+            ));
+
+        const loaded = loadCapturedLocal(declaration, capturedOffset);
+        const result = allocate(lvalueType);
+        _code ~= Instruction(
+            Op.copy, result, loaded.offset, cast(ushort) size(lvalueType),
+        );
+
+        const increment = compileExpression(post.e2);
+        const eightByte = lvalueType == ScalarType.long_ ||
+            lvalueType == ScalarType.ulong_;
+        const stepOp = post.op == EXP.minusMinus
+            ? (eightByte ? Op.subInt8 : Op.subInt4)
+            : (eightByte ? Op.addInt8 : Op.addInt4);
+        _code ~= Instruction(
+            stepOp, loaded.offset, loaded.offset, increment.offset,
+        );
+        storeCapturedLocal(declaration, capturedOffset, loaded);
         return Operand(result, lvalueType);
     }
 
@@ -3292,6 +3340,7 @@ private struct Compiler {
         _locals[variable] = offset;
         _classPointerLocals[variable] =
             variable.type.toBasetype.isTypeClass.sym;
+        _capturedOffsets[variable] = offset;
         _code ~= Instruction(
             Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
         );
@@ -4350,13 +4399,15 @@ private struct Compiler {
         if (field is null)
             return null;
 
-        // A nested function that reads its enclosing struct method's `this`
-        // receives the parent frame as its context. Materialise the native
-        // struct block before addressing the field, and retain the parent-frame
-        // index so every write through this field can be copied back.
-        if (_hasNestedContext && !_hasThis)
-            if (auto this_ = dot.e1.isThisExp)
-                if (auto captured = this_.var in _capturedOffsets) {
+        // A nested function that reads a struct value from its enclosing
+        // frame -- its enclosing method's own `this`, or an outer local (a
+        // `lazy` argument thunk's captured struct) -- receives the parent
+        // frame as its context. Materialise the native struct block before
+        // addressing the field, and retain the parent-frame index so every
+        // write through this field can be copied back.
+        if (_hasNestedContext)
+            if (auto receiver = capturedStructReceiver(dot.e1))
+                if (auto captured = receiver in _capturedOffsets) {
                     const structOffset = allocateStructBlock(dot.e1.type);
                     const frameIndexOffset = capturedFrameIndex(*captured);
                     const structSize = cast(ushort) staticArraySize(dot.e1.type);
@@ -4396,6 +4447,28 @@ private struct Compiler {
             field.type,
         );
         return result;
+    }
+
+    // The enclosing-frame struct variable `expression` reads as a receiver
+    // for field access -- the enclosing method's own `this` (only when this
+    // function has none of its own), or an outer local captured into this
+    // function (a `lazy` argument thunk's struct-typed local) -- or null if
+    // `expression` is not such a receiver. Excludes this function's own
+    // struct locals, which resolve directly through `_structLocals` instead.
+    private VarDeclaration capturedStructReceiver(Expression expression) {
+        import dmd.astenums: TY;
+
+        if (!_hasThis)
+            if (auto this_ = expression.isThisExp)
+                return this_.var;
+
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration.type.toBasetype.ty == TY.Tstruct)
+                    if (declaration !in _structLocals)
+                        return declaration;
+
+        return null;
     }
 
     private void writeBackStructField(in StructField field) {
@@ -4544,6 +4617,10 @@ private struct Compiler {
             capturedFrameIndex(capturedOffset),
             cast(ushort) valueSize,
         );
+        if (declaration.type.toBasetype.ty == TY.Tclass)
+            return Operand(
+                destination, ScalarType.ulong_, true, ScalarType.void_,
+            );
         return Operand(destination, type);
     }
 
