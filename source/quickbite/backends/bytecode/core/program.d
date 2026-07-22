@@ -107,12 +107,6 @@ package(quickbite.backends.bytecode) struct ResultType {
     }
 }
 
-// Bytes of a string-slice descriptor laid out in the frame: a uint offset
-// into Program.data followed by a uint length (a code-unit count, matching
-// every other slice descriptor's length field, not necessarily a byte
-// count: a `wchar`/`dchar` literal's code units are wider than a byte).
-package(quickbite.backends.bytecode) enum stringSliceSize = 8;
-
 // Bytes of a dynamic-array slice descriptor laid out in the frame: a native
 // `void* ptr` into VM-owned heap memory followed by a `size_t length`. The
 // native bridge reverses these fields to D's ABI `{length, ptr}` descriptor.
@@ -164,7 +158,6 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
 package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
     loadRealConstant, // a: destination frame offset, b: real constant index
-    loadStringSlice, // a: destination frame offset, b: data offset, c: length
     loadDataPointer, // a: destination frame offset, b: data offset
     // Copy `c` bytes from the read-only data segment at offset `b` into the
     // inline static-array slot at frame offset `a` (a value-type byte copy).
@@ -211,38 +204,14 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     setArrayLengthFromTemplate,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
-    // Expand the compact string descriptor {dataOffset, length} at frame offset
-    // b into a native dynamic-array descriptor {data.ptr + dataOffset, length}
-    // at frame offset a. The backing data remains the immutable program segment.
-    stringSliceToArray,
     // Write a native dynamic-array descriptor {data.ptr + dataOffset, length}
     // directly into frame offset a, from a literal's already-known data offset
-    // (b, in bytes) and length (c, in elements): the same expansion
-    // `stringSliceToArray` performs from a runtime-resident compact
-    // descriptor, but for a literal, whose offset and length are already
-    // compile-time constants, so no compact descriptor is written to a frame
-    // slot merely to be immediately re-expanded by its one consumer.
+    // (b, in bytes) and length (c, in elements). Every `string` value —
+    // literal or not — is an ordinary 16-byte {ptr, length} descriptor
+    // identical to any other `T[]`; this is simply the literal-load opcode for
+    // that shape, avoiding a data-segment-relative form that would need
+    // expanding by its consumers.
     loadStringLiteral,
-    // The reverse of `stringSliceToArray`: condense a native {ptr, length}
-    // descriptor at frame offset b back into a compact {dataOffset, length}
-    // descriptor at frame offset a, `dataOffset` being `ptr - data.ptr`, for a
-    // consumer that still expects the compact form (an assert/throw message,
-    // a class `msg` field). Exact for a literal-backed `string` local, whose
-    // pointer is always `data.ptr` plus some in-range offset; a heap-backed
-    // source has no data-segment-relative origin, so this is a best-effort
-    // condensation for that already-accepted "unrecognised string-source
-    // shape... defaults to the compact path and misreads" gap, not a new one.
-    stringArrayToSlice,
-    // Form a sub-slice of a compact string descriptor without ever expanding it
-    // to a native pointer: a: destination compact descriptor offset, b: source
-    // compact descriptor offset, c: offset of an adjacent {lo, hi} pair of
-    // size_t bounds. The new descriptor is {srcDataOffset + lo, hi - lo}, both
-    // still uint offsets into the program data segment. Bounds checked against
-    // the source length. Keeps a `string` sub-slice in the compact
-    // representation every other compact-string consumer (`.ptr`, `.length`,
-    // indexing) expects; `stringSliceToArray` above only ever expands a
-    // *read*, never a value stored back into another compact `string` slot.
-    stringSubSlice,
     // Read the length word of the slice descriptor at frame offset b into the
     // size_t slot at frame offset a.
     sliceLength,
@@ -301,12 +270,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
     sliceEqual1,
     sliceEqual4,
-    // Compare the two 8-byte string-slice descriptors {dataOffset, length} at
-    // frame offsets b and c against the read-only data segment, writing one
-    // boolean byte to frame offset a: true iff equal length and identical
-    // bytes. Distinct from sliceEqual* because a string descriptor holds a
-    // data-segment offset, not a native pointer.
-    stringSliceEqual,
     // Append the element at frame offset b to the dynamic-array slice descriptor
     // at frame offset a: allocate a fresh heap block of (length + 1) elements,
     // copy the existing elements, write the new element, root the block, and

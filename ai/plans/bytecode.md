@@ -114,46 +114,27 @@ pointer word, giving real string truthiness; `wstring`/`dstring` need no
 gates because storage matches stride. Type never selects a representation;
 nothing inspects a value's origin to decide its shape.
 
-The current implementation predates this contract for its remaining
-consumers only. Literal storage is width-faithful (`Op.loadStringLiteral`
-expanding a literal straight to a native descriptor at load time). Locals
-— declaration, parameter, reassignment — and struct fields are real
-dynamic-array descriptors now, identical to `int[]`: `_stringLocals`, the
-reassignment `copySize` special case, and the heap-rebind branch are gone.
-`resultType`/`reify` carry a `string` function result as the ordinary array
-descriptor too, the reifier classifying a literal's pointer back into a
-data-segment offset at the boundary (`reify.resolveBlock`) — the reifier
-cost named below is now paid, not pending. `Op.stringArrayToSlice`
-(`stringSliceToArray`'s reverse) bridges a real descriptor into the few
-call sites still wired to the compact form on purpose: assert/throw
-diagnostics and the exceptions subsystem's class `msg` field, a closed,
-self-consistent compact-only system outside this migration's scope.
-`stringSourceIsHeapBacked` remains only for those non-local consumers'
-compact-vs-real classification (`.ptr`, an rvalue sub-slice); it no longer
-decides local storage. Remaining migration slices:
+The implementation matches this contract, with one exception: truthiness.
+Literal storage is width-faithful (`Op.loadStringLiteral` expands a literal
+straight to a native descriptor at load time); locals, struct/class fields,
+indexing, sub-slicing, `.ptr`, `.length`, equality, assert/throw
+diagnostics, and the exceptions subsystem's `msg` field all resolve through
+the same generic dynamic-array machinery as `int[]`, with zero
+string-specific opcodes and no provenance predicate anywhere in the
+compiler. `resultType`/`reify` carry a `string` function result as the
+ordinary array descriptor too, the reifier classifying a literal's pointer
+back into a data-segment offset at the boundary (`reify.resolveBlock`).
 
-1. Consumer cleanup: retire `Op.stringSubSlice`, `validateCompactSubSlice`,
-   `compactStringLengthSlot`, `tryStringIndex` (the generic
-   `tryDynamicArrayIndex` catches strings), and `compileStringPointer`'s
-   expansion; sweep every remaining `isStringType` gate in compiler.d — each
-   is either dead or a bug. Once those non-local consumers are gone,
-   `stringSourceIsHeapBacked` itself becomes redundant (every remaining
-   source has a real descriptor) and should fall with them.
-2. Truthiness and null: with a real pointer word, `if (s)` / `assert(s)`
-   compiles as the ordinary pointer test.
-
-Done means: `stringSliceSize`, `Op.stringSubSlice`, `Op.stringSliceToArray`,
-`compileStringPointer`'s compact expansion, and `stringSourceIsHeapBacked`
-no longer exist, and the string suite runs through the same compiler paths
-as the `int[]` suite. The done-criterion is greps-return-nothing on
-purpose: the failure mode of half-migrations is both representations
-surviving. Costs, named: one extra instruction per literal load (paid),
-2-4x data-segment growth per wide-string literal (rare). Not in scope:
-value interning — D strings are slices with
-observable `.ptr` identity and memory-sharing sub-slices, so
-canonical-object interning contradicts the compiled-D oracle; deduplicating
-identical literal bytes inside the data segment is storage-side, invisible,
-and compatible.
+Remaining: `if (s)` / `assert(s)` should compile as the ordinary pointer
+test (`null` and `""` distinguishable by the pointer word), but
+`compileBoolCondition`'s fallback for a string source
+`dynamicArrayDescriptorOrNull` cannot resolve (e.g. a conditional) is not
+yet that test, and a message-less `assert(s)`/`assert(!s)` still refuses
+rather than mis-fire (`compilePlainAssert`). Not in scope: value
+interning — D strings are slices with observable `.ptr` identity and
+memory-sharing sub-slices, so canonical-object interning contradicts the
+compiled-D oracle; deduplicating identical literal bytes inside the data
+segment is storage-side, invisible, and compatible.
 
 ### Runtime type metadata
 Native-layout memory is not enough for the druntime leaves; they also
@@ -673,19 +654,13 @@ behaviour.
   requires multiple simultaneous threads. Host runtime calls and single-thread
   concurrency state already reached by existing rows are not covered by that
   deferral.
-- Strings partially violate the "Strings are ordinary arrays" contract (see
-  Core Architecture): locals and struct fields are real dynamic-array
-  descriptors now, but `Op.stringSubSlice`, `tryStringIndex`, and
-  `compileStringPointer`'s compact expansion remain for slice 2, and
-  `stringSourceIsHeapBacked` still classifies a source's shape at those
-  call sites — an unrecognised shape there (e.g. a ternary with a
-  heap-backed arm feeding `.ptr` or an rvalue sub-slice) still defaults to
-  the compact path and misreads; a local declaration or reassignment no
-  longer can, routing through the generic, shape-agnostic path instead.
-  `wstring`/`dstring` sub-slices are refused. `std.array.array` on a narrow
-  string autodecodes to `dstring`/`dchar[]` by default; compiling that path
+- Strings violate the "Strings are ordinary arrays" contract (see Core
+  Architecture) only in truthiness (`if (s)` / `assert(s)` not yet the
+  ordinary pointer test).
+- `std.array.array` on a narrow string autodecodes to `dstring`/`dchar[]`
+  by default; compiling that path
   (`ut.backends.runner.lang.cerealed.stdConvTextRendersCharArrayExpressionRaw`)
   reaches both a `scalarType` refusal for a bare `dchar[]` local and, past
   that, a machine.d `readHeapElement` crash inside `Appender!dstring`'s
-  growth path — `dchar[]` support is not a char-only-gate patch, it needs
-  the migration itself.
+  growth path — a general `dchar[]` local/`Appender` gap, not a
+  string-representation one.
