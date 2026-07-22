@@ -5938,9 +5938,7 @@ private struct Walker {
         // existing raw-value identity semantics. Array-pointer snapshots can
         // contain different element copies while still naming the same
         // allocation and offset; those two fields are their identity.
-        const same = left.isPointer && right.isPointer &&
-                !left.isLocalPointer && !right.isLocalPointer &&
-                !left.isNativePointer && !right.isNativePointer &&
+        const same = isBoxedPointer(left) && isBoxedPointer(right) &&
                 left.pointerAllocation != 0 && right.pointerAllocation != 0
             ? left.pointerAllocation == right.pointerAllocation &&
                 left.pointerElementOffset == right.pointerElementOffset
@@ -6364,7 +6362,7 @@ private struct Walker {
 
         auto result = arguments.dup; // Replaces eligible pointer values below.
         foreach (index, ref argument; result) {
-            if (argument.isPointer && !argument.isNativePointer) {
+            if (isBoxedPointer(argument)) {
                 if (auto variable = arrayPointerVariable(argument)) {
                     if (auto cell = *variable in arrayCells) {
                         const offset = cast(size_t) argument.pointerElementOffset *
@@ -8128,12 +8126,7 @@ private struct Walker {
             return false;
 
         const pointer = runExpression(pointerExpression.e1);
-        if (
-            !pointer.isPointer ||
-            pointer.isLocalPointer ||
-            pointer.isNativePointer ||
-            pointer.pointerAllocation == 0
-        )
+        if (!isBoxedPointer(pointer) || pointer.pointerAllocation == 0)
             return false;
 
         auto variable = pointer.pointerAllocation in arrayAllocationVariables;
@@ -10963,12 +10956,7 @@ private struct Walker {
     private imported!"dmd.declaration".VarDeclaration* arrayPointerVariable(
         in Value pointer,
     ) {
-        if (
-            !pointer.isPointer ||
-            pointer.isLocalPointer ||
-            pointer.isNativePointer ||
-            pointer.pointerAllocation == 0
-        )
+        if (!isBoxedPointer(pointer) || pointer.pointerAllocation == 0)
             return null;
 
         return pointer.pointerAllocation in arrayAllocationVariables;

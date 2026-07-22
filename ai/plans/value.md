@@ -564,9 +564,9 @@ it (see the Contracts preamble).
   every write path that reaches storage only through an alias table
   (slice alias, array-element alias, struct-field alias, `this` alias)
   must independently refresh the ultimate target variable's cell.
-- Promoted-cell pointer readers admit only boxed pointer carriers. Local
-  pointers resolve through their local binding and native pointers through
-  their host address; neither may enter identity-map routing.
+- Promoted-cell and allocation-identity routing admits only the boxed-pointer
+  predicate. Local pointers resolve through their local binding and native
+  pointers through their host address; neither may enter identity-map routing.
 - One guest storage location has one identity across bindings, call frames,
   repeated `ref` arguments, and source/alias pairs. A promoted aggregate alias
   shares the caller's memoized pointer id and cell; a field alias shares the
