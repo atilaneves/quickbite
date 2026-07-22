@@ -4599,13 +4599,27 @@ private struct Compiler {
         return fieldPointer;
     }
 
-    // `p.field`: read a scalar field through the struct pointer at `ptr +
-    // field.offset` into a fresh slot.
+    // `p.field`: read a scalar or dynamic-array field through the struct
+    // pointer at `ptr + field.offset` into a fresh slot.
     private Operand loadStructPointerField(StructPointerField field) {
+        import dmd.astenums: TY;
+
         if (isStringType(field.type))
             throw new Exception(
                 "Unsupported string heap-struct field in bytecode core",
             );
+
+        if (field.type.toBasetype.ty == TY.Tarray) {
+            const destination =
+                allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                structFieldAddress(field),
+                compileSizeConstant(0),
+            );
+            return Operand(destination, ScalarType.void_);
+        }
 
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);

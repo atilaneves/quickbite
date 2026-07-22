@@ -397,9 +397,9 @@ changed:
 1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-2. `file.createWriteRead.Bytecode`: lower the mutable `char[]` field of the
-   captured struct receiver in `std.array`'s trusted allocation IIFE; the
-   generic scalar-type lowering currently refuses it.
+2. `file.createWriteRead.Bytecode`: represent string truthiness as the native
+   slice-pointer test in the `std.file` read path; compact string descriptors
+   currently make the generic truthiness lowering refuse it.
 3. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
