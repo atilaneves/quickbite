@@ -355,10 +355,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     greaterOrEqualUnsigned8,
     copy, // a: destination frame offset, b: source frame offset, c: size
     // Copy `c` bytes from the mutable module-data segment at offset b into
-    // frame offset a. Backs reads of scalar module-level variables.
+    // frame offset a. Backs reads of scalar and default-null class references.
     loadModule,
     // Copy `c` bytes from frame offset a into the mutable module-data segment
-    // at offset b. Backs writes to scalar module-level variables.
+    // at offset b. Backs writes to scalar and default-null class references.
     storeModule,
     // Write the native address of mutable module-data offset b as a raw `size_t`
     // word into frame offset a. Backs `&moduleScalar`.

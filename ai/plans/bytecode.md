@@ -397,8 +397,10 @@ changed:
 1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-2. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
-   host concurrency/runtime path reached by `thisTid`.
+2. `concurrency.thisTid.Bytecode`: the single-threaded atomic load path for
+   `std.concurrency`'s module-held scheduler reference. It must lower ordinary
+   same-machine atomic reads without entering druntime's x86 inline-asm body;
+   then continue through the non-root Phobos class construction it reaches.
 
 This list is a starting order, not a substitute for repository discovery.
 After it is empty, search all backend matrices and characterization pins for

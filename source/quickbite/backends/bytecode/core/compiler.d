@@ -1812,6 +1812,14 @@ private struct Compiler {
                         moduleVariable.offset,
                         cast(ushort) size(moduleVariable.type),
                     );
+                    if (moduleVariable.isClassReference)
+                        return Operand(
+                            offset,
+                            ScalarType.ulong_,
+                            false,
+                            true,
+                            ScalarType.void_,
+                        );
                     return Operand(offset, moduleVariable.type);
                 }
 
@@ -2229,6 +2237,8 @@ private struct Compiler {
                     return Operand(field.offset, ScalarType.void_, true);
                 if (field.type.toBasetype.ty == TY.Tarray &&
                     !isStringType(field.type))
+                    return Operand(field.offset, ScalarType.void_);
+                if (field.type.toBasetype.ty == TY.Tstruct)
                     return Operand(field.offset, ScalarType.void_);
                 if (field.type.toBasetype.ty == TY.Taarray)
                     return Operand(field.offset, ScalarType.ulong_);
@@ -3131,6 +3141,13 @@ private struct Compiler {
 
         if (auto dot = expression.isDotVarExp)
             if (auto field = tryStructField(dot)) {
+                if (variable.type.toBasetype.ty == TY.Tstruct) {
+                    _structLocals[variable] = StructLocal(
+                        field.offset,
+                        structDeclarationOf(variable.type),
+                    );
+                    return true;
+                }
                 _locals[variable] = field.offset;
                 return true;
             }
@@ -8509,7 +8526,6 @@ private struct Compiler {
             declaration.type.toBasetype.ty == TY.Tsarray ||
             declaration.type.toBasetype.ty == TY.Taarray ||
             declaration.type.toBasetype.ty == TY.Tstruct ||
-            declaration.type.toBasetype.ty == TY.Tclass ||
             declaration.type.toBasetype.ty == TY.Tdelegate ||
             isPointerType(declaration.type) ||
             isComplexDoubleType(declaration.type))
@@ -8520,12 +8536,36 @@ private struct Compiler {
         if (auto existing = declaration in _moduleScalarVariables)
             return existing;
 
-        const type = scalarType(declaration.type);
-        const initializer = moduleScalarInitializerBytes(declaration, type);
+        const isClassReference = declaration.type.toBasetype.ty == TY.Tclass;
+        if (isClassReference &&
+            !moduleClassReferenceHasDefaultInitializer(declaration))
+            return null;
+
+        const type = isClassReference
+            ? ScalarType.ulong_
+            : scalarType(declaration.type);
+        const initializer = isClassReference
+            ? null
+            : moduleScalarInitializerBytes(declaration, type);
         const offset = allocateModuleBytes(size(type), size(type));
-        _moduleScalarVariables[declaration] = ModuleScalarVariable(offset, type);
+        _moduleScalarVariables[declaration] = ModuleScalarVariable(
+            offset,
+            type,
+            isClassReference,
+        );
         _program.moduleData[offset .. offset + initializer.length] = initializer[];
         return declaration in _moduleScalarVariables;
+    }
+
+    private bool moduleClassReferenceHasDefaultInitializer(
+        VarDeclaration declaration,
+    ) {
+        resolveNonRootInitializer(declaration);
+        auto initializer = declaration._init is null
+            ? null
+            : declaration._init.isExpInitializer;
+        return initializer is null ||
+            initializerExpression(initializer.exp).isNullExp !is null;
     }
 
     private ubyte[] moduleScalarInitializerBytes(
@@ -8620,6 +8660,20 @@ private struct Compiler {
             auto descriptorResult = new Operand;
             *descriptorResult = Operand(field.offset, ScalarType.void_);
             return descriptorResult;
+        }
+
+        if (field.type.toBasetype.ty == TY.Tstruct) {
+            const value = structOperandOffset(rhs);
+            _code ~= Instruction(
+                Op.copy,
+                field.offset,
+                value,
+                cast(ushort) staticArraySize(field.type),
+            );
+            writeBackStructField(*field);
+            auto structResult = new Operand;
+            *structResult = Operand(field.offset, ScalarType.void_);
+            return structResult;
         }
 
         // A static-array field `T[N] a` (`u.a = [x, y]`) writes each element
@@ -13307,6 +13361,7 @@ private struct ExceptionObjectLocal {
 private struct ModuleScalarVariable {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
+    bool isClassReference;
 }
 
 private struct ExceptionStringField {
