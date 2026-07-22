@@ -199,3 +199,23 @@ unittest {
     classInstanceByteSize(classType.sym).should == __traits(classInstanceSize, Empty);
     (classInstanceByteSize(classType.sym) > 0).should == true;
 }
+
+
+// An enum whose base type is not integral has no member constant this
+// function can ask DMD for as an integer: `Expression.toInteger` on a
+// `StringExp` member does not answer, it EMITS "integer constant expression
+// expected" into DMD's global error state and returns 0 -- so an unguarded
+// walk would both dirty the compiler's own diagnostics from inside a read
+// and label a `value` of 0 with the first such member's name. `global.errors`
+// is the observable half of that: it must be untouched.
+@("enumMemberQualifiedName.declinesANonIntegralBaseWithoutDirtyingDmdsErrorState")
+unittest {
+    import dmd.globals: global;
+
+    auto type = enumTypeOf(
+        q{ enum Name : string { first = "a", second = "b" } }, "Name");
+
+    const errorsBefore = global.errors;
+    enumMemberQualifiedName(type, 0).length.should == 0;
+    global.errors.should == errorsBefore;
+}

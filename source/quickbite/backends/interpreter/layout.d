@@ -213,31 +213,54 @@ private imported!"dmd.declaration".VarDeclaration[] classFieldsImpl(
 }
 
 
-// The byte size DMD assigns to `class_`'s own object layout
-// (`AggregateDeclaration.structsize`, which `ClassDeclaration` inherits) --
-// the field IS the instance size, verbatim, the same "DMD's own number, no
-// arithmetic of our own" contract `typeByteSize` applies to `Type.size`.
-// Unlike summing `fieldByteOffset(field) + typeByteSize(field.type)` over
-// `classFields`, this already includes the vtable pointer (and monitor)
-// DMD lays down at the front of every class object -- a field-end sum
-// omits that header and under-sizes the object. No layout needs forcing
-// here either: `structsize`, like `classFields` above, is finalized by
-// the same semantic-analysis pass (`dsymbolsem.d`) before the interpreter
-// ever runs, so there is no `sizeok`-gated state to force.
+// The byte size DMD assigns to `class_`'s own object layout -- the same
+// "DMD's own number, no arithmetic of our own" contract `typeByteSize`
+// applies to `Type.size`. Unlike summing `fieldByteOffset(field) +
+// typeByteSize(field.type)` over `classFields`, this already includes the
+// vtable pointer (and monitor) DMD lays down at the front of every class
+// object -- a field-end sum omits that header and under-sizes the object.
+//
+// Read through DMD's own FORCING accessor (`dsymbolsem.size`, which routes
+// an `AggregateDeclaration` through `determineSize`), never the bare
+// `structsize` field, for the same reason `structFields` above calls
+// `typeByteSize` before touching `sym.fields`: pre-`finalizeSize` state is
+// real, and `structsize` reads 0 in it. This is the number
+// `object_table.ObjectTable.storageFor` allocates an object body with, and
+// a 0-byte body is not a decline -- `place_value.writeClassBody` composes
+// `Place.field` at DMD's real field offsets straight past its end, writing
+// outside a GC block on both the write and the verify side with nothing
+// raised. Forcing the premise costs one already-memoized DMD call; asserting
+// it in prose costs a silent out-of-bounds heap write the day the premise
+// stops holding. Throws on DMD's `SIZE_INVALID` sentinel, exactly as
+// `typeByteSize` does.
 public size_t classInstanceByteSize(
     imported!"dmd.dclass".ClassDeclaration class_,
-) @safe pure nothrow {
+) @safe {
     return classInstanceByteSizeImpl(class_);
 }
 
-// `AggregateDeclaration.structsize` is a plain field read, but
-// `ClassDeclaration` (an `extern (C++)` class) is not itself
-// `@safe`-annotated; this is the `@trusted` boundary, mirroring
-// `declaredTypeImpl`'s identical reasoning for `VarDeclaration.type`.
+// `dmd.dsymbolsem.size` is not @safe/pure/nothrow; this is the `@trusted`
+// boundary -- it only forces and reads DMD's own computed instance size, no
+// arithmetic of our own, the same trust `typeByteSizeImpl` above gives
+// `Type.size` (including for its error path's `toPrettyChars`, a
+// NUL-terminated string from DMD's arena that `fromStringz.idup` copies into
+// GC memory immediately).
 private size_t classInstanceByteSizeImpl(
     imported!"dmd.dclass".ClassDeclaration class_,
-) @trusted pure nothrow {
-    return class_.structsize;
+) @trusted {
+    import dmd.dsymbolsem: size;
+    import dmd.location: Loc;
+    import dmd.mtype: SIZE_INVALID;
+    import std.string: fromStringz;
+
+    const bytes = size(class_, Loc.initial);
+    if (bytes == SIZE_INVALID)
+        throw new Exception(
+            "quickbite.backends.interpreter.layout.classInstanceByteSize: no "
+            ~ "instance size for class `" ~ class_.toPrettyChars.fromStringz.idup ~ "`",
+        );
+
+    return cast(size_t) bytes;
 }
 
 
@@ -321,6 +344,19 @@ private string fieldNameImpl(
 // from anything else; a caller that gets `null` back renders the
 // non-member `cast(E)N` form instead (this function does not, since that
 // is a display decision, not a DMD fact).
+//
+// An enum whose base type is not integral answers `null` outright, decided
+// here on DMD's own `TypeEnum.isIntegral` (which forces and consults the
+// enum's `memtype`) rather than left to a caller. Comparing `value` against
+// a non-integral member's own constant means asking DMD for that constant as
+// an integer, and `Expression.toInteger` is not a query: for a member DMD
+// cannot answer for -- a `StringExp`, an `ArrayLiteralExp`, a
+// `StructLiteralExp` -- its base implementation EMITS an error ("integer
+// constant expression expected") into DMD's global error state and returns
+// 0. That would make a read mutate the compiler's own diagnostics, and would
+// then match every such member against a `value` of 0, labelling it with a
+// name it does not carry. A comparison this module cannot make honestly is
+// one it declines.
 public string enumMemberQualifiedName(
     imported!"dmd.mtype".TypeEnum type,
     in long value,
@@ -343,6 +379,9 @@ private string enumMemberQualifiedNameImpl(
     import std.conv: text;
 
     if (type.sym is null || type.sym.members is null)
+        return null;
+
+    if (!type.isIntegral)
         return null;
 
     foreach (symbol; *type.sym.members) {
