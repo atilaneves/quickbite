@@ -9760,6 +9760,13 @@ private struct Compiler {
                     continue;
                 }
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitRefReturnedDynamicArrayElementArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        dynamicArrayRefWriteBacks,
+                    ))
+                        continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
                     if (emitDynamicArrayRefArgument(
                         slot,
                         (*call.arguments)[argumentIndex],
@@ -10765,13 +10772,67 @@ private struct Compiler {
         if (descriptor is null || descriptor.elementType == ScalarType.void_)
             return false;
 
+        return emitDynamicArrayElementRefArgument(
+            slot,
+            *descriptor,
+            index.e1.type,
+            index.e2,
+            writeBacks,
+        );
+    }
+
+    // A `ref`-returning wrapper may expose one element of its by-value dynamic
+    // array parameter. Run the wrapper for its checks and side effects, then
+    // bind the outer ref argument to the corresponding caller descriptor.
+    private bool emitRefReturnedDynamicArrayElementArgument(
+        in ushort slot,
+        Expression argument,
+        ref DynamicArrayRefWriteBack[] writeBacks,
+    ) {
+        auto call = argument.isCallExp;
+        auto function_ = call is null ? null : callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef || call.arguments is null)
+            return false;
+
+        auto returned = singleReturnExpression(function_.fbody);
+        auto index = returned is null ? null : returned.isIndexExp;
+        auto variable = index is null ? null : index.e1.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        auto argumentIndex = parameterIndex(function_, parameter);
+        if (argumentIndex is null || *argumentIndex >= call.arguments.length)
+            return false;
+
+        auto descriptor = dynamicArrayDescriptorOrNull(
+            (*call.arguments)[*argumentIndex],
+        );
+        if (descriptor is null || descriptor.elementType == ScalarType.void_)
+            return false;
+
+        compileCall(call);
+        return emitDynamicArrayElementRefArgument(
+            slot,
+            *descriptor,
+            index.e1.type,
+            index.e2,
+            writeBacks,
+        );
+    }
+
+    private bool emitDynamicArrayElementRefArgument(
+        in ushort slot,
+        in DynamicArrayLocal descriptor,
+        Type arrayType,
+        Expression index,
+        ref DynamicArrayRefWriteBack[] writeBacks,
+    ) {
         const elementSize = dynamicArrayElementSize(
-            index.e1.type, descriptor.elementType,
+            arrayType, descriptor.elementType,
         );
         if (elementSize > ulong.sizeof)
             return false;
 
-        const indexOffset = compileExpression(index.e2).offset;
+        const indexOffset = compileExpression(index).offset;
         const valueOffset = allocateBytes(elementSize, elementSize);
         _code ~= Instruction(
             indexLoadOp(elementSize),

@@ -1083,8 +1083,6 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed,
-        "std.conv.text reaches unsupported ref argument `front(val)`"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("arrayTooShortExceptionMessageIncludesBytes." ~ backend.stringof)

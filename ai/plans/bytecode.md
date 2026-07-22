@@ -381,13 +381,6 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `bin/ut --random` runs must be green and stable. An order-dependent crash or
   hang is a blocker to reproduce with the reported seed and fix; it is not
   acceptable handoff noise.
-- `cerealed.arrayTooShortExceptionMessageIncludesBytes.Bytecode` is omitted
-  while `std.conv.text` reaches the unsupported ref argument `front(val)`.
-  The remaining dependency sequence is general ref binding for that path,
-  void-IIFE expression-statement inlining, then the specific stale
-  `_data.arr` descriptor materialisation across `bigDataFun`'s nested call
-  that gives `copySlice` a corrupt destination length; only then promote the
-  row.
 - Do not run `bench.sh --dub cerealed` to discover the next gap until this
   complete existing Bytecode baseline is enabled and green. Once the baseline
   is complete, Cerealed is the next real-project gate. Distil each benchmark
@@ -398,21 +391,17 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `arrayTooShortExceptionMessageIncludesBytes.Bytecode`: general ref binding
-   for `std.conv.text`'s `front(val)`, void-IIFE expression-statement
-   inlining, then the stale `_data.arr` descriptor materialisation across
-   `bigDataFun`'s nested call that corrupts `copySlice`'s destination length.
-2. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
+1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: the `std.array` and
    `std.conv.text` dependency path over an exception message character array.
-3. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
+2. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
    lazy evaluation over a mutating struct-typed caller local. Its next blocker
    is `ulong <<=` compound assignment in `Reader.read64`.
-4. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
+3. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
-5. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
+4. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-6. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+5. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.
