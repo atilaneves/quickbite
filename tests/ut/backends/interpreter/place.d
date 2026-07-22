@@ -325,3 +325,38 @@ unittest {
 
     aPlace.loadScalar.asLong.should == writtenA;
 }
+
+
+// The `Place` sibling of `NativeArray.writeSliceHeader`'s own scanned-
+// destination check, for the same corruption class: a live GC pointer
+// stored into a block the collector does not scan is invisible to it, so
+// its target can be collected while the guest still reaches it through
+// this place.
+@("Place.storeReference.gcReferenceIntoNoScanPlaceThrows")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; } }, "C");
+    auto body_ = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.conservative);
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.no);
+
+    placeAt(referenceSlot, classType).storeReference(body_.address)
+        .shouldThrowWithMessage(
+            "quickbite.backends.interpreter.place.Place.storeReference: this "
+            ~ "place is not scanned by the GC, but `reference` is a live GC "
+            ~ "pointer",
+        );
+}
+
+
+// A `null` reference has nothing for the collector to lose track of, so an
+// unscanned place takes it -- the same asymmetry `writeSliceHeader`'s own
+// check draws between a live GC pointer and one that is not.
+@("Place.storeReference.nullReferenceIntoNoScanPlaceIsFine")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; } }, "C");
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.no);
+    auto place = placeAt(referenceSlot, classType);
+
+    place.storeReference(null);
+
+    (place.deref.address is null).should == true;
+}

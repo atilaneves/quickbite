@@ -1688,3 +1688,20 @@ unittest {
         ~ "needs an identityOfObjectBody capability to name the object it reads",
     );
 }
+
+
+// A boxed null slice is a length of zero, not an error. `Value.length`
+// itself throws "Expected array." for `Value.null_`, which used to make
+// `writeValue` refuse a value the read side hands straight back: a
+// `{ 0, null }` header reads as an empty array, never as `Value.null_`.
+@("place_value.writeValue.readValue.nullSliceWritesAnEmptySlice")
+unittest {
+    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
+    auto sliceType = structFields(holderType)[0].type;
+    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
+    auto root = placeAt(block, sliceType);
+
+    writeValue(root, Value.null_);
+
+    readValue(root).should == Value.arrayValue([]);
+}

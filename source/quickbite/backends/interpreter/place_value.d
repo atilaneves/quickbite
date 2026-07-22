@@ -573,6 +573,15 @@ private void* nativePointerAddress(in imported!"quickbite.lang".Value value) @tr
 // does NOT paper over -- a genuinely unscanned destination is a caller
 // bug (every real caller's destination is scanned already, per that
 // comment's own argument), not a case for this function to route around.
+//
+// `Value.null_` -- a null slice, `int[] xs = null` -- is a length of zero,
+// not an error: `Value.length` itself throws "Expected array." for it,
+// which would make this arm refuse a value `readValue`'s own slice arm
+// hands straight back (it reads a `{ 0, null }` header as an empty array,
+// never as `Value.null_`). Treating it as empty is what makes the two
+// directions agree; D itself draws no observable distinction between a
+// null and an empty slice beyond `is null`, which no header this module
+// writes can carry back anyway.
 private void writeSliceValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeDArray sliceType,
@@ -581,16 +590,19 @@ private void writeSliceValue(
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.place: Place;
+    import quickbite.lang: Value;
+
+    const length = value == Value.null_ ? 0 : value.length;
 
     auto elementType = sliceType.next;
-    auto array = NativeArray.allocate(elementType, value.length);
+    auto array = NativeArray.allocate(elementType, length);
 
     auto scratchHeader = NativeBlock.allocate(
         NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
     array.writeSliceHeader(scratchHeader, 0);
     auto elements = Place(scratchHeader.address, sliceType);
 
-    foreach (i; 0 .. value.length)
+    foreach (i; 0 .. length)
         writeValue(elements.index(i), value[i]);
 
     array.writeSliceHeader(place.address);
