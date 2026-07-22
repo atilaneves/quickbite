@@ -8378,7 +8378,23 @@ private struct Walker {
         // reference slot (forwarding a `ref` parameter into this call), or
         // owned by a cell whose writes bypass the frame slot. See the
         // `if (!bindNotVerifiable)` guard below.
-        bool bindNotVerifiable;
+        //
+        // A composition crossing a class body is the third reason, and it
+        // is a property of the ARGUMENT EXPRESSION rather than of any one
+        // variable, so it is decided here: an object body is shared by
+        // every reference to it, so a callee that took the same object by
+        // value and wrote a field through its own parameter mirror already
+        // rewrote these bytes, in an activation that has since returned,
+        // while every boxed value naming the object through some OTHER
+        // binding still carries the pre-call field. The ordinary read path
+        // survives that state only because `assertClassBodyValue` consults
+        // `classMirrorGenerations`; a bind has no such per-binding
+        // generation snapshot to consult -- the base variable is still
+        // `mirrorEstablished` and owned by no cell -- so it declines the
+        // whole shape instead. The slot is still filled: the body IS the
+        // right storage, it is the boxed comparison value that is allowed
+        // to be stale.
+        bool bindNotVerifiable = lvalueCrossesClassBody(argumentExpression);
 
         void* address;
         try {
@@ -8425,15 +8441,45 @@ private struct Walker {
         // false positive on a perfectly correct program: exactly the
         // mid-call divergence `assertReferenceBind`'s own header warns
         // about, one level removed. A base a CELL owns lags for its own,
-        // unrelated reason (`cellIsAuthorityFor`). Only a base that is
-        // neither -- an established owning slot or dataseg block the
-        // verified mirror keeps synchronously in sync -- is safe to verify,
-        // and `callerReferenceBase` alone decides which, once, while
-        // composing: the write and the verify side never evaluate that
-        // question separately, so they cannot answer it differently at two
-        // points in time.
+        // unrelated reason (`cellIsAuthorityFor`), and a composition
+        // crossing a class body for a third (`lvalueCrossesClassBody`).
+        // Only a shape that is none of those -- an established owning slot
+        // or dataseg block the verified mirror keeps synchronously in sync,
+        // reached without dereferencing a shared object body -- is safe to
+        // verify, and that is decided once, before composing: the write and
+        // the verify side never evaluate the question separately, so they
+        // cannot answer it differently at two points in time.
         if (!bindNotVerifiable)
             assertReferenceBind(parameter, address, argumentValue);
+    }
+
+    // Whether composing `expression`'s lvalue place dereferences a class
+    // reference on the way -- `lvalue_place.placeOfLvalue`'s own
+    // `receiver.type.isTypeClass` branch, asked here syntactically over the
+    // identical `DotVarExp`/`IndexExp`/`PtrExp` chain that function walks.
+    // Deliberately coarse: any class-typed receiver at any depth answers
+    // `true`, whether or not that particular object's body has actually
+    // been rewritten behind this binding's back, because a bind has no
+    // per-binding generation snapshot with which to ask the narrower
+    // question (see `bindNotVerifiable`'s initialiser). A shape this
+    // declines still gets its reference slot filled, it is only the
+    // bind-time comparison against the boxed argument that is skipped.
+    private static bool lvalueCrossesClassBody(Expression expression) {
+        if (expression is null)
+            return false;
+
+        if (auto dot = expression.isDotVarExp)
+            return dot.e1.type !is null
+                && dot.e1.type.toBasetype.isTypeClass !is null
+                || lvalueCrossesClassBody(dot.e1);
+
+        if (auto index = expression.isIndexExp)
+            return lvalueCrossesClassBody(index.e1);
+
+        if (auto pointer = expression.isPtrExp)
+            return lvalueCrossesClassBody(pointer.e1);
+
+        return false;
     }
 
     // The `resolveBase` `bindReferenceSlot` above supplies to

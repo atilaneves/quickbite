@@ -2257,6 +2257,52 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The cross-activation sibling of the fixture above: `parent`'s mirror is
+// established and no cell owns it, so bind-time composition happily walks
+// through its body -- but the nested `child` body it reaches is SHARED, and
+// `bump`'s own parameter mirror already rewrote it to 7 in an activation
+// that has since returned, while the caller's boxed `parent` still says 6.
+// Composition crossing a class body must therefore decline verification the
+// same way the ordinary read path does, or the bind asserts "reference slot
+// bind diverged from boxed argument" on a correct program. `Bytecode`
+// refuses a class field as a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: parent.child.x"),
+)) {
+    @("refArgument.nestedClassFieldArgumentAfterCalleeRewroteSharedBody." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            void bump(Child c) {
+                c.x = c.x + 1;
+            }
+
+            void setTo(ref int y, int value) {
+                y = value;
+            }
+
+            unittest {
+                auto parent = new Parent;
+                parent.child = new Child;
+                parent.child.x = 6;
+                bump(parent.child);
+                setTo(parent.child.x, 9);
+                assert(parent.child.x == 9);
+            }
+        });
+    }
+}
+
 // cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
 // units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
 // element's fields through a hidden temporary dmd's foreach-to-for lowering
