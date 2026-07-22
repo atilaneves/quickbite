@@ -257,7 +257,8 @@ private size_t classInstanceByteSizeImpl(
     if (bytes == SIZE_INVALID)
         throw new Exception(
             "quickbite.backends.interpreter.layout.classInstanceByteSize: no "
-            ~ "instance size for class `" ~ class_.toPrettyChars.fromStringz.idup ~ "`",
+            ~ "instance size for class `"
+            ~ class_.toPrettyChars.fromStringz.idup ~ "`",
         );
 
     return cast(size_t) bytes;

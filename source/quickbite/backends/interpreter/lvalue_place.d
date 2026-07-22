@@ -8,19 +8,19 @@ private:
 // variable, a `ThisExp` (the hidden `this` of a method body, resolved to its
 // own `vthis` variable exactly like a bare variable -- see that arm's own
 // comment for why it currently never resolves through the only consumer), a
-// chain of field accesses reached through `DotVarExp` receivers (a struct receiver's field sits inline at a
-// fixed offset from the receiver's own address; a class receiver holds a
-// reference, so its field composes through `Place.deref` onto the object
-// body first), a `PtrExp` (`*p`) that composes through `Place.deref` onto
-// the pointee, or an `IndexExp` over a base place that is itself one of
-// these shapes. `resolveBase` supplies the base address for a variable, and
-// `evalIndex` evaluates an `IndexExp`'s own index subexpression to a
-// `size_t` -- the only per-caller policy this function needs, so it stays
-// address composition over DMD's own AST and offsets, with no evaluation of
-// its own beyond that and no Walker state. `a[i]` composes as
+// chain of field accesses reached through `DotVarExp` receivers (a struct
+// receiver's field sits inline at a fixed offset from the receiver's own
+// address; a class receiver holds a reference, so its field composes through
+// `Place.deref` onto the object body first), a `PtrExp` (`*p`) that composes
+// through `Place.deref` onto the pointee, or an `IndexExp` over a base place
+// that is itself one of these shapes. `resolveBase` supplies the base address
+// for a variable, and `evalIndex` evaluates an `IndexExp`'s own index
+// subexpression to a `size_t` -- the only per-caller policy this function
+// needs, so it stays address composition over DMD's own AST and offsets, with
+// no evaluation of its own beyond that and no Walker state. `a[i]` composes as
 // `placeOfLvalue(a).index(evalIndex(i))`, which `Place.index` resolves
-// uniformly for a static-array, pointer, or slice base (following the
-// stored pointer for the latter two).
+// uniformly for a static-array, pointer, or slice base (following the stored
+// pointer for the latter two).
 //
 // Every arm returns the place OF the expression it was handed, never of
 // something one dereference further in. A `SymOffExp` (DMD's constant-offset
