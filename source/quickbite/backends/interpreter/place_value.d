@@ -50,8 +50,24 @@ private:
 // honest here). See `readRealBits`/`writeRealBits`'s own header comments
 // for the padding-determinism argument the verified frame mirror's
 // whole-slot byte comparison depends on.
+//
+// `identityOfObjectBody` is the caller-supplied capability the class arm
+// needs and no other arm does: a boxed `Value.classValue` carries an
+// IDENTITY, and which namespace an identity lives in is the caller's fact,
+// not this module's. `impl.d` mints identities as small counters and
+// `object_table.ObjectTable` maps counter to body address; a `Value`
+// carrying a raw address where a counter is expected passes
+// `ObjectTable.storageFor`'s non-zero guard and silently allocates a
+// SECOND body for the same object, duplicating it and breaking both
+// aliasing and generation tracking. So this takes the address-to-identity
+// translation the same way `writeClassBody` takes the inverse one
+// (`resolveObjectBody`) instead of minting a `cast(size_t) address`
+// nothing else in the codebase would recognise. `null` (the default, for
+// the majority of call sites whose place holds no class at all) makes the
+// class arm decline rather than guess.
 public imported!"quickbite.lang".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
+    size_t delegate(void* bodyAddress) @safe identityOfObjectBody = null,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
@@ -96,17 +112,17 @@ public imported!"quickbite.lang".Value readValue(
 
     auto structType = nonUnionStructOf(type);
     if (structType !is null)
-        return structValueAt(place, structType);
+        return structValueAt(place, structType, identityOfObjectBody);
 
     auto unionType = unionStructOf(type);
     if (unionType !is null)
-        return structValueAt(place, unionType);
+        return structValueAt(place, unionType, identityOfObjectBody);
 
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null) {
         Value[] elements;
         foreach (i; 0 .. staticArrayLength(arrayType))
-            elements ~= readValue(place.index(i));
+            elements ~= readValue(place.index(i), identityOfObjectBody);
 
         return Value.arrayValue(elements);
     }
@@ -121,7 +137,7 @@ public imported!"quickbite.lang".Value readValue(
 
         Value[] elements;
         foreach (i; 0 .. header.length)
-            elements ~= readValue(place.index(i));
+            elements ~= readValue(place.index(i), identityOfObjectBody);
 
         return Value.arrayValue(elements);
     }
@@ -133,7 +149,7 @@ public imported!"quickbite.lang".Value readValue(
     // `readClassValue` carries that recursion (and its cycle guard); see
     // its own header comment.
     if (type.isTypeClass !is null)
-        return readClassValue(place, null);
+        return readClassValue(place, null, identityOfObjectBody);
 
     // A pointer place's own bytes are the stored host address itself
     // (`ai/plans/value.md` decision 15) -- `place.deref` already reads
@@ -172,18 +188,26 @@ public imported!"quickbite.lang".Value readValue(
 // ever writes can carry one except directly, through another class-typed
 // field).
 //
-// `visiting` is keyed by the body's OWN address, not a minted counter --
-// decision 15's "identity IS the address" (`ai/plans/value.md`), the same
-// fact the returned `Value.classValue`'s `identity` argument uses below --
-// and it is a genuine "currently being read" set, not a "read at all"
-// set: an address is removed once its own subtree finishes (`scope(exit)`),
-// so two SIBLING fields referencing the SAME object (a DAG, not a cycle)
-// each still compose independently, matching `object_table.ObjectTable`'s
-// own "one identity, one address" guarantee rather than needing a second
-// one here.
+// `visiting` is keyed by the body's OWN address -- the storage fact, which
+// is what a cycle actually is (the same body reached twice down one
+// reference chain), and deliberately NOT the identity handed back below,
+// which lives in the caller's namespace and needs no cycle meaning at all.
+// It is a genuine "currently being read" set, not a "read at all" set: an
+// address is removed once its own subtree finishes (`scope(exit)`), so two
+// SIBLING fields referencing the SAME object (a DAG, not a cycle) each
+// still compose independently, matching `object_table.ObjectTable`'s own
+// "one identity, one address" guarantee rather than needing a second one
+// here.
+//
+// `identityOfObjectBody` translates that address into the identity the
+// CALLER's own object table uses -- see `readValue`'s own header comment
+// for why this module must not mint one itself. A caller that supplies
+// none has no class namespace to speak of, so this declines rather than
+// producing a `Value.classValue` whose identity nothing can resolve.
 private imported!"quickbite.lang".Value readClassValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     bool[size_t] visiting,
+    size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
 ) @safe {
     import quickbite.backends.interpreter.layout:
         classFields, classQualifiedName, classHierarchyNames, fieldName;
@@ -193,19 +217,29 @@ private imported!"quickbite.lang".Value readClassValue(
     // the class type, giving a place at the object body's own address
     // (`place.d`'s own contract) -- a null reference (no object bound
     // yet) reads back as `Value.null_` rather than attempting to read
-    // fields through a null address.
+    // fields through a null address. Checked before the capability below:
+    // "no object bound yet" needs no identity to answer.
     auto bodyPlace = place.deref;
     if (bodyPlace.address is null)
         return Value.null_;
 
-    const identity = cast(size_t) bodyPlace.address;
-    if (identity in visiting)
+    if (identityOfObjectBody is null)
+        throw new Exception(
+            "quickbite.backends.interpreter.place_value.readValue: "
+            ~ "a class place needs an identityOfObjectBody capability to "
+            ~ "name the object it reads",
+        );
+
+    const bodyKey = cast(size_t) bodyPlace.address;
+    if (bodyKey in visiting)
         throw new Exception(
             "quickbite.backends.interpreter.place_value.readValue: "
             ~ "cyclic class object graph",
         );
-    visiting[identity] = true;
-    scope(exit) visiting.remove(identity);
+    visiting[bodyKey] = true;
+    scope(exit) visiting.remove(bodyKey);
+
+    const identity = identityOfObjectBody(bodyPlace.address);
 
     auto classType = place.type.isTypeClass;
     string[] fieldNames;
@@ -215,8 +249,8 @@ private imported!"quickbite.lang".Value readClassValue(
 
         auto fieldPlace = bodyPlace.field(field);
         fields ~= fieldPlace.type.isTypeClass !is null
-            ? readClassValue(fieldPlace, visiting)
-            : readValue(fieldPlace);
+            ? readClassValue(fieldPlace, visiting, identityOfObjectBody)
+            : readValue(fieldPlace, identityOfObjectBody);
     }
 
     // `classQualifiedName(classType.sym)` names `classType` -- `place`'s
@@ -352,13 +386,14 @@ in (length == real.sizeof)
 private imported!"quickbite.lang".Value structValueAt(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeStruct structType,
+    size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
 ) @safe {
     import quickbite.backends.interpreter.layout: structFields;
     import quickbite.lang: Value;
 
     Value[] fields;
     foreach (field; structFields(structType))
-        fields ~= readValue(place.field(field));
+        fields ~= readValue(place.field(field), identityOfObjectBody);
 
     return Value.structValue(structTypeName(structType), fields);
 }

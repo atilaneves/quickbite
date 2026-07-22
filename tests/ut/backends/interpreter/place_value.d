@@ -36,6 +36,17 @@ unreachableResolveObjectBody() @safe {
 }
 
 
+// `readValue`'s own identity capability for the class fixtures below whose
+// expected `Value.classValue` was built with the body block's own address
+// as the identity: the namespace is the FIXTURE's choice, which is exactly
+// why `readValue` asks for it instead of minting one (its own header
+// comment). A fixture whose identities are counters supplies a lookup
+// instead -- see `readValue.classIdentityComesFromTheCallersNamespace`.
+private size_t delegate(void* bodyAddress) @safe addressAsIdentity() @safe {
+    return (bodyAddress) @trusted => cast(size_t) bodyAddress;
+}
+
+
 // `P.y` follows `P.x` with the host compiler's own alignment padding, so a
 // round trip through `writeValue`/`readValue` must land `y` at its own
 // offset independently of `x` -- the same padding trap `Place.field`'s own
@@ -280,7 +291,7 @@ unittest {
     *cast(void**) referenceSlot.address = bodyBlock.address;
     auto referencePlace = placeAt(referenceSlot, classType);
 
-    readValue(referencePlace).should == written;
+    readValue(referencePlace, addressAsIdentity).should == written;
 }
 
 
@@ -320,7 +331,7 @@ unittest {
     *cast(void**) referenceSlot.address = bodyBlock.address;
     auto referencePlace = placeAt(referenceSlot, classType);
 
-    auto read = readValue(referencePlace);
+    auto read = readValue(referencePlace, addressAsIdentity);
     read.should == written;
     read.classFieldAt(0).asLong.should == writtenBase;
     read.classFieldAt(1).asLong.should == writtenDerived;
@@ -374,7 +385,7 @@ unittest {
     *cast(void**) referenceSlot.address = bodyBlock.address;
     auto referencePlace = placeAt(referenceSlot, classType);
 
-    readValue(referencePlace).should == written;
+    readValue(referencePlace, addressAsIdentity).should == written;
 }
 
 
@@ -502,7 +513,7 @@ unittest {
     *cast(void**) referenceSlot.address = parentBlock.address;
     auto referencePlace = placeAt(referenceSlot, parentType);
 
-    readValue(referencePlace).should == parentValue;
+    readValue(referencePlace, addressAsIdentity).should == parentValue;
 }
 
 
@@ -539,7 +550,7 @@ unittest {
     *cast(void**) referenceSlot.address = parentBlock.address;
     auto referencePlace = placeAt(referenceSlot, parentType);
 
-    readValue(referencePlace).should == parentValue;
+    readValue(referencePlace, addressAsIdentity).should == parentValue;
 }
 
 
@@ -597,7 +608,7 @@ unittest {
     *cast(void**) referenceSlot.address = parentBlock.address;
     auto referencePlace = placeAt(referenceSlot, parentType);
 
-    auto read = readValue(referencePlace);
+    auto read = readValue(referencePlace, addressAsIdentity);
     const firstIdentity = read.classFieldAt(0).classIdentity;
     const secondIdentity = read.classFieldAt(1).classIdentity;
 
@@ -633,7 +644,7 @@ unittest {
     *cast(void**) referenceSlot.address = nodeABlock.address;
     auto referencePlace = placeAt(referenceSlot, nodeType);
 
-    readValue(referencePlace).shouldThrowWithMessage(
+    readValue(referencePlace, addressAsIdentity).shouldThrowWithMessage(
         "quickbite.backends.interpreter.place_value.readValue: cyclic class object graph",
     );
 }
@@ -1629,4 +1640,51 @@ unittest {
             "quickbite.backends.interpreter.place_value.writeValue: union place "
             ~ "whose single widest-member write cannot stand in for the whole union",
         );
+}
+
+
+// The identity in a `Value.classValue` is a key into the CALLER's own
+// object table -- `impl.d` mints small counters and `object_table.
+// ObjectTable` maps counter to body address -- so `readValue` translates
+// through the caller's own capability instead of handing back
+// `cast(size_t) bodyAddress`. A raw address in that field passes
+// `ObjectTable.storageFor`'s non-zero guard and silently allocates a SECOND
+// body for the same object.
+@("place_value.readValue.classIdentityComesFromTheCallersNamespace")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; } }, "C");
+
+    ObjectTable table;
+    size_t identity = 1;
+    identity = identity * 7;
+    auto bodyAddress = table.storageFor(identity, classType.sym);
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = bodyAddress;
+    auto referencePlace = placeAt(referenceSlot, classType);
+
+    size_t[void*] identityOf;
+    identityOf[bodyAddress] = identity;
+
+    readValue(referencePlace, address => identityOf[address])
+        .classIdentity.should == identity;
+}
+
+
+// No capability, no class: a caller with no identity namespace of its own
+// gets a decline rather than a `Value` whose identity nothing can resolve.
+@("place_value.readValue.declinesClassWithoutAnIdentityCapability")
+unittest {
+    auto classType = classTypeOf(q{ class C { int x; } }, "C");
+    auto bodyBlock = NativeBlock.allocate(
+        classInstanceByteSize(classType.sym), NativeBlock.Scan.conservative);
+
+    auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
+    *cast(void**) referenceSlot.address = bodyBlock.address;
+    auto referencePlace = placeAt(referenceSlot, classType);
+
+    readValue(referencePlace).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place_value.readValue: a class place "
+        ~ "needs an identityOfObjectBody capability to name the object it reads",
+    );
 }
