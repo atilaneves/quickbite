@@ -7244,8 +7244,6 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
-        lazyArgumentClassMirrorEstablished = child.lazyArgumentClassMirrorEstablished;
-        lazyArgumentClassMirrorGenerations = child.lazyArgumentClassMirrorGenerations;
         mergePerFrameCellsFrom(child);
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
@@ -7279,8 +7277,6 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
-        lazyArgumentClassMirrorEstablished = child.lazyArgumentClassMirrorEstablished;
-        lazyArgumentClassMirrorGenerations = child.lazyArgumentClassMirrorGenerations;
         mergePerFrameCellsFrom(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -13716,8 +13712,6 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
-        lazyArgumentClassMirrorEstablished = child.lazyArgumentClassMirrorEstablished;
-        lazyArgumentClassMirrorGenerations = child.lazyArgumentClassMirrorGenerations;
         mergePerFrameCellsFrom(child);
     }
 

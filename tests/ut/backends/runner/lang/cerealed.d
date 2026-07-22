@@ -1498,6 +1498,54 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `lazy` class-typed argument re-enters its own function through an
+// intermediate call before ever being forced: `f`'s lazy parameter `c` is
+// rebound by a NESTED call to `f` (through `g`, using the same parameter
+// `VarDeclaration`) before the OUTER `f` forces its own `c` via `return c`.
+// The class-mirror bookkeeping captured for the outer binding
+// (`lazyArgumentClassMirrorEstablished`/`...Generations`, see `impl.d`'s
+// `bindLazyFunctionParameter`) must survive the inner call/return unharmed:
+// a prior version of the fix wholesale-absorbed those maps upward on every
+// call return, which could migrate a pointer captured for the intermediate
+// `g` activation into the outer `f` activation after `g` -- and the pointee
+// -- had already returned, corrupting native stack memory the next time
+// `return c` forces the outer binding. `first` gates the reentry so the
+// program terminates instead of recursing forever.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    // Pre-existing gap, independent of the class-mirror absorb fix above
+    // (confirmed identical before and after it): a lazy class argument
+    // re-forced after an intermediate reentrant call does not preserve the
+    // caller's original object identity. No crash either way -- only the
+    // returned identity diverges from the oracle.
+    Omit!(Interpreter, Because.diverges,
+        "lazy class argument loses caller identity across reentrant call/return"),
+)) {
+    @("lazyClassArgumentSurvivesReentrantCallReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int val;
+            }
+
+            C f(lazy C c, bool first) {
+                if (first)
+                    g();
+                return c;
+            }
+
+            void g() { f(new C(), false); }
+
+            unittest {
+                auto c1 = new C();
+                auto result = f(c1, true);
+                assert(result is c1);
+            }
+        });
+    }
+}
+
 // The owed §9.10 fixture, distilled to a raw pointer-slice reproduction: a
 // pointer slice shrunk to `[0 .. 0]` must retain its backing allocation, so
 // a regrow through `.ptr` still sees the original storage rather than a

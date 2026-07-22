@@ -1297,6 +1297,23 @@ in parallel and never blocks it.
        the thunk returns, and forwarding them the same way
        `lazyArgumentLocals`/`lazyArgumentFrames` already do when a `lazy`
        argument is itself re-forwarded into another `lazy` parameter.
+       `Walker`s are STACK locals, so these captured pointers are only ever
+       safe to hand DOWNWARD -- fork (a caller forking a callee) and the
+       lazy re-forward branch above, where the pointee always outlives the
+       holder. The per-call-site absorb functions
+       (`writeBackFunctionState`/`writeBackMemberFunctionState`/
+       `mergeNewClassExpressionState`) must NOT also absorb these two maps
+       UPWARD from a returning callee: a callee's map can hold an entry a
+       GRANDCHILD bound pointing at an INTERMEDIATE walker, and absorbing it
+       into the (longer-lived) caller after the intermediate walker's own
+       native frame is gone leaves the caller holding a dangling pointer --
+       written through the next time that binding's `lazy` argument is
+       forced. A walker only ever forces a `lazy` `VarDeclaration` belonging
+       to its own function or to its lazy-caller chain, both already present
+       via fork alone, so omitting these two maps from the three absorbs
+       costs nothing: an illegitimate entry a bad absorb would have
+       introduced now simply isn't found, and the existing missing-entry
+       guard in `runLazyArgument` refuses cleanly instead.
      - One decline condition is a proven EXCEPTION to this contract, safe to
        re-derive at verify time: `identity in classObjectCells`
        (`classBodyShapeMatchesImpl`'s nested-field decline) is MONOTONIC — an
