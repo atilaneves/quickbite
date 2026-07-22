@@ -928,9 +928,9 @@ in parallel and never blocks it.
    that constructs and consumes boxed aggregates, without reversing the
    existing `place`/`place_value` -> `RuntimeValue` dependency. The boundary
    exposes boxed aggregate reconstruction and visits for struct, array, and
-   class fields. Make `AggregateValue` the common consumer boundary for every
-   aggregate operation in `impl` and `ffi_marshal` before changing its
-   representation. `RuntimeValue.Array` conflates static and dynamic arrays,
+   class fields. Complete `impl`'s direct aggregate-consumer migration before
+   changing the boundary's representation. `RuntimeValue.Array` conflates
+   static and dynamic arrays,
    so category-by-category handle migration would recreate a second
    authority; preserve the no-two-world invariant by changing the one common
    boundary. Then replace that boundary's recursively boxed `Array`,

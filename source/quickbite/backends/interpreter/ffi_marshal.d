@@ -159,7 +159,9 @@ public bool tryCallNativeMember(
 ) {
     import quickbite.ffi: callNativeMember;
 
-    if (receiverType is null || !receiver.isStruct)
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+    if (receiverType is null || !AggregateValue.isStruct(receiver))
         return false;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
@@ -200,7 +202,9 @@ public bool tryCallNativeConstructor(
 ) {
     import quickbite.ffi: callNativeMember;
 
-    if (receiverType is null || !receiver.isStruct)
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+    if (receiverType is null || !AggregateValue.isStruct(receiver))
         return false;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
@@ -725,6 +729,7 @@ private void marshalArgument(
             // `field.type.toBasetype` performed.
             import quickbite.backends.interpreter.layout: typeByteSize;
             import quickbite.backends.interpreter.native_struct: NativeStruct;
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
             // `NativeStruct.borrow` fabricates its extent from `type`
             // rather than sub-slicing `buffer`, so a too-short `buffer`
@@ -737,7 +742,7 @@ private void marshalArgument(
                 marshalArgument(
                     ns.field(index),
                     ns.fieldDeclaration(index).type.toBasetype,
-                    value.structFieldAt(index),
+                    AggregateValue.fieldAt(value, index),
                     stableString,
                     keepAlive,
                     keepAliveBuffers,
@@ -751,6 +756,7 @@ private void marshalArgument(
             import dmd.mtype: TypeSArray;
             import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
             import quickbite.backends.interpreter.native_array: NativeArray;
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
             auto staticArray = cast(TypeSArray) type;
             auto elementType = staticArray.next.toBasetype;
@@ -765,7 +771,7 @@ private void marshalArgument(
                 marshalArgument(
                     na.element(index),
                     elementType,
-                    value[index],
+                    AggregateValue.elementAt(value, index),
                     stableString,
                     keepAlive,
                     keepAliveBuffers,
@@ -917,11 +923,12 @@ private ubyte[] marshalSliceArgument(
     // old code did, and reused both
     // to build the handle and to dispatch the recursive marshal.
     import quickbite.backends.interpreter.native_array: NativeArray;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-    if (value.arrayNativeAddress !is null) {
-        *cast(size_t*) buffer.ptr = value.length;
+    if (AggregateValue.nativeArrayAddress(value) !is null) {
+        *cast(size_t*) buffer.ptr = AggregateValue.elementCount(value);
         *cast(const(void)**) (buffer.ptr + size_t.sizeof) =
-            value.arrayNativeAddress;
+            AggregateValue.nativeArrayAddress(value);
         return null;
     }
 
@@ -931,13 +938,13 @@ private ubyte[] marshalSliceArgument(
     auto elementType = type.nextOf.toBasetype;
     if (elementType.ty == TY.Tvoid)
         elementType = Type.tuns8;
-    auto na = NativeArray.allocate(elementType, value.length);
+    auto na = NativeArray.allocate(elementType, AggregateValue.elementCount(value));
     const(char)*[] keepAlive;
-    foreach (index; 0 .. value.length) {
+    foreach (index; 0 .. AggregateValue.elementCount(value)) {
         marshalArgument(
             na.element(index),
             elementType,
-            value[index],
+            AggregateValue.elementAt(value, index),
             false,
             keepAlive,
             keepAliveBuffers,
@@ -952,7 +959,7 @@ private ubyte[] marshalSliceArgument(
     // allocation never moves.
     auto bytes = na.block.bytes;
     keepAliveBuffers ~= bytes;
-    *cast(size_t*) buffer.ptr = value.length;
+    *cast(size_t*) buffer.ptr = AggregateValue.elementCount(value);
     *cast(void**) (buffer.ptr + size_t.sizeof) = bytes.ptr;
     return bytes;
 }
@@ -1156,6 +1163,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
     in ubyte[] buffer,
 ) {
     import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.mtype: TypeSArray;
     import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
     import quickbite.backends.interpreter.native_array: NativeArray;
@@ -1183,7 +1191,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
     foreach (index; 0 .. length)
         elements ~= unmarshalValue(elementType, na.element(index));
 
-    return Value.arrayValue(elements);
+    return AggregateValue.reconstructArray(elements);
 }
 
 private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalSlice(
@@ -1192,6 +1200,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
 ) {
     import quickbite.ffi: isSupportedFfiSlice;
     import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.astenums: TY;
 
     assert(isSupportedFfiSlice(type));
@@ -1208,7 +1217,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
                     break;
 
                 default:
-                    return Value.nativeArrayValueWithLength(0, data);
+                    return AggregateValue.reconstructNativeArrayWithLength(0, data);
             }
         }
         return emptySliceValue(type);
@@ -1254,7 +1263,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
             Value[] elements;
             foreach (index; 0 .. length)
                 elements ~= unmarshalValue(elementType, na.element(index));
-            return Value.nativeArrayValue(elements, data);
+            return AggregateValue.reconstructNativeArray(elements, data);
     }
 }
 
@@ -1262,6 +1271,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value emptySlice
     imported!"dmd.mtype".Type type,
 ) {
     import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.astenums: TY;
 
     switch (type.nextOf.toBasetype.ty) with (TY) {
@@ -1274,7 +1284,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value emptySlice
             dchar[] empty;
             return Value.stringValue(empty);
         default:
-            return Value.arrayValue([]);
+            return AggregateValue.reconstructArray([]);
     }
 }
 
@@ -1336,6 +1346,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
     in ubyte[] buffer,
 ) {
     import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: typeByteSize;
     import quickbite.backends.interpreter.native_struct: NativeStruct;
     import std.string: fromStringz;
@@ -1364,7 +1375,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
             ns.field(index),
         );
 
-    return Value.structValue(fromStringz(type.sym.toChars).idup, fields);
+    return AggregateValue.reconstructStruct(fromStringz(type.sym.toChars).idup, fields);
 }
 
 // Marshal a backend value into a NUL-terminated C string valid for the

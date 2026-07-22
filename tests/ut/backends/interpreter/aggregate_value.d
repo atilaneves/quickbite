@@ -26,6 +26,18 @@ unittest {
     AggregateValue.isArray(arrayValue).should == true;
     AggregateValue.elementCount(arrayValue).should == 1;
     AggregateValue.elementAt(arrayValue, 0).should == structValue;
+    const nativeArray = AggregateValue.reconstructNativeArray(
+        [Value(3)],
+        cast(const(void)*) 0x1234,
+    );
+    AggregateValue.nativeArrayAddress(nativeArray).should == cast(const(void)*) 0x1234;
+    AggregateValue.elementAt(nativeArray, 0).should == Value(3);
+    const nativeLengthOnlyArray = AggregateValue.reconstructNativeArrayWithLength(
+        2,
+        cast(const(void)*) 0x5678,
+    );
+    AggregateValue.elementCount(nativeLengthOnlyArray).should == 2;
+    AggregateValue.nativeArrayAddress(nativeLengthOnlyArray).should == cast(const(void)*) 0x5678;
     AggregateValue.isClass(classValue).should == true;
     AggregateValue.classFieldAt(classValue, 0).should == arrayValue;
 }

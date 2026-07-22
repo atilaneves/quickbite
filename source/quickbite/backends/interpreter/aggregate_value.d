@@ -27,6 +27,24 @@ public struct AggregateValue {
         return Value.arrayValue(elements);
     }
 
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value reconstructNativeArray(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value[] elements,
+        const(void)* address,
+    ) @safe pure {
+        import quickbite.backends.interpreter.runtime_value: Value;
+
+        return Value.nativeArrayValue(elements, address);
+    }
+
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value reconstructNativeArrayWithLength(
+        in size_t length,
+        const(void)* address,
+    ) @safe pure {
+        import quickbite.backends.interpreter.runtime_value: Value;
+
+        return Value.nativeArrayValueWithLength(length, address);
+    }
+
     public static imported!"quickbite.backends.interpreter.runtime_value".Value reconstructClass(
         in string typeName,
         in string[] typeNames,
@@ -88,5 +106,11 @@ public struct AggregateValue {
         in size_t index,
     ) @safe pure {
         return value[index];
+    }
+
+    public static const(void)* nativeArrayAddress(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    ) @safe pure {
+        return value.arrayNativeAddress;
     }
 }
