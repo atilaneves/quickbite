@@ -103,15 +103,20 @@ deletion (items 2-3).
    by evaluating an expression: immediate scalar results, native
    aggregate handles, locations/references, callables, and interpreter
    metadata. The extracted `RuntimeValue` carrier's `Array`, `Struct`, and
-   `ClassObject` expression aggregates remain recursive boxed trees. Native
-   aggregate-handle rvalue and reconstruction APIs, with consumers including
-   FFI able to use them, are a prerequisite to the one atomic migration of its
-   three interim data-pointer arms and local/frame/ref/capture/cross-frame
-   authority to one host-address arm; they are not an authority migration of
-   their own. Function and delegate handles are separate, non-data categories.
-   That expression currency is distinct from the authoritative storage of an
-   addressable guest value — it is a return type, never an authority (decision
-   15).
+   `ClassObject` expression aggregates remain recursive boxed trees. Before
+   introducing a native aggregate-handle rvalue, extract their aggregate
+   visitor/reconstruction behaviour and its direct consumer boundary from
+   `RuntimeValue`: `place` and `place_value` already depend on
+   `RuntimeValue`, so reversing that direction to thread a handle through
+   their current API would make a cycle. A handle with no consumer is equally
+   speculative. Only that extracted boundary and FFI may then migrate to
+   native handles and their reconstruction APIs. This is a prerequisite to,
+   not part of, the one atomic migration of the carrier's three interim
+   data-pointer arms and local/frame/ref/capture/cross-frame authority to one
+   host-address arm. Function and delegate handles are separate, non-data
+   categories. That expression currency is distinct from the authoritative
+   storage of an addressable guest value — it is a return type, never an
+   authority (decision 15).
    The earlier claim that a boxed tagged union
    is "the natural form" for a tree walker was downgraded: it argues
    against *reimplementing* layout, not against *reusing* it. It is
@@ -914,12 +919,17 @@ in parallel and never blocks it.
    `void` result just to reuse the evaluator path.
 
 3. Complete the interpreter-private `RuntimeValue` carrier's expression-only
-   aggregate path before the authority switch: replace its recursively boxed
-   `Array`, `Struct`, and `ClassObject` rvalues with native aggregate handles,
-   provide their whole-value reconstruction APIs, and make every consumer,
-   including FFI, use them. This is a prerequisite, not a second storage
-   authority. Then replace its three data-pointer arms with one host-address
-   arm in the same atomic migration that replaces local/frame,
+   aggregate path before the authority switch. First extract its recursive
+   aggregate visitor/reconstruction behaviour and the direct consumer boundary
+   that constructs and consumes boxed aggregates, without reversing the
+   existing `place`/`place_value` -> `RuntimeValue` dependency. Then replace
+   that boundary's recursively boxed `Array`, `Struct`, and `ClassObject`
+   rvalues with native aggregate handles, provide their whole-value
+   reconstruction APIs, and make every consumer, including FFI, use them. A
+   handle is introduced only with that consumer migration. This is a
+   prerequisite, not a second storage authority. Then replace its three
+   data-pointer arms with one host-address arm in the same atomic migration
+   that replaces local/frame,
    `ref`/`out`/capture, pointer-dereference, and cross-frame-write authority,
    and delete cells and aliases. Function and delegate handles remain separate
    non-data categories. Expression results need immediate scalars, native
