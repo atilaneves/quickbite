@@ -706,6 +706,10 @@ they die with the machinery at the authority switch:
 - Union residuals: aggregate members beyond plain structs, promotion
   for unions with non-scalar members, and default-init first members or
   siblings outside the supported recursively scalar shapes.
+- `promoteStructCell` guards only union-DECLARED types, so a plain
+  struct bearing an anonymous union is promoted and its overlapping
+  fields seeded last-wins into a cell — which, unlike the mirror, is
+  authority once present.
 
 ### Unions
 

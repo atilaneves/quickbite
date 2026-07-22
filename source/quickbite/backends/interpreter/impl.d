@@ -1643,10 +1643,11 @@ private struct Walker {
     }
 
     // `classBodyShapeMatches`'s own recursion, threading `visiting` -- the
-    // set of object identities already being checked along the CURRENT
-    // reference chain -- exactly the DFS "currently in progress" set
+    // set of object identities seen ANYWHERE in this graph, a deliberately
+    // stricter set than the DFS "currently in progress" one
     // `place_value.readClassValue`/`writeClassBodyImpl` each carry on their
-    // own side (see their header comments), kept here instead of there
+    // own side (see their header comments, and the next paragraph for what
+    // this one additionally refuses and why), kept here instead of there
     // because this is a VALUE-only check (no address to resolve or write),
     // so it can decline a cycle without ever calling `writeClassBody` at
     // all. Keyed by `Value.classIdentity`, not an address: this function
