@@ -13864,6 +13864,15 @@ private struct Walker {
     // `ObjectTable.storageFor` throws outright the moment the two
     // instances disagree on size (its own defense-in-depth check, see
     // `value.md`'s class-mirror contract).
+    //
+    // `writeBackGlobals` is here for the reason
+    // `mergeNewStructConstructorState`'s own header gives: the constructor
+    // body runs on a child sharing this activation's ONE
+    // `module_table.ModuleTable` block by pointer, so a dataseg variable it
+    // assigns to is already written in the shared mirror, and leaving this
+    // activation's boxed copy at the pre-call value makes the next read of
+    // that global assert on the divergence rather than merely answer
+    // staler.
     private void mergeNewClassExpressionState(ref Walker child) {
         nextLocalPointerId = child.nextLocalPointerId;
         nextFunctionPointerId = child.nextFunctionPointerId;
@@ -13875,6 +13884,7 @@ private struct Walker {
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
         mergePerFrameCellsFrom(child);
+        writeBackGlobals(child);
     }
 
     private Value newArrayValue(

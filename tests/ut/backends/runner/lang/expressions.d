@@ -2257,6 +2257,40 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The class sibling of the fixture above: a class constructor runs on a
+// child `Walker` too (`impl.d`'s `runNewClassExpression`), sharing the same
+// one `module_table.ModuleTable` block, so its dataseg write must reach the
+// caller's boxed copy by the identical write-back. `Ctfe` cannot read or
+// write dataseg storage at all (compile-time execution has no such storage
+// to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.classConstructorGlobalWriteVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDatasegClassCtorWrite;
+
+            class K {
+                this(int _) {
+                    quickbiteDatasegClassCtorWrite = 7;
+                }
+            }
+
+            unittest {
+                quickbiteDatasegClassCtorWrite = 1;
+
+                auto k = new K(0);
+
+                assert(quickbiteDatasegClassCtorWrite == 7);
+            }
+        });
+    }
+}
+
 // The same `__gshared` global read from two different call frames (the
 // top-level unittest body's own root frame, and a called function's own
 // forked child frame) resolves to ONE mirror block -- `impl.d`'s
