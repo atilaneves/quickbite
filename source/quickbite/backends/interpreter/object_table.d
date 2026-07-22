@@ -21,6 +21,20 @@ public struct ObjectTable {
 
     private NativeBlock[size_t] _blocks;
 
+    // Bumped by every `storageFor` call for `identity`, first allocation or
+    // not -- a monotonic "who last touched this body" token. Every real
+    // caller (`impl.d`'s `mirrorClassToFrame`, directly for a variable's own
+    // top-level identity, and `resolveObjectBody` for a class-typed field's
+    // nested one) always follows the call with an actual write into the
+    // returned address (`place_value.writeClassBody`'s own recursion), so a
+    // call here always means "this identity's body is about to be
+    // rewritten" -- bumping unconditionally, not only on first allocation,
+    // is what lets `generation` answer "has anyone rewritten this body
+    // since I last looked" for a SHARED identity two independent mirror
+    // writes (different variables, or different activations) can each
+    // reach. See `generation`'s own comment for the consumer.
+    private size_t[size_t] _generations;
+
     // The stable address of the object body identified by `identity`. The
     // first call for a given `identity` allocates its block, sized and
     // scanned from `class_`'s own DMD layout; every later call for the
@@ -58,6 +72,8 @@ public struct ObjectTable {
             classInstanceByteSize, classQualifiedName;
         import std.conv: text;
 
+        _generations[identity] = _generations.get(identity, 0) + 1;
+
         if (auto block = identity in _blocks) {
             if (block.byteLength != classInstanceByteSize(class_))
                 throw new Exception(text(
@@ -80,6 +96,18 @@ public struct ObjectTable {
 
     public bool has(size_t identity) const pure nothrow @safe {
         return (identity in _blocks) !is null;
+    }
+
+    // `identity`'s current write generation -- 0 for an identity `storageFor`
+    // has never been called for. A caller that recorded `generation(identity)`
+    // right after its own write and later sees a DIFFERENT value here knows
+    // some OTHER `storageFor` call -- another variable's mirror, another
+    // activation's, it makes no difference which since the table is shared
+    // for the whole execution (`impl.d`'s `classObjectTable` field comment)
+    // -- has rewritten this identity's body since; see `impl.d`'s
+    // `classMirrorGenerations`/`assertClassBodyValue` for the consumer.
+    public size_t generation(size_t identity) const pure @safe {
+        return _generations.get(identity, 0);
     }
 
     // The `NativeBlock` bound to `identity`, once `storageFor` has

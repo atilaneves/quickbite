@@ -3165,6 +3165,138 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A shared object graph's nested body, rewritten through a DIFFERENT
+// binding's own mirror after `parent`'s own mirror last established, must
+// not crash a later read of `parent`: `child`'s own `mirrorClassToFrame`
+// write (`child.x = 5;`) rewrites the SAME `object_table.ObjectTable`-owned
+// body `parent`'s established graph already composed (`parent.child` is the
+// identical identity), strictly AFTER `parent`'s own mirror recorded what
+// it wrote. The pre-existing boxed-authority gap
+// (`ai/plans/value.md`'s Cell coherence "Known gaps") already means
+// `parent`'s own boxed `locals[]` copy of `child`'s field goes stale here --
+// a wrong VALUE on a correct guest program, on master too -- but the native
+// mirror's own verify step must not turn that pre-existing wrong answer
+// into an internal `AssertError` crash.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
+        "Known gaps): child's own mirror write refreshes the shared " ~
+        "object body, but parent's boxed copy of the child field is never " ~
+        "refreshed, so parent.child.x reads back stale"),
+)) {
+    @("class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                auto child = new Child();
+                auto parent = new Parent();
+                parent.child = child;
+
+                child.x = 5;
+
+                assert(parent.child.x == 5);
+            }
+        });
+    }
+}
+
+// The `DotVarExp`-alias counterpart of the fixture above: `c` aliases
+// `parent.child`'s own identity through a non-`VarExp` source, so it gets no
+// promoted cell of its own (`classIdentityAliasedByAnotherBinding`'s own
+// header comment) and establishes an INDEPENDENT mirror for the same
+// identity. Writing through `c` rewrites the shared body strictly after
+// `parent`'s own mirror last established, the identical shape the fixture
+// above exercises through a plain top-level variable instead of an alias.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
+        "Known gaps): c's own mirror write refreshes the shared object " ~
+        "body, but parent's boxed copy of the child field is never " ~
+        "refreshed, so parent.child.x reads back stale"),
+)) {
+    @("class.sharedNestedBodyRewrittenByDotVarAliasDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+
+                Child c = parent.child;
+                c.x = 7;
+
+                assert(parent.child.x == 7);
+            }
+        });
+    }
+}
+
+// The cross-activation counterpart: a callee's own parameter mirror
+// (`bump`'s own `c`) rewrites the shared body strictly after the caller's
+// `parent` established its own mirror -- the callee's per-walker
+// `classMirrorEstablished`/generation bookkeeping is a SEPARATE frame's
+// own, but `object_table.ObjectTable` is shared across every activation for
+// the whole execution (`impl.d`'s `classObjectTable` field comment), so the
+// rewrite is visible the moment control returns to the caller.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
+        "Known gaps): bump's own mirror write refreshes the shared object " ~
+        "body, but parent's boxed copy of the child field is never " ~
+        "refreshed, so parent.child.x reads back stale"),
+)) {
+    @("class.sharedNestedBodyRewrittenAcrossActivationDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            void bump(Child c) {
+                c.x = c.x + 1;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+                parent.child.x = 6;
+
+                bump(parent.child);
+
+                assert(parent.child.x == 7);
+            }
+        });
+    }
+}
+
 // A class-typed field reassigned to a NEW object must observe the new
 // object's own fields afterward, not retain the old object's -- ordinary
 // class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell

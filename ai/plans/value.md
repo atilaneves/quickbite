@@ -1268,14 +1268,26 @@ in parallel and never blocks it.
        (`isZeroFilled`, deleted) `assertClassBodyValue`/
        `assertClassReferenceMirror` used to carry: once the verify side
        trusts what the write already decided, the storage it goes on to
-       compare was genuinely written by that SAME write, so a real
-       divergence is the only way the two sides can still disagree —
-       the "never established, reads as zero" ambiguity the skip
-       existed to resolve cannot arise any more. The verify path itself
-       performs no writes of its own: it reads `ObjectTable` state with
-       `has`/`opIndex`, never `storageFor` (which allocates a fresh
-       block on a miss) — a verify step must never mutate the shared
-       table it is checking.
+       compare was genuinely written by that SAME write, closing the
+       "never established, reads as zero" ambiguity the skip existed to
+       resolve. A real divergence is not the only way the two sides can
+       still disagree, though: the SAME shared, identity-keyed body can
+       be legitimately rewritten by a DIFFERENT binding's own mirror
+       write after this write ran — a sibling top-level local, a
+       `DotVarExp` alias, or a callee's own parameter mirror in another
+       activation, since `ObjectTable` is one instance for the whole
+       execution. `impl.d`'s `classMirrorGenerations` closes that gap: a
+       per-variable snapshot of `ObjectTable.generation` for every
+       identity the write composed, taken right after it ran.
+       `assertClassBodyValue` checks each identity's CURRENT generation
+       against its recorded snapshot before touching its bytes, and
+       skips the comparison — never recursing into that identity's own
+       fields either — the moment it is stale, rather than asserting on
+       bytes the write never actually vouched for. The verify path
+       itself performs no writes of its own: it reads `ObjectTable`
+       state with `has`/`opIndex`, never `storageFor` (which allocates a
+       fresh block on a miss) — a verify step must never mutate the
+       shared table it is checking.
      - Residual, NOT fixed by this slice (out of scope — authority stays boxed):
        the `classObjectCells`/`classIdentityAliasedByAnotherBinding` declines
        above only paper over the symptom for the mirror — an internal assert

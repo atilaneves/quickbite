@@ -608,8 +608,8 @@ private void writeUnionValue(
 // here may have already written PRECEDING fields (of this object or an
 // ancestor's) before the throw -- an all-or-nothing guarantee would need a
 // separate, side-effect-free pre-pass this module has no reason to grow,
-// since every real call site (`impl.d`'s `mirrorClassToFrame`/
-// `assertClassFrameMirror`) already runs the pure, cycle-aware
+// since `writeClassBody`'s only real call site (`impl.d`'s
+// `mirrorClassToFrame`) already runs the pure, cycle-aware
 // `classBodyShapeMatches` gate first and never reaches a cycle here at all;
 // this function's own guard exists so a direct call (this module's own
 // tests) still terminates rather than overflowing the stack.

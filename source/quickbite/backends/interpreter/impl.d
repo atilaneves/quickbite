@@ -292,6 +292,54 @@ private struct Walker {
     // by `get`'s default) is already the correct starting state.
     private bool[VarDeclaration] classMirrorEstablished;
 
+    // Per-variable snapshot of `object_table.ObjectTable.generation` for
+    // every identity `mirrorClassToFrame`'s established graph composed --
+    // this variable's own top-level identity and every nested class-typed
+    // field's identity, transitively -- taken right after the write that
+    // set `classMirrorEstablished[variable]` true. Closes the gap
+    // `classMirrorEstablished` alone leaves open: that flag pins THIS
+    // variable's own write/verify decision, but says nothing about the
+    // SHARED, identity-keyed storage (`classObjectTable`) it vouches for --
+    // storage a DIFFERENT binding's mirror write (another local aliasing a
+    // NESTED identity through a `DotVarExp`, a sibling top-level local
+    // sharing a nested identity, or a callee's own parameter mirror in a
+    // DIFFERENT activation, since `classObjectTable` is one instance for
+    // the whole execution -- its own field comment) can legitimately
+    // rewrite AFTER this variable's mirror last established. Confirmed by
+    // three fixtures (`class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash`,
+    // `...ByDotVarAliasDoesNotCrash`, `...AcrossActivationDoesNotCrash`):
+    // each rewrites a NESTED identity of an established graph through a
+    // second binding, which used to reach `assertClassBodyValue`'s final
+    // byte comparison with `value` still holding the FIRST binding's own
+    // stale snapshot of that field -- a guaranteed "class body mirror
+    // diverged from boxed local" `AssertError` on a correct guest program
+    // (the boxed staleness that causes it is itself a pre-existing,
+    // documented gap -- `ai/plans/value.md`'s Cell coherence "Known gaps"
+    // -- the crash was never inevitable, only this mirror's own re-
+    // verification of stale bytes was).
+    //
+    // `assertClassBodyValue` checks each identity's CURRENT `classObjectTable.
+    // generation` against what is recorded here before asserting its bytes;
+    // a mismatch means some other write reached that identity in between,
+    // so this skips the assertion for that identity (and, since a
+    // rewritten body's own field values are no longer what `value`
+    // describes, does not recurse into its fields either) rather than
+    // comparing bytes the write side never actually vouched for. Recorded
+    // by `recordClassMirrorGenerations`, called only from
+    // `mirrorClassToFrame`'s own successful (non-`Value.null_`) write path,
+    // right after `writeClassBody` returns -- so every generation recorded
+    // here is the POST-write value, matching what `assertClassBodyValue`
+    // will later re-read via the identical `classObjectTable.generation`.
+    // Not consulted for a `Value.null_` local (`assertClassFrameMirror`'s
+    // own null arm never reaches `assertClassBodyValue`), so left
+    // unrecorded on that path. Not duped into a child frame by
+    // `forkPerFrameCellsInto`, for the identical reason
+    // `classMirrorEstablished` above is not (its own field comment): a
+    // fresh activation starts with nothing established, so an absent entry
+    // (`generation(identity) != recordedGenerations.get(identity, size_t.max)`,
+    // always true) is already the correct "nothing recorded yet" answer.
+    private size_t[size_t][VarDeclaration] classMirrorGenerations;
+
     // Authoritative native bytes for a struct local that has had one of its
     // `native_scalar.isNativeScalarType` fields address-taken, mirroring
     // `arrayCells` above: populated eagerly the moment `&s.field` is taken
@@ -1231,7 +1279,53 @@ private struct Walker {
         auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
         writeClassBody(Place(bodyAddress, classType), value, &resolveObjectBody);
         Place(mirrorAddress(variable), classType).storeReference(bodyAddress);
+        classMirrorGenerations[variable] = null;
+        recordClassMirrorGenerations(variable, classType.sym, value, identity);
         established = true;
+    }
+
+    // Populates `classMirrorGenerations[variable]` with `classObjectTable.
+    // generation(identity)` for `identity` and every nested class-typed
+    // field's own identity, transitively -- the identical graph
+    // `classBodyShapeMatches`/`writeClassBody` already proved acyclic and
+    // just composed, walked again here (cheaply: no allocation, no
+    // resolution, just a map read per identity) because recording a
+    // generation snapshot needs `value`'s own field values, which this
+    // function's caller (`mirrorClassToFrame`) already has but `writeClassBody`
+    // itself does not hand back. `classMirrorGenerations[variable]`'s own
+    // field comment carries the full rationale for why this snapshot exists
+    // and how `assertClassBodyValue` consumes it. Guards against re-walking
+    // a DAG's shared identity twice (`identity in classMirrorGenerations[variable]`)
+    // the same way `classBodyShapeMatchesImpl`'s own `visiting` set does for
+    // a live cycle -- the graph is already proven acyclic by the time this
+    // runs, so this is only ever a DAG-sharing short-circuit, never a cycle
+    // guard of its own.
+    private void recordClassMirrorGenerations(
+        VarDeclaration variable,
+        imported!"dmd.dclass".ClassDeclaration class_,
+        in Value value,
+        size_t identity,
+    ) {
+        import quickbite.backends.interpreter.layout: classFields, declaredType;
+
+        classMirrorGenerations[variable][identity] = classObjectTable.generation(identity);
+
+        foreach (index, field; classFields(class_)) {
+            auto fieldClassType = declaredType(field).isTypeClass;
+            if (fieldClassType is null)
+                continue;
+
+            auto fieldValue = value.classFieldAt(index);
+            if (fieldValue == Value.null_)
+                continue;
+
+            const nestedIdentity = fieldValue.classIdentity;
+            if (nestedIdentity in classMirrorGenerations[variable])
+                continue;
+
+            recordClassMirrorGenerations(
+                variable, fieldClassType.sym, fieldValue, nestedIdentity);
+        }
     }
 
     // Whether `value`'s shape matches what `place_value.readValue`/
@@ -1742,7 +1836,8 @@ private struct Walker {
 
         auto bodyAddress = (*classObjectTable)[identity].address;
         assertClassReferenceMirror(variable, classType, bodyAddress);
-        assertClassBodyValue(classType, value, identity);
+        assertClassBodyValue(
+            classType, value, identity, classMirrorGenerations.get(variable, null));
     }
 
     // Recursively verifies `value`'s composed bytes against the REAL object
@@ -1764,21 +1859,46 @@ private struct Walker {
     // scratch-vs-real comparison one level down, rather than composing
     // into the real nested body at all.
     //
-    // No cycle guard of its own: `classBodyShapeMatches`
-    // (`assertClassFrameMirror`'s caller, immediately before this) has
-    // already proven `value`'s graph acyclic for the identical value, so a
-    // cycle reaching here would mean the two disagree -- an invariant this
-    // function trusts rather than re-checks, the same way `writeClassBody`
-    // trusts its own callers once `classBodyShapeMatches` has run.
+    // No cycle guard of its own: `classMirrorEstablished`
+    // (`assertClassFrameMirror`'s own gate, checked before this is ever
+    // reached) guarantees the WRITE side already ran `classBodyShapeMatches`
+    // over this identical value and found it acyclic, before `writeClassBody`
+    // composed it -- a cycle reaching here would mean the two disagree, an
+    // invariant this function trusts rather than re-checks, the same way
+    // `writeClassBody` trusts its own callers once `classBodyShapeMatches`
+    // has run.
+    //
+    // `recordedGenerations` is `classMirrorGenerations[variable]` from the
+    // caller (`assertClassFrameMirror`), threaded down unchanged through
+    // every recursive call: the snapshot `object_table.ObjectTable.
+    // generation` took, per identity, right after `mirrorClassToFrame`'s own
+    // write composed this whole graph. Before touching `identity`'s real
+    // bytes at all, this checks that snapshot against the identity's CURRENT
+    // generation -- a mismatch means some OTHER `storageFor` call (another
+    // binding's mirror write reaching this SAME shared identity, in this
+    // frame or a completely different activation -- `classMirrorGenerations`'
+    // own field comment) has rewritten this body since, so `value`'s cached
+    // copy of it is no longer what the real bytes hold. Skipping the
+    // assertion (and the recursion into this identity's own fields, since a
+    // rewritten body's field values are no longer described by `value`
+    // either) is the fix: comparing bytes the write side never actually
+    // vouched for is exactly the false-crash shape three fixtures found
+    // (`class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash` and its
+    // two siblings, `classMirrorGenerations`'s own field comment).
     private void assertClassBodyValue(
         imported!"dmd.mtype".TypeClass classType,
         in Value value,
         in size_t identity,
+        in size_t[size_t] recordedGenerations,
     ) {
         import quickbite.backends.interpreter.layout: classFields, classInstanceByteSize;
         import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: writeValue;
+
+        const recordedGeneration = recordedGenerations.get(identity, size_t.max);
+        if (classObjectTable.generation(identity) != recordedGeneration)
+            return;
 
         // Scanned conservatively, unconditionally -- not derived from
         // `layout.typeHasPointers` over any one field, the same choice
@@ -1857,7 +1977,8 @@ private struct Walker {
 
             auto nestedAddress = (*classObjectTable)[nestedIdentity].address;
             fieldPlace.storeReference(nestedAddress);
-            assertClassBodyValue(fieldClassType, fieldValue, nestedIdentity);
+            assertClassBodyValue(
+                fieldClassType, fieldValue, nestedIdentity, recordedGenerations);
         }
 
         // `classObjectTable[identity]` (not the frame) is the actual body
