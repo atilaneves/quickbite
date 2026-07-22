@@ -236,16 +236,16 @@ public Place placeAt(
 }
 
 
-// A `Place` at `variable`'s own slot in `frame` -- `FrameBlock.slotAddress`
-// already asserts `variable` owns a slot in this activation; this just
-// pairs that address with the local's own declared type.
+// A `Place` at `variable`'s binding in `frame` -- `FrameBlock.bindingAddress`
+// is the one decoder for both inline owning slots and reference slots, and
+// this just pairs that resolved address with the local's own declared type.
 public Place placeAt(
     imported!"quickbite.backends.interpreter.frame_block".FrameBlock frame,
     imported!"dmd.declaration".VarDeclaration variable,
 ) @safe {
     import quickbite.backends.interpreter.layout: declaredType;
 
-    return Place(frame.slotAddress(variable), declaredType(variable));
+    return Place(frame.bindingAddress(variable), declaredType(variable));
 }
 
 
