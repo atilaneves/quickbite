@@ -1459,6 +1459,45 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The class-typed sibling of `lazyArgumentMutatesCallerLocal`: the thunk
+// rebinds the CALLER's own class local `v` to `w`'s identity, and `v`'s
+// class-mirror write/decline decision (`impl.d`'s `classMirrorEstablished`/
+// `classMirrorGenerations`) must travel with the same swap that already
+// carries `locals`/`_activationFrame` into the thunk (`runLazyArgument`,
+// `bindLazyFunctionParameter`), or the caller's later read of `v` consults
+// stale bookkeeping recorded before the call instead of the decision the
+// thunk's own `setLocal` actually made. `v = w` aliases two live class
+// identities, which makes `mirrorClassToFrame` DECLINE to mirror -- so a
+// desynced flag used to crash the interpreter (a stale-true decision
+// compared against a slot the write never touched) rather than merely
+// diverge in value.
+static foreach (backend; Matrix!(
+    // Same bytecode-core gap as the fixture above, over a class reference
+    // instead of a bare scalar.
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("lazyArgumentMutatesCallerClassLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            void forceLazy(lazy int e) { auto t = e; }
+
+            unittest {
+                auto w = new C();
+                C v = new C();
+
+                forceLazy((v = w) !is null ? v.x : 0);
+
+                assert(v.x == 0);
+            }
+        });
+    }
+}
+
 // The owed §9.10 fixture, distilled to a raw pointer-slice reproduction: a
 // pointer slice shrunk to `[0 .. 0]` must retain its backing allocation, so
 // a regrow through `.ptr` still sees the original storage rather than a

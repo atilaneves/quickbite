@@ -565,6 +565,26 @@ private struct Walker {
     // was bound, captured alongside `lazyArgumentLocals` so `runLazyArgument`
     // can swap `_activationFrame` to it too -- see the comment there.
     private FrameBlock[VarDeclaration] lazyArgumentFrames;
+    // The caller's own `classMirrorEstablished`/`classMirrorGenerations`
+    // FIELDS (not their values) at the moment the `lazy` argument was bound,
+    // captured alongside `lazyArgumentLocals`/`lazyArgumentFrames` so
+    // `runLazyArgument` can swap the mirror bookkeeping to the caller's own
+    // storage for the duration of the thunk too -- see that function's own
+    // comment for why a `setLocal` inside the thunk needs this in addition
+    // to `locals`/`_activationFrame`. Captured as a POINTER to the field,
+    // never the AA value itself: an empty `bool[VarDeclaration]`/
+    // `size_t[size_t][VarDeclaration]` is `null`, so copying the VALUE at
+    // bind time would not alias the caller's map -- a first write during the
+    // thunk would silently allocate a fresh table on the callee's own copy
+    // instead of the caller's real field, leaving the caller's own map
+    // exactly as stale as before. `runLazyArgument` swaps through the
+    // pointer at both ends (read the caller's current value in, write
+    // whatever the thunk produced -- new table or not -- back out), so this
+    // is correct whether or not the caller's map was already non-null when
+    // the lazy argument was bound.
+    private bool[VarDeclaration]*[VarDeclaration] lazyArgumentClassMirrorEstablished;
+    private size_t[size_t][VarDeclaration]*[VarDeclaration]
+        lazyArgumentClassMirrorGenerations;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private ArrayElementAlias[VarDeclaration] arrayElementAliases;
@@ -3522,7 +3542,13 @@ private struct Walker {
         forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
         child.bindFunctionParameters(
-            call.f, arguments, argumentExpressions, locals, _activationFrame,
+            call.f,
+            arguments,
+            argumentExpressions,
+            locals,
+            _activationFrame,
+            &classMirrorEstablished,
+            &classMirrorGenerations,
         );
 
         try {
@@ -3581,6 +3607,8 @@ private struct Walker {
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.lazyArgumentFrames = lazyArgumentFrames.dup;
+        child.lazyArgumentClassMirrorEstablished = lazyArgumentClassMirrorEstablished.dup;
+        child.lazyArgumentClassMirrorGenerations = lazyArgumentClassMirrorGenerations.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationAliases = arrayAllocationAliases.dup;
@@ -7071,7 +7099,13 @@ private struct Walker {
         seedPointerTargetLocals(child);
         registerClassArgumentAliases(function_, argumentExpressions, child);
         child.bindFunctionParameters(
-            function_, arguments, argumentExpressions, locals, _activationFrame,
+            function_,
+            arguments,
+            argumentExpressions,
+            locals,
+            _activationFrame,
+            &classMirrorEstablished,
+            &classMirrorGenerations,
         );
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
         registerDirectAggregateFieldRefArgumentAliases(
@@ -7151,7 +7185,13 @@ private struct Walker {
         registerClassArgumentAliases(function_, argumentExpressions, child);
         registerClassThisAlias(function_, receiverExpression, child);
         child.bindFunctionParameters(
-            function_, arguments, argumentExpressions, locals, _activationFrame,
+            function_,
+            arguments,
+            argumentExpressions,
+            locals,
+            _activationFrame,
+            &classMirrorEstablished,
+            &classMirrorGenerations,
         );
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
         registerDirectAggregateFieldRefArgumentAliases(
@@ -7204,6 +7244,8 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
+        lazyArgumentClassMirrorEstablished = child.lazyArgumentClassMirrorEstablished;
+        lazyArgumentClassMirrorGenerations = child.lazyArgumentClassMirrorGenerations;
         mergePerFrameCellsFrom(child);
         writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
@@ -7237,6 +7279,8 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
+        lazyArgumentClassMirrorEstablished = child.lazyArgumentClassMirrorEstablished;
+        lazyArgumentClassMirrorGenerations = child.lazyArgumentClassMirrorGenerations;
         mergePerFrameCellsFrom(child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
@@ -8168,6 +8212,8 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions = null,
         Value[VarDeclaration] callerLocals = null,
         FrameBlock callerFrame = FrameBlock.init,
+        bool[VarDeclaration]* callerMirrorEstablished = null,
+        size_t[size_t][VarDeclaration]* callerMirrorGenerations = null,
     ) {
         if (arguments.length == 0) {
             if (function_.parameters !is null && function_.parameters.length != 0)
@@ -8190,6 +8236,8 @@ private struct Walker {
                         : null,
                     callerLocals,
                     callerFrame,
+                    callerMirrorEstablished,
+                    callerMirrorGenerations,
                 );
                 continue;
             }
@@ -8661,11 +8709,31 @@ private struct Walker {
     // `runLazyArgument` swaps `_activationFrame` to this captured frame for
     // the duration of the thunk, keeping `setLocal`'s frame mirror pointed at
     // the local it is actually writing instead of silently skipping it.
+    //
+    // `callerMirrorEstablished`/`callerMirrorGenerations` are POINTERS to
+    // the caller's own `classMirrorEstablished`/`classMirrorGenerations`
+    // fields (`bindFunctionParameters`' own identically named parameters,
+    // forwarded from `child.bindFunctionParameters(..., &classMirrorEstablished,
+    // &classMirrorGenerations)` at every real call site), captured for the
+    // same reason `callerLocals`/`callerFrame` are: `setLocal` inside the
+    // thunk calls `mirrorClassToFrame`, which records its write/decline
+    // decision into `this.classMirrorEstablished`/`this.classMirrorGenerations`
+    // -- the CALLEE's own fields -- even while `locals`/`_activationFrame`
+    // are swapped to write the actual bytes into the CALLER's storage. Left
+    // unswapped, that write-decision bookkeeping lands on a map nobody ever
+    // reads again (this activation's own, orphaned once the thunk returns),
+    // while the CALLER's own map -- the one a later read of the mutated
+    // variable actually consults -- keeps whatever STALE decision it
+    // recorded before the call, now describing a value the thunk's `setLocal`
+    // already changed. See `runLazyArgument`'s own comment for how the swap
+    // (and the null-AA-safe write-back through these pointers) works.
     private void bindLazyFunctionParameter(
         VarDeclaration parameter,
         Expression argumentExpression,
         Value[VarDeclaration] callerLocals,
         FrameBlock callerFrame,
+        bool[VarDeclaration]* callerMirrorEstablished,
+        size_t[size_t][VarDeclaration]* callerMirrorGenerations,
     ) {
         // Same fresh-binding rule as `bindFunctionParameters`: a lazy
         // parameter is still a new
@@ -8681,6 +8749,18 @@ private struct Walker {
                     lazyArgumentLocals[parameter] = *captured;
                 if (auto capturedFrame = variable in lazyArgumentFrames)
                     lazyArgumentFrames[parameter] = *capturedFrame;
+                if (
+                    auto capturedMirrorEstablished =
+                        variable in lazyArgumentClassMirrorEstablished
+                )
+                    lazyArgumentClassMirrorEstablished[parameter] =
+                        *capturedMirrorEstablished;
+                if (
+                    auto capturedMirrorGenerations =
+                        variable in lazyArgumentClassMirrorGenerations
+                )
+                    lazyArgumentClassMirrorGenerations[parameter] =
+                        *capturedMirrorGenerations;
                 return;
             }
         }
@@ -8691,6 +8771,8 @@ private struct Walker {
         lazyArgumentExpressions[parameter] = argumentExpression;
         lazyArgumentLocals[parameter] = callerLocals;
         lazyArgumentFrames[parameter] = callerFrame;
+        lazyArgumentClassMirrorEstablished[parameter] = callerMirrorEstablished;
+        lazyArgumentClassMirrorGenerations[parameter] = callerMirrorGenerations;
     }
 
     private Value runLazyArgument(VarDeclaration variable) {
@@ -8706,11 +8788,33 @@ private struct Walker {
         if (capturedFrame is null)
             throw new Exception("Unsupported eval call.");
 
+        auto capturedMirrorEstablished = variable in lazyArgumentClassMirrorEstablished;
+        if (capturedMirrorEstablished is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto capturedMirrorGenerations = variable in lazyArgumentClassMirrorGenerations;
+        if (capturedMirrorGenerations is null)
+            throw new Exception("Unsupported eval call.");
+
         auto savedLocals = locals;  // mutated below while evaluating the thunk
         auto savedFrame = _activationFrame;
+        auto savedMirrorEstablished = classMirrorEstablished;
+        auto savedMirrorGenerations = classMirrorGenerations;
         scope(exit) {
+            // Write whatever the thunk produced -- the SAME table mutated in
+            // place, or (see `lazyArgumentClassMirrorEstablished`'s own field
+            // comment) a fresh one if the caller's own field started `null`
+            // -- back through the captured pointers before restoring this
+            // activation's own fields, so the caller's NEXT read (after
+            // `runLazyArgument` returns) sees the decision the thunk's own
+            // `setLocal` actually recorded, not this activation's unrelated
+            // bookkeeping.
+            *(*capturedMirrorEstablished) = classMirrorEstablished;
+            *(*capturedMirrorGenerations) = classMirrorGenerations;
             locals = savedLocals;
             _activationFrame = savedFrame;
+            classMirrorEstablished = savedMirrorEstablished;
+            classMirrorGenerations = savedMirrorGenerations;
         }
 
         // No `.dup`: see the comment on `bindLazyFunctionParameter`. `locals`
@@ -8718,9 +8822,16 @@ private struct Walker {
         // and `_activationFrame` becomes the caller's own frame so a mutation
         // the thunk performs (`setLocal`) mirrors into the slot the caller
         // will actually read afterwards, instead of the callee's unrelated
-        // frame silently discarding it.
+        // frame silently discarding it. `classMirrorEstablished`/
+        // `classMirrorGenerations` swap the same way, through the captured
+        // pointers, so `setLocal`'s own `mirrorClassToFrame` call records its
+        // write/decline decision into the CALLER's bookkeeping instead of
+        // this activation's own (see `bindLazyFunctionParameter`'s header for
+        // why that divergence is unsafe).
         locals = *captured;
         _activationFrame = *capturedFrame;
+        classMirrorEstablished = *(*capturedMirrorEstablished);
+        classMirrorGenerations = *(*capturedMirrorGenerations);
         return runLazyArgumentExpression(*expression);
     }
 
@@ -10103,7 +10214,13 @@ private struct Walker {
         child.thisValue = receiver;
         child.hasThis = true;
         child.bindFunctionParameters(
-            function_, arguments, argumentExpressions, locals, _activationFrame,
+            function_,
+            arguments,
+            argumentExpressions,
+            locals,
+            _activationFrame,
+            &classMirrorEstablished,
+            &classMirrorGenerations,
         );
 
         try {
@@ -10178,7 +10295,13 @@ private struct Walker {
         forkPerFrameCellsInto(child);
         seedPointerTargetLocals(child);
         child.bindFunctionParameters(
-            call.f, arguments, argumentExpressions, locals, _activationFrame,
+            call.f,
+            arguments,
+            argumentExpressions,
+            locals,
+            _activationFrame,
+            &classMirrorEstablished,
+            &classMirrorGenerations,
         );
 
         try {
@@ -13566,6 +13689,8 @@ private struct Walker {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
+        lazyArgumentClassMirrorEstablished = child.lazyArgumentClassMirrorEstablished;
+        lazyArgumentClassMirrorGenerations = child.lazyArgumentClassMirrorGenerations;
         mergePerFrameCellsFrom(child);
         return child.thisValue;
     }

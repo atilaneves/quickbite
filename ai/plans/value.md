@@ -1250,6 +1250,34 @@ in parallel and never blocks it.
        binding, and a fresh activation's own frame starts with no entry —
        correctly "not yet established", the same way its frame slots start
        GC-zeroed.
+     - The premise above -- `classMirrorEstablished[variable]` only ever
+       changes alongside `locals[variable]`, because both are written by the
+       SAME `setLocal` call -- holds for every ordinary write, but not
+       across the one seam that runs `setLocal` against SOMEONE ELSE's
+       `locals`: a `lazy` argument's thunk. `runLazyArgument` runs the
+       thunk on the callee's own `Walker`, with `locals`/`_activationFrame`
+       swapped to the CALLER's live storage so a mutation inside the thunk
+       (e.g. rebinding a class-typed caller local) is visible to the caller
+       immediately (`bindLazyFunctionParameter`'s own header). A `setLocal`
+       reached from inside the thunk still calls `mirrorClassToFrame` on
+       `this` -- the CALLEE -- so its write/decline decision would land in
+       the callee's own `classMirrorEstablished`/`classMirrorGenerations`
+       unless those are swapped too, leaving the CALLER's map holding
+       whatever decision it recorded before the call while its real bytes
+       were just mutated underneath it: the same unsafe direction the
+       CONTRACT above forbids, reached through a decline instead of a
+       re-derived predicate. `runLazyArgument`/`bindLazyFunctionParameter`
+       therefore swap `classMirrorEstablished`/`classMirrorGenerations`
+       exactly like `locals`/`_activationFrame`, through captured POINTERS
+       to the caller's fields (`lazyArgumentClassMirrorEstablished`/
+       `lazyArgumentClassMirrorGenerations`) rather than the AA values
+       themselves -- an empty `bool[VarDeclaration]`/
+       `size_t[size_t][VarDeclaration]` is `null`, so a value copy would not
+       alias the caller's storage the way `Value[VarDeclaration]` aliasing
+       for `locals` relies on -- writing back through those pointers when
+       the thunk returns, and forwarding them the same way
+       `lazyArgumentLocals`/`lazyArgumentFrames` already do when a `lazy`
+       argument is itself re-forwarded into another `lazy` parameter.
      - One decline condition is a proven EXCEPTION to this contract, safe to
        re-derive at verify time: `identity in classObjectCells`
        (`classBodyShapeMatchesImpl`'s nested-field decline) is MONOTONIC — an
