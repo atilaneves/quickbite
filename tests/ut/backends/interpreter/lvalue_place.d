@@ -94,8 +94,9 @@ Expression lvalueTargetOfMethod(
 
 // The right-hand-side sibling of `lvalueTargetOf` above: a `SymOffExp` (DMD's
 // constant-offset address-of shape) is itself an rvalue -- the VALUE of
-// `&local`/`&arr[2]` -- never something assigned INTO, so its fixtures below
-// need the first assignment's RHS rather than its LHS.
+// `&local`/`&arr[2]` -- never something assigned INTO, so a fixture handing
+// one to `placeOfLvalue` directly needs the first assignment's RHS rather
+// than its LHS.
 Expression addressOfTargetOf(in string source, in string name) {
     auto moduleResult = parseSnippet(source);
     auto function_ = findFunction(moduleResult.module_, name);
@@ -389,40 +390,43 @@ unittest {
 }
 
 
-// The base case for `SymOffExp`: `&v` for a plain scalar local folds to a
-// `SymOffExp` with a zero byte offset (DMD's own `symbol.offset`, applied
-// verbatim) and a pointer-to-`int` static type, landing the place directly
-// on `v`'s own storage.
-@("placeOfLvalue.symOffExp.scalarLocalComposesZeroOffsetWithScalarRoundTrip")
+// The base case for a `SymOffExp` reached the only way production ever
+// reaches one -- RECURSIVELY, under a `PtrExp`. `*&p` is DMD's own shape for
+// a `ref` argument written that way (`optimize.d` folds `&p` to a
+// `SymOffExp` and stops at `keepLvalue` before folding the `PtrExp` away),
+// and the place it composes is `p`'s OWN storage at `p`'s own declared
+// type -- the address-of and the dereference cancel. A composition that
+// dereferences twice instead lands on whatever `p` happens to point AT,
+// which for a pointer local is a real, non-null address a caller would go
+// on to write through.
+@("placeOfLvalue.ptrExp.symOffOperandCancelsRatherThanDerefencingTwice")
 unittest {
-    auto target = addressOfTargetOf(
-        q{ void quickbiteLvalueSymOffScalar(int v) { int* p; p = &v; } },
-        "quickbiteLvalueSymOffScalar",
+    auto target = lvalueTargetOf(
+        q{ void quickbiteLvaluePtrSymOff(int* p) { *&p = null; } },
+        "quickbiteLvaluePtrSymOff",
     );
 
-    auto block = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-    auto place = placeOfLvalue(target, (variable) => block.address, (expr) => refuseEvalIndex(expr));
+    auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
+    auto pointerBlock = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.no);
+    *(cast(void**) pointerBlock.address) = pointee.address;
 
-    place.address.should == block.address;
+    auto place = placeOfLvalue(target, (variable) => pointerBlock.address, (expr) => refuseEvalIndex(expr));
 
-    int written = 15;
-    written = written * 3 + 4;
-    place.storeScalar(Value(written));
-    place.loadScalar.asLong.should == written;
+    place.address.should == pointerBlock.address;
+    (place.type.isTypePointer !is null).should == true;
 }
 
 
-// The centrepiece for `SymOffExp`'s non-zero-offset case: `&buf[2]` (a
-// constant-index address into a static-array local) folds to a `SymOffExp`
-// whose own `offset` is DMD's already-computed byte offset -- `2 *
-// int.sizeof` -- which `placeOfLvalue` must apply DIRECTLY to `buf`'s own
-// cell address rather than re-deriving it as an element index (`value.md`'s
-// Layout authority contract).
-@("placeOfLvalue.symOffExp.arrayElementAppliesDmdsOwnByteOffsetWithScalarRoundTrip")
+// The centrepiece for `SymOffExp`'s non-zero-offset case, again through the
+// recursive path: `*&buf[2]` carries a `SymOffExp` whose own `offset` is
+// DMD's already-computed byte offset -- `2 * int.sizeof` -- which must be
+// applied DIRECTLY to `buf`'s own cell address rather than re-derived as an
+// element index (`value.md`'s Layout authority contract).
+@("placeOfLvalue.ptrExp.symOffOperandAppliesDmdsOwnByteOffsetWithScalarRoundTrip")
 unittest {
-    auto target = addressOfTargetOf(
-        q{ void quickbiteLvalueSymOffElement(int[4] buf) { int* p; p = &buf[2]; } },
-        "quickbiteLvalueSymOffElement",
+    auto target = lvalueTargetOf(
+        q{ void quickbiteLvaluePtrSymOffElement(int[4] buf) { *&buf[2] = 0; } },
+        "quickbiteLvaluePtrSymOffElement",
     );
 
     auto block = NativeBlock.allocate(4 * int.sizeof, NativeBlock.Scan.no);
@@ -434,6 +438,74 @@ unittest {
     written = written * 5 + 6;
     place.storeScalar(Value(written));
     place.loadScalar.asLong.should == written;
+}
+
+
+// The other recursive path onto a `SymOffExp`: an `IndexExp` whose BASE is
+// one. `arr.ptr[1]` is the everyday shape that reaches here, and the
+// pointer it indexes is an rvalue -- there is no storage holding it for
+// `Place.index`'s own pointer case to read back out, so the stride applies
+// straight to the address the `SymOffExp` names.
+@("placeOfLvalue.indexExp.symOffBaseStepsFromTheAddressItNamesWithScalarRoundTrip")
+unittest {
+    auto target = lvalueTargetOf(
+        q{ void quickbiteLvalueIndexSymOff(int[4] arr) { arr.ptr[1] = 0; } },
+        "quickbiteLvalueIndexSymOff",
+    );
+
+    auto block = NativeBlock.allocate(4 * int.sizeof, NativeBlock.Scan.no);
+    auto place = placeOfLvalue(target, (variable) => block.address, (index) => 1);
+
+    (cast(size_t) place.address).should == cast(size_t) block.address + int.sizeof;
+
+    int written = 19;
+    written = written * 4 + 7;
+    place.storeScalar(Value(written));
+    place.loadScalar.asLong.should == written;
+}
+
+
+// The same `IndexExp`-over-`SymOffExp` path where following a stored
+// pointer instead of stepping from the named address is actually
+// observable: the element type is ITSELF a pointer, so `Place.index`'s
+// pointer case would read `a[1]`'s own stored contents and index from
+// THERE. `(&a[1])[0]` is `a[1]` itself.
+@("placeOfLvalue.indexExp.symOffBaseOverPointerElementsDoesNotFollowStoredPointer")
+unittest {
+    auto target = lvalueTargetOf(
+        q{ void quickbiteLvalueIndexSymOffPointers(int*[4] a) { (&a[1])[0] = null; } },
+        "quickbiteLvalueIndexSymOffPointers",
+    );
+
+    auto block = NativeBlock.allocate(4 * (void*).sizeof, NativeBlock.Scan.conservative);
+    auto stray = NativeBlock.allocate(4 * (void*).sizeof, NativeBlock.Scan.conservative);
+    *(cast(void**) (block.address + (void*).sizeof)) = stray.address;
+
+    auto place = placeOfLvalue(target, (variable) => block.address, (index) => 0);
+
+    (cast(size_t) place.address).should == cast(size_t) block.address + (void*).sizeof;
+}
+
+
+// A bare `SymOffExp` is an RVALUE -- the VALUE of `&v`, not a location --
+// so `placeOfLvalue` has no place to return for it and must refuse rather
+// than hand back the place of what it points at, which every recursive
+// caller would then dereference a second time.
+@("placeOfLvalue.stillUnsupported.bareSymOffExpRefuses")
+unittest {
+    auto target = addressOfTargetOf(
+        q{ void quickbiteLvalueSymOffBare(int v) { int* p; p = &v; } },
+        "quickbiteLvalueSymOffBare",
+    );
+
+    placeOfLvalue(
+        target,
+        (variable) => refuseResolveBase(variable),
+        (expr) => refuseEvalIndex(expr),
+    ).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
+        ~ "unsupported lvalue expression",
+    );
 }
 
 

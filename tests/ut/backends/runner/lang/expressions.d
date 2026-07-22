@@ -7236,3 +7236,77 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+
+// A `ref` argument written as an explicit dereference of an address-of binds
+// the VARIABLE, not what it points at. The reason this shape is worth its own
+// fixture is that DMD hands the call site it verbatim rather than folding it
+// back to a bare `VarExp`: `optimize.d`'s `visitPtr` folds `&p` down to a
+// `SymOffExp` and then returns at `keepLvalue` (true for a `ref` argument)
+// before folding the `PtrExp` away. So the interpreter's own lvalue-place
+// composition (`lvalue_place.placeOfLvalue`, reached from `impl.d`'s
+// `bindReferenceSlot`) meets a `PtrExp` over a `SymOffExp`, where the
+// address-of and the dereference must cancel rather than compose into two
+// dereferences of `p`'s slot.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "binds a `ref` argument written `*&p` to what `p` points at rather " ~
+        "than to `p` itself"),
+)) {
+    @("pointer.refArgumentThroughDerefOfAddressOfRebindsTheVariable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 42;
+            }
+
+            void rebind(ref int* q, int* target) {
+                q = target;
+            }
+
+            unittest {
+                int first = seed;
+                int second = 99;
+                int* p = &first;
+                rebind(*&p, &second);
+                assert(*p == 99);
+                assert(first == 42);
+            }
+        });
+    }
+}
+
+// The static-array sibling of the fixture above: `*&buf[2]` carries DMD's
+// own already-computed byte offset for element 2 in the `SymOffExp` it folds
+// to, which the `ref` bind must apply directly to `buf`'s own storage
+// (`ai/plans/value.md`'s Layout authority contract) rather than re-derive as
+// an element index.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "binds a `ref` argument written `*&buf[2]` to the array's first " ~
+        "element rather than to element 2"),
+)) {
+    @("pointer.refArgumentThroughDerefOfArrayElementAddressWritesThatElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 42;
+            }
+
+            void bump(ref int r) {
+                r = r + 1;
+            }
+
+            unittest {
+                int[4] buf;
+                buf[2] = seed;
+                bump(*&buf[2]);
+                assert(buf[2] == 43);
+                assert(buf[1] == 0);
+                assert(buf[3] == 0);
+            }
+        });
+    }
+}
