@@ -277,11 +277,11 @@ private struct Compiler {
             foreach (parameterIndex; 0 .. function_.parameters.length) {
                 auto parameter = (*function_.parameters)[parameterIndex];
                 const offset = layout.offsets[parameterIndex];
+                _capturedOffsets[parameter] = offset;
 
                 if (parameterIsLazy(parameter)) {
                     _lazyDelegateLocals[parameter] = offset;
                     _lazyDelegateDeclarations[parameter] = true;
-                    _capturedOffsets[parameter] = offset;
                     continue;
                 }
 
@@ -302,7 +302,6 @@ private struct Compiler {
                     _structLocals[parameter] = StructLocal(
                         offset, structDeclarationOf(parameter.type),
                     );
-                    _capturedOffsets[parameter] = offset;
                     continue;
                 }
 
@@ -4024,6 +4023,13 @@ private struct Compiler {
         if (function_.vthis is null)
             return null;
 
+        // A nested function with captured outer locals receives a closure
+        // context, even when DMD also reports the enclosing struct method's
+        // `this` through `vthis`. Do not consume that context as a struct
+        // receiver: the captured-variable paths need the hidden frame context.
+        if (hasCapturedOuterLocal(function_))
+            return null;
+
         auto enclosing = enclosingMethodOf(function_);
         if (enclosing is null)
             return null;
@@ -4034,6 +4040,13 @@ private struct Compiler {
         if (structDeclaration is null || structDeclaration.isNested)
             return null;
         return structDeclaration;
+    }
+
+    private bool hasCapturedOuterLocal(FuncDeclaration function_) {
+        foreach (variable; function_.outerVars)
+            if (variable.isThisDeclaration is null)
+                return true;
+        return false;
     }
 
     private bool needsNestedFrameContext(FuncDeclaration function_) {
@@ -4382,14 +4395,16 @@ private struct Compiler {
         in ushort capturedOffset,
     ) {
         const type = scalarType(declaration.type);
-        const destination = allocate(type);
+        const isString = isStringType(declaration.type);
+        const valueSize = isString ? stringSliceSize : size(type);
+        const destination = allocateBytes(valueSize, isString ? 4 : valueSize);
         _code ~= Instruction(
             Op.frameLoad,
             destination,
             capturedFrameIndex(capturedOffset),
-            cast(ushort) size(type),
+            cast(ushort) valueSize,
         );
-        return Operand(destination, type);
+        return Operand(destination, type, isString);
     }
 
     private void storeCapturedLocal(
@@ -4398,11 +4413,14 @@ private struct Compiler {
         in Operand value,
     ) {
         const type = scalarType(declaration.type);
+        const valueSize = isStringType(declaration.type)
+            ? stringSliceSize
+            : size(type);
         _code ~= Instruction(
             Op.frameStore,
             value.offset,
             capturedFrameIndex(capturedOffset),
-            cast(ushort) size(type),
+            cast(ushort) valueSize,
         );
     }
 
