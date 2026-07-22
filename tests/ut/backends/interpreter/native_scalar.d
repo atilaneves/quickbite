@@ -6,7 +6,7 @@ import ut.backends.interpreter: enumTypeOf;
 import quickbite.backends.interpreter.native_scalar:
     isNativeScalarType, readScalar, writeScalar;
 import quickbite.backends.interpreter.layout: typeByteSize;
-import quickbite.lang: Value;
+import quickbite.backends.interpreter.runtime_value: Value;
 import dmd.mtype: Type;
 
 private:

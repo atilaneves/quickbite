@@ -186,11 +186,11 @@ package bool isStdConvText(imported!"dmd.func".FuncDeclaration function_) {
         declaration.packages[0].toString == "std";
 }
 
-package imported!"quickbite.lang".Value stdConvTextCall(
-    in imported!"quickbite.lang".Value[] arguments,
+package imported!"quickbite.backends.interpreter.runtime_value".Value stdConvTextCall(
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     in bool[] rawStringArguments,
 ) @safe pure {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     string rendered;
     foreach (index, ref argument; arguments)
@@ -200,7 +200,7 @@ package imported!"quickbite.lang".Value stdConvTextCall(
 }
 
 private string stdConvTextArgument(
-    in imported!"quickbite.lang".Value argument,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value argument,
     in bool rawStringArgument,
 ) @safe pure {
     // `rawStringArgument` comes from the original D expression type; after
@@ -226,9 +226,9 @@ package size_t interpreterBuiltinArgumentCount(
     }
 }
 
-package imported!"quickbite.lang".Value unaryBuiltinCall(
+package imported!"quickbite.backends.interpreter.runtime_value".Value unaryBuiltinCall(
     in InterpreterBuiltin builtin,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) {
     import std.math: mathFabs = fabs;
     import std.math: mathIsInfinity = isInfinity;
@@ -255,10 +255,10 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
     throw new Exception("Unsupported interpreter unary builtin call.");
 }
 
-package imported!"quickbite.lang".Value binaryBuiltinCall(
+package imported!"quickbite.backends.interpreter.runtime_value".Value binaryBuiltinCall(
     in InterpreterBuiltin builtin,
-    in imported!"quickbite.lang".Value lhs,
-    in imported!"quickbite.lang".Value rhs,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value lhs,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value rhs,
 ) {
     import std.math: mathPow = pow;
 

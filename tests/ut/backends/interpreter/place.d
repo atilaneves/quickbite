@@ -8,7 +8,7 @@ import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, stru
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
 import quickbite.backends.interpreter.frame_block: FrameBlock;
-import quickbite.lang: Value;
+import quickbite.backends.interpreter.runtime_value: Value;
 
 private:
 

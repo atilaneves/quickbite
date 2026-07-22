@@ -906,16 +906,14 @@ in parallel and never blocks it.
    consumes its returned string. Do not retain `Value` or render a dummy
    `void` result just to reuse the evaluator path.
 
-3. Extract the tree walker's execution-result carrier into its package,
-   independently of the shared type's final deletion. Migrate every
-   data-pointer producer and consumer to its one host-address arm before
-   the binding-authority switch; function and delegate handles remain
-   separate non-data categories. Do not reproduce a display-oriented
-   general-purpose `Value` privately: the carrier exists only for
-   recursive expression/function execution and uses immediate scalar
-   results plus the native handles, locations, callables, and metadata
-   that execution actually requires. Once no backend depends on
-   `quickbite.lang.Value` as a cross-backend type, delete the shared struct
+3. Reduce the interpreter-private `RuntimeValue` carrier to expression
+   execution only, then migrate every data-pointer producer and consumer to
+   its one host-address arm before the binding-authority switch; function and
+   delegate handles remain separate non-data categories. Do not retain its
+   display-oriented or recursive aggregate arms as a private replacement for
+   shared `Value`: expression results need immediate scalars, native handles,
+   locations, callables, and execution metadata only. Once no backend depends
+   on `quickbite.lang.Value` as a cross-backend type, delete the shared struct
    and its unit tests together. This deletion is decision 15's completion
    signal.
 
@@ -948,8 +946,9 @@ in parallel and never blocks it.
      assignment target and a `SymOffExp` naming a function; a
      captured-variable slot cannot resolve a relay through a
      non-referencing intermediate activation.
-   - The carrier extraction in item 3 precedes the authority switch: every
-     data-pointer producer and consumer must use its one host-address arm;
+   - The carrier's host-address migration in item 3 precedes the authority
+     switch: every data-pointer producer and consumer must use its one
+     host-address arm;
      function/delegate handles stay separate non-data categories. Then move
      the whole local-storage path together: pointer creation and dereference
      must name frame bytes; `ref`/`out` and captured bindings must carry their

@@ -9,13 +9,12 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends.evaluator:
         Evaluator,
         EvalResult,
-        ReplSession,
-        displayString;
+        ReplSession;
     import quickbite.backends.interpreter.frame_block: FrameBlock;
     import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
     import quickbite.backends.interpreter.module_table: ModuleTable;
     import quickbite.backends.interpreter.object_table: ObjectTable;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
@@ -44,7 +43,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             auto layout = cachedFrameLayout(function_);
             walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(function_.fbody);
-            return EvalResult(displayString(walker.result, function_));
+            return EvalResult(interpreterDisplayString(walker.result, function_));
         } catch (Exception exception) {
             // The interpreter's own message, verbatim: rewriting it through
             // DMD's CTFE engine (as an earlier revision did) replaced the
@@ -116,6 +115,23 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     return isArrayType(type);
 }
 
+private string interpreterDisplayString(
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.frontend.dmd.types: isCharacterArrayType;
+
+    if (value == Value.void_)
+        return "";
+
+    auto returnType = function_.type is null ? null : function_.type.nextOf;
+    if (isCharacterArrayType(returnType))
+        return `"` ~ value.asCharArrayString ~ `"` ~ value.stringTypeAnnotation;
+
+    return value.toString;
+}
+
 private enum LoopControl {
     none,
     break_,
@@ -145,9 +161,9 @@ private struct FieldPathKey {
 }
 
 private class InterpretedException: Exception {
-    public imported!"quickbite.lang".Value object;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value object;
 
-    public this(in imported!"quickbite.lang".Value object) {
+    public this(in imported!"quickbite.backends.interpreter.runtime_value".Value object) {
         const message = object.classFieldNamed("msg").asCharArrayString;
         super(message);
         this.object = object;
@@ -171,8 +187,8 @@ private struct Walker {
     import quickbite.backends.interpreter.module_table: ModuleTable;
     import quickbite.backends.interpreter.object_table: ObjectTable;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.frontend.dmd.values: defaultValue;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_values: defaultValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     private Throwable[const(void)*] nativeThrowableRoots;
 
@@ -1465,7 +1481,7 @@ private struct Walker {
     //
     // The fix declines here rather than resolving the object's actual
     // dynamic `ClassDeclaration` to size against: `value`'s only dynamic
-    // information is `classTypeName`, a NAME (`quickbite.lang.Value`
+    // information is `classTypeName`, a NAME (`quickbite.backends.interpreter.runtime_value.Value`
     // carries no `ClassDeclaration` -- it is DMD-free by design), and the
     // walker's own name-to-declaration resolvers
     // (`classDeclarationByQualifiedName` and friends) search by lexical
@@ -2140,7 +2156,7 @@ private struct Walker {
         in string className,
         in const(void)* nativeObjectPointer,
     ) const {
-        import quickbite.frontend.dmd.values: defaultValue;
+        import quickbite.backends.interpreter.runtime_values: defaultValue;
         import quickbite.backends.interpreter.layout: classFields;
         import dmd.dclass: ClassDeclaration;
 
@@ -2602,7 +2618,7 @@ private struct Walker {
     private Value runExpression(imported!"dmd.expression".Expression expression) {
         import dmd.astenums: TY;
         import dmd.tokens: EXP;
-        import quickbite.frontend.dmd.values: integerValue, realValue;
+        import quickbite.backends.interpreter.runtime_values: integerValue, realValue;
 
         if (auto integer = expression.isIntegerExp) {
             if (integer.type !is null && integer.type.ty == TY.Tenum)
@@ -2631,7 +2647,7 @@ private struct Walker {
         }
 
         if (auto string_ = expression.isStringExp) {
-            import quickbite.frontend.dmd.string_literals: stringValue;
+            import quickbite.backends.interpreter.runtime_string_literals: stringValue;
 
             return stringValue(string_);
         }
@@ -5737,7 +5753,7 @@ private struct Walker {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType, readScalar;
             import quickbite.backends.interpreter.native_struct: NativeStruct;
-            import quickbite.frontend.dmd.values: defaultValue;
+            import quickbite.backends.interpreter.runtime_values: defaultValue;
 
             auto target = pointer.e1.type.toBasetype.nextOf.toBasetype;
             const targetSize = typeByteSize(target);
@@ -9271,7 +9287,7 @@ private struct Walker {
     }
 
     private Value runPowExpression(imported!"dmd.expression".PowExp pow) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
@@ -9296,7 +9312,7 @@ private struct Walker {
     private Value runIntegerComplementExpression(
         imported!"dmd.expression".ComExp complement,
     ) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
@@ -9324,7 +9340,7 @@ private struct Walker {
         in Value rightValue,
         in string operator,
     ) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
@@ -10295,7 +10311,7 @@ private struct Walker {
         imported!"dmd.mtype".Type type,
         in Value value,
     ) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastValue = castValue,
             CastTarget,
             tryCastTarget;
@@ -12043,7 +12059,7 @@ private struct Walker {
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
         import quickbite.frontend.dmd.types: isPointerType;
@@ -12102,7 +12118,7 @@ private struct Walker {
 
         if (auto integer = cast_.e1.isIntegerExp)
             if (integer.type !is null && integer.type.ty == TY.Tenum) {
-                import quickbite.frontend.dmd.values: castIntegerValue;
+                import quickbite.backends.interpreter.runtime_values: castIntegerValue;
 
                 return castIntegerValue(integer, type.ty);
             }
@@ -12233,7 +12249,7 @@ private struct Walker {
     }
 
     private Value boolCastValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
@@ -14483,8 +14499,8 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
 }
 
 
-private bool isTruthy(in imported!"quickbite.lang".Value value) {
-    import quickbite.lang: Value;
+private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     if (value == Value.null_)
         return false;
@@ -14524,11 +14540,11 @@ private bool returnsRef(imported!"dmd.func".FuncDeclaration function_) {
 // The `this` a native constructor initialises: the struct's default `.init`.
 // The variable being constructed has no usable value yet, so the evaluated
 // receiver is not a struct (mirrors runMemberFunction's ctor seeding).
-private imported!"quickbite.lang".Value nativeConstructorReceiver(
+private imported!"quickbite.backends.interpreter.runtime_value".Value nativeConstructorReceiver(
     imported!"dmd.func".FuncDeclaration function_,
-    in imported!"quickbite.lang".Value receiver,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
 ) {
-    import quickbite.frontend.dmd.values: defaultValue;
+    import quickbite.backends.interpreter.runtime_values: defaultValue;
 
     auto structDecl = function_.parent is null
         ? null
@@ -14537,12 +14553,12 @@ private imported!"quickbite.lang".Value nativeConstructorReceiver(
 }
 
 
-private imported!"quickbite.lang".Value classDefaultValue(
+private imported!"quickbite.backends.interpreter.runtime_value".Value classDefaultValue(
     imported!"dmd.dclass".ClassDeclaration class_,
     in size_t identity = 0,
 ) {
-    import quickbite.frontend.dmd.values: defaultValue;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_values: defaultValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import quickbite.backends.interpreter.layout: classFields;
 
     string[] fieldNames;
@@ -14916,15 +14932,15 @@ private struct StructArrayFieldAliases {
 
 private struct AssocArraySlotAlias {
     public imported!"dmd.declaration".VarDeclaration source;
-    public imported!"quickbite.lang".Value key;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value key;
 }
 
 
 private struct RuntimeDelegate {
     public imported!"dmd.func".FuncDeclaration function_;
     public size_t functionPointerId;
-    public imported!"quickbite.lang".Value contextPointer;
-    public imported!"quickbite.lang".Value receiver;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value contextPointer;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value receiver;
     public bool hasReceiver;
 }
 

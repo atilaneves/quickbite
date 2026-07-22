@@ -65,14 +65,14 @@ private:
 // nothing else in the codebase would recognise. `null` (the default, for
 // the majority of call sites whose place holds no class at all) makes the
 // class arm decline rather than guess.
-public imported!"quickbite.lang".Value readValue(
+public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     size_t delegate(void* bodyAddress) @safe identityOfObjectBody = null,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         staticArrayLength, enumMemberQualifiedName, typeByteSize;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     auto type = place.type;
 
@@ -204,14 +204,14 @@ public imported!"quickbite.lang".Value readValue(
 // for why this module must not mint one itself. A caller that supplies
 // none has no class namespace to speak of, so this declines rather than
 // producing a `Value.classValue` whose identity nothing can resolve.
-private imported!"quickbite.lang".Value readClassValue(
+private imported!"quickbite.backends.interpreter.runtime_value".Value readClassValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     bool[size_t] visiting,
     size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
 ) @safe {
     import quickbite.backends.interpreter.layout:
         classFields, classQualifiedName, classHierarchyNames, fieldName;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     // `place.deref` follows this place's own stored reference and keeps
     // the class type, giving a place at the object body's own address
@@ -306,7 +306,7 @@ public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
 // `writeValue` to throw after a partial recursive write.
 public bool valueMatchesPlace(
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     if (!isPlaceComposable(type))
         return false;
@@ -320,12 +320,12 @@ public bool valueMatchesPlace(
 // re-walking every nested aggregate at each leaf.
 private bool valueMatchesComposablePlace(
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         declaredType, staticArrayLength, structFields;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     if (isNativeScalarType(type))
         return value.isNumericScalar || value.isCharacter;
@@ -476,13 +476,13 @@ in (length == real.sizeof)
 // `Value` for a union (`impl.d`'s `withUnionFieldWrite`, which likewise
 // stores a union's `Value` as `Value.structValue` with one entry per
 // declared member, never a smaller "only the live member" shape).
-private imported!"quickbite.lang".Value structValueAt(
+private imported!"quickbite.backends.interpreter.runtime_value".Value structValueAt(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeStruct structType,
     size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
 ) @safe {
     import quickbite.backends.interpreter.layout: structFields;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     Value[] fields;
     foreach (field; structFields(structType))
@@ -534,12 +534,12 @@ private imported!"quickbite.lang".Value structValueAt(
 // shared codec.
 public void writeValue(
     imported!"quickbite.backends.interpreter.place".Place place,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         structFields, staticArrayLength, typeByteSize;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     auto type = place.type;
 
@@ -616,7 +616,7 @@ public void writeValue(
 // is `isNativePointer` or `Value.null_`, so this never reaches
 // `asNativePointer`'s own throwing arm -- it always returns a real host
 // address, or `null`.
-private void* nativePointerAddress(in imported!"quickbite.lang".Value value) @trusted {
+private void* nativePointerAddress(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @trusted {
     return value.asNativePointer;
 }
 
@@ -678,12 +678,12 @@ private void* nativePointerAddress(in imported!"quickbite.lang".Value value) @tr
 private void writeSliceValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeDArray sliceType,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     const length = value == Value.null_ ? 0 : value.length;
 
@@ -727,7 +727,7 @@ private void writeSliceValue(
 private void writeUnionValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeStruct unionType,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     import quickbite.backends.interpreter.layout: structFields;
 
@@ -975,7 +975,7 @@ private bool writeCoversWholeType(imported!"dmd.mtype".Type type) @safe {
 // tests) still terminates rather than overflowing the stack.
 public void writeClassBody(
     imported!"quickbite.backends.interpreter.place".Place bodyPlace,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     void* delegate(size_t identity, imported!"dmd.dclass".ClassDeclaration class_) @safe
         resolveObjectBody,
 ) @safe {
@@ -984,14 +984,14 @@ public void writeClassBody(
 
 private void writeClassBodyImpl(
     imported!"quickbite.backends.interpreter.place".Place bodyPlace,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     void* delegate(size_t identity, imported!"dmd.dclass".ClassDeclaration class_) @safe
         resolveObjectBody,
     bool[size_t] visiting,
 ) @safe {
     import quickbite.backends.interpreter.layout: classFields;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     auto classType = bodyPlace.type.isTypeClass;
     if (classType is null)

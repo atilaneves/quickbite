@@ -12,7 +12,7 @@ import quickbite.backends.interpreter.layout:
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar;
 import quickbite.backends.interpreter.object_table: ObjectTable;
-import quickbite.lang: Value;
+import quickbite.backends.interpreter.runtime_value: Value;
 import dmd.dclass: ClassDeclaration;
 import dmd.mtype: Type;
 import dmd.typesem: sarrayOf, pointerTo;

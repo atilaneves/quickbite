@@ -193,7 +193,7 @@ public struct Place {
     // grows a second scalar<->bytes codec. Only a native scalar type
     // (`native_scalar.isNativeScalarType`) is legal here; a non-scalar
     // place refuses rather than guessing at a byte interpretation.
-    public imported!"quickbite.lang".Value loadScalar() @safe {
+    public imported!"quickbite.backends.interpreter.runtime_value".Value loadScalar() @safe {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType, readScalar;
         import quickbite.backends.interpreter.layout: typeByteSize;
 
@@ -210,7 +210,7 @@ public struct Place {
     // place's address at this place's own static type, via `native_scalar.
     // writeScalar`. Refuses the same way `loadScalar` does for a
     // non-scalar place.
-    public void storeScalar(in imported!"quickbite.lang".Value value) @safe {
+    public void storeScalar(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @safe {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType, writeScalar;
         import quickbite.backends.interpreter.layout: typeByteSize;
 
