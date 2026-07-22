@@ -1616,10 +1616,7 @@ static foreach (backend; Matrix!()) {
 
 // DMD emits the char[16] default init as a sparse ArrayLiteralExp: every
 // element null, the char.init value carried in `basis`.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "static-array struct field storage does not support a sparse array-literal initializer"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.staticCharArrayFieldDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

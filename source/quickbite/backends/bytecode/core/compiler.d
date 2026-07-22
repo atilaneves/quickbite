@@ -3913,6 +3913,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto literal = arrayLiteralOf(element)) {
+            compileStaticArrayLiteral(fieldOffset, fieldType, literal);
+            return;
+        }
+
         // `S(seed)` broadcasts a scalar into all elements of the field.
         if (element.type.toBasetype.ty != TY.Tsarray) {
             const value = compileExpression(element);
@@ -9286,7 +9291,10 @@ private struct Compiler {
         const elementSize = cast(uint) size(elementScalar);
 
         foreach (elementIndex; 0 .. literal.elements.length) {
-            const value = compileExpression((*literal.elements)[elementIndex]);
+            auto element = (*literal.elements)[elementIndex];
+            const value = compileExpression(
+                element is null ? literal.basis : element,
+            );
             if (value.type != elementScalar)
                 throw new Exception(text(
                     "Unsupported static array literal element in bytecode core: ",
@@ -12061,12 +12069,13 @@ private struct Compiler {
             rhs.type.toBasetype.ty != TY.Tarray)
             return false;
 
-        // Two immutable character arrays use their compact string descriptors
-        // and retain string diagnostics below. A mutable character array and a
-        // string literal instead compare as ordinary slices: materialising the
-        // literal into a heap-backed descriptor gives both operands the same
-        // native-layout representation.
-        if (isStringType(lhs.type) && isStringType(rhs.type))
+        // Two compact string descriptors retain their string diagnostics below.
+        // A cast may present a mutable array as a read-only character array, so
+        // preserve its native descriptor instead of classifying it by the cast
+        // type alone.
+        if (isStringType(lhs.type) && isStringType(rhs.type) &&
+            dynamicArrayDescriptorOrNull(lhs) is null &&
+            dynamicArrayDescriptorOrNull(rhs) is null)
             return false;
 
         const elementType = dynamicArrayElementType(lhs.type);
