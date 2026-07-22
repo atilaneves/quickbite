@@ -141,6 +141,53 @@ public struct Place {
         );
     }
 
+    // The write side of `deref`'s class case, and now also of a pointer
+    // place's own slot: stores `reference` -- a class object body's own
+    // address, a pointer's own host address, or `null` -- as the
+    // reference/pointer this place's own address holds. A caller here
+    // already knows the address to store (an `object_table.ObjectTable`
+    // lookup for a class, or a boxed `Value`'s own host address for a
+    // pointer -- `place_value.writeValue`'s pointer arm, the call site that
+    // retires the "no call site yet" gap this comment used to record)
+    // rather than one following it FROM somewhere else. A stored class
+    // reference or pointer value is itself just a pointer-width bit
+    // pattern, the same width `deref`'s class case and `index`'s pointer
+    // case already read back out via `readStoredPointer` -- this is that
+    // read's exact inverse. Only a pointer or class place is legal here;
+    // every other type is refused.
+    //
+    // A live GC pointer stored into a destination the collector does not
+    // scan is the same corruption `native_array.NativeArray.
+    // writeSliceHeader(void*)` refuses for a slice header -- the stored
+    // address becomes invisible to the GC, so its target can be collected
+    // while the guest still reaches it through this place -- so this
+    // refuses it on the same terms, reading both facts mechanically
+    // (`core.memory.GC.addrOf`/`GC.getAttr`, `referenceIsScanned` below)
+    // rather than from any caller-supplied label. Like that one, this never
+    // fires for a legitimate call site: every destination a `Place` is
+    // composed from (a frame slot, a struct/class body, an array element)
+    // whose type transitively contains a pointer or class reference was
+    // allocated `NativeBlock.Scan.conservative` for exactly that reason,
+    // per DMD's own `hasPointers` (`value.md`'s Containers contract). A
+    // `null` reference and a non-GC (FFI/foreign) address are both fine
+    // anywhere: there is nothing for the collector to lose track of.
+    public void storeReference(void* reference) @safe {
+        if (_type.isTypePointer is null && _type.isTypeClass is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.storeReference: "
+                ~ "only a pointer or class place can store a reference",
+            );
+
+        if (referenceIsGcOwned(reference) && !destinationIsScanned(_address))
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.storeReference: "
+                ~ "this place is not scanned by the GC, but `reference` is a "
+                ~ "live GC pointer",
+            );
+
+        writeStoredPointer(_address, reference);
+    }
+
     // Reads the scalar at this place's address, at this place's own
     // static type, via `native_scalar.readScalar` -- this primitive never
     // grows a second scalar<->bytes codec. Only a native scalar type
@@ -231,4 +278,41 @@ private ubyte[] placeBytes(void* address, in size_t length) pure nothrow @truste
 // `placeAdd` already performs on any other address.
 private void* readStoredPointer(void* address) pure nothrow @trusted {
     return *cast(void**) address;
+}
+
+
+// Whether `reference` is an address the GC owns, so that storing it
+// somewhere unscanned would genuinely lose it -- `GC.addrOf` resolves a GC
+// address to its own allocation's base and answers `null` for foreign
+// memory and for `null` itself. The source-side half of `storeReference`'s
+// check, mirroring `native_array.d`'s identical `GC.addrOf(_block.address)`
+// test. `GC.addrOf` is not `@safe`; this is the `@trusted` boundary.
+private bool referenceIsGcOwned(void* reference) @trusted {
+    import core.memory: GC;
+
+    return GC.addrOf(reference) !is null;
+}
+
+
+// The destination-side half: whether `address` sits inside a block the GC
+// actually scans. Only a resolved GC block WITHOUT the `NO_SCAN` attribute
+// counts, matching `NativeBlock.Scan.conservative`; foreign memory and an
+// explicitly `NO_SCAN` block both answer `false`, matching `Scan.no`. The
+// same derivation as `native_array.d`'s own `destinationIsScanned`, kept
+// here rather than shared because `place.d` deliberately depends on
+// `native_array` only for slice-header layout, not the other way round.
+private bool destinationIsScanned(void* address) @trusted {
+    import core.memory: GC;
+
+    const base = GC.addrOf(address);
+    return base !is null && (GC.getAttr(base) & GC.BlkAttr.NO_SCAN) == 0;
+}
+
+
+// The write side of `readStoredPointer`: writing a pointer value through a
+// `void**` reinterpret is not `@safe` either. This is `Place.
+// storeReference`'s `@trusted` boundary, mirroring `readStoredPointer`
+// above exactly.
+private void writeStoredPointer(void* address, void* reference) pure nothrow @trusted {
+    *cast(void**) address = reference;
 }

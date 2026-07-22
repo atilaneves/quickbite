@@ -1866,6 +1866,440 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `frame_layout`'s reference slot for a `ref`/`out` parameter (`value.md`'s
+// Remaining work item 5) composes the caller-side address of a `ref`
+// argument's own lvalue at bind time and stores it in the callee's frame,
+// purely as an internal, bind-time-verified shadow -- authority stays
+// boxed, so every fixture below only re-confirms `SystemLinker`-oracle
+// behaviour that already worked, now exercised through the new wiring.
+static foreach (backend; Matrix!()) {
+    @("refArgument.scalarParameterMutatedByCallee." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void increment(ref int x) {
+                x = x + 1;
+            }
+
+            unittest {
+                int value = 41;
+                increment(value);
+                assert(value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("refArgument.structParameterMutatedByCallee." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            void moveBy(ref Point p, int dx, int dy) {
+                p.x = p.x + dx;
+                p.y = p.y + dy;
+            }
+
+            unittest {
+                Point p = Point(1, 2);
+                moveBy(p, 10, 20);
+                assert(p.x == 11);
+                assert(p.y == 22);
+            }
+        });
+    }
+}
+
+// The caller-side base resolver (`impl.d`'s `callerReferenceBase`) must
+// resolve a `ref` argument's dataseg (`__gshared`) root variable through
+// the shared `moduleTable`, not the caller's own `_activationFrame` (a
+// dataseg variable owns no frame slot at all -- `frame_layout.
+// isAliasingLocal`). `Ctfe` cannot read or write dataseg storage at all
+// (compile-time execution has no such storage to access, the same
+// pre-existing limitation `dataseg.moduleScalarAndStructMirroredAcrossWrites`
+// in expressions.d already pins); `Bytecode` refuses a dataseg variable as
+// a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: counter"),
+)) {
+    @("refArgument.datasegVariableArgument." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int counter;
+
+            void bump(ref int x) {
+                x = x + 1;
+            }
+
+            unittest {
+                counter = 5;
+                bump(counter);
+                assert(counter == 6);
+            }
+        });
+    }
+}
+
+// An indexed element (`IndexExp` over a constant index -- `impl.d`'s
+// `constantIndex` only accepts DMD's own already-folded integer constant,
+// never a runtime-evaluated one, to avoid evaluating a side-effecting
+// index a second time) composes through `lvalue_place.placeOfLvalue`'s
+// existing `IndexExp` shape. `Bytecode` answers a wrong value rather than
+// refusing, pinned below.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.diverges,
+        "a write through a `ref` argument written `arr[1]` never reaches " ~
+        "element 1"),
+)) {
+    @("refArgument.indexedElementArgumentComposesReferenceSlot." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int[3] arr = [1, 2, 3];
+                setTo(arr[1], 99);
+                assert(arr[0] == 1);
+                assert(arr[1] == 99);
+                assert(arr[2] == 3);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes: Bytecode's own actual
+// answer, hand-listed because no `SystemLinker`-oracle expectation applies
+// to it. Element 1 still holds its initializer after the write, while the
+// elements either side of it are untouched.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("refArgument.indexedElementArgumentLeavesTheElementUnwritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int[3] arr = [1, 2, 3];
+                setTo(arr[1], 99);
+                assert(arr[0] == 1);
+                assert(arr[1] == 99);
+                assert(arr[2] == 3);
+            }
+        }).shouldThrowWithMessage("2 != 99");
+    }
+}
+
+// A struct field (`DotVarExp`) composes through `lvalue_place.
+// placeOfLvalue`'s existing field shape.
+static foreach (backend; Matrix!()) {
+    @("refArgument.fieldArgumentComposesReferenceSlot." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { int value; }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                Holder h;
+                setTo(h.value, 77);
+                assert(h.value == 77);
+            }
+        });
+    }
+}
+
+// A ternary/conditional expression (`CondExp`) is a legal `ref` argument
+// in D (its lvalue-ness follows whichever branch is taken), but an lvalue
+// shape `lvalue_place.placeOfLvalue` does not compose (it throws, by its
+// own documented contract -- "every other lvalue shape refuses rather
+// than guesses"); `impl.d`'s `bindReferenceSlot` must decline silently --
+// leaving the reference slot unfilled -- rather than propagate that
+// throw, and boxed authority (unaffected either way) must still produce
+// the correct, oracle-matching result. `Bytecode` answers a wrong value
+// rather than refusing, pinned below.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.diverges,
+        "a write through a `ref` argument written `cond ? a : b` never " ~
+        "reaches `a`"),
+)) {
+    @("refArgument.nonComposingShapeArgumentDeclinesSilently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int a = 1;
+                int b = 2;
+                bool cond = true;
+                setTo(cond ? a : b, 55);
+                assert(a == 55);
+                assert(b == 2);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes: Bytecode's own actual
+// answer, hand-listed because no `SystemLinker`-oracle expectation applies
+// to it. `a` still holds its initializer after the call.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("refArgument.nonComposingShapeArgumentLeavesTheTargetUnwritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int a = 1;
+                int b = 2;
+                bool cond = true;
+                setTo(cond ? a : b, 55);
+                assert(a == 55);
+                assert(b == 2);
+            }
+        }).shouldThrowWithMessage("1 != 55");
+    }
+}
+
+// Recursion forwards the SAME `ref` parameter into the next activation's
+// own `ref` argument: `impl.d`'s `callerReferenceBase` must resolve a
+// `VarExp` that is itself the caller's own `ref` parameter by reading
+// THROUGH its already-filled reference slot (`FrameBlock.
+// hasReferenceSlot`/`referenceSlotValue`), not by treating the slot's own
+// address as the target -- otherwise every recursive level would bind to
+// the slot one level up instead of the original root storage.
+static foreach (backend; Matrix!()) {
+    @("refArgument.recursionForwardsRefParameterAcrossActivations." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void incAndRecurse(ref int x, int depth) {
+                x = x + 1;
+                if (depth > 0)
+                    incAndRecurse(x, depth - 1);
+            }
+
+            unittest {
+                int value = 0;
+                incAndRecurse(value, 3);
+                assert(value == 4);
+            }
+        });
+    }
+}
+
+// A class-typed receiver's field as a `ref` argument, where the class local's
+// own mirror DECLINED (`C` has a non-composable `int[]` field, so
+// `mirrorClassToFrame` never establishes a body for it and the frame slot
+// stays GC-zeroed). `impl.d`'s `bindReferenceSlot` composed
+// `receiver.deref.field(x)` off that zeroed slot -- `null + fieldOffset`,
+// non-null and so past the `address is null` guard -- and then dereferenced
+// it in `assertReferenceBind`: SIGSEGV on a perfectly legal program.
+// Composition must consult what the write side actually DID for the base
+// variable, not assume a slot it never filled. `Bytecode` refuses a class
+// field as a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: holder.value"),
+)) {
+    @("refArgument.classFieldArgumentWithDeclinedClassMirror." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int[] elements;
+                int value;
+            }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                auto holder = new Holder;
+                setTo(holder.value, 88);
+                assert(holder.value == 88);
+            }
+        });
+    }
+}
+
+// The boxed-carrier sibling of the fixture above: a pointer to a struct local
+// whose own mirror never established storage the composition can reach, with
+// the field reached through the pointer (`PtrExp`/`DotVarExp`). Same rule --
+// the address is composed from a slot the write side may never have filled,
+// so composition must decline rather than deref whatever the slot happens to
+// hold. `Bytecode` refuses a pointer-carried field as a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: (*carrier).value"),
+)) {
+    @("refArgument.pointerCarriedFieldArgumentComposesSafely." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] elements;
+                int value;
+            }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* carrier = &holder;
+                setTo(carrier.value, 66);
+                assert(holder.value == 66);
+            }
+        });
+    }
+}
+
+// A cell-promoted local (address taken, so `scalarCells` -- not the frame slot
+// -- is authoritative for it) passed as a `ref` argument. The frame slot is
+// deliberately left stale by `writeBackLocalPointerTargets`, while the boxed
+// argument is read THROUGH the cell, so bind-time verification compared a
+// stale slot against a fresh value and asserted "reference slot bind diverged
+// from boxed argument" on a correct program. Verification must skip exactly
+// where `assertFrameMirror` already skips.
+static foreach (backend; Matrix!()) {
+    @("refArgument.cellPromotedLocalArgumentSkipsBindVerification." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(int* q) {
+                *q = 2;
+            }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int value = 1;
+                int* pointer = &value;
+                bump(pointer);
+                assert(value == 2);
+                setTo(value, 3);
+                assert(value == 3);
+            }
+        });
+    }
+}
+
+// Non-crashing sibling of the declined-mirror crash above: the class local's
+// mirror was established, then DECLINED later (two bindings referencing the
+// same object make the class identity aliased), so the object body stops being
+// updated and holds a stale field. Composing an address off that body and
+// verifying against the boxed argument then fires "reference slot bind
+// diverged from boxed argument" on a correct program: the verify decision must
+// re-derive the write side's own current decline, not merely "was it ever
+// established". `Bytecode` refuses a class field as a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: first.value"),
+)) {
+    @("refArgument.classFieldArgumentAfterAliasedIdentityDecline." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int value;
+            }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                auto first = new Holder;
+                first.value = 1;
+                auto second = first;
+                first.value = 2;
+                setTo(first.value, 3);
+                assert(first.value == 3);
+                assert(second.value == 3);
+            }
+        });
+    }
+}
+
+// The cross-activation sibling of the fixture above: `parent`'s mirror is
+// established and no cell owns it, so bind-time composition happily walks
+// through its body -- but the nested `child` body it reaches is SHARED, and
+// `bump`'s own parameter mirror already rewrote it to 7 in an activation
+// that has since returned, while the caller's boxed `parent` still says 6.
+// Composition crossing a class body must therefore decline verification the
+// same way the ordinary read path does, or the bind asserts "reference slot
+// bind diverged from boxed argument" on a correct program. `Bytecode`
+// refuses a class field as a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: parent.child.x"),
+)) {
+    @("refArgument.nestedClassFieldArgumentAfterCalleeRewroteSharedBody." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            void bump(Child c) {
+                c.x = c.x + 1;
+            }
+
+            void setTo(ref int y, int value) {
+                y = value;
+            }
+
+            unittest {
+                auto parent = new Parent;
+                parent.child = new Child;
+                parent.child.x = 6;
+                bump(parent.child);
+                setTo(parent.child.x, 9);
+                assert(parent.child.x == 9);
+            }
+        });
+    }
+}
+
 // cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
 // units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
 // element's fields through a hidden temporary dmd's foreach-to-for lowering
@@ -2197,6 +2631,87 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// DMD flattens an ANONYMOUS union's members into the enclosing struct's own
+// `fields` at OVERLAPPING offsets (`ai/plans/value.md`'s Unions section: the
+// offsets are the aliasing truth). The enclosing declaration is still a
+// plain struct, so treating its fields as independent, non-overlapping
+// storage writes both members in declaration order over the same bytes and
+// lets the last one win. `real` and `long` never re-derive each other, so
+// after `s.l = 42` the boxed `r` is still NaN while the bytes read `42` --
+// two members whose snapshots genuinely contradict, which is exactly what
+// an explicit union's own stricter gate exists to refuse.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped anonymous-union field"),
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("union.anonymousUnionInStructSurvivesRefBindToOverlappingMember." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                union {
+                    real r;
+                    long l;
+                }
+            }
+
+            real observe(ref real x) {
+                return x;
+            }
+
+            unittest {
+                S s;
+                s.l = 42;
+                observe(s.r);
+                assert(s.l == 42);
+            }
+        });
+    }
+}
+
+
+// The same flattened anonymous union one level down, as a member of an
+// EXPLICIT union: the enclosing union's own coherence question is asked of
+// each member's type, and `S`'s flattened members are both native scalars,
+// so nothing but the overlapping-offsets check distinguishes `S` from an
+// ordinary two-field struct. Writing through `u.s.a` and binding it by
+// `ref` afterwards exercises both the member write and the reference bind
+// that the enclosing union's members must agree about.
+static foreach (backend; Matrix!()) {
+    @("union.anonymousUnionInStructMemberOfUnion." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                union {
+                    int a;
+                    float b;
+                }
+            }
+
+            union U {
+                S s;
+                long l;
+            }
+
+            int observe(ref int x) {
+                return x;
+            }
+
+            unittest {
+                U u;
+                u.s.a = 7;
+                assert(observe(u.s.a) == 7);
+                assert(u.s.a == 7);
+            }
+        });
+    }
+}
+
 
 // An untouched plain-struct sibling reads the same first-member default bits
 // as a scalar sibling. The struct's scalar field spans the first float's NaN
@@ -2735,6 +3250,205 @@ static foreach (backend; Matrix!(
             unittest {
                 U value;
                 assert(value.bits == 0x7FC00000);
+            }
+        });
+    }
+}
+
+
+// An empty union is legal D: `U u;` declares a one-byte local with no
+// member to read. Picking a "widest member" out of an empty member list
+// and indexing it kills the whole interpreter with a
+// `core.exception.RangeError` on a perfectly ordinary program -- the
+// native-layout mirror is a verified shadow of the boxed value and must
+// never be the reason a program dies.
+static foreach (backend; Matrix!()) {
+    @("union.emptyUnionLocalRunsToCompletion." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {}
+
+            int twice(int i) {
+                U u;
+                return i * 2;
+            }
+
+            unittest {
+                int three = 3;
+                assert(twice(three) == 6);
+            }
+        });
+    }
+}
+
+
+// A `real` union member is one no boxed union write path re-derives from a
+// sibling's bytes (`real` is deliberately not `native_scalar.
+// isNativeScalarType`), so the boxed `Value` for `u` carries `r = real.nan`
+// alongside `l = 42` -- two entries that cannot both describe the same
+// bytes. Reading `l` back must still give the value just written.
+static foreach (backend; Matrix!()) {
+    @("union.writeThroughLongMemberSurvivesRealSibling." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                real r;
+                long l;
+            }
+
+            unittest {
+                U u;
+                long bits = 42;
+                u.l = bits;
+                assert(u.l == 42);
+            }
+        });
+    }
+}
+
+
+// The pointer sibling of the fixture above: a pointer union member is not
+// re-derived from a sibling's bytes either, so `p` stays `null` in the
+// boxed `Value` after `u.l` is written. `p` and `l` are the same width, so
+// a "widest member wins" native write would break the tie in `p`'s favour
+// and zero the bytes `l` was just given.
+static foreach (backend; Matrix!()) {
+    @("union.writeThroughLongMemberSurvivesPointerSibling." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                int* p;
+                long l;
+            }
+
+            unittest {
+                U u;
+                long bits = 42;
+                u.l = bits;
+                assert(u.l == 42);
+            }
+        });
+    }
+}
+
+
+// The padded-widest-member shape: `S` is 16 bytes with 7 bytes of padding
+// after `b`, so a native write that composes `S` field by field never
+// touches bytes 9..15 -- bytes the same-width sibling `x` reads as live
+// data.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "real DMD's own CTFE engine refuses reinterpretation through the " ~
+        "overlapped field"),
+)) {
+    @("union.writeThroughPaddedStructMemberLeavesArraySiblingTailIntact." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long l;
+                byte b;
+            }
+
+            union U {
+                S s;
+                ubyte[16] x;
+            }
+
+            unittest {
+                U u;
+                ubyte marker = 0xFF;
+                u.x[12] = marker;
+                long bits = 42;
+                u.s.l = bits;
+                assert(u.x[12] == 0xFF);
+            }
+        });
+    }
+}
+
+
+// A union whose members are all place-composable in isolation but one of
+// which is a floating-base enum: the mirror's union arm writes only the
+// widest member, and `E` ties with `long` at 8 bytes so first-declared `E`
+// wins the tie -- a write `place_value.writeValue` refuses for a
+// floating-base enum. Declaring `u` at all takes that path, so the union
+// gate must decline this shape rather than let the refusal escape as an
+// exception out of the mirror.
+static foreach (backend; Matrix!()) {
+    @("union.floatingBaseEnumMemberDoesNotEscapeTheMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E : double { a = 1.5 }
+
+            union U {
+                E e;
+                long l;
+            }
+
+            unittest {
+                U u;
+                assert(u.e == E.a);
+            }
+        });
+    }
+}
+
+
+// The same shape one level down through a static array: `E[2]` ties with
+// `long[2]` at 16 bytes and wins the tie, so the widest-member write
+// composes down to a floating-base enum element.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported static-array struct field in bytecode core: [1.5, 1.5]"),
+)) {
+    @("union.floatingBaseEnumArrayMemberDoesNotEscapeTheMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E : double { a = 1.5 }
+
+            union U {
+                E[2] e;
+                long[2] l;
+            }
+
+            unittest {
+                U u;
+                assert(u.e[0] == E.a);
+            }
+        });
+    }
+}
+
+
+// And one level down through a struct field: `S` ties with `long` at 8
+// bytes and wins the tie, so the widest-member write composes down to a
+// floating-base enum field.
+static foreach (backend; Matrix!()) {
+    @("union.floatingBaseEnumStructMemberDoesNotEscapeTheMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E : double { a = 1.5 }
+
+            struct S {
+                E e;
+            }
+
+            union U {
+                S s;
+                long l;
+            }
+
+            unittest {
+                U u;
+                assert(u.s.e == E.a);
             }
         });
     }

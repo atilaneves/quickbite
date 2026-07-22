@@ -584,6 +584,53 @@ public struct NativeArray {
         writeSliceHeaderBytes(dest.bytes[byteOffset .. end], _length, _block.address);
     }
 
+    // The same write as the `NativeBlock`+`byteOffset` overload above, for a
+    // destination reached only as a raw address rather than through a
+    // caller-owned `NativeBlock` handle -- `place_value.writeValue`'s slice
+    // arm composes its destination by `place.Place.field`/`index` DMD
+    // offset/stride arithmetic, and `Place`'s own contract is "an address
+    // plus a type, nothing more" (`place.d`'s own header comment), so it
+    // never has a `NativeBlock` to hand back the way a frame/struct/array
+    // cell caller of the overload above already holds one.
+    //
+    // Invariant 1 (bounds) needs no separate check here: `destAddress`'s
+    // own static type is always the slice type itself (that is what makes
+    // it this overload's caller in the first place), so `layout.
+    // typeByteSize` for it already IS `sliceHeaderByteLength` -- there is
+    // no larger enclosing block and byte offset to validate against, only
+    // the whole of a destination already sized to fit.
+    //
+    // Invariant 2 (scanned destination) is enforced identically in effect,
+    // but the fact it needs -- is this address inside a block the GC
+    // actually scans? -- is read mechanically at `destAddress` itself via
+    // `core.memory.GC.addrOf`/`GC.getAttr` (`destinationIsScanned` below),
+    // rather than trusted from a caller-supplied `NativeBlock.scan`: the
+    // same "read the mechanical fact, never trust a label" rule the check
+    // above already applies to the SOURCE side (`GC.addrOf(_block.
+    // address)`), now applied to the destination too, because there is no
+    // label to trust here at all.
+    //
+    // Every real caller reaches this only through a `Place` composed from
+    // an activation frame slot, a struct/class body, or an array element --
+    // every one of which was itself allocated `Scan.conservative` whenever
+    // it (transitively) contains a slice field, per DMD's own `hasPointers`
+    // recursing into aggregate fields (`value.md`'s Containers contract) --
+    // so this never actually throws for a legitimate call site; it is the
+    // same defensive check the overload above performs, not a speculative
+    // one invented for this overload alone.
+    public void writeSliceHeader(void* destAddress) const @safe {
+        import core.memory: GC;
+
+        if (GC.addrOf(_block.address) !is null && !destinationIsScanned(destAddress))
+            throw new Exception(
+                "quickbite.backends.interpreter.native_array.NativeArray."
+                ~ "writeSliceHeader: destAddress is not scanned by the GC, "
+                ~ "but this array's block address is a live GC pointer",
+            );
+
+        writeSliceHeaderBytes(destAddressBytes(destAddress), _length, _block.address);
+    }
+
     // How many `_stride`-sized elements the block's true GC allocation
     // could hold, derived from `NativeBlock.trueByteSize` rather than
     // stored -- the GC already knows this fact, so a separate `_capacity`
@@ -901,6 +948,34 @@ private size_t byteLength(in size_t length, in size_t stride) pure @safe {
         );
 
     return bytes;
+}
+
+// Whether `address` sits inside a block the GC actually scans -- the
+// mechanical fact the raw-address `writeSliceHeader(void*)` overload above
+// needs, read the same way every other GC-visibility check in this module
+// reads it: `GC.addrOf` resolves `address` to its own allocation's base
+// (`null` if it is not GC memory at all -- genuinely foreign memory, or a
+// zero-length allocation's own null address), and only a resolved block
+// WITHOUT the `NO_SCAN` attribute counts as scanned. Both "not GC memory"
+// and "GC memory explicitly marked `NO_SCAN`" answer `false` here, matching
+// `NativeBlock.Scan.no`; anything else answers `true`, matching `Scan.
+// conservative`. `GC.addrOf`/`GC.getAttr` are not `@safe`; this is the
+// `@trusted` boundary, mirroring `native_block.d`'s `trueByteSizeOf`.
+private bool destinationIsScanned(void* address) @trusted {
+    import core.memory: GC;
+
+    const base = GC.addrOf(address);
+    return base !is null && (GC.getAttr(base) & GC.BlkAttr.NO_SCAN) == 0;
+}
+
+// Reinterpreting a raw address as a byte range is not `@safe`; this is the
+// `@trusted` boundary, mirroring `place.d`'s own `placeBytes`. Always
+// exactly `sliceHeaderByteLength` bytes -- the one length the raw-address
+// `writeSliceHeader(void*)` overload above ever writes, since its
+// destination's own static type already fixes that size (see that
+// overload's own header comment).
+private ubyte[] destAddressBytes(void* address) pure nothrow @trusted {
+    return (cast(ubyte*) address)[0 .. NativeArray.sliceHeaderByteLength];
 }
 
 // Writing a raw pointer's bit pattern into a byte range is not @safe; this

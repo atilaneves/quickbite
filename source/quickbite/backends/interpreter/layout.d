@@ -211,3 +211,188 @@ private imported!"dmd.declaration".VarDeclaration[] classFieldsImpl(
 
     return fields;
 }
+
+
+// The byte size DMD assigns to `class_`'s own object layout -- the same
+// "DMD's own number, no arithmetic of our own" contract `typeByteSize`
+// applies to `Type.size`. Unlike summing `fieldByteOffset(field) +
+// typeByteSize(field.type)` over `classFields`, this already includes the
+// vtable pointer (and monitor) DMD lays down at the front of every class
+// object -- a field-end sum omits that header and under-sizes the object.
+//
+// Read through DMD's own FORCING accessor (`dsymbolsem.size`, which routes
+// an `AggregateDeclaration` through `determineSize`), never the bare
+// `structsize` field, for the same reason `structFields` above calls
+// `typeByteSize` before touching `sym.fields`: pre-`finalizeSize` state is
+// real, and `structsize` reads 0 in it. This is the number
+// `object_table.ObjectTable.storageFor` allocates an object body with, and
+// a 0-byte body is not a decline -- `place_value.writeClassBody` composes
+// `Place.field` at DMD's real field offsets straight past its end, writing
+// outside a GC block on both the write and the verify side with nothing
+// raised. Forcing the premise costs one already-memoized DMD call; asserting
+// it in prose costs a silent out-of-bounds heap write the day the premise
+// stops holding. Throws on DMD's `SIZE_INVALID` sentinel, exactly as
+// `typeByteSize` does.
+public size_t classInstanceByteSize(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @safe {
+    return classInstanceByteSizeImpl(class_);
+}
+
+// `dmd.dsymbolsem.size` is not @safe/pure/nothrow; this is the `@trusted`
+// boundary -- it only forces and reads DMD's own computed instance size, no
+// arithmetic of our own, the same trust `typeByteSizeImpl` above gives
+// `Type.size` (including for its error path's `toPrettyChars`, a
+// NUL-terminated string from DMD's arena that `fromStringz.idup` copies into
+// GC memory immediately).
+private size_t classInstanceByteSizeImpl(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @trusted {
+    import dmd.dsymbolsem: size;
+    import dmd.location: Loc;
+    import dmd.mtype: SIZE_INVALID;
+    import std.string: fromStringz;
+
+    const bytes = size(class_, Loc.initial);
+    if (bytes == SIZE_INVALID)
+        throw new Exception(
+            "quickbite.backends.interpreter.layout.classInstanceByteSize: no "
+            ~ "instance size for class `"
+            ~ class_.toPrettyChars.fromStringz.idup ~ "`",
+        );
+
+    return cast(size_t) bytes;
+}
+
+
+// `class_`'s own fully-qualified, human-readable name (`Dsymbol.
+// toPrettyChars`, e.g. `"pkg.mod.C"`) -- the boxed class `Value`'s
+// singular `typeName`, the same fact `impl.d`'s boxed-era `classInfoName`
+// reads for that identical purpose. Read here instead so `place_value.d`'s
+// class-body composition (`readValue`'s class arm) stays on this module's
+// "DMD's own facts, no second set of rules" contract rather than growing
+// its own copy of this derivation.
+public string classQualifiedName(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @safe {
+    return classQualifiedNameImpl(class_);
+}
+
+// `Dsymbol.toPrettyChars` is not @safe/pure/nothrow; this is the @trusted
+// boundary. It returns a valid NUL-terminated string owned by DMD's arena;
+// `fromStringz.idup` copies it into GC memory immediately, the same trust
+// `typeByteSizeImpl`'s error path gives an identical `toChars`-family call.
+private string classQualifiedNameImpl(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @trusted {
+    import std.string: fromStringz;
+
+    return class_.toPrettyChars.fromStringz.idup;
+}
+
+
+// `class_`'s own inheritance-chain names, most-derived first (`class_`'s
+// own bare `ident`, then its `baseClass`'s, up to `Object`'s) -- the boxed
+// class `Value`'s `typeNames`, minus the interface names `impl.d`'s
+// boxed-era `classTypeNames` also folds in: interface identity has no
+// bearing on a class object's own field layout or body storage, the only
+// things this package's class-body composition needs `typeNames` for.
+public string[] classHierarchyNames(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @safe pure nothrow {
+    return classHierarchyNamesImpl(class_);
+}
+
+// `ClassDeclaration.baseClass`/`Dsymbol.ident` are not @safe (extern (C++)
+// members); this is the @trusted boundary -- it only walks and reads
+// DMD's own already-populated declarations, the same "read DMD's own
+// state, no arithmetic of our own" trust `classFieldsImpl` above applies
+// to `.fields`.
+private string[] classHierarchyNamesImpl(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) @trusted pure nothrow {
+    string[] names;
+    for (auto current = class_; current !is null; current = current.baseClass)
+        names ~= current.ident is null ? "" : current.ident.toString.idup;
+
+    return names;
+}
+
+
+// `field`'s own declared name (`VarDeclaration.ident`), verbatim -- the
+// boxed class `Value`'s `fieldNames`, the same derivation `impl.d`'s
+// boxed-era `variableName` uses for that identical purpose.
+public string fieldName(
+    imported!"dmd.declaration".VarDeclaration field,
+) @safe {
+    return fieldNameImpl(field);
+}
+
+// `VarDeclaration.ident` is not @safe (an extern (C++) member); this is
+// the @trusted boundary, mirroring `classHierarchyNamesImpl` above.
+private string fieldNameImpl(
+    imported!"dmd.declaration".VarDeclaration field,
+) @trusted {
+    return field.ident is null ? "" : field.ident.toString.idup;
+}
+
+
+// The qualified name (`"E.b"`) DMD gives the member of enum `type` whose
+// value equals `value`, or `null` when no member carries it -- the same
+// qualification `value.md`'s Display format spec rule 5 requires ("E.b",
+// never a bare "b"). Reads `TypeEnum.sym.members`/`EnumMember` directly,
+// DMD's own enum member declarations, rather than re-deriving membership
+// from anything else; a caller that gets `null` back renders the
+// non-member `cast(E)N` form instead (this function does not, since that
+// is a display decision, not a DMD fact).
+//
+// An enum whose base type is not integral answers `null` outright, decided
+// here on DMD's own `TypeEnum.isIntegral` (which forces and consults the
+// enum's `memtype`) rather than left to a caller. Comparing `value` against
+// a non-integral member's own constant means asking DMD for that constant as
+// an integer, and `Expression.toInteger` is not a query: for a member DMD
+// cannot answer for -- a `StringExp`, an `ArrayLiteralExp`, a
+// `StructLiteralExp` -- its base implementation EMITS an error ("integer
+// constant expression expected") into DMD's global error state and returns
+// 0. That would make a read mutate the compiler's own diagnostics, and would
+// then match every such member against a `value` of 0, labelling it with a
+// name it does not carry. A comparison this module cannot make honestly is
+// one it declines.
+public string enumMemberQualifiedName(
+    imported!"dmd.mtype".TypeEnum type,
+    in long value,
+) @safe {
+    return enumMemberQualifiedNameImpl(type, value);
+}
+
+// `EnumDeclaration.members` and `EnumMember.value`/`.ident` are not
+// @safe/pure/nothrow -- an extern (C++) class's fields and methods, the
+// same caveat `declaredTypeImpl` above gives for `VarDeclaration.type`;
+// this is the @trusted boundary. It only walks DMD's own already-populated
+// member list and reads each member's own already-computed constant value
+// and identifier -- no arithmetic of our own, the same "read DMD's own
+// state, no arithmetic of our own" trust `place_value.d`'s
+// `structTypeNameImpl` gives for reading a struct's own name.
+private string enumMemberQualifiedNameImpl(
+    imported!"dmd.mtype".TypeEnum type,
+    in long value,
+) @trusted {
+    import std.conv: text;
+
+    if (type.sym is null || type.sym.members is null)
+        return null;
+
+    if (!type.isIntegral)
+        return null;
+
+    foreach (symbol; *type.sym.members) {
+        auto member = symbol.isEnumMember;
+        if (member is null)
+            continue;
+
+        if (cast(long) member.value.toInteger == value)
+            return text(type.sym.ident.toString, ".", member.ident.toString);
+    }
+
+    return null;
+}

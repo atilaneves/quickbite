@@ -13,6 +13,22 @@ import quickbite.lang: Value;
 private:
 
 
+@("ModuleTable.has.falseUntilFirstStorageForCall")
+unittest {
+    auto variable = parseVar(
+        q{ int quickbiteModuleGlobalLazy; },
+        "quickbiteModuleGlobalLazy",
+    );
+    ModuleTable table;
+
+    table.has(variable).should == false;
+
+    table.storageFor(variable);
+
+    table.has(variable).should == true;
+}
+
+
 @("ModuleTable.storageFor.stableAddressAcrossRepeatedCalls")
 unittest {
     auto variable = parseVar(

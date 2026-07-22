@@ -1459,6 +1459,133 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The class-typed sibling of `lazyArgumentMutatesCallerLocal`: the thunk
+// rebinds the CALLER's own class local `v` to `w`'s identity, and `v`'s
+// class-mirror write/decline decision (`impl.d`'s `mirrorEstablished`/
+// `classMirrorGenerations`) must travel with the same swap that already
+// carries `locals`/`_activationFrame` into the thunk (`runLazyArgument`,
+// `bindLazyFunctionParameter`), or the caller's later read of `v` consults
+// stale bookkeeping recorded before the call instead of the decision the
+// thunk's own `setLocal` actually made. `v = w` aliases two live class
+// identities, which makes `mirrorClassToFrame` DECLINE to mirror -- so a
+// desynced flag is not merely a wrong value here but an interpreter crash:
+// a stale-true decision compared against a slot the write never touched.
+static foreach (backend; Matrix!(
+    // Same bytecode-core gap as the fixture above, over a class reference
+    // instead of a bare scalar.
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("lazyArgumentMutatesCallerClassLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            void forceLazy(lazy int e) { auto t = e; }
+
+            unittest {
+                auto w = new C();
+                C v = new C();
+
+                forceLazy((v = w) !is null ? v.x : 0);
+
+                assert(v.x == 0);
+            }
+        });
+    }
+}
+
+// A `lazy` class-typed argument re-enters its own function through an
+// intermediate call before ever being forced: `f`'s lazy parameter `c` is
+// rebound by a NESTED call to `f` (through `g`, using the same parameter
+// `VarDeclaration`) before the OUTER `f` forces its own `c` via `return c`.
+// The class-mirror bookkeeping captured for the outer binding
+// (`lazyArgumentMirrorEstablished`/`...Generations`, see `impl.d`'s
+// `bindLazyFunctionParameter`) belongs to the activation that captured it
+// and must not migrate: absorbing those maps upward on a call return hands
+// the outer `f` activation a pointer captured for the intermediate `g`
+// activation, after `g` -- and the pointee -- has already returned, so
+// forcing the outer binding reads native stack memory that is no longer
+// live. `first` gates the reentry so the program terminates instead of
+// recursing forever.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    // A lazy class argument re-forced after an intermediate reentrant call
+    // does not preserve the caller's original object identity. Pinned on
+    // Interpreter by `lazyClassArgumentReentrantCallReturnLosesIdentity`
+    // below, which is what keeps the divergence a wrong identity rather
+    // than a crash.
+    Omit!(Interpreter, Because.diverges,
+        "lazy class argument loses caller identity across reentrant call/return"),
+)) {
+    @("lazyClassArgumentSurvivesReentrantCallReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int val;
+            }
+
+            C f(lazy C c, bool first) {
+                if (first)
+                    g();
+                return c;
+            }
+
+            void g() { f(new C(), false); }
+
+            unittest {
+                auto c1 = new C();
+                auto result = f(c1, true);
+                assert(result is c1);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes: Interpreter's own
+// actual answer for the same program, hand-listed because no
+// `SystemLinker`-oracle expectation applies to it (`SystemLinker` passes).
+// The identity the caller passed in is replaced by the one the intermediate
+// `g` activation bound, so the returned object carries `g`'s field value
+// instead of the caller's -- asserted on the FIELD rather than on `is`,
+// since an identity mismatch renders the snippet's own module name, which
+// is not stable across test orderings. What this pins is that Interpreter
+// EXECUTES the shape -- the guest program runs to completion and fails its
+// own assert the ordinary way -- and that its divergence is exactly this
+// value. It is not a crash detector: letting the lazy binding's captured
+// pointer migrate out of its own activation reads memory of a returned
+// activation, which is undefined behaviour that does not manifest here, so
+// the suite stays green with the absorb re-added.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("lazyClassArgumentReentrantCallReturnLosesIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int val;
+            }
+
+            C f(lazy C c, bool first) {
+                if (first)
+                    g();
+                return c;
+            }
+
+            void g() { f(new C(), false); }
+
+            unittest {
+                auto c1 = new C();
+                c1.val = 5;
+                auto result = f(c1, true);
+                assert(result.val == 5);
+            }
+        }).shouldThrowWithMessage("0 != 5");
+    }
+}
+
 // The owed §9.10 fixture, distilled to a raw pointer-slice reproduction: a
 // pointer slice shrunk to `[0 .. 0]` must retain its backing allocation, so
 // a regrow through `.ptr` still sees the original storage rather than a
@@ -1754,3 +1881,4 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+

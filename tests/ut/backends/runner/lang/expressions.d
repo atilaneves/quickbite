@@ -723,6 +723,204 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `Base`-typed local holding a `Derived` object, a virtual call through
+// that `Base` reference (dynamic dispatch must still reach
+// `Derived.score`), a downcast to a `Derived`-typed local,
+// the `Base` reference then nulled, and a field write through the downcast
+// local that only `Derived` declares. The danger in this shape is one
+// object identity reached through two DIFFERENT static types (`Base`, then
+// `Derived`): `object_table.ObjectTable.storageFor` sizes the identity's
+// body from whichever mirrors first (`Base`, narrower), so a later
+// `Derived`-typed write would go through a too-small block with no bounds
+// check of its own (`place.Place` has none) -- silent GC-heap corruption in
+// a release build. `impl.d`'s `classBodyShapeMatches` declines a class
+// mirror outright whenever a static type's name disagrees with the boxed
+// value's own dynamic one (own header comment), so `Base b`'s own mirror
+// never allocates the too-narrow body at all. The fixture pins a second
+// property alongside it: declining `d`'s write while `b` still aliases it,
+// then no longer declining once `b` is null, leaves `d`'s frame slot
+// read/verified before its OWN first successful write ever ran, and
+// `assertClassReferenceMirror`/`assertClassBodyValue` must skip rather than
+// assert on such an all-zero, never-established slot/body (their own header
+// comments).
+static foreach (backend; Matrix!()) {
+    @("class.downcastFieldWriteAfterVirtualCallThroughWiderStaticType." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int baseField;
+
+                int score() {
+                    return baseField;
+                }
+            }
+
+            class Derived : Base {
+                int derivedField;
+
+                override int score() {
+                    return baseField + derivedField;
+                }
+            }
+
+            int run(int seed) {
+                Base b = new Derived();
+                b.baseField = seed;
+
+                const virtualScore = b.score();
+
+                auto d = cast(Derived) b;
+                b = null;
+
+                d.derivedField = seed + 1;
+
+                return virtualScore * 100 + d.score;
+            }
+
+            unittest {
+                assert(run(10) == 1021);
+            }
+        });
+    }
+}
+
+// The write/verify TIME asymmetry: `p`'s OWN mirror write declines
+// (`classIdentityAliasedByAnotherBinding`, `impl.d`) while `y`'s object
+// identity is still shared by another live binding, leaving `p`'s frame
+// slot holding its PRIOR, unrelated object's address (from the earlier `p =
+// new C(); p.x = seed;`, both unaliased at that point, so that write
+// succeeded) rather than the never-written zero bytes the simpler "no other
+// binding aliased it yet" case leaves behind. Nulling every OTHER binding
+// of `y`'s identity afterwards is what makes the read side able to
+// re-derive a DIFFERENT (non-declining) answer than the write saw: a
+// verify step that re-runs the decline predicate at READ time finds nothing
+// aliasing `y`'s identity any more, and goes on to compare `p`'s STALE,
+// NON-zero frame slot (still the prior object's address) against a freshly
+// composed expectation for `y`'s object -- a guaranteed "frame class
+// reference mirror diverged from boxed local" `AssertError` on a correct
+// guest program, and one no all-zero-slot skip can mask, since a stale
+// non-null address is not all-zero. So `impl.d`'s `mirrorEstablished`
+// records what `mirrorClassToFrame` actually did for `p`'s CURRENT binding
+// at write time and `assertClassFrameMirror` trusts that instead of
+// re-deriving: `p`'s write declined, so its later read never re-enters the
+// mirror at all, regardless of what happens to `y`/`keepAlive` afterwards.
+static foreach (backend; Matrix!()) {
+    @("class.declinedMirrorWriteStaysDeclinedAfterAliasIsNulled." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C { int x; }
+
+            C identity(C c) { return c; }
+
+            int run(int seed) {
+                auto p = new C();
+                p.x = seed;
+
+                auto y = new C();
+                y.x = seed + 1;
+                auto keepAlive = identity(y);
+                p = identity(y);
+                keepAlive = null;
+                y = null;
+
+                return p.x;
+            }
+
+            unittest {
+                assert(run(10) == 11);
+            }
+        });
+    }
+}
+
+// The rebind-invalidation counterpart of the fixture above, isolating the
+// write/rebind/read sequence on its own: `p`'s FIRST write (unaliased)
+// establishes its mirror, then `p`'s REBIND to `y`'s identity declines
+// (`keepAlive` still aliases it at that exact moment) and must leave `p`
+// with NO established mirror for its new binding -- catching a stale
+// "we already wrote it" flag that (wrongly) survived from the FIRST
+// binding, which `mirrorEstablished` (`impl.d`) is keyed and
+// overwritten per write specifically to prevent (its own header comment).
+// Never nulls `y`/`keepAlive`, unlike the fixture above: a stale flag
+// would crash on THIS read already, with no need for the aliasing
+// binding to disappear first.
+static foreach (backend; Matrix!()) {
+    @("class.declinedRebindDoesNotInheritPriorBindingsEstablishedMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C { int x; }
+
+            C identity(C c) { return c; }
+
+            int run(int seed) {
+                auto p = new C();
+                p.x = seed;
+
+                auto other = new C();
+                other.x = seed + 1;
+                auto keepAlive = identity(other);
+                p = identity(other);
+
+                return p.x;
+            }
+
+            unittest {
+                assert(run(10) == 11);
+            }
+        });
+    }
+}
+
+// The class-typed-FIELD counterpart of
+// class.downcastFieldWriteAfterVirtualCallThroughWiderStaticType above:
+// `Holder.field` is declared `Base` but references a `Derived` instance, so
+// mirroring `holder` itself walks into that field with `impl.d`'s
+// `classBodyShapeMatchesImpl` -- its own header comment names this exact
+// nested-field decline (a class-typed field whose declared type
+// disagrees with the boxed value's own dynamic class), the recursive
+// sibling of that root-level decline.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.downcastFieldWriteThroughFieldDeclaredAsWiderStaticType." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int baseField;
+            }
+
+            class Derived : Base {
+                int derivedField;
+            }
+
+            class Holder {
+                Base field;
+            }
+
+            int run(int seed) {
+                auto holder = new Holder();
+                holder.field = new Derived();
+                holder.field.baseField = seed;
+
+                auto d = cast(Derived) holder.field;
+                holder.field = null;
+
+                d.derivedField = seed + 1;
+
+                return d.baseField * 100 + d.derivedField;
+            }
+
+            unittest {
+                assert(run(10) == 1011);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("interface.virtualCallUsesRuntimeDispatch." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -946,6 +1144,176 @@ static foreach (backend; Matrix!(
                 auto funcptr = delegateFunction(3);
 
                 assert(funcptr !is null);
+            }
+        });
+    }
+}
+
+// Direct call syntax (`addToTotal(1)`, not `&nested`/a delegate variable) is
+// the OTHER path a nested-function call reaches the walker through; this
+// exercises it with two mutations of the same captured local, back to back.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionDirectlyMutatesEnclosingLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int accumulate(int seed) {
+                int total = seed;
+
+                void addToTotal(int value) {
+                    total += value;
+                }
+
+                addToTotal(1);
+                addToTotal(2);
+
+                return total;
+            }
+
+            unittest {
+                assert(accumulate(10) == 13);
+            }
+        });
+    }
+}
+
+// Recursion means several activations of `recurse` are live at once, each
+// with its own `total` local and its own `bump` activation reaching it --
+// this fails if a nested function's captured-variable binding is ever
+// resolved against the WRONG activation (e.g. the innermost or outermost
+// one instead of its own direct caller).
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionInsideRecursiveFunctionKeepsPerActivationCapture." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int recurse(int depth) {
+                int total = depth * 10;
+
+                void bump() {
+                    total += 1;
+                }
+
+                if (depth > 0)
+                    recurse(depth - 1);
+
+                bump();
+
+                return total;
+            }
+
+            unittest {
+                assert(recurse(3) == 31);
+            }
+        });
+    }
+}
+
+// A delegate created early, held in a variable across unrelated statements,
+// and called twice afterward -- "stored and called later" rather than
+// invoked immediately where it is created.
+static foreach (backend; Matrix!()) {
+    @("delegate.storedThenCalledAfterUnrelatedWork." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int makeAndUseCounter(int seed) {
+                int total = seed;
+
+                int increment() {
+                    total += 1;
+                    return total;
+                }
+
+                int delegate() counter = &increment;
+
+                int unrelated = seed * 2;
+
+                auto first = counter();
+                auto second = counter();
+
+                return first + second + unrelated;
+            }
+
+            unittest {
+                assert(makeAndUseCounter(10) == 43);
+            }
+        });
+    }
+}
+
+// A lambda (`FuncExp`, not a named nested function) captures a local and is
+// passed as a VALUE into another function that invokes it -- `applyTwice`
+// is itself nested inside `addCaptured` so its own activation inherits
+// `captured` through the same boxed `locals.dup` chain the lambda's own
+// call later reads through; a lambda invoked from a call chain that never
+// passes back through an activation carrying its captured local is a
+// pre-existing, unrelated gap (boxed `locals.dup` copies whatever the
+// CALLING activation currently holds, not a snapshot taken when the
+// delegate value itself was created) and not what this fixture tests.
+// `Bytecode` refuses a delegate-typed PARAMETER; a delegate-typed
+// LOCAL/field works there today (see delegate.nestedCallUsesCapturedValue
+// above), so only the parameter form is out.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported type in bytecode core: int delegate(int)"),
+)) {
+    @("lambda.passedToNestedFunctionSeesCapturedContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int addCaptured(int seed) {
+                int captured = seed + 1;
+
+                int applyTwice(int delegate(int) f) {
+                    return f(f(seed));
+                }
+
+                auto lambda = (int value) => value + captured;
+
+                return applyTwice(lambda);
+            }
+
+            unittest {
+                assert(addCaptured(10) == 32);
+            }
+        });
+    }
+}
+
+// `int[]` is not `place_value.isPlaceComposable` (its elements live behind
+// a stored pointer, not inline), so a nested function capturing one gets no
+// verified reference-slot shadow for it -- `bindCapturedReferenceSlots`
+// still fills the slot's address (nothing about the ADDRESS depends on the
+// captured type's shape), but `assertReferenceBind` declines the
+// verification for it, exactly as it already does for a non-composing
+// `ref` parameter. Boxed authority is what this fixture actually checks:
+// the capture keeps working (read, appended to, and read again through the
+// nested function) whether or not the shadow can verify it.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionCapturesNonComposingArrayDeclinesShadowSilently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int sumWithNested(int seed) {
+                int[] captured = [seed, seed + 1, seed + 2];
+
+                int total() {
+                    int result = 0;
+                    foreach (value; captured)
+                        result += value;
+                    return result;
+                }
+
+                captured ~= seed + 3;
+
+                return total();
+            }
+
+            unittest {
+                assert(sumWithNested(1) == 1 + 2 + 3 + 4);
             }
         });
     }
@@ -1261,6 +1629,101 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(readBehindPointerByOffset() == 43);
+            }
+        });
+    }
+}
+
+// A pointer local reassigned twice within the same activation, each
+// assignment a genuine host address (`values.ptr`, not `&scalar` -- see the
+// carrier fixture below), exercises `impl.d`'s verified frame mirror on its
+// ACCEPT path twice: `setLocal`/`mirrorToFrame` writes the new address into
+// the frame slot, and the next read's `assertFrameMirror` recomposes it
+// through the identical `place_value.writeValue` and compares raw bytes
+// (`ai/plans/value.md` "Remaining work" item 5, the pointer leaf). A wrong
+// scan policy or an asymmetric write/verify guard would surface here as an
+// `AssertError` from inside the interpreter, not a wrong return value.
+static foreach (backend; Matrix!()) {
+    @("pointer.mirroredAcrossReassignment." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int reassignPointerAcrossWrites() {
+                int[] first = [10, 20];
+                int[] second = [30, 40, 50];
+
+                int* p = first.ptr;
+                const a = *p;
+
+                p = second.ptr + 1;
+                const b = *p;
+
+                return a + b;
+            }
+
+            unittest {
+                assert(reassignPointerAcrossWrites() == 50);
+            }
+        });
+    }
+}
+
+// `&x` for a scalar local boxes as `isLocalPointer` (an allocation-id
+// carrier), not a host address -- `place_value.writeValue`'s pointer arm
+// refuses to store one, so `p`'s own frame slot must be left unmirrored on
+// both the write side (`mirrorToFrame`) and the read side
+// (`assertFrameMirror`), both gated by the identical `placeShapeMatches`
+// check. Reading `p` (and through it, `x`'s live updates) repeatedly must
+// still work correctly and never throw or assert -- the mirror's decline is
+// silent, authority stays with the boxed value regardless.
+static foreach (backend; Matrix!()) {
+    @("pointer.localAddressCarrierDoesNotMirror." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int localAddressPointerTracksLiveUpdates() {
+                int x = 10;
+                int* p = &x;
+
+                x = 20;
+                const first = *p;
+
+                x = 30;
+                const second = *p;
+
+                return first + second;
+            }
+
+            unittest {
+                assert(localAddressPointerTracksLiveUpdates() == 50);
+            }
+        });
+    }
+}
+
+// A pointer PARAMETER rebound to a fresh, per-activation array's own
+// `.ptr` at every recursive depth: each activation gets its own frame slot
+// (`frame_layout.computeFrameLayout`, one per activation) and its own
+// mirrored address, so a stale sibling activation's address must never
+// leak into another's read -- proving the per-activation frame, not a
+// single shared slot, is what the mirror actually verifies against.
+static foreach (backend; Matrix!()) {
+    @("pointer.reboundAcrossActivations." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int recurseReboundPointer(int depth) {
+                int[] values = [depth * 10, depth * 10 + 1];
+                int* p = values.ptr;
+
+                if (depth == 0)
+                    return *p;
+
+                return *p + recurseReboundPointer(depth - 1);
+            }
+
+            unittest {
+                assert(recurseReboundPointer(2) == 30);
             }
         });
     }
@@ -1698,6 +2161,244 @@ static foreach (backend; Matrix!(
             unittest {
                 auto p = &gValue;
                 assert(gValue == 42);
+            }
+        });
+    }
+}
+
+// Module-level guest state (`VarDeclaration.isDataseg`) now gets the same
+// verified-frame-mirror treatment true stack locals already have
+// (`impl.d`'s `mirrorToFrame`/`assertFrameMirror`, routed to a
+// `module_table.ModuleTable` block instead of a frame slot, since a dataseg
+// local owns no frame slot at all). Authority is still boxed `locals`; the
+// four fixtures below exercise the mirror's own contract rather than any
+// new guest-visible behaviour -- a wiring bug here surfaces as a hard
+// `assert` failure inside the Interpreter's own execution, not a wrong
+// displayed value, so `SystemLinker` agreement is still the pass bar.
+//
+// A scalar and a struct `__gshared` global, each mutated across several
+// separate calls -- every intervening read re-verifies the mirror against
+// the just-written boxed value. `Ctfe` cannot read or write dataseg storage
+// at all (compile-time execution has no such storage to access); `Bytecode`
+// does not yet support a struct-typed dataseg variable.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported variable in bytecode core: quickbiteDatasegPoint"),
+)) {
+    @("dataseg.moduleScalarAndStructMirroredAcrossWrites." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            __gshared int quickbiteDatasegCounter;
+            __gshared Point quickbiteDatasegPoint;
+
+            void bump() {
+                quickbiteDatasegCounter = quickbiteDatasegCounter + 1;
+            }
+
+            void movePoint(int dx, int dy) {
+                quickbiteDatasegPoint.x = quickbiteDatasegPoint.x + dx;
+                quickbiteDatasegPoint.y = quickbiteDatasegPoint.y + dy;
+            }
+
+            unittest {
+                bump();
+                bump();
+                bump();
+                assert(quickbiteDatasegCounter == 3);
+
+                movePoint(1, 2);
+                movePoint(3, 4);
+                assert(quickbiteDatasegPoint.x == 4);
+                assert(quickbiteDatasegPoint.y == 6);
+            }
+        });
+    }
+}
+
+// A heap struct's own constructor runs on a CHILD `Walker` (`impl.d`'s
+// `runNewStructPointerExpression`), and a dataseg write it performs lands
+// in the ONE shared `module_table.ModuleTable` block every frame resolves
+// through -- so the caller must write the child's boxed dataseg values
+// back (`writeBackGlobals`) exactly as an ordinary call does, or its own
+// boxed copy stays at the pre-call value while the shared mirror already
+// holds the constructor's, and the caller's next read of the global
+// asserts on the divergence instead of merely answering staler. `Ctfe`
+// cannot read or write dataseg storage at all (compile-time execution has
+// no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.heapStructConstructorGlobalWriteVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDatasegCtorWrite;
+
+            struct S {
+                this(int _) {
+                    quickbiteDatasegCtorWrite = 7;
+                }
+            }
+
+            unittest {
+                quickbiteDatasegCtorWrite = 1;
+
+                auto p = new S(0);
+
+                assert(quickbiteDatasegCtorWrite == 7);
+            }
+        });
+    }
+}
+
+// The class sibling of the fixture above: a class constructor runs on a
+// child `Walker` too (`impl.d`'s `runNewClassExpression`), sharing the same
+// one `module_table.ModuleTable` block, so its dataseg write must reach the
+// caller's boxed copy by the identical write-back. `Ctfe` cannot read or
+// write dataseg storage at all (compile-time execution has no such storage
+// to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.classConstructorGlobalWriteVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDatasegClassCtorWrite;
+
+            class K {
+                this(int _) {
+                    quickbiteDatasegClassCtorWrite = 7;
+                }
+            }
+
+            unittest {
+                quickbiteDatasegClassCtorWrite = 1;
+
+                auto k = new K(0);
+
+                assert(quickbiteDatasegClassCtorWrite == 7);
+            }
+        });
+    }
+}
+
+// The same `__gshared` global read from two different call frames (the
+// top-level unittest body's own root frame, and a called function's own
+// forked child frame) resolves to ONE mirror block -- `impl.d`'s
+// `moduleTable` field is allocated once per root `Walker` and shared by
+// pointer into every forked child, exactly like `classObjectTable`. Were a
+// child frame to instead lazily allocate its OWN (fresh, zeroed) block the
+// first time it read `quickbiteDatasegSharedAcrossFrames`, the very first
+// call to `readSharedGlobal` below would already disagree with the boxed
+// value it was handed (7, not 0) and the interpreter's own mirror assert
+// would fire. `Ctfe` cannot read or write dataseg storage at all
+// (compile-time execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.sameGlobalFromTwoFramesResolvesToOneBlock." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDatasegSharedAcrossFrames = 7;
+
+            int readSharedGlobal() {
+                return quickbiteDatasegSharedAcrossFrames;
+            }
+
+            unittest {
+                assert(quickbiteDatasegSharedAcrossFrames == 7);
+                assert(readSharedGlobal() == 7);
+
+                quickbiteDatasegSharedAcrossFrames = 21;
+                assert(readSharedGlobal() == 21);
+            }
+        });
+    }
+}
+
+// A `__gshared` global whose initializer is a function call is materialized
+// lazily on its first read (`impl.d`'s `isDataseg && variable._init !is
+// null` arm), not at frame-fork time -- `module_table.ModuleTable` only
+// ever allocates a variable's block from inside `setLocal`'s own
+// `mirrorToFrame` call, which runs after that lazy initializer has already
+// produced a real value, never before. Reading it for the first time from
+// inside a CALLED function (not the top-level unittest body itself) proves
+// the child frame observes the same materialized value, not a
+// pre-mirrored default. `Ctfe` cannot read or write dataseg storage at all
+// (compile-time execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.lazilyMaterializedGlobalNotMirroredBeforeMaterialization." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int computeInit() {
+                return 5 * 2 + 1;
+            }
+
+            __gshared int quickbiteDatasegLazyInit = computeInit();
+
+            int readLazyGlobal() {
+                return quickbiteDatasegLazyInit;
+            }
+
+            unittest {
+                assert(readLazyGlobal() == 11);
+            }
+        });
+    }
+}
+
+// A `__gshared` struct whose own type the mirror codec refuses -- a
+// dynamic-array field makes `place_value.isPlaceComposable` answer `false`
+// for the whole struct (a slice is not itself composable; see its own
+// header comment) -- declines on BOTH `mirrorToFrame` and `assertFrameMirror`
+// identically, via their shared `isPlaceComposable` gate, so this global
+// never enters the mirror at all and keeps using the existing boxed
+// `locals` path exclusively. `Ctfe` cannot read or write dataseg storage at
+// all (compile-time execution has no such storage to access); `Bytecode`
+// does not yet support a dynamic-array field access on a dataseg struct.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported dynamic array access in bytecode core: " ~
+        "quickbiteDatasegWithArray.data"),
+)) {
+    @("dataseg.mirrorRefusedShapeDeclinesOnBothSides." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct WithArray { int[] data; }
+
+            __gshared WithArray quickbiteDatasegWithArray;
+
+            void appendOne() {
+                quickbiteDatasegWithArray.data =
+                    quickbiteDatasegWithArray.data ~ 1;
+            }
+
+            unittest {
+                appendOne();
+                appendOne();
+                assert(quickbiteDatasegWithArray.data.length == 2);
+                assert(quickbiteDatasegWithArray.data[0] == 1);
+                assert(quickbiteDatasegWithArray.data[1] == 1);
             }
         });
     }
@@ -2346,6 +3047,40 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class object passed unchanged through recursive calls keeps one
+// identity across every activation: a recursive function's own class
+// parameter gets its OWN frame slot at each recursion depth, but every
+// depth's slot must still resolve to the SAME object body. Mutating a
+// field at the deepest call and reading it back, unmutated, through every
+// ancestor frame's own parameter on the way back out proves the shared
+// identity rather than merely a shared final value.
+static foreach (backend; Matrix!()) {
+    @("class.recursiveCallSharesObjectIdentityAcrossActivations." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            int rec(C c, int depth) {
+                if (depth == 0) {
+                    c.x = 42;
+                    return c.x;
+                }
+                const inner = rec(c, depth - 1);
+                return c.x + inner;
+            }
+
+            unittest {
+                auto c = new C();
+                assert(rec(c, 3) == 168);
+            }
+        });
+    }
+}
+
 // A class object reached through a class-typed field keeps one identity when
 // copied into a local. Promoting storage through the local must therefore make
 // the write visible through the original field reference too.
@@ -2371,6 +3106,691 @@ static foreach (backend; Matrix!(
                 int* pointer = &child.x;
                 *pointer = 99;
                 assert(parent.child.x == 99);
+            }
+        });
+    }
+}
+
+// A class field whose own type is a class -- an object GRAPH, not only a
+// single object -- built as a short linked list, then mutated and read back
+// through the SAME chain of field accesses throughout: this is the
+// real-object-graph shape the native frame mirror's class-body composition
+// now has to compose and verify without asserting. Deliberately built and
+// read through one root reference only (`first.next...`), never through a
+// second, independent local bound to an interior node: `ai/plans/value.md`'s
+// Cell coherence contract already names class-typed fields as having "no
+// cell support on either the read or write side", and a second alias into
+// the middle of the graph is exactly the shape that gap affects -- out of
+// this fixture's scope, which is the mirror's own composition, not that
+// pre-existing boxed-authority limit.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.linkedListNodeMutationVisibleThroughChain." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Node {
+                int value;
+                Node next;
+            }
+
+            int mark(int seed) {
+                return seed * 5 + 2;
+            }
+
+            unittest {
+                auto first = new Node();
+                first.value = mark(1);
+                first.next = new Node();
+                first.next.value = mark(2);
+                first.next.next = new Node();
+                first.next.next.value = mark(3);
+
+                assert(first.value == mark(1));
+                assert(first.next.value == mark(2));
+                assert(first.next.next.value == mark(3));
+
+                first.next.next.value = mark(30);
+
+                assert(first.next.next.value == mark(30));
+                assert(first.next.value == mark(2));
+                assert(first.value == mark(1));
+            }
+        });
+    }
+}
+
+// A class object referencing ITSELF (`n.next = n`) must not crash the
+// interpreter: `impl.d`'s `classBodyShapeMatches` (the shared pure gate
+// `mirrorClassToFrame`/`assertClassFrameMirror` both call before either ever
+// reaches `place_value.writeClassBody`) now seeds its own `visiting` set
+// with the ROOT object's identity before walking its fields, so a field
+// that reintroduces that same identity one level down declines the mirror
+// right there, deterministically, instead of reaching `writeClassBody`'s
+// own address-keyed cycle guard and throwing out into this assignment.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.selfReferencingObjectDoesNotCrash." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Node {
+                int value;
+                Node next;
+            }
+
+            int mark(int seed) {
+                return seed * 11 + 7;
+            }
+
+            unittest {
+                auto n = new Node();
+                n.value = mark(1);
+                n.next = n;
+
+                assert(n.next.value == mark(1));
+            }
+        });
+    }
+}
+
+// The two-object counterpart of the self-reference fixture above: a ring
+// (`a.next = b; b.next = a;`) reintroduces `a`'s own identity through `b`'s
+// field, one level further down than the direct self-reference does. The
+// same seeded `visiting` set in `classBodyShapeMatches` catches this shape
+// too, since the reintroduced identity is checked against the ROOT's own
+// seed no matter how many field hops away it resurfaces.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.twoNodeRingDoesNotCrash." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Node {
+                int value;
+                Node next;
+            }
+
+            int mark(int seed) {
+                return seed * 11 + 7;
+            }
+
+            unittest {
+                auto a = new Node();
+                auto b = new Node();
+
+                a.value = mark(1);
+                b.value = mark(2);
+
+                a.next = b;
+                b.next = a;
+
+                assert(a.next.value == mark(2));
+                assert(b.next.value == mark(1));
+            }
+        });
+    }
+}
+
+// A shared object graph's nested body, rewritten through a DIFFERENT
+// binding's own mirror after `parent`'s own mirror last established, must
+// not crash a later read of `parent`: `child`'s own `mirrorClassToFrame`
+// write (`child.x = 5;`) rewrites the SAME `object_table.ObjectTable`-owned
+// body `parent`'s established graph already composed (`parent.child` is the
+// identical identity), strictly AFTER `parent`'s own mirror recorded what
+// it wrote. The pre-existing boxed-authority gap
+// (`ai/plans/value.md`'s Cell coherence "Known gaps") already means
+// `parent`'s own boxed `locals[]` copy of `child`'s field goes stale here --
+// a wrong VALUE on a correct guest program, on master too -- but the native
+// mirror's own verify step must not turn that pre-existing wrong answer
+// into an internal `AssertError` crash.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
+        "Known gaps): child's own mirror write refreshes the shared " ~
+        "object body, but parent's boxed copy of the child field is never " ~
+        "refreshed, so parent.child.x reads back stale"),
+)) {
+    @("class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                auto child = new Child();
+                auto parent = new Parent();
+                parent.child = child;
+
+                child.x = 5;
+
+                assert(parent.child.x == 5);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes, and the only place its
+// own "does not crash" property is actually executed on the backend that has
+// the mirror: Interpreter runs the guest program to completion and fails its
+// OWN `assert(parent.child.x == 5)` with the stale boxed value, rather than
+// dying inside the interpreter with a mirror-verify `AssertError`. Hand-
+// listed because no `SystemLinker`-oracle expectation applies to it
+// (`SystemLinker` passes).
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedNestedBodyRewrittenBySiblingBindingReadsStale." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                auto child = new Child();
+                auto parent = new Parent();
+                parent.child = child;
+
+                child.x = 5;
+
+                assert(parent.child.x == 5);
+            }
+        }).shouldThrowWithMessage("0 != 5");
+    }
+}
+
+// The `DotVarExp`-alias counterpart of the fixture above: `c` aliases
+// `parent.child`'s own identity through a non-`VarExp` source, so it gets no
+// promoted cell of its own (`classIdentityAliasedByAnotherBinding`'s own
+// header comment) and establishes an INDEPENDENT mirror for the same
+// identity. Writing through `c` rewrites the shared body strictly after
+// `parent`'s own mirror last established, the identical shape the fixture
+// above exercises through a plain top-level variable instead of an alias.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
+        "Known gaps): c's own mirror write refreshes the shared object " ~
+        "body, but parent's boxed copy of the child field is never " ~
+        "refreshed, so parent.child.x reads back stale"),
+)) {
+    @("class.sharedNestedBodyRewrittenByDotVarAliasDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+
+                Child c = parent.child;
+                c.x = 7;
+
+                assert(parent.child.x == 7);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the alias fixture above owes, and the only
+// place its own "does not crash" property is executed on the backend that
+// has the mirror: the same stale boxed read, reached through the alias
+// instead of a plain top-level variable.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedNestedBodyRewrittenByDotVarAliasReadsStale." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+
+                Child c = parent.child;
+                c.x = 7;
+
+                assert(parent.child.x == 7);
+            }
+        }).shouldThrowWithMessage("0 != 7");
+    }
+}
+
+// One object reachable twice from ONE composed graph -- a DAG, not a cycle:
+// both of `parent`'s own class-typed fields reference the identical `Child`
+// identity. Writing through one field (`parent.left.x = 5`) refreshes the
+// shared `object_table.ObjectTable` body, but leaves the OTHER field's own
+// boxed snapshot inside `parent`'s `locals[]` copy stale -- the same
+// pre-existing boxed-authority gap the fixtures above exercise across
+// bindings, here reached entirely within a single value. The two snapshots
+// then genuinely contradict each other, so a mirror that writes the shared
+// body once per sibling (last snapshot wins) and verifies each sibling
+// against its own snapshot must decline the shape outright rather than
+// turn that contradiction into an internal `AssertError`.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
+        "Known gaps): the write through parent.left refreshes the shared " ~
+        "object body, but parent's own boxed copy of the right field is " ~
+        "never refreshed, so parent.right.x reads back stale"),
+)) {
+    @("class.sharedSiblingFieldsWithDifferentSnapshotsDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child left;
+                Child right;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.left = new Child();
+                parent.right = parent.left;
+
+                parent.left.x = 5;
+
+                assert(parent.right.x == 5);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the shared-sibling fixture above owes, and the
+// only place its own "does not crash" property is executed on the backend
+// that has the mirror: Interpreter runs the guest program to completion and
+// fails its OWN assertion with the stale boxed value rather than dying
+// inside the interpreter with a mirror-verify `AssertError`. Hand-listed
+// because no `SystemLinker`-oracle expectation applies to it
+// (`SystemLinker` passes).
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedSiblingFieldsWithDifferentSnapshotsReadsStale." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child left;
+                Child right;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.left = new Child();
+                parent.right = parent.left;
+
+                parent.left.x = 5;
+
+                assert(parent.right.x == 5);
+            }
+        }).shouldThrowWithMessage("0 != 5");
+    }
+}
+
+// The cross-activation counterpart: a callee's own parameter mirror
+// (`bump`'s own `c`) rewrites the shared body strictly after the caller's
+// `parent` established its own mirror -- the callee's per-walker
+// `mirrorEstablished`/generation bookkeeping is a SEPARATE frame's
+// own, but `object_table.ObjectTable` is shared across every activation for
+// the whole execution (`impl.d`'s `classObjectTable` field comment), so the
+// rewrite is visible the moment control returns to the caller.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
+        "Known gaps): bump's own mirror write refreshes the shared object " ~
+        "body, but parent's boxed copy of the child field is never " ~
+        "refreshed, so parent.child.x reads back stale"),
+)) {
+    @("class.sharedNestedBodyRewrittenAcrossActivationDoesNotCrash." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            void bump(Child c) {
+                c.x = c.x + 1;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+                parent.child.x = 6;
+
+                bump(parent.child);
+
+                assert(parent.child.x == 7);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the cross-activation fixture above owes, and
+// the only place its own "does not crash" property is executed on the
+// backend that has the mirror: the caller's boxed copy still holds the
+// pre-call 6 the callee's mirror write replaced.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedNestedBodyRewrittenAcrossActivationReadsStale." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            void bump(Child c) {
+                c.x = c.x + 1;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+                parent.child.x = 6;
+
+                bump(parent.child);
+
+                assert(parent.child.x == 7);
+            }
+        }).shouldThrowWithMessage("6 != 7");
+    }
+}
+
+// A heap struct's own constructor runs on a CHILD `Walker` (`impl.d`'s
+// `runNewStructPointerExpression`), which mints its own class identities
+// (`++nextClassObjectId`) for any `new` it evaluates -- the constructed
+// `C` here. That counter must be merged back into the caller once the
+// constructor returns, or the caller's own NEXT `new` (`new D()` below)
+// re-mints the SAME identity the constructor already handed out, giving
+// two live, differently-sized objects the SAME `object_table.ObjectTable`
+// key. SystemLinker runs this fine (real heap addresses never collide);
+// the interpreter's own `ObjectTable` throws outright the moment the two
+// disagree on size, converting a pre-existing (harmless-until-now) boxed
+// identity aliasing into a guest-visible crash.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classIdentity.structConstructorIdentityDoesNotCollideWithCallersNext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            class D {
+                long a, b;
+            }
+
+            struct S {
+                C c;
+
+                this(int _) {
+                    c = new C();
+                }
+            }
+
+            unittest {
+                auto s = new S(1);
+                D d = new D();
+                d = null;
+
+                C e = s.c;
+
+                assert(e.x == 0);
+            }
+        });
+    }
+}
+
+// The exception-path sibling of the fixture above: a struct constructor
+// that mints a class identity and then THROWS out of its own body must
+// still merge `nextClassObjectId` back into the caller (`impl.d`'s
+// `runNewStructPointerExpression`) -- unwinding through a guest exception
+// the caller catches is not a different path for the counter than
+// returning normally, and the collision it otherwise leaves behind makes
+// `ObjectTable.storageFor` throw on the caller's next differently-sized
+// `new`.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classIdentity.throwingStructConstructorIdentityDoesNotCollideWithCallersNext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            class D {
+                long a, b;
+            }
+
+            struct S {
+                int unused;
+
+                this(int _) {
+                    C c = new C();
+                    c.x = 1;
+                    throw new Exception("boom");
+                }
+            }
+
+            unittest {
+                bool caught;
+
+                try {
+                    auto s = new S(1);
+                } catch (Exception) {
+                    caught = true;
+                }
+
+                assert(caught);
+
+                D d = new D();
+                d.a = 2;
+
+                assert(d.a == 2);
+            }
+        });
+    }
+}
+
+// The class-constructor sibling of the same contract: a class constructor
+// runs on its own CHILD `Walker` too (`impl.d`'s `runNewClassExpression`),
+// and a guest exception unwinding out of its body is not a different path
+// for `nextClassObjectId` than returning normally -- both go through
+// `mergeNewClassExpressionState`. Left unmerged, the caller's next
+// differently-sized `new` re-mints the identity the constructor's own `new
+// C()` already handed out and `ObjectTable.storageFor` throws on the size
+// disagreement.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classIdentity.throwingClassConstructorIdentityDoesNotCollideWithCallersNext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            class D {
+                long a, b;
+            }
+
+            class Thrower {
+                this(int _) {
+                    C c = new C();
+                    c.x = 1;
+                    throw new Exception("boom");
+                }
+            }
+
+            unittest {
+                bool caught;
+
+                try {
+                    auto t = new Thrower(1);
+                } catch (Exception) {
+                    caught = true;
+                }
+
+                assert(caught);
+
+                D d = new D();
+                d.a = 2;
+
+                assert(d.a == 2);
+            }
+        });
+    }
+}
+
+// The destructor sibling of the same contract: a destructor that mints a
+// class identity and then THROWS must still merge `nextClassObjectId` back
+// into the caller. A destructor runs as an ordinary member call (`impl.d`'s
+// `isDtorExpStatement` arm evaluates a plain `CallExp`), so it merges
+// through `writeBackMemberFunctionState`'s existing `InterpretedException`
+// path rather than through a `new`-expression site of its own -- this
+// fixture pins that the scope-exit route really does share that path.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classIdentity.throwingDestructorIdentityDoesNotCollideWithCallersNext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            class D {
+                long a, b;
+            }
+
+            struct S {
+                int unused;
+
+                ~this() {
+                    C c = new C();
+                    c.x = 1;
+                    throw new Exception("boom");
+                }
+            }
+
+            unittest {
+                bool caught;
+
+                try {
+                    {
+                        S s = S(0);
+                    }
+                } catch (Exception) {
+                    caught = true;
+                }
+
+                assert(caught);
+
+                D d = new D();
+                d.a = 2;
+
+                assert(d.a == 2);
+            }
+        });
+    }
+}
+
+// A class-typed field reassigned to a NEW object must observe the new
+// object's own fields afterward, not retain the old object's -- ordinary
+// class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
+// coherence contract), which the native mirror's object-graph composition
+// must not disturb.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classField.reassignedObjectFieldObservesNewObjectsFields." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int value;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            int mark(int seed) {
+                return seed * 3 + 1;
+            }
+
+            unittest {
+                auto parent = new Parent();
+
+                parent.child = new Child();
+                parent.child.value = mark(1);
+                assert(parent.child.value == mark(1));
+
+                parent.child = new Child();
+                parent.child.value = mark(2);
+                assert(parent.child.value == mark(2));
             }
         });
     }
@@ -5961,6 +7381,196 @@ static foreach (backend; Matrix!()) {
                 int i = 0;
                 auto p = &a[i++].inner.x;
                 assert(i == 1);
+            }
+        });
+    }
+}
+
+// Gap fixture, not a fix (`ai/plans/value.md`'s Cell coherence "Known gaps"
+// list): `mid.leaf` and `aliasLeaf` are two live bindings to the SAME `Leaf`
+// identity. `mid.leaf.value = mark(1)` is a deep field-chain write reached
+// through `mid`'s own frame slot, which correctly refreshes the identity-
+// keyed object body the native frame mirror mirrors into (`classObjectTable`,
+// `impl.d`'s `mirrorClassToFrame`/`writeClassBody`) -- but `aliasLeaf`'s OWN
+// boxed local (`locals[]`, keyed per VARIABLE, not per identity) is never
+// refreshed, since only a var's own promoted cell or direct write path
+// touches its `locals[]` entry. `impl.d`'s `classIdentityAliasedByAnotherBinding`
+// now declines to mirror or verify a class local whenever another live
+// binding boxes the identical identity (own header comment), so reading
+// `aliasLeaf` afterward hits the generic unpromoted-local path
+// (`assertFrameMirror`), finds no mirror slot to check, and returns
+// `aliasLeaf`'s own stale boxed value unmodified -- an ordinary WRONG VALUE
+// (`aliasLeaf.value == 0`, not `mark(1)`) rather than the internal
+// `AssertError: "class body mirror diverged from boxed local"` this used to
+// throw. The fault is still in the boxed AUTHORITY itself (the stale
+// `locals[]` copy); the mirror merely no longer crashes trying to verify
+// against it. Closing this generally needs every class-typed local's read
+// to consult identity-keyed storage instead of its own per-variable boxed
+// copy -- exactly the native-layout authority switch (`ai/plans/value.md`
+// decision 15/17), so it is frozen new representation-ceiling machinery,
+// not a correctness fix to existing boxed machinery. `Bytecode` omitted per
+// the omit-don't-pin convention (unconfirmed for this shape, matching the
+// other object-graph fixtures' own backend set).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Interpreter, Because.diverges,
+        "boxed-authority staleness: a deep field-chain write through one " ~
+        "alias does not refresh another alias's own cached copy of the " ~
+        "same object identity, so aliasLeaf.value reads back 0 instead of " ~
+        "mark(1) -- see ai/plans/value.md's Cell coherence known gaps"),
+)) {
+    @("classField.deepChainWriteThroughOneAliasVisibleThroughAnother." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Leaf {
+                int value;
+            }
+
+            class Mid {
+                Leaf leaf;
+            }
+
+            int mark(int seed) {
+                return seed * 7 + 3;
+            }
+
+            unittest {
+                auto leaf = new Leaf();
+                auto mid = new Mid();
+                mid.leaf = leaf;
+
+                auto aliasLeaf = mid.leaf;
+
+                mid.leaf.value = mark(1);
+
+                assert(aliasLeaf.value == mark(1));
+            }
+        });
+    }
+}
+
+// The Interpreter counterpart of the gap fixture above, proving the DECLINE
+// rather than the crash it replaced: `impl.d`'s
+// `classIdentityAliasedByAnotherBinding` (`mirrorClassToFrame`'s and
+// `assertClassFrameMirror`'s shared gate, via `classBodyShapeMatches`) now
+// sees `leaf` and `aliasLeaf` as two live top-level bindings to the same
+// identity and declines to mirror or verify either one, so reading
+// `aliasLeaf` afterward hits the generic unpromoted-local path with no
+// mirror slot to check at all, rather than reaching `assertClassBodyValue`'s
+// own byte-comparison assert. The interpreted guest program therefore runs
+// to completion and fails its OWN `assert(aliasLeaf.value == mark(1))` the
+// ordinary way (`0 != 10`, `throwOnTestFailure`'s plain `Exception`) instead
+// of dying with `core.exception.AssertError: "class body mirror diverged
+// from boxed local"`. Not a `Matrix!()` member (no `SystemLinker`-oracle
+// comparison is possible here -- `SystemLinker` passes cleanly, so a
+// Matrix fixture would only ever restate the known gap above): a hand-
+// written `AliasSeq!(Interpreter)` pin of Interpreter's own actual, still-
+// divergent behaviour, per AGENTS.md's characterization-pin convention.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("classField.deepChainWriteThroughOneAliasVisibleThroughAnotherDeclinesRatherThanAsserts." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Leaf {
+                int value;
+            }
+
+            class Mid {
+                Leaf leaf;
+            }
+
+            int mark(int seed) {
+                return seed * 7 + 3;
+            }
+
+            unittest {
+                auto leaf = new Leaf();
+                auto mid = new Mid();
+                mid.leaf = leaf;
+
+                auto aliasLeaf = mid.leaf;
+
+                mid.leaf.value = mark(1);
+
+                assert(aliasLeaf.value == mark(1));
+            }
+        }).shouldThrowWithMessage("0 != 10");
+    }
+}
+
+
+// A `ref` argument written as an explicit dereference of an address-of binds
+// the VARIABLE, not what it points at. The reason this shape is worth its own
+// fixture is that DMD hands the call site it verbatim rather than folding it
+// back to a bare `VarExp`: `optimize.d`'s `visitPtr` folds `&p` down to a
+// `SymOffExp` and then returns at `keepLvalue` (true for a `ref` argument)
+// before folding the `PtrExp` away. So the interpreter's own lvalue-place
+// composition (`lvalue_place.placeOfLvalue`, reached from `impl.d`'s
+// `bindReferenceSlot`) meets a `PtrExp` over a `SymOffExp`, where the
+// address-of and the dereference must cancel rather than compose into two
+// dereferences of `p`'s slot.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "binds a `ref` argument written `*&p` to what `p` points at rather " ~
+        "than to `p` itself"),
+)) {
+    @("pointer.refArgumentThroughDerefOfAddressOfRebindsTheVariable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 42;
+            }
+
+            void rebind(ref int* q, int* target) {
+                q = target;
+            }
+
+            unittest {
+                int first = seed;
+                int second = 99;
+                int* p = &first;
+                rebind(*&p, &second);
+                assert(*p == 99);
+                assert(first == 42);
+            }
+        });
+    }
+}
+
+// The static-array sibling of the fixture above: `*&buf[2]` carries DMD's
+// own already-computed byte offset for element 2 in the `SymOffExp` it folds
+// to, which the `ref` bind must apply directly to `buf`'s own storage
+// (`ai/plans/value.md`'s Layout authority contract) rather than re-derive as
+// an element index.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "binds a `ref` argument written `*&buf[2]` to the array's first " ~
+        "element rather than to element 2"),
+)) {
+    @("pointer.refArgumentThroughDerefOfArrayElementAddressWritesThatElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 42;
+            }
+
+            void bump(ref int r) {
+                r = r + 1;
+            }
+
+            unittest {
+                int[4] buf;
+                buf[2] = seed;
+                bump(*&buf[2]);
+                assert(buf[2] == 43);
+                assert(buf[1] == 0);
+                assert(buf[3] == 0);
             }
         });
     }

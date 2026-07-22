@@ -417,8 +417,11 @@ change that makes them false, never prospectively.
 
 - `layout.d` is the only place the interpreter package reads DMD layout:
   `typeByteSize`, `fieldByteOffset`, `structFields`, `classFields`,
-  `staticArrayLength`. Every number is DMD's own, verbatim; the
-  interpreter must not grow a second set of D layout rules.
+  `staticArrayLength`, `classInstanceByteSize`. Every number is DMD's
+  own, verbatim; the interpreter must not grow a second set of D layout
+  rules. A class body's byte size is always the latter (DMD's own
+  `structsize`), never a hand-summed per-field total, which omits the
+  vtable/monitor header and can under-count a field-less class to 0.
 - `structFields` forces struct layout (via `typeByteSize`) before reading
   fields — `sym.fields` and field offsets are meaningless before DMD's
   own `determineSize` has run. Class fields need no forcing (populated by
@@ -436,8 +439,13 @@ change that makes them false, never prospectively.
   fixed-width leaf codec must not absorb. That is an ABI-width concern
   specific to libffi's calling convention, not a second set of layout
   rules.
-- `native_scalar` deliberately excludes `real` (`Tfloat80`): its 80-bit
-  padded layout is host- and ABI-specific, not a portable native scalar.
+- `native_scalar` deliberately excludes `real` (`Tfloat80`): `ffi_marshal`
+  shares that codec for its exact-size scalar arms, and widening it would
+  change shipping FFI behaviour. `real` IS otherwise `place_value.
+  isPlaceComposable` via its own leaf codec (`readRealBits`/
+  `writeRealBits`); a write composes into a zero-initialised local and
+  copies the WHOLE slot, making `real`'s padding deterministic for the
+  verified mirror's raw-byte comparison.
 - Integer offsetting of a native pointer preserves the native-pointer carrier
   and applies the byte delta already scaled from the expression's static
   pointer type. Do not route it through the boxed pointer's allocation id or
@@ -596,6 +604,20 @@ it (see the Contracts preamble).
   read/write paths. Promotion requested before materialization is a no-op.
   Slice-local promotion may initiate promotion after materialization;
   unsupported element shapes still remain on boxed aliasing paths.
+- `object_table.ObjectTable`'s "stable identity ... minted once per
+  boxed class object" premise needs `impl.d`'s `nextClassObjectId`
+  counter single-valued across every child `Walker` that mints one. A
+  heap-struct constructor and a class constructor each run the
+  constructed type's body on a CHILD `Walker` of their own; a
+  destructor is an ordinary member call and rides that call's own
+  write-back. All of them merge the counter back into the caller on
+  every path, an exception unwinding out of the body included, or the
+  caller's next `new` can re-mint an identity the child already handed
+  out.
+  `storageFor` sizes a body from whichever caller's class reaches an
+  identity first and reuses that block after, so every caller sharing
+  an identity must agree on its dynamic class or corrupt memory writing
+  through it — `place.Place` has no bounds check of its own.
 - Fresh bindings (a declaration re-executed by a loop, recursion reusing
   the same AST `VarDeclaration`, parameter binding) must drop both the
   cell AND the pointer-id memo, so the next address-of mints a fresh id.
@@ -629,6 +651,19 @@ it (see the Contracts preamble).
   assignment mutates the existing same-length storage and preserves interior
   pointer identity. Whole-array and element addresses remain distinct views of
   that same authority.
+- The verified frame/object-body mirror's verify side must never
+  re-derive a decline condition from mutable walker state — it must
+  consult what the write side decided for the CURRENT value (a
+  per-variable flag set right after each write), or a stale re-check
+  can assert on bytes the write never wrote. It must never mutate the
+  shared object table either: a per-write generation snapshot, not a
+  fresh read, detects a later write to the same identity from a
+  different binding. It also declines any object identity reachable more
+  than once from one composed graph (sibling fields, cousins, a cycle
+  alike): `locals[]` snapshots one boxed copy per REFERENCE, so those
+  copies can legitimately contradict each other, and one shared body
+  written once per reference then makes the byte comparison assert on a
+  program the oracle runs.
 
 Known gaps in this interim machinery — recorded so `interpreter.md` §8
 triage recognizes them instead of re-investigating each as a new bug;
@@ -660,9 +695,21 @@ they die with the machinery at the authority switch:
 - Class-typed fields and dynamic-array fields whose element is neither
   a native scalar nor a supported non-union struct have no cell support
   on either the read or write side.
+- A class-typed local's own `locals[]` copy is never refreshed when a
+  shared object identity is mutated through a different alias or a deep
+  field-chain write (`a.b.c.value = x`) reached via another variable, so
+  reading the stale alias returns the WRONG boxed value — a real bug in
+  the boxed authority itself (the mirror merely declines to verify such
+  a local, so this surfaces as a wrong-value divergence, not an assert).
+  Closing it needs every class-typed read to consult identity-keyed
+  storage instead of a per-variable copy, i.e. the authority switch.
 - Union residuals: aggregate members beyond plain structs, promotion
   for unions with non-scalar members, and default-init first members or
   siblings outside the supported recursively scalar shapes.
+- `promoteStructCell` guards only union-DECLARED types, so a plain
+  struct bearing an anonymous union is promoted and its overlapping
+  fields seeded last-wins into a cell — which, unlike the mirror, is
+  authority once present.
 
 ### Unions
 
@@ -671,9 +718,11 @@ Durable DMD facts:
 - DMD reports a union as a `TypeStruct` whose `sym` is a
   `UnionDeclaration`; every top-level member's offset is 0, and an
   anonymous union's members are flattened into the parent's fields at
-  overlapping offsets. The offsets themselves are the aliasing truth;
-  DMD's `overlapped` flag is a derived fact about them, not a second
-  source of truth to consume.
+  overlapping offsets — so a plain `StructDeclaration`'s (or a class's)
+  own fields are not necessarily disjoint, and any path that walks them
+  "one field each, in declaration order" must first check that they are.
+  The offsets themselves are the aliasing truth; DMD's `overlapped` flag
+  is a derived fact about them, not a second source of truth to consume.
 - D zero-initializes a union from its FIRST declared member's default
   value: the whole block carries the first member's bits, and an
   untouched sibling reads those bits reinterpreted. Computing each
@@ -861,54 +910,27 @@ in parallel and never blocks it.
 5. **Representation track (parallel).** Implement decision 15 in
    bounded, independently green slices, then one small authority switch
    (decision 17):
-   - Preparation, behavior-neutral, each slice green on its own:
-     - Per-activation frame blocks: one GC block per activation, DMD's
-       own closure model, with slot offsets assigned by
-       `frame_layout.computeFrameLayout` from DMD's own per-type size and
-       alignment, and the block itself allocated by
-       `frame_block.FrameBlock` with a scan policy chosen from
-       `layout.typeHasPointers` over each slotted local's type —
-       allocated per activation, including the top-level walker running
-       a unittest/REPL body, and held on `Walker._activationFrame`, with
-       authority still in `locals`/cells until reads route through it. A
-       non-address-taken local whose type is place-composable
-       (`place_value.isPlaceComposable`: a native scalar, non-union
-       struct, or static array of composable elements) has its frame
-       slot kept as a verified shadow, mirrored by `setLocal` and
-       checked against the boxed value on every read; a slice local's
-       slot instead holds a `{length, ptr}` header mirror (from the
-       boxed value's stable native backing) verified the same way.
-     - Lvalue evaluation yielding places: a `place.Place` is an address
-       plus its static type; `field`/`index` compose another place by
-       DMD offsets/strides — `index` on a pointer or slice place follows
-       the place's own stored pointer (or the slice header's `ptr`)
-       rather than indexing inline, `deref` follows a pointer or class
-       place's own stored pointer/reference to the pointee/object body
-       (keeping the class type, so a following `field` composes at the
-       DMD class field offset) so pointer-deref and class-field lvalues
-       can compose — and scalar load/store routes through the
-       `native_scalar` codec. `lvalue_place.placeOfLvalue` composes a
-       place for the variable, struct- and class-field, index, and
-       pointer-deref lvalue shapes from a caller-supplied base-address
-       resolver and index evaluator (`a[i]` =
-       `placeOfLvalue(a).index(evalIndex(i))`, uniform over a
-       static-array, pointer, or slice base; a class receiver's field
-       and `*p` both compose through `Place.deref`), refusing anything
-       else.
-     - Loads/stores routed through places: module-level guest state
-       bound to blocks by `module_table.ModuleTable` per the existing
-       extern-data rules; whole-aggregate read/write composed over
-       places down to scalar leaves by
-       `place_value.readValue`/`writeValue` (native scalar leaves via
-       `Place.loadScalar`/`storeScalar`, non-union struct and
-       static-array shapes recursed field-by-field/element-by-element
-       via `Place.field`/`index`; `readValue` also reconstructs a slice
-       from its native `{length, ptr}` header and elements — read side
-       only, `writeValue`'s slice case is still deferred pending
-       backing-storage allocation). A dynamic-array local holds a real
-       `{length, ptr}` slice header; a class variable holds a reference
-       (address) to an object block owned by object identity; a union
-       is overlapping bytes.
+   - Preparation is done: per-activation frame blocks; lvalue places
+     composing through a variable, fields, indexing, pointer/class
+     dereference, and address-of — `this` has an arm but no reachable
+     caller, since DMD slots `vthis` as neither a parameter nor a body
+     local and `resolveBase` therefore always declines it; `ref`/`out`
+     and captured-variable reference slots; and load/store through places
+     for scalars, enums, pointers, `real`, structs, unions, slices,
+     class object bodies, and dataseg storage, each verified against
+     the still-authoritative boxed value on write. Composition gaps
+     carried to the switch: `placeOfLvalue` refuses a `SliceExp`
+     assignment target and a `SymOffExp` naming a function; a
+     captured-variable slot cannot resolve a relay through a
+     non-referencing intermediate activation.
+   - `object_table.ObjectTable` never evicts: every class identity the
+     mirror touches keeps its body pinned for the whole execution,
+     because liveness lives in `impl.d`'s boxed copies and nothing
+     reports it back, and a wrong eviction silently splits one object
+     into two bodies. Nothing to do before the switch, which dissolves
+     the question instead of answering it: once a native block IS the
+     object, its lifetime is the collector's and no identity-keyed pin
+     exists.
    - The authority switch: native storage becomes the sole authority
      for all bindings. Merge gate: no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/
