@@ -205,3 +205,34 @@ unittest {
 
     frame.block.scan.should == NativeBlock.Scan.conservative;
 }
+
+
+// An OWNING slot is in the layout, so the slot lookup underneath these two
+// succeeds for one and the pointer-width write lands inside storage that
+// may be narrower than eight bytes -- overwriting whatever local
+// `computeFrameLayout` packed after it. Nothing else catches that, so the
+// refusal is a throw rather than an `in` contract `-release` would strip
+// (the posture `object_table.ObjectTable.storageFor` argues for the same
+// corruption class).
+@("FrameBlock.setReferenceSlot.referenceSlotValue.refuseAnOwningSlotRatherThanWritingPointerWidthIntoIt")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbiteFrameBlockOwningSlotRefused(int a) {} },
+        "quickbiteFrameBlockOwningSlotRefused",
+    );
+    auto layout = computeFrameLayout(function_);
+    auto frame = FrameBlock.allocate(layout);
+    auto a = (*function_.parameters)[0];
+
+    frame.hasOwningSlot(a).should == true;
+
+    int target = 42;
+    frame.setReferenceSlot(a, &target).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.frame_block.FrameBlock."
+        ~ "setReferenceSlot: variable has no reference slot",
+    );
+    frame.referenceSlotValue(a).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.frame_block.FrameBlock."
+        ~ "referenceSlotValue: variable has no reference slot",
+    );
+}

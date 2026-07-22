@@ -95,16 +95,42 @@ public struct FrameBlock {
     // a stored `void*` cannot be verified by the compiler, the same
     // boundary `place.d`'s own `readStoredPointer` crosses for an
     // identically-shaped read.
-    public void* referenceSlotValue(VarDeclaration variable) @trusted
-    in (hasReferenceSlot(variable), "variable has no reference slot") {
+    //
+    // THROWS on a caller that got that wrong, rather than stating it as an
+    // `in` contract the way `slotAddress`/`slotOffset` above do, for the
+    // reason `object_table.ObjectTable.storageFor` gives at length for its
+    // own size check: `-release` strips a contract, and that is precisely
+    // the build where silent memory corruption matters most. The
+    // distinction from those two is not taste. Their contract is belt and
+    // braces -- the very next thing they do is `_layout[variable]`, an
+    // associative-array lookup that raises `RangeError` on a missing key in
+    // every build, so a slotless caller cannot get past them quietly. This
+    // pair has no such backstop: an OWNING slot IS in the layout, so the
+    // lookup succeeds and the pointer-width write below lands inside a slot
+    // that may be narrower than eight bytes, silently overwriting the
+    // neighbouring local packed after it. The only thing standing between
+    // that and a caller bug is this check, so it must survive `-release`.
+    public void* referenceSlotValue(VarDeclaration variable) @trusted {
+        if (!hasReferenceSlot(variable))
+            throw new Exception(
+                "quickbite.backends.interpreter.frame_block.FrameBlock."
+                ~ "referenceSlotValue: variable has no reference slot",
+            );
+
         return *cast(void**) slotAddress(variable);
     }
 
     // The write side of `referenceSlotValue` above: stores `address` as
     // the caller-supplied address `variable`'s own reference slot binds
-    // to. Same `@trusted` boundary and precondition.
-    public void setReferenceSlot(VarDeclaration variable, void* address) @trusted
-    in (hasReferenceSlot(variable), "variable has no reference slot") {
+    // to. Same `@trusted` boundary, and the same throw for the same reason
+    // -- more sharply so, since this is the write half.
+    public void setReferenceSlot(VarDeclaration variable, void* address) @trusted {
+        if (!hasReferenceSlot(variable))
+            throw new Exception(
+                "quickbite.backends.interpreter.frame_block.FrameBlock."
+                ~ "setReferenceSlot: variable has no reference slot",
+            );
+
         *cast(void**) slotAddress(variable) = address;
     }
 
