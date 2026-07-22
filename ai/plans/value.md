@@ -567,8 +567,9 @@ it (see the Contracts preamble).
 - Promoted-cell and allocation-identity routing admits only the boxed-pointer
   predicate. Local pointers resolve through their local binding and native
   pointers through their host address; neither may enter identity-map routing.
-  Direct dereference and compound-assignment/atomic reads share one ordered
-  promoted-cell route, so they cannot choose different interim authorities.
+  Direct dereference and compound-assignment/atomic reads and writes share
+  their respective ordered promoted-cell routes, so they cannot choose
+  different interim authorities.
 - One guest storage location has one identity across bindings, call frames,
   repeated `ref` arguments, and source/alias pairs. A promoted aggregate alias
   shares the caller's memoized pointer id and cell; a field alias shares the

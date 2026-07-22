@@ -10097,55 +10097,7 @@ private struct Walker {
                 return;
             }
 
-            if (writeThroughArrayPointer(pointer, value))
-                return;
-
-            // `&s.field` of a scalar field on a plain struct LOCAL promoted
-            // a `structCells` entry at address-of time: write through it
-            // exactly like SystemLinker's
-            // real aliasing, instead of refusing below.
-            if (writeThroughStructFieldPointer(pointer, value))
-                return;
-
-            // `&s.arr[i]` of a static-array field on a plain struct LOCAL
-            // promoted a `structCells` entry at address-of time
-            // (struct-static-array-field follow-up): write through
-            // it exactly like SystemLinker's real aliasing, instead of
-            // refusing below.
-            if (writeThroughStructArrayFieldPointer(pointer, value))
-                return;
-
-            // `&s.inner.x` of a nested (one level) scalar field on a plain
-            // struct LOCAL promoted a `structCells` entry at address-of time
-            // (nested-struct-field follow-up): write
-            // through it exactly like SystemLinker's real aliasing, instead
-            // of refusing below.
-            if (writeThroughNestedStructFieldPointer(pointer, value))
-                return;
-
-            // `&c.x` of a scalar field on a plain class-typed LOCAL promoted
-            // a `classCells` entry at address-of time
-            // (write-through-pointer slice): write through it
-            // exactly like SystemLinker's real aliasing, instead of refusing
-            // below.
-            if (writeThroughClassFieldPointer(pointer, value))
-                return;
-
-            // `&c.inner.x` of a nested (one level) scalar field on a plain
-            // class-typed LOCAL promoted a `classCells` entry at address-of
-            // time (aggregate composition, write-through-pointer follow-up):
-            // write through it
-            // exactly like SystemLinker's real aliasing, instead of refusing
-            // below.
-            if (writeThroughNestedClassStructFieldPointer(pointer, value))
-                return;
-
-            // `&c.arr[i]` of a static-array field on a plain class-typed
-            // LOCAL promoted a `classCells` entry at address-of time
-            // (write-through-pointer
-            // follow-up): write through it exactly like SystemLinker's real
-            // aliasing, instead of refusing below.
-            if (writeThroughClassArrayFieldPointer(pointer, value))
+            if (writeThroughPromotedPointer(pointer, value))
                 return;
 
             // Every OTHER `&s.field` (addressOfExpression's DotVarExp
@@ -13380,51 +13332,7 @@ private struct Walker {
             return;
         }
 
-        // An array-element pointer (`&a[i]`): the same shared-storage
-        // helper `writeLocation`'s `*p = x` arm already calls, so a
-        // compound-assignment/atomic/post-increment write-back
-        // (this function's only callers) refreshes the same `locals`
-        // mirror and, when promoted, the same `arrayCells` entry that
-        // `arrayPointerCellValue` above reads from -- instead of the stale
-        // boxed-value rewrite the fallback below would otherwise perform.
-        if (writeThroughArrayPointer(pointer, value))
-            return;
-
-        // A struct-field pointer (`&s.field`): the same shared-storage
-        // helper `writeLocation`'s `PtrExp` arm already calls, so a
-        // compound-assignment/atomic/post-increment write-back (this
-        // function's only callers) refreshes the same promoted
-        // `structCells` entry that `structFieldPointerCellValue` above reads
-        // from -- instead of the stale boxed-value rewrite the fallback
-        // below would otherwise perform.
-        if (writeThroughStructFieldPointer(pointer, value))
-            return;
-
-        // A struct-static-array-field pointer (`&s.arr[i]`): the array-typed
-        // sibling of the check above, same reasoning.
-        if (writeThroughStructArrayFieldPointer(pointer, value))
-            return;
-
-        // A nested-struct-field pointer (`&s.inner.x`): the one-level-nested
-        // sibling of the two checks above, same reasoning.
-        if (writeThroughNestedStructFieldPointer(pointer, value))
-            return;
-
-        // A class-field pointer (`&c.field`): the class-typed sibling of the
-        // struct-family checks above, same reasoning.
-        if (writeThroughClassFieldPointer(pointer, value))
-            return;
-
-        // A nested-class-struct-field pointer (`&c.inner.x`): the class-
-        // typed sibling of `writeThroughNestedStructFieldPointer`,
-        // same reasoning.
-        if (writeThroughNestedClassStructFieldPointer(pointer, value))
-            return;
-
-        // A class-array-field pointer (`&c.arr[i]`): the class-typed
-        // sibling of `writeThroughStructArrayFieldPointer`, same
-        // reasoning.
-        if (writeThroughClassArrayFieldPointer(pointer, value))
+        if (writeThroughPromotedPointer(pointer, value))
             return;
 
         if (auto address = expression.isAddrExp) {
@@ -13438,6 +13346,19 @@ private struct Walker {
         }
 
         writeLocation(expression, pointer.withPointerTarget(value));
+    }
+
+    // The single ordered route through promoted boxed-pointer writes. Direct
+    // dereference and compound-assignment/atomic write-back use this gate, so
+    // they cannot update different interim authorities.
+    private bool writeThroughPromotedPointer(in Value pointer, in Value value) {
+        return writeThroughArrayPointer(pointer, value) ||
+            writeThroughStructFieldPointer(pointer, value) ||
+            writeThroughStructArrayFieldPointer(pointer, value) ||
+            writeThroughNestedStructFieldPointer(pointer, value) ||
+            writeThroughClassFieldPointer(pointer, value) ||
+            writeThroughNestedClassStructFieldPointer(pointer, value) ||
+            writeThroughClassArrayFieldPointer(pointer, value);
     }
 
     private void writePointerElements(
