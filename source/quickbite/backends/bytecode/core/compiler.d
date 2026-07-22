@@ -9444,15 +9444,16 @@ private struct Compiler {
                 equal.op == EXP.notEqual,
             );
 
+        const bothDynamicArrays = equal.e1.type.toBasetype.ty == TY.Tarray &&
+            equal.e2.type.toBasetype.ty == TY.Tarray;
         const bothCompactStrings = isStringType(equal.e1.type) &&
             isStringType(equal.e2.type) &&
             dynamicArrayDescriptorOrNull(equal.e1) is null &&
             dynamicArrayDescriptorOrNull(equal.e2) is null;
-        const bothCharArrays = dynamicArrayElementType(equal.e1.type) ==
-            ScalarType.char_ &&
+        const bothCharArrays = bothDynamicArrays &&
+            dynamicArrayElementType(equal.e1.type) == ScalarType.char_ &&
             dynamicArrayElementType(equal.e2.type) == ScalarType.char_;
-        if (equal.e1.type.toBasetype.ty == TY.Tarray &&
-            equal.e2.type.toBasetype.ty == TY.Tarray &&
+        if (bothDynamicArrays &&
             !bothCompactStrings &&
             (!isStringType(equal.e1.type) && !isStringType(equal.e2.type) ||
                 bothCharArrays)) {
