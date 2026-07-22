@@ -8154,31 +8154,6 @@ private struct Walker {
         return isDynamicArrayType(variable.type);
     }
 
-    private void runDestructor(
-        imported!"dmd.func".FuncDeclaration function_,
-        in Value receiver,
-    ) {
-        Walker child;
-        child.runningCalledFunction = true;
-        child.currentFunction = function_;
-        auto layout = cachedFrameLayout(function_);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
-        child.result = Value(false);
-        child.locals = locals.dup;
-        forkPerFrameCellsInto(child);
-        child.thisValue = receiver;
-        child.hasThis = true;
-
-        child.runStatement(function_.fbody);
-        nextLocalPointerId = child.nextLocalPointerId;
-        nextClassObjectId = child.nextClassObjectId;
-        allocationCount = child.allocationCount;
-        mergePerFrameCellsFrom(child);
-        writeBackGlobals(child);
-        writeBackLocalPointerTargets(child);
-    }
-
     private Value[VarDeclaration] datasegLocals() {
         Value[VarDeclaration] result;
         foreach (variable, value; locals) {
