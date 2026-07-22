@@ -685,8 +685,11 @@ they die with the machinery at the authority switch:
   widening loads, and aggregates that do not fit; non-fitting writes
   must fail rather than corrupt adjacent storage.
 - Postblit execution is an interpreter expression-execution gap.
-- Recursive activations of one function share one cell (all cell maps
-  key on `VarDeclaration`) — a real divergence.
+- Recursive activations reuse each local declaration's `VarDeclaration`,
+  while boxed cell maps key authority by that declaration.  A pointer saved
+  by an outer activation can therefore resolve to an inner activation's
+  fresh binding rather than the storage it named; only address-keyed native
+  authority removes that ambiguity.
 - Nested-struct and static-array class-field pointers follow the
   variable slot after a reference rebind rather than retaining object
   identity; `ref`-parameter address identity holds only for the

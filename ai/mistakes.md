@@ -225,6 +225,9 @@
   `AliasSeq` lines, patch with nearby test-name context and verify `bin/ut -l`
   shows the intended new backend instance before running the test.
 
+- Do not omit untested backend rows: verify every mature backend and include
+  each one that passes.
+
 - An in-process ORC/LLJIT load of a dmd `.o` is not equivalent to dlopen: dmd
   emits weak (COMDAT) druntime/phobos template instances whose bodies can be
   degenerate stubs, and ORC binds calls to the object's own weak definition

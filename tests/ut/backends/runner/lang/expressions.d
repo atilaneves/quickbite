@@ -1210,6 +1210,77 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Each recursive activation binds the same declaration AST anew. A pointer
+// saved by the outer activation must keep naming that activation's local when
+// the inner activation binds its own `x`.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "CTFE resolves the caller pointer to the inner activation's x; see " ~
+        "the Ctfe characterization pin below"),
+    Omit!(Interpreter, Because.diverges,
+        "boxed authorities are keyed by VarDeclaration, so recursive " ~
+        "activations share x until the authority switch"),
+)) {
+    @("pointer.recursiveLocalAliasSurvivesInnerFreshBinding." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            int recurse(int depth, int* parent) {
+                int x = seed(depth);
+                int* current = &x;
+
+                if (parent !is null)
+                    *parent = seed(99);
+
+                if (depth > 0)
+                    recurse(depth - 1, current);
+
+                return x;
+            }
+
+            unittest {
+                assert(recurse(seed(1), null) == 99);
+            }
+        });
+    }
+}
+
+// Ctfe resolves `parent` through the recursive declaration's current binding,
+// so it updates the inner `x` and the outer call returns 1. This pins Ctfe's
+// actual divergence; SystemLinker is the language-surface oracle above.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("pointer.recursiveLocalAliasSurvivesInnerFreshBinding." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            int recurse(int depth, int* parent) {
+                int x = seed(depth);
+                int* current = &x;
+
+                if (parent !is null)
+                    *parent = seed(99);
+
+                if (depth > 0)
+                    recurse(depth - 1, current);
+
+                return x;
+            }
+
+            unittest {
+                assert(recurse(seed(1), null) == 1);
+            }
+        });
+    }
+}
+
 // A delegate created early, held in a variable across unrelated statements,
 // and called twice afterward -- "stored and called later" rather than
 // invoked immediately where it is created.
