@@ -3060,6 +3060,10 @@ private struct Compiler {
     private bool stringSourceIsHeapBacked(Expression source) {
         if (tryArrayDuplication(source) !is null)
             return true;
+        if (auto call = source.isCallExp)
+            if (auto function_ = callFunction(call))
+                if (isNewArrayRuntimeCall(function_))
+                    return true;
         if (auto slice = source.isSliceExp)
             return stringSourceIsHeapBacked(slice.e1);
         if (auto cast_ = source.isCastExp)
@@ -10580,7 +10584,7 @@ private struct Compiler {
         import std.conv: text;
 
         if (call.arguments is null || call.arguments.length == 0 ||
-            !isDynamicArrayArgument(call))
+            (!isDynamicArrayArgument(call) && !isStringType(call.type)))
             throw new Exception(text(
                 "Unsupported new array runtime call in bytecode core: ",
                 expressionChars(call),

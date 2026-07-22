@@ -1126,7 +1126,6 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.unconfirmed,
         "std.conv.text slices past the char array's allocated block"),
     Omit!(LLVMJit, Because.unconfirmed),
