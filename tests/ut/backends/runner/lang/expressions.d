@@ -3537,6 +3537,58 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The class-constructor sibling of the same contract: a class constructor
+// runs on its own CHILD `Walker` too (`impl.d`'s `runNewClassExpression`),
+// and a guest exception unwinding out of its body is not a different path
+// for `nextClassObjectId` than returning normally -- both go through
+// `mergeNewClassExpressionState`. Left unmerged, the caller's next
+// differently-sized `new` re-mints the identity the constructor's own `new
+// C()` already handed out and `ObjectTable.storageFor` throws on the size
+// disagreement.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("classIdentity.throwingClassConstructorIdentityDoesNotCollideWithCallersNext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int x;
+            }
+
+            class D {
+                long a, b;
+            }
+
+            class Thrower {
+                this(int _) {
+                    C c = new C();
+                    c.x = 1;
+                    throw new Exception("boom");
+                }
+            }
+
+            unittest {
+                bool caught;
+
+                try {
+                    auto t = new Thrower(1);
+                } catch (Exception) {
+                    caught = true;
+                }
+
+                assert(caught);
+
+                D d = new D();
+                d.a = 2;
+
+                assert(d.a == 2);
+            }
+        });
+    }
+}
+
 // The destructor sibling of the same contract: a destructor that mints a
 // class identity and then THROWS must still merge `nextClassObjectId` back
 // into the caller. A destructor runs as an ordinary member call (`impl.d`'s
