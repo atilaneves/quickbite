@@ -1981,7 +1981,7 @@ private struct Compiler {
             return compileLocalIntegerCompoundAssign(
                 leftShiftAssign,
                 Op.shlInt4,
-                Op.shlInt4,
+                Op.shlInt8,
                 "Unsupported compound assignment in bytecode core: ",
             );
 
@@ -1989,7 +1989,7 @@ private struct Compiler {
             return compileLocalIntegerCompoundAssign(
                 orAssign,
                 Op.bitOrInt4,
-                Op.bitOrInt4,
+                Op.bitOrInt8,
                 "Unsupported compound assignment in bytecode core: ",
             );
 
@@ -7488,9 +7488,15 @@ private struct Compiler {
                 expressionChars(assign),
             ));
 
-        if (isEightByteInteger(lvalueType) != isEightByteInteger(rhs.type) ||
-            (isEightByteInteger(lvalueType) &&
-                (rhs.type != lvalueType || op8 == op4)))
+        const eightByteShift = op8 == Op.shlInt8 ||
+            op8 == Op.shrInt8 || op8 == Op.ushrInt8;
+        const lvalueIsEightByte = isEightByteInteger(lvalueType);
+        const validRhs = lvalueIsEightByte
+            ? eightByteShift
+                ? size(rhs.type) <= int.sizeof
+                : rhs.type == lvalueType
+            : !isEightByteInteger(rhs.type);
+        if (!validRhs || lvalueIsEightByte && op8 == op4)
             throw new Exception(text(
                 unsupportedMessage,
                 expressionChars(assign),
@@ -7504,7 +7510,12 @@ private struct Compiler {
             Operand(*slot, lvalueType),
             operationType,
         );
-        const rhsValue = integerOperationOperand(rhs, operationType);
+        const rhsValue = integerOperationOperand(
+            rhs,
+            isEightByteInteger(lvalueType) && eightByteShift
+                ? ScalarType.int_
+                : operationType,
+        );
         const destination = size(lvalueType) == size(operationType)
             ? *slot
             : allocate(operationType);

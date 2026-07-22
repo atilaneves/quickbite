@@ -393,7 +393,8 @@ changed:
 
 1. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
    lazy evaluation over a mutating struct-typed caller local. Its next blocker
-   is `ulong <<=` compound assignment in `Reader.read64`.
+   is matching the reader's runtime `RangeError` through the forwarded lazy
+   call chain.
 2. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
