@@ -995,7 +995,8 @@ unittest {
 // written alone leaves the block's remaining bytes at whatever `place`
 // already held (zero, straight off `NativeBlock.allocate`) -- so `i`,
 // read back, is `s`'s own bits zero-extended into the wider type, not
-// sign-extended the way a `cast(int)` from `short` would be.
+// sign-extended the way a `cast(int)` from `short` would be. A NEGATIVE
+// short is what makes those two answers differ at all.
 @("place_value.readValue.unionWritingShortMemberIsVisibleThroughIntSiblingReinterpreted")
 unittest {
     auto unionType = structTypeOf(q{ union U { int i; short s; } }, "U");
@@ -1003,12 +1004,13 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
     auto root = placeAt(block, unionType);
 
-    short writtenS = 3;
-    writtenS = cast(short)(writtenS * 1000 + 7);
+    short writtenS = -3;
+    writtenS = cast(short)(writtenS * 1000 - 7);
 
     writeValue(root.field(fields[1]), Value(writtenS));
 
     readValue(root).structFieldAt(0).asLong.should == cast(int) cast(ushort) writtenS;
+    readValue(root).structFieldAt(0).asLong.shouldNotEqual(cast(int) writtenS);
 }
 
 
@@ -1444,8 +1446,17 @@ unittest {
 // two different padding patterns could still both read back correctly
 // (`readRealBits` never inspects the padding) while still breaking the
 // mirror's byte-for-byte comparison.
-@("place_value.writeValue.realWritePaddingIsDeterministicAcrossTwoWrites")
+//
+// Both writes go into a destination pre-filled with a DIFFERENT non-zero
+// pattern, and the padding is asserted zero rather than merely equal: an
+// all-zero destination and a padding-preserving write agree by accident,
+// so a write that copies only the significant bytes has to show up here.
+@("place_value.writeValue.realWriteZeroesPaddingSoTwoWritesAreByteIdentical")
 unittest {
+    // x87 extended precision on this host: 10 significant bytes of the 16
+    // `real` occupies, the rest padding (`writeRealBits`' own comment).
+    enum significantByteLength = 10;
+
     auto type = Type.tfloat80;
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
@@ -1454,13 +1465,16 @@ unittest {
     one = one * 1 + 0;
     real written = one + real.epsilon;
 
+    block.bytes[] = ubyte(0xab);
     writeValue(root, Value(written));
     auto firstBytes = block.bytes.dup;
 
+    block.bytes[] = ubyte(0xcd);
     writeValue(root, Value(written));
-    auto secondBytes = block.bytes.dup;
 
-    firstBytes.should == secondBytes;
+    block.bytes.should == firstBytes;
+    firstBytes[significantByteLength .. $].should ==
+        new ubyte[firstBytes.length - significantByteLength];
 }
 
 
