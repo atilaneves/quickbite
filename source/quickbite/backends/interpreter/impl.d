@@ -1303,6 +1303,23 @@ private struct Walker {
     // for a class-typed FIELD: `classIdentityAliasedByAnotherBinding` below
     // catches the shape that decline cannot, because it is a decline about
     // `variable` ITSELF, not about one of its fields (own header comment).
+    //
+    // `visiting` is seeded with `value`'s OWN identity here, before the
+    // recursion ever starts -- `classBodyShapeMatchesImpl` on its own only
+    // ever adds a FIELD's identity to `visiting` as it descends into that
+    // field, so a root whose own identity reappears exactly one field down
+    // (`n.next = n`) was never checked against anything: the boxed `Value`
+    // a field holds is a SNAPSHOT taken at assignment time, not a live
+    // view, so `n.next`'s own `next` field reads back `null` (it was still
+    // unset when `n.next = n` captured `n`'s state) -- the boxed tree
+    // itself is already acyclic and terminates on its own, even though the
+    // identity it repeats is the very one `writeClassBody` will re-resolve
+    // to the SAME real address a second time. Seeding the root here is
+    // what makes that repeat visible to THIS gate too, exactly the "check
+    // the current identity" `writeClassBodyImpl` already does on entry,
+    // keyed by `bodyPlace.address` instead of a boxed identity -- the two
+    // guards agree once both start from the object being written, not only
+    // from the fields underneath it.
     private bool classBodyShapeMatches(
         VarDeclaration variable,
         imported!"dmd.dclass".ClassDeclaration class_,
@@ -1311,7 +1328,8 @@ private struct Walker {
         if (classIdentityAliasedByAnotherBinding(variable, value.classIdentity))
             return false;
 
-        return classBodyShapeMatchesImpl(class_, value, null);
+        bool[size_t] visiting = [value.classIdentity: true];
+        return classBodyShapeMatchesImpl(class_, value, visiting);
     }
 
     // The top-level sibling of `classBodyShapeMatchesImpl`'s own nested

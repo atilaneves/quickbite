@@ -1187,7 +1187,17 @@ in parallel and never blocks it.
        ever reach `writeClassBody`, so a cycle declines there,
        deterministically, rather than by throwing out of
        `writeClassBody`'s own recursion (this codebase avoids
-       exceptions for control flow). `classBodyShapeMatches` also
+       exceptions for control flow). The DFS set is seeded with the
+       ROOT object's own identity before the walk starts, not only
+       populated as fields are descended into: a field's boxed `Value`
+       is a snapshot taken at assignment time, so a direct
+       self-reference (`n.next = n`) reads back `null` one field
+       further in and would otherwise never re-trip the guard, even
+       though `writeClassBody` resolves that field to the SAME real
+       address as the root and throws on it. Seeding the root keeps
+       this gate and `writeClassBody`'s own address-keyed guard
+       agreeing regardless of how the boxed snapshot happens to
+       truncate. `classBodyShapeMatches` also
        declines whenever a nested identity is present in
        `classObjectCells` (the boxed-era promoted-cell table) — a real
        gap found empirically, not hypothesized: `locals[]` caches one

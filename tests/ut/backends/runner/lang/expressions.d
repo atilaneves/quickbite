@@ -2889,6 +2889,80 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A class object referencing ITSELF (`n.next = n`) must not crash the
+// interpreter: `impl.d`'s `classBodyShapeMatches` (the shared pure gate
+// `mirrorClassToFrame`/`assertClassFrameMirror` both call before either ever
+// reaches `place_value.writeClassBody`) now seeds its own `visiting` set
+// with the ROOT object's identity before walking its fields, so a field
+// that reintroduces that same identity one level down declines the mirror
+// right there, deterministically, instead of reaching `writeClassBody`'s
+// own address-keyed cycle guard and throwing out into this assignment.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.selfReferencingObjectDoesNotCrash." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Node {
+                int value;
+                Node next;
+            }
+
+            int mark(int seed) {
+                return seed * 11 + 7;
+            }
+
+            unittest {
+                auto n = new Node();
+                n.value = mark(1);
+                n.next = n;
+
+                assert(n.next.value == mark(1));
+            }
+        });
+    }
+}
+
+// The two-object counterpart of the self-reference fixture above: a ring
+// (`a.next = b; b.next = a;`) reintroduces `a`'s own identity through `b`'s
+// field, one level further down than the direct self-reference does. The
+// same seeded `visiting` set in `classBodyShapeMatches` catches this shape
+// too, since the reintroduced identity is checked against the ROOT's own
+// seed no matter how many field hops away it resurfaces.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.twoNodeRingDoesNotCrash." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Node {
+                int value;
+                Node next;
+            }
+
+            int mark(int seed) {
+                return seed * 11 + 7;
+            }
+
+            unittest {
+                auto a = new Node();
+                auto b = new Node();
+
+                a.value = mark(1);
+                b.value = mark(2);
+
+                a.next = b;
+                b.next = a;
+
+                assert(a.next.value == mark(2));
+                assert(b.next.value == mark(1));
+            }
+        });
+    }
+}
+
 // A class-typed field reassigned to a NEW object must observe the new
 // object's own fields afterward, not retain the old object's -- ordinary
 // class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
