@@ -103,18 +103,19 @@ deletion (items 2-3).
    by evaluating an expression: immediate scalar results, native
    aggregate handles, locations/references, callables, and interpreter
    metadata. The extracted `RuntimeValue` carrier's `Array`, `Struct`, and
-   `ClassObject` expression aggregates remain recursive boxed trees. Before
-   introducing a native aggregate-handle rvalue, extract their aggregate
-   visitor/reconstruction behaviour and its direct consumer boundary from
-   `RuntimeValue`: `place` and `place_value` already depend on
-   `RuntimeValue`, so reversing that direction to thread a handle through
-   their current API would make a cycle. Before a native aggregate-handle
-   rvalue exists, `AggregateValue` must become the common consumer boundary:
-   all aggregate operations in `impl` and `ffi_marshal` consume it. A handle
-   with no consumer is equally speculative. `RuntimeValue.Array` currently
-   conflates static and dynamic arrays, so migrating categories through
-   separate handle paths would create a second authority. The common boundary
-   preserves the no-two-world invariant while its representation changes.
+   `ClassObject` expression aggregates remain recursive boxed trees.
+   `AggregateValue` is their complete common visitor/reconstruction and
+   mutation boundary, consumed by every aggregate operation in `impl` and
+   `ffi_marshal`; its signatures are still `RuntimeValue`-typed. The next
+   valid operation is one atomic carrier-boundary migration: change every
+   `AggregateValue` consumer and its signatures to native typed-address
+   aggregate handles, including whole-value reconstruction. A handle with no
+   consumer is equally speculative. `RuntimeValue.Array` owns recursive
+   elements for both static and dynamic arrays; its `nativeAddress` is an FFI
+   shortcut, not a category boundary. Static/dynamic slicing of this migration
+   is forbidden because it would create a second authority. The common
+   boundary preserves the no-two-world invariant while its representation
+   changes.
    This is a prerequisite to, not part of, the one atomic migration of the
    carrier's three interim data-pointer arms and local/frame/ref/capture/
    cross-frame authority to one host-address arm. Function and delegate
@@ -923,17 +924,16 @@ in parallel and never blocks it.
    `void` result just to reuse the evaluator path.
 
 3. Complete the interpreter-private `RuntimeValue` carrier's expression-only
-   aggregate path before the authority switch. `AggregateValue` is the common
-   boxed aggregate boundary, so replace its implementation rather than adding
-   another aggregate consumer path. `RuntimeValue.Array` conflates static and
-   dynamic
-   arrays, so category-by-category handle migration would recreate a second
-   authority; preserve the no-two-world invariant by changing the one common
-   boundary. Then replace that boundary's recursively boxed `Array`,
-   `Struct`, and `ClassObject` rvalues with native aggregate handles and
-   provide their whole-value reconstruction APIs. A handle is introduced only
-   with that consumer migration. This is a prerequisite, not a second storage
-   authority. Then replace its three data-pointer arms with one host-address
+   aggregate path before the authority switch. The common `AggregateValue`
+   boundary is complete but remains `RuntimeValue`-typed. Its next operation
+   is atomic: migrate every consumer and boundary signature to native
+   typed-address aggregate handles and supply their whole-value reconstruction
+   APIs. Do not introduce a handle separately, retain a `Value` aggregate path,
+   or split static from dynamic arrays: `RuntimeValue.Array` owns recursive
+   elements for both, and `nativeAddress` is only an FFI shortcut. The one
+   migration replaces the boundary's recursively boxed `Array`, `Struct`, and
+   `ClassObject` rvalues without relaxing the no-two-world invariant. Then
+   replace its three data-pointer arms with one host-address
    arm in the same atomic migration that replaces local/frame,
    `ref`/`out`/capture, pointer-dereference, and cross-frame-write authority,
    and delete cells and aliases. Function and delegate handles remain separate
