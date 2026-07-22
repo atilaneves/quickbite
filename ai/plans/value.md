@@ -102,13 +102,16 @@ deletion (items 2-3).
    carrier for recursive expression results — the uniform D type returned
    by evaluating an expression: immediate scalar results, native
    aggregate handles, locations/references, callables, and interpreter
-   metadata. `RuntimeValue` has three interim data-pointer arms, coupled to
-   boxed-local authority. Their replacement by one host-address arm is one
-   atomic migration with local/frame/ref/capture/cross-frame authority, not a
-   preparatory carrier-only slice; function and delegate handles are separate,
-   non-data categories. That expression currency is distinct from the
-   authoritative storage of an addressable guest value — it is a return type,
-   never an authority (decision 15).
+   metadata. The extracted `RuntimeValue` carrier's `Array`, `Struct`, and
+   `ClassObject` expression aggregates remain recursive boxed trees. Native
+   aggregate-handle rvalue and reconstruction APIs, with consumers including
+   FFI able to use them, are a prerequisite to the one atomic migration of its
+   three interim data-pointer arms and local/frame/ref/capture/cross-frame
+   authority to one host-address arm; they are not an authority migration of
+   their own. Function and delegate handles are separate, non-data categories.
+   That expression currency is distinct from the authoritative storage of an
+   addressable guest value — it is a return type, never an authority (decision
+   15).
    The earlier claim that a boxed tagged union
    is "the natural form" for a tree walker was downgraded: it argues
    against *reimplementing* layout, not against *reusing* it. It is
@@ -910,18 +913,20 @@ in parallel and never blocks it.
    consumes its returned string. Do not retain `Value` or render a dummy
    `void` result just to reuse the evaluator path.
 
-3. Reduce the interpreter-private `RuntimeValue` carrier to expression
-   execution only. Its three data-pointer arms cannot be normalized while
-   boxed locals/cells remain authority: replace all three with its one
-   host-address arm in the same atomic migration that replaces local/frame,
+3. Complete the interpreter-private `RuntimeValue` carrier's expression-only
+   aggregate path before the authority switch: replace its recursively boxed
+   `Array`, `Struct`, and `ClassObject` rvalues with native aggregate handles,
+   provide their whole-value reconstruction APIs, and make every consumer,
+   including FFI, use them. This is a prerequisite, not a second storage
+   authority. Then replace its three data-pointer arms with one host-address
+   arm in the same atomic migration that replaces local/frame,
    `ref`/`out`/capture, pointer-dereference, and cross-frame-write authority,
-   then delete cells and aliases. Function and delegate handles remain
-   separate non-data categories. Do not retain display-oriented or recursive
-   aggregate arms as a private replacement for shared `Value`: expression
-   results need immediate scalars, native handles, locations, callables, and
-   execution metadata only. Once no backend depends on `quickbite.lang.Value`
-   as a cross-backend type, delete the shared struct and its unit tests
-   together. This deletion is decision 15's completion signal.
+   and delete cells and aliases. Function and delegate handles remain separate
+   non-data categories. Expression results need immediate scalars, native
+   handles, locations, callables, and execution metadata only. Once no backend
+   depends on `quickbite.lang.Value` as a cross-backend type, delete the shared
+   struct and its unit tests together. This deletion is decision 15's
+   completion signal.
 
 4. **Workingness track (leads).** Keep the shipping boxed interpreter
    advancing toward the cerealed/dub goal: one language-surface fix plus
