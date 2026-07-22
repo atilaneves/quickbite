@@ -73,6 +73,13 @@ public imported!"quickbite.lang".Value readValue(
     // non-member form (`cast(E)N`) instead.
     auto enumType = type.isTypeEnum;
     if (enumType !is null) {
+        if (isFloatingBaseEnum(type))
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.readValue: "
+                ~ "enum with a floating base type has no Value.enumValue "
+                ~ "representation",
+            );
+
         const bits = place.loadScalar.asLong;
         const qualifiedName = enumMemberQualifiedName(enumType, bits);
         return Value.enumValue(
@@ -236,9 +243,11 @@ private imported!"quickbite.lang".Value readClassValue(
 
 
 // True for `real` (`TY.Tfloat80`), resolving an enum's base type the same
-// way `native_scalar.d`'s own `nativeScalarKindOf` does, so an enum whose
-// base type is `real` would dispatch correctly here too (though DMD gives
-// every enum an integral base type in practice). `@trusted`: `Type.
+// way `native_scalar.d`'s own `nativeScalarKindOf` does. That makes
+// `enum E : real` answer `true` here as well, which is a fact about the
+// BITS, not a claim that such an enum composes: `isFloatingBaseEnum` below
+// declines it before this is consulted, because the read side has no enum
+// `Value` to give back for a floating one. `@trusted`: `Type.
 // toBasetype` is not `@safe`, mirroring `native_scalar.d`'s identical
 // boundary for the identical call. `public`: `impl.d`'s `placeShapeMatches`
 // needs the identical check, to decide whether a boxed `Value` reaching a
@@ -250,6 +259,28 @@ public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
     import dmd.astenums: TY;
 
     return type.toBasetype.ty == TY.Tfloat80;
+}
+
+
+// True for an enum whose base type is a floating one -- `enum E : double`
+// and `enum E : real` are both legal D, and both are shapes this module
+// composes in ONE direction only. `writeValue` would happily write them
+// (their base type is `native_scalar.isNativeScalarType` or `isRealType`),
+// but `readValue` cannot bring them back: its enum arm must return a
+// `Value.enumValue`, whose bits are a `long`, and there is no member
+// lookup or `cast(E)N` rendering for a floating one. A one-way shape is
+// not composable, so all three of `isPlaceComposable`, `readValue` and
+// `writeValue` decline it together rather than letting a write land that
+// the read side then refuses -- exactly the asymmetry `isPlaceComposable`'s
+// contract exists to rule out.
+//
+// `TypeEnum.isFloating` forwards to the enum's own member type (DMD's own
+// override), so this needs no separate base-type resolution. `@trusted`:
+// neither `isFloating` nor `Type.isTypeEnum` is `@safe`-annotated, the
+// same boundary `isRealType` above draws for `toBasetype`.
+private bool isFloatingBaseEnum(imported!"dmd.mtype".Type type) @trusted {
+    auto enumType = type.isTypeEnum;
+    return enumType !is null && enumType.isFloating;
 }
 
 
@@ -382,6 +413,18 @@ public void writeValue(
     import quickbite.lang: Value;
 
     auto type = place.type;
+
+    // Refused for the same reason `readValue`'s own enum arm refuses it
+    // (its message there): `Value.enumValue` carries `long` bits, so a
+    // floating-base enum has no boxed enum shape to read back, and a write
+    // this module cannot undo is not a composition -- both directions
+    // decline together, which is what `isPlaceComposable` promises.
+    if (isFloatingBaseEnum(type))
+        throw new Exception(
+            "quickbite.backends.interpreter.place_value.writeValue: "
+            ~ "enum with a floating base type has no Value.enumValue "
+            ~ "representation",
+        );
 
     if (isNativeScalarType(type)) {
         place.storeScalar(value);
@@ -722,6 +765,9 @@ private void writeClassBodyImpl(
 // comment there.
 public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+    if (isFloatingBaseEnum(type))
+        return false;
 
     if (isNativeScalarType(type))
         return true;

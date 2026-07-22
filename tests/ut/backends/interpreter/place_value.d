@@ -1457,3 +1457,64 @@ unittest {
 unittest {
     isPlaceComposable(Type.tfloat80).should == true;
 }
+
+
+// `enum E : real` and `enum E : double` are legal D, and `writeValue` can
+// write either (their base types are scalars this module knows). `readValue`
+// cannot bring them back: `Value.enumValue` carries `long` bits. A shape
+// that composes in one direction only is not composable, so all three of
+// the predicate and the two directions decline it together.
+@("place_value.isPlaceComposable.falseForRealBasedEnum")
+unittest {
+    auto enumType = enumTypeOf(q{ enum E: real { a = 1.0L } }, "E");
+    isPlaceComposable(enumType).should == false;
+}
+
+
+@("place_value.isPlaceComposable.falseForDoubleBasedEnum")
+unittest {
+    auto enumType = enumTypeOf(q{ enum E: double { a = 1.0 } }, "E");
+    isPlaceComposable(enumType).should == false;
+}
+
+
+@("place_value.readValue.declinesRealBasedEnum")
+unittest {
+    auto enumType = enumTypeOf(q{ enum E: real { a = 1.0L } }, "E");
+    auto block = NativeBlock.allocate(typeByteSize(enumType), NativeBlock.Scan.no);
+    auto root = placeAt(block, enumType);
+
+    readValue(root).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place_value.readValue: enum with a "
+        ~ "floating base type has no Value.enumValue representation",
+    );
+}
+
+
+@("place_value.writeValue.declinesDoubleBasedEnum")
+unittest {
+    auto enumType = enumTypeOf(q{ enum E: double { a = 1.0 } }, "E");
+    auto block = NativeBlock.allocate(typeByteSize(enumType), NativeBlock.Scan.no);
+    auto root = placeAt(block, enumType);
+
+    double written = 0.5;
+    written = written + 0.5;
+
+    writeValue(root, Value(written)).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place_value.writeValue: enum with a "
+        ~ "floating base type has no Value.enumValue representation",
+    );
+}
+
+
+// A struct whose enum field has a floating base type declines as a whole,
+// the same way one non-composable field already refuses a whole struct --
+// so `impl.d`'s mirror never reaches the field at all.
+@("place_value.isPlaceComposable.falseForStructWithRealBasedEnumField")
+unittest {
+    auto type = structTypeOf(q{
+        enum E: real { a = 1.0L }
+        struct S { int tag; E e; }
+    }, "S");
+    isPlaceComposable(type).should == false;
+}
