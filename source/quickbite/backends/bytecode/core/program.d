@@ -107,7 +107,9 @@ package(quickbite.backends.bytecode) struct ResultType {
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset
-// into Program.data followed by a uint length.
+// into Program.data followed by a uint length (a code-unit count, matching
+// every other slice descriptor's length field, not necessarily a byte
+// count: a `wchar`/`dchar` literal's code units are wider than a byte).
 package(quickbite.backends.bytecode) enum stringSliceSize = 8;
 
 // Bytes of a dynamic-array slice descriptor laid out in the frame: a native
@@ -212,6 +214,14 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // b into a native dynamic-array descriptor {data.ptr + dataOffset, length}
     // at frame offset a. The backing data remains the immutable program segment.
     stringSliceToArray,
+    // Write a native dynamic-array descriptor {data.ptr + dataOffset, length}
+    // directly into frame offset a, from a literal's already-known data offset
+    // (b, in bytes) and length (c, in elements): the same expansion
+    // `stringSliceToArray` performs from a runtime-resident compact
+    // descriptor, but for a literal, whose offset and length are already
+    // compile-time constants, so no compact descriptor is written to a frame
+    // slot merely to be immediately re-expanded by its one consumer.
+    loadStringLiteral,
     // Form a sub-slice of a compact string descriptor without ever expanding it
     // to a native pointer: a: destination compact descriptor offset, b: source
     // compact descriptor offset, c: offset of an adjacent {lo, hi} pair of

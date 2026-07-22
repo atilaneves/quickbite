@@ -239,6 +239,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case loadStringLiteral:
+                writeSliceDescriptorPointer(
+                    stack,
+                    base + instruction.a,
+                    cast(size_t) (program.data.ptr + instruction.b),
+                    instruction.c,
+                );
+                ++ip;
+                break;
+
             case stringSubSlice:
                 const sourceDataOffset = scalarValue!uint(
                     stack, base + instruction.b,

@@ -117,27 +117,25 @@ nothing inspects a value's origin to decide its shape.
 The current implementation predates this contract: a string local holds a
 compact 8-byte {data offset, length} descriptor expanded at each use —
 bootstrap scaffolding from the first string-literal lowering, and the root of
-an entire silent-misread bug family. Migration slices, each independently
-green, folded into and sequenced with the descriptor word-order flip above:
+an entire silent-misread bug family. Literal storage is now width-faithful
+(code units at their declared width, pool {offset, length} in elements,
+`Op.loadStringLiteral` expanding a literal straight to a native descriptor at
+load time instead of per consumer); the compact descriptor itself remains.
+Remaining migration slices, each independently green, folded into and
+sequenced with the descriptor word-order flip above:
 
-1. Width-faithful literal storage: store code units at the declared element
-   width (`stringCodeUnits!T` exists, unused); pool entries carry
-   {offset, length} in elements; add `loadStringLiteral` (today's
-   `stringSliceToArray`, run once at literal load instead of per consumer).
-   The deferred wide-string gap falls out here rather than being its own
-   project.
-2. String locals become dynamic-array locals through the generic declaration,
+1. String locals become dynamic-array locals through the generic declaration,
    parameter, and reassignment paths. This slice deletes rather than adds:
    the reassignment `copySize` special case, the heap-rebind branch and its
    map surgery, `stringSourceIsHeapBacked`, `_stringLocals`. The
    conditional-reassignment refusal rows go green because the bug's
    precondition (two slot widths) no longer exists.
-3. Consumer cleanup: retire `Op.stringSubSlice`, `validateCompactSubSlice`,
+2. Consumer cleanup: retire `Op.stringSubSlice`, `validateCompactSubSlice`,
    `compactStringLengthSlot`, `tryStringIndex` (the generic
    `tryDynamicArrayIndex` catches strings), and `compileStringPointer`'s
    expansion; sweep every remaining `isStringType` gate in compiler.d — each
    is either dead or a bug.
-4. Truthiness and null: with a real pointer word, `if (s)` / `assert(s)`
+3. Truthiness and null: with a real pointer word, `if (s)` / `assert(s)`
    compiles as the ordinary pointer test.
 
 Done means: `stringSliceSize`, `_stringLocals`, `Op.stringSubSlice`,

@@ -2609,9 +2609,7 @@ private struct Compiler {
         if (index.e1.type.toBasetype.nextOf.toBasetype.ty != TY.Tchar)
             return null;
 
-        const string_ = compileExpression(index.e1);
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(Op.stringSliceToArray, offset, string_.offset);
+        const offset = compileExpandedStringPointer(index.e1);
         return loadDynamicArrayElement(
             offset, dynamicArrayElementType(index.e1.type), index.e2,
             index.type,
@@ -2884,14 +2882,71 @@ private struct Compiler {
         return null;
     }
 
-    // A string literal lives in the read-only data segment; the frame slot
-    // holds a slice descriptor (data offset and length). reify rebuilds the
-    // string from that descriptor plus the segment at the boundary.
+    // A string literal lives in the read-only data segment, stored at its
+    // declared element width; the frame slot holds a compact slice descriptor
+    // (data offset in bytes, length in elements). reify rebuilds the string
+    // from that descriptor plus the segment at the boundary.
     private Operand compileStringLiteral(StringExp string_) {
-        import quickbite.frontend.dmd.string_literals: stringChars;
+        const literal = appendStringLiteral(string_);
+        const offset = allocateBytes(stringSliceSize, 4);
+        _code ~= Instruction(
+            Op.loadStringSlice, offset, literal.dataOffset, literal.length,
+        );
+        return Operand(offset, ScalarType.void_, true);
+    }
+
+    // The expanded native {ptr, length} descriptor for a string-typed source
+    // expression, at a fresh frame slot: `Op.loadStringLiteral` directly for
+    // a literal, whose data offset and length are already compile-time
+    // constants, or the general compile-then-expand path (`Op
+    // .stringSliceToArray` over a runtime-resident compact descriptor)
+    // otherwise.
+    private ushort compileExpandedStringPointer(Expression source) {
+        if (auto literal = source.isStringExp)
+            return compileStringLiteralPointer(literal);
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.stringSliceToArray, offset, compileExpression(source).offset,
+        );
+        return offset;
+    }
+
+    // Compile a string literal directly into an expanded native {ptr, length}
+    // descriptor at a fresh frame slot; see `compileExpandedStringPointer`.
+    private ushort compileStringLiteralPointer(StringExp string_) {
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        emitLoadStringLiteral(offset, string_);
+        return offset;
+    }
+
+    // Emit a string literal's bytes into the data segment and an
+    // `Op.loadStringLiteral` writing the expanded {ptr, length} descriptor
+    // directly into the existing frame slot `destination` (as opposed to
+    // `compileStringLiteralPointer`'s fresh one).
+    private void emitLoadStringLiteral(
+        in ushort destination,
+        StringExp string_,
+    ) {
+        const literal = appendStringLiteral(string_);
+        _code ~= Instruction(
+            Op.loadStringLiteral,
+            destination,
+            literal.dataOffset,
+            literal.length,
+        );
+    }
+
+    // Append `string_`'s code units to the read-only data segment at their
+    // declared element width, returning the segment offset (in bytes) and the
+    // code-unit count (not the byte count, which differs for `wchar`/`dchar`
+    // literals) — the {offset, length} pair every literal-load instruction's
+    // operands share.
+    private StringLiteralData appendStringLiteral(StringExp string_) {
+        import quickbite.frontend.dmd.string_literals: stringCodeUnitBytes;
         import std.conv: text;
 
-        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const bytes = stringCodeUnitBytes(string_);
         const dataOffset = _program.data.length;
         if (dataOffset > ushort.max || bytes.length > ushort.max)
             throw new Exception(text(
@@ -2900,14 +2955,9 @@ private struct Compiler {
             ));
         _program.data ~= bytes;
 
-        const offset = allocateBytes(stringSliceSize, 4);
-        _code ~= Instruction(
-            Op.loadStringSlice,
-            offset,
-            cast(ushort) dataOffset,
-            cast(ushort) bytes.length,
+        return StringLiteralData(
+            cast(ushort) dataOffset, cast(ushort) (bytes.length / string_.sz),
         );
-        return Operand(offset, ScalarType.void_, true);
     }
 
     private Operand compileImaginaryDoubleLiteral(RealExp real_) {
@@ -5344,10 +5394,14 @@ private struct Compiler {
         // the program data rather than copying its bytes.
         if (auto cast_ = source.isCastExp)
             if (isStringType(cast_.e1.type)) {
-                const string_ = compileExpression(cast_.e1);
-                _code ~= Instruction(
-                    Op.stringSliceToArray, destination, string_.offset,
-                );
+                if (auto literal = cast_.e1.isStringExp)
+                    emitLoadStringLiteral(destination, literal);
+                else
+                    _code ~= Instruction(
+                        Op.stringSliceToArray,
+                        destination,
+                        compileExpression(cast_.e1).offset,
+                    );
                 return;
             }
 
@@ -5852,12 +5906,9 @@ private struct Compiler {
         // offsets as byte offsets.
         if (isCharStringType(slice.e1.type) &&
             !stringSourceIsHeapBacked(slice.e1)) {
-            const string_ = compileExpression(slice.e1);
-            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.stringSliceToArray, offset, string_.offset,
+            descriptor = DynamicArrayLocal(
+                compileExpandedStringPointer(slice.e1), ScalarType.char_,
             );
-            descriptor = DynamicArrayLocal(offset, ScalarType.char_);
         } else {
             descriptor = dynamicArrayDescriptor(slice.e1);
         }
@@ -6116,12 +6167,12 @@ private struct Compiler {
         // takes the `compileArrayPointer` path instead: reading it through
         // `compileStringPointer`'s `Op.stringSliceToArray` would misread the
         // descriptor's own pointer word as a data-segment offset.
-        // `compileStringPointer` only ever stores UTF-8 bytes
-        // (`compileStringLiteral`), so it is restricted to `char`-element
-        // strings; `wstring`/`dstring` fall through to the generic pointer
-        // handling below, which refuses (their `Tarray` source isn't a raw
-        // pointer and `isDynamicArrayArgument` excludes strings), rather than
-        // silently reinterpreting UTF-8 bytes as UTF-16/32 code units.
+        // `compileStringPointer` hardcodes `ScalarType.char_` as the result's
+        // element type, so it is restricted to `char`-element strings;
+        // `wstring`/`dstring` fall through to the generic pointer handling
+        // below, which refuses (their `Tarray` source isn't a raw pointer and
+        // `isDynamicArrayArgument` excludes strings), rather than silently
+        // mislabelling `wchar`/`dchar` code units as `char`-sized ones.
         if (isPointerType(cast_.to)) {
             if (isCharStringType(cast_.e1.type) &&
                 !stringSourceIsHeapBacked(cast_.e1))
@@ -6299,13 +6350,11 @@ private struct Compiler {
 
     // `cast(T*)s` / `s.ptr` for a string `s`: a string local holds the
     // compact 8-byte {data offset, length} descriptor, not a native pointer,
-    // so `Op.stringSliceToArray` expands it into a fresh 16-byte {ptr,
+    // so `compileExpandedStringPointer` expands it into a fresh 16-byte {ptr,
     // length} slice descriptor (the same expansion `compileSliceInto` uses
     // for `s[lo .. hi]`) before reading its pointer word.
     private Operand compileStringPointer(CastExp cast_) {
-        const string_ = compileExpression(cast_.e1);
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(Op.stringSliceToArray, offset, string_.offset);
+        const offset = compileExpandedStringPointer(cast_.e1);
         return pointerToElement(offset, ScalarType.char_, compileSizeConstant(0));
     }
 
@@ -9854,8 +9903,18 @@ private struct Compiler {
         return Operand(offset, ScalarType.bool_);
     }
 
+    // `Op.stringSliceEqual` compares its operands' compact {dataOffset,
+    // length} descriptors as byte ranges; `length` is an element count, which
+    // only matches a byte count for a `char` element. Restricting to
+    // char strings here — like every other byte-stride-1 compact-descriptor
+    // consumer, see `isCharStringType` — keeps a `wstring`/`dstring`
+    // comparison falling through to an explicit refusal rather than
+    // comparing a truncated byte range.
     private Operand* tryStringEquality(BinExp equal) {
         import dmd.tokens: EXP;
+
+        if (!isCharStringType(equal.e1.type) || !isCharStringType(equal.e2.type))
+            return null;
 
         const left = compileExpression(equal.e1);
         const right = compileExpression(equal.e2);
@@ -13481,6 +13540,14 @@ private struct PointerElementMetadata {
     uint byteStride;
 }
 
+// A string literal's data-segment placement: `dataOffset` in bytes, `length`
+// in elements (code units), matching the compact descriptor and the expanded
+// native descriptor's own {offset, length} operand pair.
+private struct StringLiteralData {
+    ushort dataOffset;
+    ushort length;
+}
+
 // A dynamic-array local: its slice-descriptor frame offset and the element
 // type. `elementType` is the element scalar (for an array-of-arrays it is the
 // innermost element scalar); when `elementIsArray` is set the element is itself
@@ -14327,15 +14394,14 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
 }
 
 // A `string` specifically (immutable `char`-element array), excluding
-// `wstring`/`dstring`. Every string literal is stored in the data segment as
-// UTF-8 bytes regardless of its declared element width
-// (`quickbite.frontend.dmd.string_literals.stringChars`), so code that reads
-// those bytes as `char`-sized code units — the compact-string fast paths
-// (compact slicing, indexing, `.ptr`/`.length`) and anything reinterpreting
-// them through a pointer (`compileStringPointer`) — is only correct for a
-// `char` element; a `wstring`/`dstring`'s length and byte layout would not
-// match its `wchar`/`dchar` element stride, so such values fall through to
-// the general, slower path instead of silently computing wrong offsets.
+// `wstring`/`dstring`. The compact descriptor's sub-slice opcode
+// (`Op.stringSubSlice`) adds its `{lo, hi}` bounds directly to a byte offset,
+// and its pointer-expansion consumers (`compileStringPointer`,
+// `tryStringIndex`) hardcode `ScalarType.char_` as the resulting element
+// type — both assume a byte-stride-1 element, which only a `char` element
+// satisfies; a `wstring`/`dstring`'s `wchar`/`dchar` stride would make that
+// arithmetic wrong, so such values fall through to the general, slower path
+// instead of silently computing wrong offsets.
 private bool isCharStringType(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
