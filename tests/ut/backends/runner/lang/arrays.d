@@ -3160,12 +3160,7 @@ static foreach (backend; Matrix!()) {
     Reassigning a compact-descriptor `string` local from a heap-backed source
     inside an untaken `if` branch must not touch `b`: the branch never runs.
 +/
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "reassigning a compact string local from a heap-backed source " ~
-        "inside a conditional refuses rather than rebind past a lexical " ~
-        "point that does not dominate every later read"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInConditionalLeavesUntakenBranchUnchanged." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3198,12 +3193,7 @@ static foreach (backend; Matrix!(
     inside a loop body must observe each iteration's own reassignment, not the
     value the local held before the loop started.
 +/
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "reassigning a compact string local from a heap-backed source " ~
-        "inside a loop body refuses rather than rebind past a lexical " ~
-        "point that does not dominate every later read"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInLoopUpdatesEachIteration." ~
         backend.stringof)
     @Tags(backend.stringof)
