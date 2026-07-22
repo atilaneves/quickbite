@@ -341,19 +341,18 @@ deletion (items 2-3).
       the partition: language-surface → fix now; representation-
       ceiling → wait.
     - The **representation track** implements decision 15 in bounded,
-      independently green preparation slices with authority unchanged
-      — per-activation frame blocks plumbed in, lvalue evaluation
-      returning places (addresses), loads and stores routed through
-      them — followed by ONE small global authority switch, then
-      deletion of the machinery the switch killed. Not a monolithic
-      rewrite verified only at the end, and not per-shape authority
-      flips (mixed-shape values recreate the two-world coherence seams
-      this redesign exists to kill): preparation changes the behavior
-      of nothing, and the switch is small because everything is
-      already in place. The track rebases onto master as workingness
-      PRs land and absorbs their fixtures as its acceptance tests; the
-      tracks converge when the native-layout authority passes the
-      working interpreter's matrix.
+      independently green preparation slices. Frame and place mirrors do
+      not make an authority switch ready: the coherent switch must move
+      boxed-local authority together with pointer identity and dereference,
+      `ref`/`out`/capture binding, and cross-frame writes. `scalarCells`
+      and alias maps cannot remain an authority behind native frame bytes.
+      Not a monolithic rewrite verified only at the end, and not per-shape
+      authority flips (mixed-shape values recreate the two-world coherence
+      seams this redesign exists to kill): replace the whole local-storage
+      path coherently, then delete the machinery it made dead. The track
+      rebases onto master as workingness PRs land and absorbs their fixtures
+      as its acceptance tests; the tracks converge when the native-layout
+      authority passes the working interpreter's matrix.
 
     Activation storage: every activation allocates one frame block, including
     an activation whose layout has no slots. Contiguous activation storage is
@@ -912,9 +911,9 @@ in parallel and never blocks it.
    triage is the partition.
 
 5. **Representation track (parallel).** Implement decision 15 in
-   bounded, independently green slices, then one small authority switch
-   (decision 17):
-   - Preparation is done: per-activation frame blocks; lvalue places
+   bounded, independently green slices, then replace boxed local authority
+   coherently (decision 17):
+   - Frame and place mirrors exist: per-activation frame blocks; lvalue places
      composing through a variable, fields, indexing, pointer/class
      dereference, and address-of — `this` has an arm but no reachable
      caller, since DMD slots `vthis` as neither a parameter nor a body
@@ -927,6 +926,13 @@ in parallel and never blocks it.
      assignment target and a `SymOffExp` naming a function; a
      captured-variable slot cannot resolve a relay through a
      non-referencing intermediate activation.
+   - Before native frame bytes become local authority, move the whole
+     local-storage path together: pointer creation and dereference must name
+     those bytes; `ref`/`out` and captured bindings must carry their addresses;
+     and cross-frame mutation must write those addresses directly. Do not
+     retain `scalarCells`, other cell families, or alias/reverse maps as an
+     authority behind the frames: a mirror plus any of those authorities is
+     still two storage worlds.
    - `object_table.ObjectTable` never evicts: every class identity the
      mirror touches keeps its body pinned for the whole execution,
      because liveness lives in `impl.d`'s boxed copies and nothing
@@ -936,7 +942,8 @@ in parallel and never blocks it.
      object, its lifetime is the collector's and no identity-keyed pin
      exists.
    - The authority switch: native storage becomes the sole authority
-     for all bindings. Merge gate: no new red rows (decision 17).
+     for all bindings as part of that coherent path replacement. Merge gate:
+     no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/
      `arrayCells`/`structCells`/`classCells`/`classObjectCells` and
      every alias/reverse map, `arrayRebinds`/`classRebinds`,
