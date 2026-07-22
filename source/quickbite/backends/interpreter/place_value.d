@@ -777,7 +777,23 @@ out (result; !result || isPlaceComposable(type))
     if (structType is null)
         return false;
 
-    foreach (field; structFields(structType))
+    // The same gate `allFieldsComposable` applies to a struct's own fields
+    // (its header comment), applied here for the same reason and to keep
+    // the subset property the `out` contract above states: a struct
+    // bearing an ANONYMOUS union has both of DMD's flattened members in
+    // `structFields` at the same offset, and when they are native scalars
+    // -- unlike the `real`/`long` pair, which stops at
+    // `isWritableNativeScalar` -- the walk below would otherwise call the
+    // whole struct re-derivable while `isPlaceComposable` declines it.
+    // Over-declining is the right bias: the union merely stays unmirrored,
+    // whereas accepting it routes `u.s.b = 1.5f` through the non-union
+    // receiver path, leaves the boxed sibling stale, and a later `ref`
+    // bind verifies that stale snapshot against the sibling's bytes.
+    auto fields = structFields(structType);
+    if (!fieldsAreDisjoint(fields))
+        return false;
+
+    foreach (field; fields)
         if (!isUnionMemberReDerivable(declaredType(field)))
             return false;
 

@@ -2677,6 +2677,45 @@ static foreach (backend; Matrix!(
 }
 
 
+// The same flattened anonymous union one level down, as a member of an
+// EXPLICIT union: the enclosing union's own coherence question is asked of
+// each member's type, and `S`'s flattened members are both native scalars,
+// so nothing but the overlapping-offsets check distinguishes `S` from an
+// ordinary two-field struct. Writing through `u.s.a` and binding it by
+// `ref` afterwards exercises both the member write and the reference bind
+// that the enclosing union's members must agree about.
+static foreach (backend; Matrix!()) {
+    @("union.anonymousUnionInStructMemberOfUnion." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                union {
+                    int a;
+                    float b;
+                }
+            }
+
+            union U {
+                S s;
+                long l;
+            }
+
+            int observe(ref int x) {
+                return x;
+            }
+
+            unittest {
+                U u;
+                u.s.a = 7;
+                assert(observe(u.s.a) == 7);
+                assert(u.s.a == 7);
+            }
+        });
+    }
+}
+
+
 // An untouched plain-struct sibling reads the same first-member default bits
 // as a scalar sibling. The struct's scalar field spans the first float's NaN
 // representation, so independently defaulting the struct would incorrectly

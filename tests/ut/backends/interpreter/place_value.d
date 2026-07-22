@@ -1610,6 +1610,26 @@ unittest {
 }
 
 
+// The same union with `S` grown an ANONYMOUS union of its own: DMD
+// flattens `a` and `b` into `S`'s own fields at the same offset, so `S`
+// does not compose (`allFieldsComposable`'s overlap gate), and a member
+// that does not compose is not one the union write path re-derives
+// coherently either. Both flattened members are native scalars, so nothing
+// but the overlap check stops the member walk -- which is why this shape,
+// and not the `real`/`long` neighbours above, is the one that reached
+// `isUnionMemberReDerivable`'s "re-derivable implies composable" `out`
+// contract and made the contract itself assert on a program the oracle
+// runs.
+@("place_value.isPlaceComposable.falseForUnionWithAnonymousUnionBearingStructMember")
+unittest {
+    auto unionType = structTypeOf(q{
+        struct S { union { int a; float b; } }
+        union U { S s; long l; }
+    }, "U");
+    isPlaceComposable(unionType).should == false;
+}
+
+
 // `union U {}` is legal D. It has no member for the single-member write to
 // pick, so it declines -- rather than indexing an empty member list, which
 // kills the whole interpreter with a `core.exception.ArrayIndexError` (an
