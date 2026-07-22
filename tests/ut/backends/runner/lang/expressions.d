@@ -800,7 +800,7 @@ static foreach (backend; Matrix!()) {
 // composed expectation for `y`'s object -- a guaranteed "frame class
 // reference mirror diverged from boxed local" `AssertError` on a correct
 // guest program, and one no all-zero-slot skip can mask, since a stale
-// non-null address is not all-zero. So `impl.d`'s `classMirrorEstablished`
+// non-null address is not all-zero. So `impl.d`'s `mirrorEstablished`
 // records what `mirrorClassToFrame` actually did for `p`'s CURRENT binding
 // at write time and `assertClassFrameMirror` trusts that instead of
 // re-deriving: `p`'s write declined, so its later read never re-enters the
@@ -841,7 +841,7 @@ static foreach (backend; Matrix!()) {
 // (`keepAlive` still aliases it at that exact moment) and must leave `p`
 // with NO established mirror for its new binding -- catching a stale
 // "we already wrote it" flag that (wrongly) survived from the FIRST
-// binding, which `classMirrorEstablished` (`impl.d`) is keyed and
+// binding, which `mirrorEstablished` (`impl.d`) is keyed and
 // overwritten per write specifically to prevent (its own header comment).
 // Never nulls `y`/`keepAlive`, unlike the fixture above: a stale flag
 // would crash on THIS read already, with no need for the aliasing
@@ -3390,7 +3390,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // The cross-activation counterpart: a callee's own parameter mirror
 // (`bump`'s own `c`) rewrites the shared body strictly after the caller's
 // `parent` established its own mirror -- the callee's per-walker
-// `classMirrorEstablished`/generation bookkeeping is a SEPARATE frame's
+// `mirrorEstablished`/generation bookkeeping is a SEPARATE frame's
 // own, but `object_table.ObjectTable` is shared across every activation for
 // the whole execution (`impl.d`'s `classObjectTable` field comment), so the
 // rewrite is visible the moment control returns to the caller.

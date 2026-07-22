@@ -1461,7 +1461,7 @@ static foreach (backend; Matrix!(
 
 // The class-typed sibling of `lazyArgumentMutatesCallerLocal`: the thunk
 // rebinds the CALLER's own class local `v` to `w`'s identity, and `v`'s
-// class-mirror write/decline decision (`impl.d`'s `classMirrorEstablished`/
+// class-mirror write/decline decision (`impl.d`'s `mirrorEstablished`/
 // `classMirrorGenerations`) must travel with the same swap that already
 // carries `locals`/`_activationFrame` into the thunk (`runLazyArgument`,
 // `bindLazyFunctionParameter`), or the caller's later read of `v` consults
@@ -1502,7 +1502,7 @@ static foreach (backend; Matrix!(
 // rebound by a NESTED call to `f` (through `g`, using the same parameter
 // `VarDeclaration`) before the OUTER `f` forces its own `c` via `return c`.
 // The class-mirror bookkeeping captured for the outer binding
-// (`lazyArgumentClassMirrorEstablished`/`...Generations`, see `impl.d`'s
+// (`lazyArgumentMirrorEstablished`/`...Generations`, see `impl.d`'s
 // `bindLazyFunctionParameter`) belongs to the activation that captured it
 // and must not migrate: absorbing those maps upward on a call return hands
 // the outer `f` activation a pointer captured for the intermediate `g`
@@ -1552,10 +1552,13 @@ static foreach (backend; Matrix!(
 // `g` activation bound, so the returned object carries `g`'s field value
 // instead of the caller's -- asserted on the FIELD rather than on `is`,
 // since an identity mismatch renders the snippet's own module name, which
-// is not stable across test orderings. The guest program runs to completion
-// and fails its own assert the ordinary way, so a regression that lets the
-// lazy binding's captured pointer migrate out of its own activation fails
-// here too, with an interpreter-level crash instead of this value.
+// is not stable across test orderings. What this pins is that Interpreter
+// EXECUTES the shape -- the guest program runs to completion and fails its
+// own assert the ordinary way -- and that its divergence is exactly this
+// value. It is not a crash detector: letting the lazy binding's captured
+// pointer migrate out of its own activation reads memory of a returned
+// activation, which is undefined behaviour that does not manifest here, so
+// the suite stays green with the absorb re-added.
 static foreach (backend; AliasSeq!(Interpreter)) {
     @("lazyClassArgumentReentrantCallReturnLosesIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
