@@ -8,6 +8,9 @@ import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
 import quickbite.backends.interpreter.native_scalar: writeScalar, readScalar;
 import quickbite.lang: Value;
+import std.algorithm.searching: canFind;
+import std.conv: text;
+import std.exception: collectExceptionMsg;
 
 private:
 
@@ -48,21 +51,63 @@ class Derived: Base {
     long derivedField;
 }
 
+// The identical hierarchy as source, for `classTypeOf` -- kept as one
+// shared string so both tests below parse the SAME declarations the host
+// `Base`/`Derived` above are compiled from, rather than two hand-typed
+// (and possibly drifting) copies.
+private enum classHierarchySource = q{
+    class Base { int baseField; }
+    class Derived: Base { long derivedField; }
+};
+
 
 @("ObjectTable.storageFor.blockByteLengthMatchesDmdInstanceSizeIncludingInheritedFields")
 unittest {
-    auto classType = classTypeOf(
-        q{
-            class Base { int baseField; }
-            class Derived: Base { long derivedField; }
-        },
-        "Derived",
-    );
+    auto classType = classTypeOf(classHierarchySource, "Derived");
     ObjectTable table;
 
     table.storageFor(1, classType.sym);
 
     table[1].byteLength.should == __traits(classInstanceSize, Derived);
+}
+
+
+// The bug this defense-in-depth guard closes: `storageFor` sizes an
+// identity's body block from whichever caller's `class_` shows up FIRST
+// (`Base`, here), and used to hand that same block back UNCHANGED to a
+// later caller passing a WIDER class (`Derived`) for the SAME identity --
+// silently, since `place.Place` has no bounds check of its own and
+// `writeClassBody` would go on to write `Derived`'s wider field layout
+// through it. `impl.d`'s `classBodyShapeMatches` is the actual gate that
+// keeps this from happening in the real mirror pipeline (it declines
+// whenever a static type's name disagrees with the boxed value's own
+// dynamic one, before either mirror direction ever reaches `storageFor`);
+// this is only the low-level backstop, proven directly here by calling
+// `storageFor` the same mismatched way a caller bug would.
+@("ObjectTable.storageFor.widerSecondCallForTheSameIdentityThrows")
+unittest {
+    auto baseType = classTypeOf(classHierarchySource, "Base");
+    auto derivedType = classTypeOf(classHierarchySource, "Derived");
+    ObjectTable table;
+
+    table.storageFor(1, baseType.sym);
+
+    // `classQualifiedName`'s snippet module prefix varies per run
+    // (`runner/lang/expressions.d`'s own `typeid.typeNameReturnsIdentifier`
+    // test notes the identical fact), so this matches the stable suffix
+    // rather than the whole message; the byte counts come from the same
+    // `__traits(classInstanceSize, ...)` oracle the test above uses, not
+    // hand-derived literals.
+    const message = collectExceptionMsg!Exception(table.storageFor(1, derivedType.sym));
+    message.canFind(text(
+        "storageFor: identity 1's already-allocated body is ",
+        __traits(classInstanceSize, Base), " bytes, but ",
+    )).should == true;
+    message.canFind(text(
+        ".Derived needs ", __traits(classInstanceSize, Derived),
+        " -- a caller passed a class narrower or wider than the one this ",
+        "identity was first allocated for",
+    )).should == true;
 }
 
 

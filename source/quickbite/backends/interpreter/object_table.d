@@ -28,9 +28,50 @@ public struct ObjectTable {
     // `class_` is consulted only on that first call -- an object's runtime
     // class is fixed at construction, so a later call for an
     // already-allocated identity needs no class to size against.
+    //
+    // The size check below is defense in depth, not the primary guard: a
+    // caller reaching here with a `class_` whose size disagrees with
+    // another caller's for the SAME `identity` is a caller bug --
+    // `impl.d`'s `classBodyShapeMatches`/`classBodyShapeMatchesImpl` are
+    // the actual gate that keeps every caller's `class_` for a given
+    // identity equal to that identity's own dynamic class (their own
+    // header comments carry the full story -- silent GC-heap corruption
+    // otherwise: a `Base`-typed mirror allocating first and a
+    // `Derived`-typed mirror for the SAME identity following would get
+    // that same too-small block back unchanged, and the composition this
+    // address is handed to (`place_value.writeClassBody`) has no bounds
+    // check of its own). Checked as an exact size MISMATCH, not only a
+    // too-small one: once the primary gate holds, every caller's `class_`
+    // for a given identity is the SAME class, so its instance size is
+    // exactly the cached block's size every time, never merely no-larger
+    // -- a caller passing a class one field NARROWER (memory-safe by
+    // itself) is just as much evidence of the invariant having broken as
+    // one field wider. Throwing rather than an `in` contract, which
+    // `-release` strips -- precisely the build this kind of silent
+    // corruption matters most in -- because a violation here is an
+    // internal invariant broken by a caller, not guest-reachable input;
+    // the same "throw for a broken invariant" idiom `quickbite.lang.Value`'s
+    // own variant accessors already use (e.g. `classTypeName` on a
+    // non-class `Value`).
     public void* storageFor(size_t identity, ClassDeclaration class_) @safe {
-        if (auto block = identity in _blocks)
+        import quickbite.backends.interpreter.layout:
+            classInstanceByteSize, classQualifiedName;
+        import std.conv: text;
+
+        if (auto block = identity in _blocks) {
+            if (block.byteLength != classInstanceByteSize(class_))
+                throw new Exception(text(
+                    "quickbite.backends.interpreter.object_table.ObjectTable"
+                    ~ ".storageFor: identity ", identity, "'s already-",
+                    "allocated body is ", block.byteLength, " bytes, but ",
+                    classQualifiedName(class_), " needs ",
+                    classInstanceByteSize(class_), " -- a caller passed a ",
+                    "class narrower or wider than the one this identity ",
+                    "was first allocated for",
+                ));
+
             return block.address;
+        }
 
         auto block = allocateBlock(class_);
         _blocks[identity] = block;

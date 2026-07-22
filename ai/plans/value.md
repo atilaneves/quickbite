@@ -1224,7 +1224,36 @@ in parallel and never blocks it.
        local costs nothing while authority stays boxed, while a false
        negative here would re-crash the interpreter — so each declines
        a shared identity outright rather than proving a stale read is
-       actually imminent. The mirror's own object-body comparison
+       actually imminent. `classBodyShapeMatches` also declines
+       whenever `value`'s own dynamic class name (`Value.classTypeName`,
+       set once at `new` from the constructed type and never revised)
+       disagrees with `layout.classQualifiedName(class_)` for `class_`
+       — `variable`'s (or a class-typed field's) own STATIC type, not
+       necessarily the object's dynamic one, since a `Base`-typed local
+       can box a `Derived` instance. This is the fix for a real silent
+       GC-heap corruption: `object_table.ObjectTable.storageFor` sizes
+       an identity's body from whichever
+       caller's `class_` reaches it FIRST and returns that SAME block
+       to every later caller unchanged, so a `Base`-typed mirror
+       allocating first and a `Derived`-typed mirror for the SAME
+       identity following it used to get that same too-small block
+       back, and `writeClassBody` would write `Derived`'s wider field
+       layout through it with no bounds check of its own (`place.Place`
+       has none). Declining on a static/dynamic name mismatch — rather
+       than resolving the object's actual dynamic `ClassDeclaration` to
+       size against — costs only mirror coverage for a polymorphic
+       binding: `Value` carries no `ClassDeclaration`, only a name, and
+       a name-to-declaration search (`classDeclarationByQualifiedName`)
+       is not the same guarantee as the exact symbol DMD bound this
+       object's construction to. `ObjectTable.storageFor` also carries
+       its own defense-in-depth check — not the primary guard, since
+       `classBodyShapeMatches` above is what keeps every caller's
+       `class_` for a given identity equal to that identity's own
+       dynamic class — throwing (not an `in` contract, which `-release`
+       strips) if a cache-hit's block size ever disagrees with the
+       requested class's own instance size, so a future caller bug of
+       the identical shape is loud rather than silently corrupting.
+       The mirror's own object-body comparison
        (`impl.d`'s `assertClassBodyValue`) is a DEDICATED recursive
        function, not a call to `writeClassBody`: `writeClassBody`'s
        resolver writes into the REAL nested body (correct for
@@ -1232,11 +1261,31 @@ in parallel and never blocks it.
        mutate the body it is comparing against), so
        `assertClassBodyValue` builds one scratch per graph level and
        compares each against `classObjectTable`'s own entry instead.
-       Residual, NOT fixed by this slice (out of scope — authority
-       stays boxed): the two declines above only paper over the
-       symptom for the mirror — an internal assert must never be the
-       reason a program that used to run instead crashes — not the
-       underlying boxed-authority staleness itself (a write through
+       Both `assertClassBodyValue` and `assertClassReferenceMirror`
+       (the frame slot's own stored-reference comparison) skip rather
+       than assert when the REAL storage they compare against — a
+       frame slot, or an `ObjectTable` body — reads all-zero while the
+       freshly composed expectation does not:
+       `classIdentityAliasedByAnotherBinding`'s decline (above) is
+       TIME-VARYING, so a variable whose every WRITE so far was
+       declined (another binding still shared its identity)
+       can reach a LATER read/verify where the same gate no longer
+       declines, once that binding is reassigned or nulled — with a
+       frame slot or body that was simply never written by
+       `mirrorClassToFrame`'s own successful write, not one that
+       diverged. Every such block starts GC-zeroed and only
+       `mirrorClassToFrame` ever writes a non-zero reference/body into
+       it, so all-zero is the one byte pattern shared by "never
+       established" and "genuinely all-zero fields"; resolving that
+       ambiguity by skipping (never by asserting) is what keeps a
+       correct guest program — `SystemLinker` runs it without incident
+       — from crashing on the mirror's own internal inconsistency.
+       Residual, NOT fixed by this slice (out of scope — authority stays
+       boxed): the `classObjectCells`/
+       `classIdentityAliasedByAnotherBinding` declines above only paper
+       over the symptom for the mirror — an internal assert must never
+       be the reason a program that used to run instead crashes — not
+       the underlying boxed-authority staleness itself (a write through
        one alias of a shared object graph not propagating into every
        other alias's own cached copy), a real, pre-existing gap in
        `locals[]` found while adding this slice's own Matrix fixtures

@@ -1320,12 +1320,60 @@ private struct Walker {
     // keyed by `bodyPlace.address` instead of a boxed identity -- the two
     // guards agree once both start from the object being written, not only
     // from the fields underneath it.
+    //
+    // `value.classTypeName != classQualifiedName(class_)` is a fourth
+    // decline, closing a real silent GC-heap corruption: `object_table.
+    // ObjectTable.storageFor` sizes an identity's body block from
+    // whichever caller's `class_` argument reaches it FIRST, and its own
+    // header comment says why that is safe
+    // -- "an object's runtime class is fixed at construction" -- but that
+    // premise is about the OBJECT, not about the `class_` argument every
+    // caller here happens to pass, which is `variable`'s (or a field's)
+    // own STATIC type, not the object's DYNAMIC one. `Base b = new
+    // Derived(); auto d = cast(Derived) b;` boxes the SAME identity
+    // through two DIFFERENT static types; whichever mirrors first wins
+    // the size for every later caller, so a `Base`-typed mirror running
+    // first allocates a `Base`-sized block, and a later `Derived`-typed
+    // mirror for the SAME identity gets that same too-small block back
+    // unchanged -- `writeClassBody` then writes `Derived`'s wider field
+    // layout through it with no bounds check of its own (`place.Place`
+    // has none), silently scribbling past the allocation.
+    //
+    // The fix declines here rather than resolving the object's actual
+    // dynamic `ClassDeclaration` to size against: `value`'s only dynamic
+    // information is `classTypeName`, a NAME (`quickbite.lang.Value`
+    // carries no `ClassDeclaration` -- it is DMD-free by design), and the
+    // walker's own name-to-declaration resolvers
+    // (`classDeclarationByQualifiedName` and friends) search by lexical
+    // scope or across every analysed module, which is not the same
+    // guarantee as "the exact symbol DMD bound this expression's runtime
+    // type to" -- a name collision (two same-named classes in different
+    // modules) could resolve to the WRONG declaration and silently
+    // undersize or missize a body again. Comparing the name we already
+    // trust (`classQualifiedName(class_)`, the identical derivation
+    // `readClassValue`/`classDefaultValue` used to produce this very
+    // `value.classTypeName` in the first place) against `class_` itself
+    // costs only mirror coverage for a polymorphic binding -- a
+    // `Base`-typed local holding a `Derived` object never mirrors while
+    // seen through `Base`, exactly the same trade
+    // `classIdentityAliasedByAnotherBinding` above already makes:
+    // declining too often is always the cheaper mistake. Once every
+    // static type that ever reaches `storageFor` for a given identity has
+    // been proven to equal that identity's own dynamic class (the ONLY
+    // way this check can pass), every later call for that identity
+    // requests the identical size, so the object-lifetime premise
+    // `storageFor`'s own header comment states is true again.
     private bool classBodyShapeMatches(
         VarDeclaration variable,
         imported!"dmd.dclass".ClassDeclaration class_,
         in Value value,
     ) {
+        import quickbite.backends.interpreter.layout: classQualifiedName;
+
         if (classIdentityAliasedByAnotherBinding(variable, value.classIdentity))
+            return false;
+
+        if (value.classTypeName != classQualifiedName(class_))
             return false;
 
         bool[size_t] visiting = [value.classIdentity: true];
@@ -1419,7 +1467,8 @@ private struct Walker {
         in Value value,
         bool[size_t] visiting,
     ) {
-        import quickbite.backends.interpreter.layout: classFields, declaredType;
+        import quickbite.backends.interpreter.layout:
+            classFields, declaredType, classQualifiedName;
         import quickbite.backends.interpreter.place_value: isClassBodyComposable;
 
         foreach (index, field; classFields(class_)) {
@@ -1437,6 +1486,15 @@ private struct Walker {
                 continue;
 
             if (!fieldValue.isClassObject)
+                return false;
+
+            // The nested-field counterpart of `classBodyShapeMatches`'s own
+            // static/dynamic decline above (its header comment carries the
+            // full rationale): a class-typed FIELD whose declared type is
+            // narrower than the object it currently references would reach
+            // `resolveObjectBody`/`storageFor` with the SAME
+            // too-narrow-`class_` hazard the root check exists to close.
+            if (fieldValue.classTypeName != classQualifiedName(fieldClassType.sym))
                 return false;
 
             const identity = fieldValue.classIdentity;
@@ -1697,11 +1755,39 @@ private struct Walker {
 
         // `classObjectTable[identity]` (not the frame) is the actual body
         // -- `(*classObjectTable)` because the shared table is reached
-        // through a pointer (see its own field comment).
+        // through a pointer (see its own field comment). The real body
+        // reading all-zero while `scratch` (this function's own composed
+        // expectation) is not is the class-BODY counterpart of
+        // `assertClassReferenceMirror`'s identical all-zero skip (its own
+        // header comment carries the full rationale): a body this
+        // identity's `storageFor` call two lines above the caller
+        // (`assertClassFrameMirror`) just allocated FRESH is GC-zeroed and
+        // never yet written by `mirrorClassToFrame`'s own successful
+        // write, the same "never established" state as an unwritten frame
+        // slot, not a divergence.
+        const actual = (*classObjectTable)[identity].bytes;
+        if (isZeroFilled(actual) && !isZeroFilled(scratch.bytes))
+            return;
+
         assert(
-            (*classObjectTable)[identity].bytes == scratch.bytes,
+            actual == scratch.bytes,
             "class body mirror diverged from boxed local",
         );
+    }
+
+    // Shared by `assertClassBodyValue` above and `assertClassReferenceMirror`
+    // below: each compares one side that is REAL mirror storage (a frame
+    // slot, or an `ObjectTable` body) -- which starts GC-zeroed and stays
+    // that way until the FIRST successful `mirrorClassToFrame` write --
+    // against a scratch composed fresh from the CURRENT boxed value, so
+    // "all zero" is the one byte pattern common to both "never
+    // established" and "genuinely all-zero fields", the exact ambiguity
+    // each caller's own header comment resolves in favour of skipping
+    // rather than asserting.
+    private static bool isZeroFilled(in ubyte[] bytes) pure nothrow @safe {
+        import std.algorithm: all;
+
+        return bytes.all!(b => b == 0);
     }
 
     // The frame-slot reference comparison both `assertClassFrameMirror`
@@ -1732,8 +1818,39 @@ private struct Walker {
         auto scratch = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
         Place(scratch.address, classType).storeReference(expected);
 
+        const actual = frameBytesAt(mirrorAddress(variable), (void*).sizeof);
+
+        // A frame slot reading all-zero (`isZeroFilled`, shared with
+        // `assertClassBodyValue`'s identical skip above) while `expected`
+        // is a real (non-null) address is not a divergence to report: it
+        // is indistinguishable from "this variable's class mirror has
+        // never been established" -- every frame slot starts zeroed
+        // (`frame_block.FrameBlock.allocate`'s own `NativeBlock.allocate`,
+        // GC-zeroed memory), and the only thing that ever writes a
+        // non-zero reference into THIS slot is `mirrorClassToFrame`'s own
+        // successful write. `classBodyShapeMatches` (this function's
+        // caller `assertClassFrameMirror` calls it identically to
+        // `mirrorClassToFrame`) is TIME-VARYING:
+        // `classIdentityAliasedByAnotherBinding` can decline a variable's
+        // write while another binding still shares its identity, and stop
+        // declining once that binding is reassigned or nulled, so a
+        // variable whose every WRITE so far was declined can still reach
+        // a LATER read/verify where the SAME gate no longer declines --
+        // with a frame slot that was simply never written, not one that
+        // diverged. Reporting that as a divergence would make the mirror
+        // itself the reason a correct guest program dies
+        // (`ai/plans/value.md`'s own design rule), for a program
+        // `SystemLinker` runs without incident: exactly what a `Base`-
+        // typed local aliasing a `Derived`-typed one hits once
+        // `classBodyShapeMatches`'s static/dynamic decline (above) makes
+        // the `Base`-typed mirror decline where it used to succeed,
+        // delaying the `Derived`-typed alias's own first successful write
+        // past a read that runs before it.
+        if (expected !is null && isZeroFilled(actual))
+            return;
+
         assert(
-            frameBytesAt(mirrorAddress(variable), (void*).sizeof) == scratch.bytes,
+            actual == scratch.bytes,
             "frame class reference mirror diverged from boxed local",
         );
     }

@@ -212,6 +212,19 @@ private imported!"quickbite.lang".Value readClassValue(
             : readValue(fieldPlace);
     }
 
+    // `classQualifiedName(classType.sym)` names `classType` -- `place`'s
+    // own STATIC type, not necessarily the object's dynamic one -- unlike
+    // `impl.d`'s `classDefaultValue`, invoked once at `new` with the class
+    // actually being constructed, which is where every `Value.classValue`
+    // this codebase mints its `classTypeName` from today; casts pass it
+    // through unchanged rather than re-deriving it. `impl.d`'s
+    // `classBodyShapeMatches` (the class mirror's write/verify gate) now
+    // trusts `classTypeName` as the object's genuine dynamic class, so a
+    // `Value` reaching there from THIS function through a place statically
+    // narrower than the real object (were one ever routed into a shared
+    // identity `classBodyShapeMatches` checks) would carry a name that
+    // undersells the object's real class and wrongly MATCH where the gate
+    // should decline.
     return Value.classValue(
         classQualifiedName(classType.sym),
         classHierarchyNames(classType.sym),

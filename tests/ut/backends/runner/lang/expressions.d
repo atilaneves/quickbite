@@ -723,6 +723,115 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `Base`-typed local holding a `Derived` object, a virtual call through
+// that `Base` reference (dynamic dispatch must still reach
+// `Derived.score`), a downcast to a `Derived`-typed local,
+// the `Base` reference then nulled, and a field write through the downcast
+// local that only `Derived` declares. Before the fix, the SAME object
+// identity mirrored through two DIFFERENT static types (`Base`, then
+// `Derived`) -- `object_table.ObjectTable.storageFor` sized the identity's
+// body from whichever mirrors first (`Base`, narrower), so the later
+// `Derived`-typed write went through a too-small block with no bounds
+// check of its own (`place.Place` has none): silent GC-heap corruption in
+// a release build. `impl.d`'s `classBodyShapeMatches` now declines a class
+// mirror outright whenever a static type's name disagrees with the boxed
+// value's own dynamic one (own header comment), so `Base b`'s own mirror
+// never allocates the too-narrow body in the first place. Verifying this
+// exact shape under `assert` (as this suite runs) also surfaced a SEPARATE,
+// pre-existing gap this fixture pins too: declining `d`'s write while `b`
+// still aliased it, then no longer declining once `b` is null, left `d`'s
+// frame slot read/verified before its OWN first successful write ever ran
+// -- `assertClassReferenceMirror`/`assertClassBodyValue`'s own header
+// comments cover the fix (skip rather than assert on an all-zero,
+// never-established slot/body).
+static foreach (backend; Matrix!()) {
+    @("class.downcastFieldWriteAfterVirtualCallThroughWiderStaticType." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int baseField;
+
+                int score() {
+                    return baseField;
+                }
+            }
+
+            class Derived : Base {
+                int derivedField;
+
+                override int score() {
+                    return baseField + derivedField;
+                }
+            }
+
+            int run(int seed) {
+                Base b = new Derived();
+                b.baseField = seed;
+
+                const virtualScore = b.score();
+
+                auto d = cast(Derived) b;
+                b = null;
+
+                d.derivedField = seed + 1;
+
+                return virtualScore * 100 + d.score;
+            }
+
+            unittest {
+                assert(run(10) == 1021);
+            }
+        });
+    }
+}
+
+// The class-typed-FIELD counterpart of the fixture above: `Holder.field`
+// is declared `Base` but references a `Derived` instance, so mirroring
+// `holder` itself walks into that field with `impl.d`'s
+// `classBodyShapeMatchesImpl` -- its own header comment names this exact
+// nested-field decline (a class-typed field whose declared type
+// disagrees with the boxed value's own dynamic class), the recursive
+// sibling of the root-level decline the fixture above exercises.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+)) {
+    @("class.downcastFieldWriteThroughFieldDeclaredAsWiderStaticType." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int baseField;
+            }
+
+            class Derived : Base {
+                int derivedField;
+            }
+
+            class Holder {
+                Base field;
+            }
+
+            int run(int seed) {
+                auto holder = new Holder();
+                holder.field = new Derived();
+                holder.field.baseField = seed;
+
+                auto d = cast(Derived) holder.field;
+                holder.field = null;
+
+                d.derivedField = seed + 1;
+
+                return d.baseField * 100 + d.derivedField;
+            }
+
+            unittest {
+                assert(run(10) == 1011);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("interface.virtualCallUsesRuntimeDispatch." ~ backend.stringof)
     @Tags(backend.stringof)
