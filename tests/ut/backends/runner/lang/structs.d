@@ -1922,14 +1922,13 @@ static foreach (backend; Matrix!()) {
 // isAliasingLocal`). `Ctfe` cannot read or write dataseg storage at all
 // (compile-time execution has no such storage to access, the same
 // pre-existing limitation `dataseg.moduleScalarAndStructMirroredAcrossWrites`
-// in expressions.d already pins); `Bytecode` does not yet support a
-// dataseg variable as a `ref` argument at all (confirmed pre-existing --
-// reproduces unchanged on this branch before this slice's own commit).
+// in expressions.d already pins); `Bytecode` refuses a dataseg variable as
+// a `ref` argument.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support a dataseg variable as a ref argument"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: counter"),
 )) {
     @("refArgument.datasegVariableArgument." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1954,12 +1953,12 @@ static foreach (backend; Matrix!(
 // `constantIndex` only accepts DMD's own already-folded integer constant,
 // never a runtime-evaluated one, to avoid evaluating a side-effecting
 // index a second time) composes through `lvalue_place.placeOfLvalue`'s
-// existing `IndexExp` shape. `Bytecode` does not yet support an indexed
-// element as a `ref` argument at all (confirmed pre-existing --
-// reproduces unchanged on this branch before this slice's own commit).
+// existing `IndexExp` shape. `Bytecode` answers a wrong value rather than
+// refusing, pinned below.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support an indexed element as a ref argument"),
+    Omit!(Bytecode, Because.diverges,
+        "a write through a `ref` argument written `arr[1]` never reaches " ~
+        "element 1"),
 )) {
     @("refArgument.indexedElementArgumentComposesReferenceSlot." ~
         backend.stringof)
@@ -1978,6 +1977,31 @@ static foreach (backend; Matrix!(
                 assert(arr[2] == 3);
             }
         });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes: Bytecode's own actual
+// answer, hand-listed because no `SystemLinker`-oracle expectation applies
+// to it. Element 1 still holds its initializer after the write, while the
+// elements either side of it are untouched.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("refArgument.indexedElementArgumentLeavesTheElementUnwritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int[3] arr = [1, 2, 3];
+                setTo(arr[1], 99);
+                assert(arr[0] == 1);
+                assert(arr[1] == 99);
+                assert(arr[2] == 3);
+            }
+        }).shouldThrowWithMessage("2 != 99");
     }
 }
 
@@ -2010,12 +2034,12 @@ static foreach (backend; Matrix!()) {
 // than guesses"); `impl.d`'s `bindReferenceSlot` must decline silently --
 // leaving the reference slot unfilled -- rather than propagate that
 // throw, and boxed authority (unaffected either way) must still produce
-// the correct, oracle-matching result. `Bytecode` does not yet support a
-// `CondExp` as a `ref` argument at all (confirmed pre-existing --
-// reproduces unchanged on this branch before this slice's own commit).
+// the correct, oracle-matching result. `Bytecode` answers a wrong value
+// rather than refusing, pinned below.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support a CondExp as a ref argument"),
+    Omit!(Bytecode, Because.diverges,
+        "a write through a `ref` argument written `cond ? a : b` never " ~
+        "reaches `a`"),
 )) {
     @("refArgument.nonComposingShapeArgumentDeclinesSilently." ~
         backend.stringof)
@@ -2035,6 +2059,31 @@ static foreach (backend; Matrix!(
                 assert(b == 2);
             }
         });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes: Bytecode's own actual
+// answer, hand-listed because no `SystemLinker`-oracle expectation applies
+// to it. `a` still holds its initializer after the call.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("refArgument.nonComposingShapeArgumentLeavesTheTargetUnwritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int a = 1;
+                int b = 2;
+                bool cond = true;
+                setTo(cond ? a : b, 55);
+                assert(a == 55);
+                assert(b == 2);
+            }
+        }).shouldThrowWithMessage("1 != 55");
     }
 }
 
@@ -2074,12 +2123,11 @@ static foreach (backend; Matrix!()) {
 // non-null and so past the `address is null` guard -- and then dereferenced
 // it in `assertReferenceBind`: SIGSEGV on a perfectly legal program.
 // Composition must consult what the write side actually DID for the base
-// variable, not assume a slot it never filled. `Bytecode` does not yet
-// support a class field as a `ref` argument at all (confirmed pre-existing --
-// reproduces unchanged before this commit).
+// variable, not assume a slot it never filled. `Bytecode` refuses a class
+// field as a `ref` argument.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support a class field as a ref argument"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: holder.value"),
 )) {
     @("refArgument.classFieldArgumentWithDeclinedClassMirror." ~
         backend.stringof)
@@ -2109,12 +2157,10 @@ static foreach (backend; Matrix!(
 // the field reached through the pointer (`PtrExp`/`DotVarExp`). Same rule --
 // the address is composed from a slot the write side may never have filled,
 // so composition must decline rather than deref whatever the slot happens to
-// hold. `Bytecode` does not yet support a pointer-carried field as a `ref`
-// argument at all (confirmed pre-existing -- reproduces unchanged before this
-// commit).
+// hold. `Bytecode` refuses a pointer-carried field as a `ref` argument.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support a pointer-carried field as a ref argument"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: (*carrier).value"),
 )) {
     @("refArgument.pointerCarriedFieldArgumentComposesSafely." ~
         backend.stringof)
@@ -2180,12 +2226,10 @@ static foreach (backend; Matrix!()) {
 // verifying against the boxed argument then fires "reference slot bind
 // diverged from boxed argument" on a correct program: the verify decision must
 // re-derive the write side's own current decline, not merely "was it ever
-// established". `Bytecode` does not yet support a class field as a `ref`
-// argument at all (confirmed pre-existing -- reproduces unchanged before this
-// commit).
+// established". `Bytecode` refuses a class field as a `ref` argument.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support a class field as a ref argument"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: first.value"),
 )) {
     @("refArgument.classFieldArgumentAfterAliasedIdentityDecline." ~
         backend.stringof)

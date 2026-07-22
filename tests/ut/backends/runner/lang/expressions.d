@@ -1256,13 +1256,12 @@ static foreach (backend; Matrix!()) {
 // pre-existing, unrelated gap (boxed `locals.dup` copies whatever the
 // CALLING activation currently holds, not a snapshot taken when the
 // delegate value itself was created) and not what this fixture tests.
+// `Bytecode` refuses a delegate-typed PARAMETER; a delegate-typed
+// LOCAL/field works there today (see delegate.nestedCallUsesCapturedValue
+// above), so only the parameter form is out.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "a delegate-typed PARAMETER (`int delegate(int) f`) is not yet " ~
-        "supported in bytecode core (\"Unsupported type in bytecode core: " ~
-        "int delegate(int)\"); a delegate-typed LOCAL/field works today " ~
-        "(see delegate.nestedCallUsesCapturedValue above), only the " ~
-        "parameter form does not"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported type in bytecode core: int delegate(int)"),
 )) {
     @("lambda.passedToNestedFunctionSeesCapturedContext." ~ backend.stringof)
     @Tags(backend.stringof)
