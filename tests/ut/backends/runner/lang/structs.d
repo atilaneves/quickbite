@@ -3210,11 +3210,7 @@ static foreach (backend; Matrix!()) {
 // isNativeScalarType`), so the boxed `Value` for `u` carries `r = real.nan`
 // alongside `l = 42` -- two entries that cannot both describe the same
 // bytes. Reading `l` back must still give the value just written.
-static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.inexpressible,
-        "real DMD's own CTFE engine refuses reinterpretation through the " ~
-        "overlapped field"),
-)) {
+static foreach (backend; Matrix!()) {
     @("union.writeThroughLongMemberSurvivesRealSibling." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3240,11 +3236,7 @@ static foreach (backend; Matrix!(
 // boxed `Value` after `u.l` is written. `p` and `l` are the same width, so
 // a "widest member wins" native write would break the tie in `p`'s favour
 // and zero the bytes `l` was just given.
-static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.inexpressible,
-        "real DMD's own CTFE engine refuses reinterpretation through the " ~
-        "overlapped field"),
-)) {
+static foreach (backend; Matrix!()) {
     @("union.writeThroughLongMemberSurvivesPointerSibling." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -2184,7 +2184,8 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
-    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported variable in bytecode core: quickbiteDatasegPoint"),
 )) {
     @("dataseg.moduleScalarAndStructMirroredAcrossWrites." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -2375,7 +2376,9 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
-    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported dynamic array access in bytecode core: " ~
+        "quickbiteDatasegWithArray.data"),
 )) {
     @("dataseg.mirrorRefusedShapeDeclinesOnBothSides." ~ backend.stringof)
     @Tags(backend.stringof)
