@@ -13128,7 +13128,7 @@ private struct Walker {
     // struct-field address at all -- which keeps the existing boxed
     // `pointerTarget` fallback at each call site.
     private bool structFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto path = pointer.pointerAllocation in fieldPointerPaths;
@@ -13156,7 +13156,7 @@ private struct Walker {
     // field pointer -- no promoted cell, a non-scalar field, or a pointer
     // that was never a class-field address at all.
     private bool classFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto path = pointer.pointerAllocation in fieldPointerPaths;
@@ -13197,7 +13197,7 @@ private struct Walker {
     // never a struct-array-field address at all -- which keeps the existing
     // boxed `pointerTarget` fallback at each call site.
     private bool structArrayFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto variable = pointer.pointerAllocation in structArrayFieldPointerVariables;
@@ -13234,7 +13234,7 @@ private struct Walker {
     // pointer that was never a class-array-field address at all -- which
     // keeps the existing boxed `pointerTarget` fallback at each call site.
     private bool classArrayFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto variable = pointer.pointerAllocation in classArrayFieldPointerVariables;
@@ -13281,7 +13281,7 @@ private struct Walker {
     // nested-struct-field address at all -- which keeps the existing boxed
     // `pointerTarget` fallback at each call site.
     private bool nestedStructFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto path = pointer.pointerAllocation in fieldPointerPaths;
@@ -13317,7 +13317,7 @@ private struct Walker {
     // other pointer, which keeps the existing boxed `pointerTarget` fallback
     // at each call site.
     private bool arrayNestedStructFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto variable = pointer.pointerAllocation in arrayNestedStructFieldPointerVariables;
@@ -13362,7 +13362,7 @@ private struct Walker {
     // at all -- which keeps the existing boxed `pointerTarget` fallback at
     // each call site.
     private bool nestedClassStructFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto path = pointer.pointerAllocation in fieldPointerPaths;
@@ -13422,6 +13422,14 @@ private struct Walker {
             return cellValue;
 
         return pointer.pointerTarget;
+    }
+
+    // Promoted-cell readers are an interim boxed-authority path: a local
+    // pointer already resolves through its local binding, while a native
+    // pointer reads its host address directly. Only the remaining boxed
+    // pointer carrier needs the identity maps below.
+    private static bool isBoxedPointer(in Value pointer) @safe {
+        return pointer.isPointer && !pointer.isLocalPointer && !pointer.isNativePointer;
     }
 
     private void writePointerTarget(
