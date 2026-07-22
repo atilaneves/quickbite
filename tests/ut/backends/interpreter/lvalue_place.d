@@ -5,7 +5,8 @@ import ut;
 import ut.backends.interpreter: structTypeOf, classTypeOf, findFunction;
 import quickbite.frontend.compiler: parseSnippet;
 import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
-import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, structFields, typeByteSize;
+import quickbite.backends.interpreter.layout:
+    classFields, classInstanceByteSize, fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.lang: Value;
 import dmd.expression: Expression, AssignExp;
@@ -207,8 +208,8 @@ unittest {
     auto fields = classFields(classType.sym);
     auto xField = fields[0];
 
-    auto bodyByteSize = fieldByteOffset(xField) + typeByteSize(xField.type);
-    auto body_ = NativeBlock.allocate(bodyByteSize, NativeBlock.Scan.no);
+    auto body_ = NativeBlock.allocate(
+        classInstanceByteSize(classType.sym), NativeBlock.Scan.no);
 
     auto referenceBlock = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
     *(cast(void**) referenceBlock.address) = body_.address;
@@ -348,8 +349,8 @@ unittest {
     auto fields = classFields(classType.sym);
     auto xField = fields[0];
 
-    auto bodyByteSize = fieldByteOffset(xField) + typeByteSize(xField.type);
-    auto body_ = NativeBlock.allocate(bodyByteSize, NativeBlock.Scan.no);
+    auto body_ = NativeBlock.allocate(
+        classInstanceByteSize(classType.sym), NativeBlock.Scan.no);
 
     auto referenceBlock = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
     *(cast(void**) referenceBlock.address) = body_.address;
