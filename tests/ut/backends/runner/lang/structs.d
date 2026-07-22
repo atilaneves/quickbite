@@ -2066,6 +2066,153 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class-typed receiver's field as a `ref` argument, where the class local's
+// own mirror DECLINED (`C` has a non-composable `int[]` field, so
+// `mirrorClassToFrame` never establishes a body for it and the frame slot
+// stays GC-zeroed). `impl.d`'s `bindReferenceSlot` composed
+// `receiver.deref.field(x)` off that zeroed slot -- `null + fieldOffset`,
+// non-null and so past the `address is null` guard -- and then dereferenced
+// it in `assertReferenceBind`: SIGSEGV on a perfectly legal program.
+// Composition must consult what the write side actually DID for the base
+// variable, not assume a slot it never filled. `Bytecode` does not yet
+// support a class field as a `ref` argument at all (confirmed pre-existing --
+// reproduces unchanged before this commit).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support a class field as a ref argument"),
+)) {
+    @("refArgument.classFieldArgumentWithDeclinedClassMirror." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int[] elements;
+                int value;
+            }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                auto holder = new Holder;
+                setTo(holder.value, 88);
+                assert(holder.value == 88);
+            }
+        });
+    }
+}
+
+// The boxed-carrier sibling of the fixture above: a pointer to a struct local
+// whose own mirror never established storage the composition can reach, with
+// the field reached through the pointer (`PtrExp`/`DotVarExp`). Same rule --
+// the address is composed from a slot the write side may never have filled,
+// so composition must decline rather than deref whatever the slot happens to
+// hold. `Bytecode` does not yet support a pointer-carried field as a `ref`
+// argument at all (confirmed pre-existing -- reproduces unchanged before this
+// commit).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support a pointer-carried field as a ref argument"),
+)) {
+    @("refArgument.pointerCarriedFieldArgumentComposesSafely." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] elements;
+                int value;
+            }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* carrier = &holder;
+                setTo(carrier.value, 66);
+                assert(holder.value == 66);
+            }
+        });
+    }
+}
+
+// A cell-promoted local (address taken, so `scalarCells` -- not the frame slot
+// -- is authoritative for it) passed as a `ref` argument. The frame slot is
+// deliberately left stale by `writeBackLocalPointerTargets`, while the boxed
+// argument is read THROUGH the cell, so bind-time verification compared a
+// stale slot against a fresh value and asserted "reference slot bind diverged
+// from boxed argument" on a correct program. Verification must skip exactly
+// where `assertFrameMirror` already skips.
+static foreach (backend; Matrix!()) {
+    @("refArgument.cellPromotedLocalArgumentSkipsBindVerification." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(int* q) {
+                *q = 2;
+            }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                int value = 1;
+                int* pointer = &value;
+                bump(pointer);
+                assert(value == 2);
+                setTo(value, 3);
+                assert(value == 3);
+            }
+        });
+    }
+}
+
+// Non-crashing sibling of the declined-mirror crash above: the class local's
+// mirror was established, then DECLINED later (two bindings referencing the
+// same object make the class identity aliased), so the object body stops being
+// updated and holds a stale field. Composing an address off that body and
+// verifying against the boxed argument then fires "reference slot bind
+// diverged from boxed argument" on a correct program: the verify decision must
+// re-derive the write side's own current decline, not merely "was it ever
+// established". `Bytecode` does not yet support a class field as a `ref`
+// argument at all (confirmed pre-existing -- reproduces unchanged before this
+// commit).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support a class field as a ref argument"),
+)) {
+    @("refArgument.classFieldArgumentAfterAliasedIdentityDecline." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int value;
+            }
+
+            void setTo(ref int x, int value) {
+                x = value;
+            }
+
+            unittest {
+                auto first = new Holder;
+                first.value = 1;
+                auto second = first;
+                first.value = 2;
+                setTo(first.value, 3);
+                assert(first.value == 3);
+                assert(second.value == 3);
+            }
+        });
+    }
+}
+
 // cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
 // units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
 // element's fields through a hidden temporary dmd's foreach-to-for lowering

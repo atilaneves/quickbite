@@ -242,9 +242,11 @@ private struct Walker {
     private bool[VarDeclaration] classRebinds;
 
     // Per-variable record of whether THIS activation's most recent
-    // `mirrorClassToFrame` write for `variable`'s CURRENT binding actually
-    // wrote real storage (a genuine `null` reference, or a resolved
-    // non-null one), rather than declining. Closes a write/verify TIME
+    // `mirrorToFrame` write for `variable`'s CURRENT binding actually
+    // wrote real storage -- composed bytes for a place-composable local, a
+    // `{ length, ptr }` header for a slice, or a class reference plus body
+    // (a genuine `null` reference, or a resolved non-null one) -- rather
+    // than declining. Closes a write/verify TIME
     // asymmetry: `assertClassFrameMirror` used to re-run
     // `classBodyShapeMatches` (and this function's own `Value.null_`/
     // `isClassObject`/`identity == 0`/`isClassBodyComposable` guards)
@@ -268,36 +270,63 @@ private struct Walker {
     // is not zero-fill-detectable, so `assertClassReferenceMirror`'s own
     // all-zero skip cannot mask it.
     //
-    // `mirrorClassToFrame` is the ONLY writer, setting this on every one of
-    // its own exits (`scope(exit)`, its own header comment) -- `true` only
-    // after an actual write (including the `Value.null_` arm), `false` on
-    // every decline. `assertClassFrameMirror` reads it FIRST and returns
-    // without asserting, or re-deriving anything, when it is absent or
-    // `false` -- trusting what the write already decided rather than a
-    // second, possibly-stale opinion.
+    // `mirrorToFrame` is the ONLY writer, setting this on every one of its
+    // own exits (`scope(exit)`, its own header comment) -- `true` only
+    // after an actual write by one of its arms (including
+    // `mirrorClassToFrame`'s own `Value.null_` arm), `false` on every
+    // decline, its own and its arms' alike. Two consumers read it, and
+    // neither re-derives the decision for itself:
+    //
+    // - `assertClassFrameMirror` returns without asserting when it is
+    //   absent or `false` -- trusting what the write already decided
+    //   rather than a second, possibly-stale opinion.
+    // - `callerReferenceBase` refuses to hand a caller-side base address
+    //   out of an unestablished slot at all, so no reference-slot
+    //   composition ever reads (let alone dereferences) storage the write
+    //   side never filled. That consumer is why this record covers every
+    //   `mirrorToFrame` arm rather than only the class one: composition
+    //   follows a stored reference out of a slot for a class base
+    //   (`Place.deref`) or a pointer base alike, and a pointer local whose
+    //   mirror declined (a boxed-era carrier with no host address --
+    //   `placeShapeMatches`'s pointer arm) leaves a slot exactly as
+    //   unusable as a declined class local's does.
     //
     // Needs no separate rebind invalidation: `locals[variable] = value` is
-    // written ONLY by `setLocal`, which calls `mirrorToFrame` (and, for a
-    // class-typed local, `mirrorClassToFrame`) with that SAME value
-    // immediately afterwards, for every write path this walker has --
-    // declaration, rebind, a loop's fresh binding, parameter binding, and
-    // a field mutation's read-modify-write reconstruction alike -- so this
-    // map is always freshly overwritten by the very write that changes
-    // `variable`'s current binding; there is no path that changes
-    // `locals[variable]` without `mirrorClassToFrame` running again right
-    // after. Not duped into a child frame by `forkPerFrameCellsInto`, for
+    // written ONLY by `setLocal`, which calls `mirrorToFrame` with that
+    // SAME value immediately afterwards, for every write path this walker
+    // has -- declaration, rebind, a loop's fresh binding, parameter
+    // binding, and a field mutation's read-modify-write reconstruction
+    // alike -- so this map is always freshly overwritten by the very write
+    // that changes `variable`'s current binding; there is no path that
+    // changes `locals[variable]` without `mirrorToFrame` running again
+    // right after.
+    //
+    // Says nothing, on its own, about a local whose CELL (`scalarCells`/
+    // `structCells`/`arrayCells`/`classCells`) is the authority for it: a
+    // write through the cell (`writeCelledLocal`, or
+    // `writeBackLocalPointerTargets` after a callee mutated the local
+    // through a pointer) deliberately leaves the frame slot behind without
+    // running `setLocal` at all, so this record stays `true` from the last
+    // real mirror write while the slot itself goes stale. Being established
+    // is therefore necessary for a slot to be worth VERIFYING, never
+    // sufficient, and both consumers pair it with the same four-map cell
+    // check (`cellIsAuthorityFor`) for exactly that reason:
+    // `assertClassFrameMirror` gets that check from its own caller
+    // (`assertFrameMirror`'s own first guard), and `callerReferenceBase`
+    // makes it itself, against the caller-side cell maps this activation
+    // was forked with. Not duped into a child frame by `forkPerFrameCellsInto`, for
     // the identical reason `arrayRebinds`/`classRebinds` above are not
     // (their own field comments): a fresh activation's frame slots start
     // GC-zeroed and unwritten, so "not yet established" (absent, `false`
     // by `get`'s default) is already the correct starting state.
-    private bool[VarDeclaration] classMirrorEstablished;
+    private bool[VarDeclaration] mirrorEstablished;
 
     // Per-variable snapshot of `object_table.ObjectTable.generation` for
     // every identity `mirrorClassToFrame`'s established graph composed --
     // this variable's own top-level identity and every nested class-typed
     // field's identity, transitively -- taken right after the write that
-    // set `classMirrorEstablished[variable]` true. Closes the gap
-    // `classMirrorEstablished` alone leaves open: that flag pins THIS
+    // set `mirrorEstablished[variable]` true. Closes the gap
+    // `mirrorEstablished` alone leaves open: that flag pins THIS
     // variable's own write/verify decision, but says nothing about the
     // SHARED, identity-keyed storage (`classObjectTable`) it vouches for --
     // storage a DIFFERENT binding's mirror write (another local aliasing a
@@ -334,7 +363,7 @@ private struct Walker {
     // own null arm never reaches `assertClassBodyValue`), so left
     // unrecorded on that path. Not duped into a child frame by
     // `forkPerFrameCellsInto`, for the identical reason
-    // `classMirrorEstablished` above is not (its own field comment): a
+    // `mirrorEstablished` above is not (its own field comment): a
     // fresh activation starts with nothing established, so an absent entry
     // (`generation(identity) != recordedGenerations.get(identity, size_t.max)`,
     // always true) is already the correct "nothing recorded yet" answer.
@@ -565,7 +594,7 @@ private struct Walker {
     // was bound, captured alongside `lazyArgumentLocals` so `runLazyArgument`
     // can swap `_activationFrame` to it too -- see the comment there.
     private FrameBlock[VarDeclaration] lazyArgumentFrames;
-    // The caller's own `classMirrorEstablished`/`classMirrorGenerations`
+    // The caller's own `mirrorEstablished`/`classMirrorGenerations`
     // FIELDS (not their values) at the moment the `lazy` argument was bound,
     // captured alongside `lazyArgumentLocals`/`lazyArgumentFrames` so
     // `runLazyArgument` can swap the mirror bookkeeping to the caller's own
@@ -582,7 +611,7 @@ private struct Walker {
     // whatever the thunk produced -- new table or not -- back out), so this
     // is correct whether or not the caller's map was already non-null when
     // the lazy argument was bound.
-    private bool[VarDeclaration]*[VarDeclaration] lazyArgumentClassMirrorEstablished;
+    private bool[VarDeclaration]*[VarDeclaration] lazyArgumentMirrorEstablished;
     private size_t[size_t][VarDeclaration]*[VarDeclaration]
         lazyArgumentClassMirrorGenerations;
     private bool[VarDeclaration] uninitializedLocals;
@@ -1067,16 +1096,25 @@ private struct Walker {
     private void mirrorToFrame(VarDeclaration variable, in Value value) {
         import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
 
+        // `established` becomes `mirrorEstablished[variable]` on every exit
+        // from this function (`scope(exit)` below) -- `false` unless an arm
+        // actually wrote real storage, so every decline, this function's own
+        // and its arms' alike, records itself as "not established" the same
+        // way a fresh, never-written frame slot already reads. See
+        // `mirrorEstablished`'s own field comment for what reads it.
+        bool established = false;
+        scope(exit) mirrorEstablished[variable] = established;
+
         if (!hasMirrorSlot(variable))
             return;
 
         if (variable.type.toBasetype.isTypeDArray !is null) {
-            mirrorSliceToFrame(variable, value);
+            established = mirrorSliceToFrame(variable, value);
             return;
         }
 
         if (variable.type.toBasetype.isTypeClass !is null) {
-            mirrorClassToFrame(variable, value);
+            established = mirrorClassToFrame(variable, value);
             return;
         }
 
@@ -1087,6 +1125,7 @@ private struct Walker {
             return;
 
         writeValue(mirrorPlace(variable), value);
+        established = true;
     }
 
     // Whether `variable` has mirror storage to write/verify at all: this
@@ -1172,24 +1211,28 @@ private struct Walker {
     // scans conservatively (`frame_block.frameHasPointers`/`module_table.
     // allocateBlock`, both via `layout.typeHasPointers`, true for every
     // `Type.isTypeDArray`).
-    private void mirrorSliceToFrame(VarDeclaration variable, in Value value) {
+    //
+    // Returns whether it actually wrote a header, for `mirrorToFrame`'s own
+    // `mirrorEstablished` record (that field's own comment).
+    private bool mirrorSliceToFrame(VarDeclaration variable, in Value value) {
         import quickbite.backends.interpreter.native_array: NativeArray;
 
         if (variable in arrayCells)
-            return;
+            return false;
 
         if (!value.isArray)
-            return;
+            return false;
 
         const nativeAddress = value.arrayNativeAddress;
         if (nativeAddress is null && value.length != 0)
-            return;
+            return false;
 
         auto arrayType = variable.type.toBasetype.isTypeDArray;
         auto array = NativeArray.borrow(
             arrayType.next, cast(void*) nativeAddress, value.length);
 
         array.writeSliceHeader(mirrorAddress(variable));
+        return true;
     }
 
     // The class sibling of `mirrorSliceToFrame`'s header write above: a
@@ -1258,41 +1301,36 @@ private struct Walker {
     // same fact `mirrorSliceToFrame`'s own header comment leans on for its
     // slice slot), so the reference this writes always lands in a
     // destination the GC can see.
-    private void mirrorClassToFrame(VarDeclaration variable, in Value value) {
+    //
+    // Returns whether it actually wrote real storage, which its caller
+    // (`mirrorToFrame`) records as `mirrorEstablished[variable]` -- `false`
+    // for every decline below, so a decline records itself the same way a
+    // fresh, never-written frame slot already reads. See
+    // `mirrorEstablished`'s own field comment for why that record exists
+    // and what reads it: nothing re-derives this decision at READ time.
+    private bool mirrorClassToFrame(VarDeclaration variable, in Value value) {
         import quickbite.backends.interpreter.place_value:
             isClassBodyComposable, writeClassBody;
 
         auto classType = variable.type.toBasetype.isTypeClass;
 
-        // `established` becomes `classMirrorEstablished[variable]` on every
-        // exit from this function (`scope(exit)` below) -- `false` unless
-        // explicitly set on the two paths that actually write real
-        // storage, so every decline (an early `return` above it) records
-        // itself as "not established" the same way a fresh, never-written
-        // frame slot already reads. See `classMirrorEstablished`'s own
-        // field comment for why this replaces `assertClassFrameMirror`'s
-        // old re-derivation of this same decision at READ time.
-        bool established = false;
-        scope(exit) classMirrorEstablished[variable] = established;
-
         if (value == Value.null_) {
             Place(mirrorAddress(variable), classType).storeReference(null);
-            established = true;
-            return;
+            return true;
         }
 
         if (!value.isClassObject)
-            return;
+            return false;
 
         const identity = value.classIdentity;
         if (identity == 0)
-            return;
+            return false;
 
         if (!isClassBodyComposable(classType.sym))
-            return;
+            return false;
 
         if (!classBodyShapeMatches(variable, classType.sym, value))
-            return;
+            return false;
 
         // Not `const`: `Place`'s constructor and `storeReference` both
         // take a mutable `void*`.
@@ -1301,7 +1339,7 @@ private struct Walker {
         Place(mirrorAddress(variable), classType).storeReference(bodyAddress);
         classMirrorGenerations[variable] = null;
         recordClassMirrorGenerations(variable, classType.sym, value, identity);
-        established = true;
+        return true;
     }
 
     // Populates `classMirrorGenerations[variable]` with `classObjectTable.
@@ -1827,7 +1865,7 @@ private struct Walker {
     // that is a dedicated recursive function rather than a call to
     // `place_value.writeClassBody` the way `mirrorClassToFrame` makes).
     private void assertClassFrameMirror(VarDeclaration variable, in Value value) {
-        if (!classMirrorEstablished.get(variable, false))
+        if (!mirrorEstablished.get(variable, false))
             return;
 
         auto classType = variable.type.toBasetype.isTypeClass;
@@ -1839,12 +1877,12 @@ private struct Walker {
 
         const identity = value.classIdentity;
 
-        // `classMirrorEstablished[variable]` is only ever set `true` right
+        // `mirrorEstablished[variable]` is only ever set `true` right
         // after a real write (`mirrorClassToFrame`'s own header comment),
         // and `value` here is bit-identical to the value that write ran
         // with (`setLocal` is the sole writer of `locals`, and always calls
         // `mirrorToFrame` with the SAME value immediately afterwards -- see
-        // `classMirrorEstablished`'s own field comment), so `identity`
+        // `mirrorEstablished`'s own field comment), so `identity`
         // cannot be 0 and `classObjectTable.has(identity)` cannot be
         // `false` here in practice: that write already resolved this exact
         // identity through `storageFor`. Checked anyway, as a read-only
@@ -1879,7 +1917,7 @@ private struct Walker {
     // scratch-vs-real comparison one level down, rather than composing
     // into the real nested body at all.
     //
-    // No cycle guard of its own: `classMirrorEstablished`
+    // No cycle guard of its own: `mirrorEstablished`
     // (`assertClassFrameMirror`'s own gate, checked before this is ever
     // reached) guarantees the WRITE side already ran `classBodyShapeMatches`
     // over this identical value and found it acyclic, before `writeClassBody`
@@ -1958,11 +1996,11 @@ private struct Walker {
             // `classObjectTable`-independent storage, by a pointer write
             // through a completely different alias -- strictly AFTER the
             // owning variable's own mirror last established successfully
-            // (`classMirrorEstablished` freezes THAT decision at write
+            // (`mirrorEstablished` freezes THAT decision at write
             // time; it says nothing about a DIFFERENT alias's later
             // action on a field this variable never itself rewrote).
             // Unlike `classIdentityAliasedByAnotherBinding`
-            // (`classMirrorEstablished`'s own header comment explains why
+            // (`mirrorEstablished`'s own header comment explains why
             // THAT one must stay pinned to write time), `identity in
             // classObjectCells` is MONOTONIC: `classObjectCells` entries
             // are never removed (only the per-variable `classCells` cache
@@ -1983,7 +2021,7 @@ private struct Walker {
             // inserts a fresh block). Once the decline above does not
             // apply, this nested identity is always already present --
             // `mirrorClassToFrame`'s own successful write (the one that
-            // set `classMirrorEstablished[variable]`, this whole call
+            // set `mirrorEstablished[variable]`, this whole call
             // chain's precondition -- see `assertClassFrameMirror`) ran
             // `writeClassBody` over this SAME `value`, which resolves
             // (and so allocates) every reachable nested identity via
@@ -2004,8 +2042,8 @@ private struct Walker {
         // `classObjectTable[identity]` (not the frame) is the actual body
         // -- `(*classObjectTable)` because the shared table is reached
         // through a pointer (see its own field comment). No all-zero skip
-        // here (contrast the pre-`classMirrorEstablished` history of this
-        // function): `assertClassFrameMirror`'s own `classMirrorEstablished`
+        // here (contrast the pre-`mirrorEstablished` history of this
+        // function): `assertClassFrameMirror`'s own `mirrorEstablished`
         // check already guarantees this exact `value`'s own
         // `mirrorClassToFrame` write ran `writeClassBody` over this same
         // body, so `actual` genuinely reflects that write, not a
@@ -2047,11 +2085,11 @@ private struct Walker {
 
         const actual = frameBytesAt(mirrorAddress(variable), (void*).sizeof);
 
-        // No all-zero skip here (contrast the pre-`classMirrorEstablished`
+        // No all-zero skip here (contrast the pre-`mirrorEstablished`
         // history of this function, when this ran off a RE-DERIVED
         // decision that could disagree with what `mirrorClassToFrame`
         // actually did): `assertClassFrameMirror`'s own
-        // `classMirrorEstablished` check already guarantees `variable`'s
+        // `mirrorEstablished` check already guarantees `variable`'s
         // OWN last write genuinely stored a reference into this exact
         // slot -- for this exact `value` -- so a real divergence is the
         // only way `actual` can now disagree with `scratch`.
@@ -3547,7 +3585,7 @@ private struct Walker {
             argumentExpressions,
             locals,
             _activationFrame,
-            &classMirrorEstablished,
+            &mirrorEstablished,
             &classMirrorGenerations,
         );
 
@@ -3607,7 +3645,7 @@ private struct Walker {
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.lazyArgumentFrames = lazyArgumentFrames.dup;
-        child.lazyArgumentClassMirrorEstablished = lazyArgumentClassMirrorEstablished.dup;
+        child.lazyArgumentMirrorEstablished = lazyArgumentMirrorEstablished.dup;
         child.lazyArgumentClassMirrorGenerations = lazyArgumentClassMirrorGenerations.dup;
         child.sliceAliases = sliceAliases.dup;
         child.arrayAllocations = arrayAllocations.dup;
@@ -7104,7 +7142,7 @@ private struct Walker {
             argumentExpressions,
             locals,
             _activationFrame,
-            &classMirrorEstablished,
+            &mirrorEstablished,
             &classMirrorGenerations,
         );
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
@@ -7190,7 +7228,7 @@ private struct Walker {
             argumentExpressions,
             locals,
             _activationFrame,
-            &classMirrorEstablished,
+            &mirrorEstablished,
             &classMirrorGenerations,
         );
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
@@ -8256,7 +8294,11 @@ private struct Walker {
             // either way.
             if (parameter.isReference && index < argumentExpressions.length)
                 bindReferenceSlot(
-                    parameter, argumentExpressions[index], callerFrame, arguments[index],
+                    parameter,
+                    argumentExpressions[index],
+                    callerFrame,
+                    callerMirrorEstablished,
+                    arguments[index],
                 );
 
             // `runRefArgumentExpression` seeds a `ref` argument still bound to
@@ -8303,8 +8345,11 @@ private struct Walker {
     // its own documented contract ("every other lvalue shape refuses
     // rather than guesses") -- and `callerReferenceBase`/`constantIndex`
     // below do the same for a variable with no mirrored caller-side
-    // storage, or a non-constant index (see `constantIndex`'s own
-    // header for why). This `catch` is the integration seam translating
+    // storage, storage the write side never actually established
+    // (`mirrorEstablished`, the one record both this composition and
+    // `assertReferenceBind`'s verification hang off), or a non-constant
+    // index (see `constantIndex`'s own header for why). This `catch` is the
+    // integration seam translating
     // that throw-to-refuse contract into this function's own
     // decline-silently one: it is not ordinary control flow, since
     // nothing downstream branches on which arm ran, and boxed authority
@@ -8317,6 +8362,7 @@ private struct Walker {
         VarDeclaration parameter,
         Expression argumentExpression,
         FrameBlock callerFrame,
+        bool[VarDeclaration]* callerMirrorEstablished,
         in Value argumentValue,
     ) {
         import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
@@ -8324,19 +8370,23 @@ private struct Walker {
         if (argumentExpression is null)
             return;
 
-        // Set by `callerReferenceBase` when it resolves the root variable
-        // THROUGH another reference slot (forwarding a `ref` parameter into
-        // this call) rather than directly (an owning slot or a dataseg
-        // variable). See the `if (!resolvedThroughReference)` guard below
-        // for why that distinction gates verification.
-        bool resolvedThroughReference;
+        // Set by `callerReferenceBase` whenever the base it resolved is
+        // storage the verified mirror does not keep in step with the boxed
+        // argument, for either of its two reasons: resolved THROUGH another
+        // reference slot (forwarding a `ref` parameter into this call), or
+        // owned by a cell whose writes bypass the frame slot. See the
+        // `if (!bindNotVerifiable)` guard below.
+        bool bindNotVerifiable;
 
         void* address;
         try {
             address = placeOfLvalue(
                 argumentExpression,
                 (variable) => callerReferenceBase(
-                    variable, callerFrame, resolvedThroughReference,
+                    variable,
+                    callerFrame,
+                    callerMirrorEstablished,
+                    bindNotVerifiable,
                 ),
                 &constantIndex,
             ).address;
@@ -8372,10 +8422,15 @@ private struct Walker {
         // after having already mutated it. Comparing there would be a
         // false positive on a perfectly correct program: exactly the
         // mid-call divergence `assertReferenceBind`'s own header warns
-        // about, one level removed. Only a DIRECTLY resolved bind (an
-        // owning slot or a dataseg variable, both kept synchronously in
-        // sync by the verified mirror) is safe to verify.
-        if (!resolvedThroughReference)
+        // about, one level removed. A base a CELL owns lags for its own,
+        // unrelated reason (`cellIsAuthorityFor`). Only a base that is
+        // neither -- an established owning slot or dataseg block the
+        // verified mirror keeps synchronously in sync -- is safe to verify,
+        // and `callerReferenceBase` alone decides which, once, while
+        // composing: the write and the verify side never evaluate that
+        // question separately, so they cannot answer it differently at two
+        // points in time.
+        if (!bindNotVerifiable)
             assertReferenceBind(parameter, address, argumentValue);
     }
 
@@ -8392,7 +8447,7 @@ private struct Walker {
     // argument forward correctly across several activations (recursion
     // passing its own `ref` parameter down again, or one function
     // forwarding a `ref` parameter into another). That branch also sets
-    // `resolvedThroughReference` for `bindReferenceSlot`'s own bind-time
+    // `bindNotVerifiable` for `bindReferenceSlot`'s own bind-time
     // verification to see, since a FORWARDED root's storage is allowed to
     // legitimately lag behind the boxed copy that forwarded it (see that
     // function's own comment). Throws for anything else -- no owning
@@ -8400,16 +8455,54 @@ private struct Walker {
     // `ref` body local, or any local `frame_layout` gives no slot to) --
     // so `bindReferenceSlot`'s own `catch` turns that into a silent
     // decline rather than a guess.
+    //
+    // Owning a slot is not enough to hand its address out: an OWNED slot is
+    // only a legal base once the write side actually ESTABLISHED it
+    // (`callerMirrorEstablished`, the caller's own `mirrorEstablished` field
+    // -- never this callee's, which describes a frame that has not started
+    // running). Composition does not merely offset from this address --
+    // `placeOfLvalue` DEREFERENCES it for a class receiver or a `PtrExp`
+    // base, and indexes through a stored slice header -- so a slot the
+    // mirror declined to fill (a class local whose body is not composable,
+    // a pointer local holding a boxed-era carrier with no host address)
+    // would be read as if it held a real reference, yielding `null +
+    // fieldOffset`: non-null, past `bindReferenceSlot`'s own null guard,
+    // and dereferenced by `assertReferenceBind` -- a SIGSEGV caused by
+    // nothing but the shadow, on a program the boxed authority runs
+    // correctly. Declining an established-looking base costs nothing but
+    // coverage of a slot nothing reads yet, so this refuses the whole
+    // shape rather than reasoning about which compositions happen to
+    // dereference and which only offset.
     private void* callerReferenceBase(
         VarDeclaration variable,
         FrameBlock callerFrame,
-        ref bool resolvedThroughReference,
+        bool[VarDeclaration]* callerMirrorEstablished,
+        ref bool bindNotVerifiable,
     ) @trusted {
-        if (variable.isDataseg)
-            return moduleTable.storageFor(variable);
+        if (variable.isDataseg || callerFrame.hasOwningSlot(variable)) {
+            if (
+                callerMirrorEstablished is null
+                    || !(*callerMirrorEstablished).get(variable, false)
+            )
+                throw new Exception(
+                    "quickbite.backends.interpreter.impl.Walker."
+                    ~ "callerReferenceBase: caller-side mirror storage for "
+                    ~ "variable is not established",
+                );
 
-        if (callerFrame.hasOwningSlot(variable))
-            return callerFrame.slotAddress(variable);
+            // Established, so the slot's bytes are real and composing from
+            // them is safe -- but a local a CELL owns has its writes
+            // deliberately routed around that slot afterwards, so those
+            // bytes are allowed to lag the boxed value bind-time
+            // verification would compare them against. Fill the slot,
+            // never verify it (see `bindNotVerifiable`'s own declaration).
+            if (cellIsAuthorityFor(variable))
+                bindNotVerifiable = true;
+
+            return variable.isDataseg
+                ? moduleTable.storageFor(variable)
+                : callerFrame.slotAddress(variable);
+        }
 
         if (callerFrame.hasReferenceSlot(variable)) {
             // `hasReferenceSlot` only says `variable` is ELIGIBLE for a
@@ -8427,7 +8520,7 @@ private struct Walker {
             // dereference; decline exactly like "no slot at all" instead.
             auto forwarded = callerFrame.referenceSlotValue(variable);
             if (forwarded !is null) {
-                resolvedThroughReference = true;
+                bindNotVerifiable = true;
                 return forwarded;
             }
         }
@@ -8436,6 +8529,31 @@ private struct Walker {
             "quickbite.backends.interpreter.impl.Walker.callerReferenceBase: "
             ~ "variable has no mirrored caller-side storage",
         );
+    }
+
+    // Whether a CELL, rather than `variable`'s own frame slot, is the
+    // authority for it -- the identical four-map question
+    // `assertFrameMirror` asks before verifying an owning local, asked here
+    // for the BASE variable of a composed `ref`-argument lvalue. The maps
+    // are this activation's, which for a bind is the CALLER's own
+    // promotions: `forkPerFrameCellsInto` dups them into the callee before
+    // `bindFunctionParameters` runs.
+    //
+    // A cell-owned local's frame slot is deliberately left behind: a write
+    // through the cell (`writeCelledLocal`, or `writeBackLocalPointerTargets`
+    // after a callee mutated the local through a pointer) never runs
+    // `setLocal`, so no mirror write follows it and the slot keeps whatever
+    // the last real mirror write left there. The boxed argument
+    // `assertReferenceBind` would compare it against was read THROUGH the
+    // cell (`runExpression`'s own `VarExp` arm prefers a promoted cell's
+    // bytes over the boxed local for exactly that reason), so the two
+    // legitimately disagree and asserting on them fires at a correct
+    // program.
+    private bool cellIsAuthorityFor(VarDeclaration variable) {
+        return (variable in scalarCells) !is null
+            || (variable in structCells) !is null
+            || (variable in arrayCells) !is null
+            || (variable in classCells) !is null;
     }
 
     // The `evalIndex` `bindReferenceSlot` above supplies to
@@ -8499,6 +8617,14 @@ private struct Walker {
     // to hold even on already-correct paths, so asserting it there would
     // risk turning an existing, silent quirk into a crash -- a real
     // shipping-behaviour change this slice must not introduce.
+    //
+    // Needs no cell-authority skip of its own the way `assertFrameMirror`
+    // does: `callerReferenceBase` already made that call while composing
+    // the address, and told `bindReferenceSlot` not to verify (its own
+    // `bindNotVerifiable`). That is deliberate rather than incidental --
+    // the write side and this verify must evaluate the SAME verdict for
+    // the same base, and the only way to guarantee that across time is to
+    // evaluate it once, before either happens.
     //
     // Declines the same way `assertFrameMirror`'s own composable arm does:
     // silently, for a `value` that is not (yet) `isPlaceComposable`'s
@@ -8579,9 +8705,14 @@ private struct Walker {
     //
     // Declines silently, exactly like `bindReferenceSlot`, for every one of
     // its decline conditions: no mirrored caller-side storage at all
-    // (`callerReferenceBase`'s own throw), an eligible-but-never-filled
-    // reference slot read through (also `callerReferenceBase`'s own
-    // throw), or a composed address of `null`. Verification reuses
+    // (`callerReferenceBase`'s own throw), storage the write side never
+    // established (also its throw, consulted here against THIS activation's
+    // own `mirrorEstablished` for the same reason the frame passed is this
+    // activation's own -- the enclosing activation IS the "caller" for a
+    // capture), an eligible-but-never-filled reference slot read through,
+    // or a composed address of `null`. A captured variable a cell owns
+    // fills its slot but skips verification, exactly as a `ref` argument's
+    // own cell-owned base does (`bindNotVerifiable`). Verification reuses
     // `assertReferenceBind` unchanged -- the same bind-time-only check,
     // the same skip when resolved through forwarding, the same silent
     // decline for a captured shape `place_value.isPlaceComposable` does
@@ -8614,11 +8745,14 @@ private struct Walker {
             if (!child._activationFrame.hasReferenceSlot(variable))
                 continue;
 
-            bool resolvedThroughReference;
+            bool bindNotVerifiable;
             void* address;
             try {
                 address = callerReferenceBase(
-                    variable, _activationFrame, resolvedThroughReference,
+                    variable,
+                    _activationFrame,
+                    &mirrorEstablished,
+                    bindNotVerifiable,
                 );
             } catch (Exception) {
                 continue;
@@ -8629,7 +8763,7 @@ private struct Walker {
 
             child._activationFrame.setReferenceSlot(variable, address);
 
-            if (!resolvedThroughReference)
+            if (!bindNotVerifiable)
                 if (auto value = variable in locals)
                     assertReferenceBind(variable, address, *value);
         }
@@ -8708,13 +8842,13 @@ private struct Walker {
     // the local it is actually writing instead of silently skipping it.
     //
     // `callerMirrorEstablished`/`callerMirrorGenerations` are POINTERS to
-    // the caller's own `classMirrorEstablished`/`classMirrorGenerations`
+    // the caller's own `mirrorEstablished`/`classMirrorGenerations`
     // fields (`bindFunctionParameters`' own identically named parameters,
-    // forwarded from `child.bindFunctionParameters(..., &classMirrorEstablished,
+    // forwarded from `child.bindFunctionParameters(..., &mirrorEstablished,
     // &classMirrorGenerations)` at every real call site), captured for the
     // same reason `callerLocals`/`callerFrame` are: `setLocal` inside the
     // thunk calls `mirrorClassToFrame`, which records its write/decline
-    // decision into `this.classMirrorEstablished`/`this.classMirrorGenerations`
+    // decision into `this.mirrorEstablished`/`this.classMirrorGenerations`
     // -- the CALLEE's own fields -- even while `locals`/`_activationFrame`
     // are swapped to write the actual bytes into the CALLER's storage. Left
     // unswapped, that write-decision bookkeeping lands on a map nobody ever
@@ -8748,9 +8882,9 @@ private struct Walker {
                     lazyArgumentFrames[parameter] = *capturedFrame;
                 if (
                     auto capturedMirrorEstablished =
-                        variable in lazyArgumentClassMirrorEstablished
+                        variable in lazyArgumentMirrorEstablished
                 )
-                    lazyArgumentClassMirrorEstablished[parameter] =
+                    lazyArgumentMirrorEstablished[parameter] =
                         *capturedMirrorEstablished;
                 if (
                     auto capturedMirrorGenerations =
@@ -8768,7 +8902,7 @@ private struct Walker {
         lazyArgumentExpressions[parameter] = argumentExpression;
         lazyArgumentLocals[parameter] = callerLocals;
         lazyArgumentFrames[parameter] = callerFrame;
-        lazyArgumentClassMirrorEstablished[parameter] = callerMirrorEstablished;
+        lazyArgumentMirrorEstablished[parameter] = callerMirrorEstablished;
         lazyArgumentClassMirrorGenerations[parameter] = callerMirrorGenerations;
     }
 
@@ -8785,7 +8919,7 @@ private struct Walker {
         if (capturedFrame is null)
             throw new Exception("Unsupported eval call.");
 
-        auto capturedMirrorEstablished = variable in lazyArgumentClassMirrorEstablished;
+        auto capturedMirrorEstablished = variable in lazyArgumentMirrorEstablished;
         if (capturedMirrorEstablished is null)
             throw new Exception("Unsupported eval call.");
 
@@ -8795,22 +8929,22 @@ private struct Walker {
 
         auto savedLocals = locals;  // mutated below while evaluating the thunk
         auto savedFrame = _activationFrame;
-        auto savedMirrorEstablished = classMirrorEstablished;
+        auto savedMirrorEstablished = mirrorEstablished;
         auto savedMirrorGenerations = classMirrorGenerations;
         scope(exit) {
             // Write whatever the thunk produced -- the SAME table mutated in
-            // place, or (see `lazyArgumentClassMirrorEstablished`'s own field
+            // place, or (see `lazyArgumentMirrorEstablished`'s own field
             // comment) a fresh one if the caller's own field started `null`
             // -- back through the captured pointers before restoring this
             // activation's own fields, so the caller's NEXT read (after
             // `runLazyArgument` returns) sees the decision the thunk's own
             // `setLocal` actually recorded, not this activation's unrelated
             // bookkeeping.
-            *(*capturedMirrorEstablished) = classMirrorEstablished;
+            *(*capturedMirrorEstablished) = mirrorEstablished;
             *(*capturedMirrorGenerations) = classMirrorGenerations;
             locals = savedLocals;
             _activationFrame = savedFrame;
-            classMirrorEstablished = savedMirrorEstablished;
+            mirrorEstablished = savedMirrorEstablished;
             classMirrorGenerations = savedMirrorGenerations;
         }
 
@@ -8819,7 +8953,7 @@ private struct Walker {
         // and `_activationFrame` becomes the caller's own frame so a mutation
         // the thunk performs (`setLocal`) mirrors into the slot the caller
         // will actually read afterwards, instead of the callee's unrelated
-        // frame silently discarding it. `classMirrorEstablished`/
+        // frame silently discarding it. `mirrorEstablished`/
         // `classMirrorGenerations` swap the same way, through the captured
         // pointers, so `setLocal`'s own `mirrorClassToFrame` call records its
         // write/decline decision into the CALLER's bookkeeping instead of
@@ -8827,7 +8961,7 @@ private struct Walker {
         // why that divergence is unsafe).
         locals = *captured;
         _activationFrame = *capturedFrame;
-        classMirrorEstablished = *(*capturedMirrorEstablished);
+        mirrorEstablished = *(*capturedMirrorEstablished);
         classMirrorGenerations = *(*capturedMirrorGenerations);
         return runLazyArgumentExpression(*expression);
     }
@@ -10216,7 +10350,7 @@ private struct Walker {
             argumentExpressions,
             locals,
             _activationFrame,
-            &classMirrorEstablished,
+            &mirrorEstablished,
             &classMirrorGenerations,
         );
 
@@ -10297,7 +10431,7 @@ private struct Walker {
             argumentExpressions,
             locals,
             _activationFrame,
-            &classMirrorEstablished,
+            &mirrorEstablished,
             &classMirrorGenerations,
         );
 
