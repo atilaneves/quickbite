@@ -976,19 +976,17 @@ in parallel and never blocks it.
        `setReferenceSlot`) so the verified mirror above (gated on
        `hasOwningSlot`, not `hasSlot`) never treats a stored address as
        inline storage of the parameter's own type. At a call,
-       `impl.d`'s `bindReferenceSlot` composes the caller-side `Place`
-       of each `ref`/`out` argument via `placeOfLvalue` — its first
-       real wiring into the walker — using `callerReferenceBase` as
-       `resolveBase` (the caller's own owning slot, the shared
-       `moduleTable` for a dataseg variable, or — reading THROUGH an
-       already-filled reference slot — the caller's own forwarded `ref`
-       parameter, so forwarding survives several activations including
-       recursion) and `constantIndex` as `evalIndex` (DMD's own already-
-       folded integer constant only, never a runtime evaluation: the
-       boxed argument snapshot has already evaluated the argument
-       expression, including any index, exactly once, and evaluating a
-       runtime index again risks firing a side-effecting index a second
-       time). Declines silently rather than guessing — never throws past
+       `impl.d`'s `bindReferenceSlot` composes the caller-side `Place` of each
+       `ref`/`out` argument via `placeOfLvalue`, using `callerReferenceBase` as
+       `resolveBase` (the caller's own owning slot, the shared `moduleTable` for
+       a dataseg variable, or — reading THROUGH an already-filled reference slot
+       — the caller's own forwarded `ref` parameter, so forwarding survives
+       several activations including recursion) and `constantIndex` as
+       `evalIndex` (DMD's own already-folded integer constant only, never a
+       runtime evaluation: the boxed argument snapshot has already evaluated the
+       argument expression, including any index, exactly once, and evaluating a
+       runtime index again risks firing a side-effecting index a second time).
+       Declines silently rather than guessing — never throws past
        this boundary — whenever the shape does not compose, the base is
        not mirrored, an eligible-but-never-filled reference slot (its
        zero-initialised default) is read through, or the composed
@@ -1053,257 +1051,219 @@ in parallel and never blocks it.
        something can still call through it, which is exactly why
        decision 17 makes the frame block a GC allocation — the same
        answer DMD's own compiled closure frame gives.
-     - Loads/stores routed through places: whole-aggregate read/write
-       composed over places down to scalar leaves by
-       `place_value.readValue`/`writeValue` (native scalar leaves via
-       `Place.loadScalar`/`storeScalar`, non-union struct and
-       static-array shapes recursed field-by-field/element-by-element
-       via `Place.field`/`index`; a slice composes symmetrically now:
-       `readValue` reconstructs one from its native `{length, ptr}`
-       header and elements, and `writeValue` (`place_value.
-       writeSliceValue`) allocates NEW backing storage sized to the
-       value's own length (`native_array.NativeArray.allocate`, whose
-       scan policy is `layout.typeHasPointers` over the element type
-       alone, chosen once and never defaulted, per the Containers
-       contract below), writes every element into it through the same
-       `Place.index` composition the read side follows, and writes the
-       `{length, ptr}` header into the destination place LAST — so an
-       element type `writeValue` cannot compose refuses the whole write
-       before the destination is ever touched, never leaving a
-       partially written array visible there. The allocated storage
-       stays reachable only via that header, which is why the write
-       throws rather than silently under-protecting it when the
-       destination itself is not GC-scanned (the same
-       `writeSliceHeader` check a `NativeBlock`-holding caller gets,
-       reached here through a raw-address overload since a `Place` is
-       only an address, with no `NativeBlock` handle of its own to pass
-       — see `native_array.d`'s own header comment on that overload).
-       This does not change `isPlaceComposable`'s own verdict for a
-       slice (still `false`): that predicate gates the verified FRAME
-       mirror, which still mirrors a slice local by header alone
-       (`impl.d`'s `mirrorSliceToFrame`), not by this full place
-       composition. An enum leaf reads back tagged per
-       the Display format spec rather than as the plain integral value
-       `native_scalar.readScalar` alone gives it: `readValue` resolves
-       the qualified member name (or the non-member `cast(E)N` form)
-       from DMD's own member declarations via
-       `layout.enumMemberQualifiedName`; `writeValue` already stores an
-       enum's bits correctly through the same scalar path, since
-       `Value.asLong` already unwraps an `EnumValue`. A pointer is a
-       composable LEAF, not a recursion: its own bytes ARE the host
-       address (decision 15), so `readValue` reads it back via
-       `Place.deref.address` (`Place.deref`'s existing pointer arm,
-       reused rather than growing a parallel raw-address accessor),
-       boxing a `null` address as `Value.null_` — the same value
-       `impl.d` gives a `null` pointer literal — and any other address as
-       `Value.nativePointerValue`. `writeValue` stores a boxed value's
-       own host address through `Place.storeReference` (`place.d`,
-       shared between a pointer and a class place). This refusal is
-       VALUE-dependent, unlike every type-shape refusal elsewhere in
-       this codec: the pointer TYPE is always accepted, and `writeValue`
-       refuses only a `value` that is not itself a host address —
-       `isLocalPointer`'s allocation-id carrier, the struct-shaped
-       `Pointer`, a function pointer's minted id — since none of those
-       boxed-era stand-ins IS the address decision 15 requires, and this
-       codec has no address to invent for them. Every mirror-side scratch
-       allocation (`impl.d`'s `assertFrameMirror`/`assertClassFrameMirror`/
-       `assertClassReferenceMirror`) now chooses its scan policy
-       mechanically — `layout.typeHasPointers` over the type being
-       composed for the generic composable path, and an explicit
-       `Scan.conservative` (never derived, matching `object_table.
-       allocateBlock`'s own reasoning) for a class body's or a bare
-       reference's scratch, both of which always carry a pointer-shaped
-       fact regardless of one field's own type — so `isPlaceComposable`
-       now answers `true` for a pointer: the type-shape question is
-       unconditional, matching `readValue`/`writeValue`'s own leaf. The
-       VALUE-dependent refusal above still has to hold on both the mirror's
-       write and verify sides, and does, through one shared gate:
-       `impl.d`'s `placeShapeMatches` (already the single function both
-       `mirrorToFrame` and `assertFrameMirror` call before ever reaching
-       `writeValue`) gained a pointer arm repeating `writeValue`'s own
-       condition (`value.isNativePointer || value == Value.null_`) — so a
-       `value` this gate declines is skipped identically on both sides, for
-       a bare pointer local and for a pointer FIELD nested in an otherwise-
-       composable struct/union/array reached through the same recursive
-       check. A class body has no such shared gate (`writeClassBody` is
-       hand-written, not routed through `placeShapeMatches`), so
-       `impl.d` grew one: `classBodyShapeMatches`, calling `placeShapeMatches`
-       per `layout.classFields` entry, called identically by
-       `mirrorClassToFrame` and `assertClassFrameMirror` right after their
-       existing `isClassBodyComposable` check — closing, for a class's own
-       pointer field, the exact gap `placeShapeMatches` already closes
-       generically for a struct's. A dynamic-array
-       local holds a real `{length, ptr}` slice header; a class
-       variable holds a reference (address) to an object body owned by
-       object identity and stored in `object_table.ObjectTable`, keyed
-       on that identity rather than any one variable binding, and
-       composed field-by-field the same way a struct is: `readValue`
-       follows a class place's stored reference via `Place.deref` (a
-       null reference reads back as `Value.null_`) and recurses one
-       `readValue` per `layout.classFields` field (base-to-derived,
-       inherited fields included), naming the class and its
-       inheritance chain from the `ClassDeclaration` itself
-       (`layout.classQualifiedName`/`classHierarchyNames`); the boxed
-       `Value`'s `classIdentity` is the body's own address, not a
-       minted counter — decision 15's "identity is the address" made
-       concrete. `place_value.writeClassBody` is the write-side mirror
-       for a body whose address is already known (an `ObjectTable`
-       lookup), recursing `writeValue` per field; `writeValue` itself
-       still refuses a class-typed place; it would have to store a
-       reference, and the address for a given identity is only known
-       to whoever owns the `ObjectTable` (`impl.d`'s
-       `classObjectTable`, wired into the verified frame mirror above
-       but not into this generic per-place dispatch, which has no
-       such table to consult), so that arm stays deferred until the
-       authority switch itself supplies one. A class-typed FIELD now
-       composes too — an object GRAPH, not only a single object —
-       because `writeClassBody` takes an explicit
-       `resolveObjectBody` capability (identity-to-address, the same
-       caller-supplied-policy shape `lvalue_place.placeOfLvalue`'s
-       `resolveBase`/`evalIndex` already use; `impl.d` satisfies it
-       from `classObjectTable` itself) and recurses into a nested
-       field's own body once that address is resolved; `readValue`'s
-       class arm (`place_value.readClassValue`) already composed a
-       nested class field with no changes needed, since a field's
-       place is shaped identically to the top-level one. Cycle policy:
-       both `readClassValue` and `writeClassBody` thread a DFS
-       "currently on this reference chain" identity set (removed on
-       backtrack, so two SIBLING fields sharing one identity — a DAG,
-       not a cycle — still compose independently) and THROW, declining
-       rather than recursing forever or silently truncating, the
-       moment an identity reappears on the path.
-       `place_value.isClassBodyComposable` answers `true`
-       unconditionally for a class-typed field (a TYPE-shape question;
-       recursing into the referenced class's own fields would have no
-       well-founded base case for a self-referencing declaration like
-       `class Node { Node next; }`) rather than recursing the
-       `isPlaceComposable` check it still uses for every other field
-       type. The VALUE-level questions `isClassBodyComposable` cannot
-       ask — an unresolvable identity, a live cycle, or a nested
-       object whose OTHER field is itself not composable — are
-       `impl.d`'s `classBodyShapeMatches`, extended with the identical
-       identity-keyed DFS guard, recursing into a class-typed field's
-       own value before `mirrorClassToFrame`/`assertClassFrameMirror`
-       ever reach `writeClassBody`, so a cycle declines there,
-       deterministically, rather than by throwing out of
-       `writeClassBody`'s own recursion (this codebase avoids
-       exceptions for control flow). The DFS set is seeded with the
-       ROOT object's own identity before the walk starts, not only
-       populated as fields are descended into: a field's boxed `Value`
-       is a snapshot taken at assignment time, so a direct
-       self-reference (`n.next = n`) reads back `null` one field
-       further in and would otherwise never re-trip the guard, even
-       though `writeClassBody` resolves that field to the SAME real
-       address as the root and throws on it. Seeding the root keeps
-       this gate and `writeClassBody`'s own address-keyed guard
-       agreeing regardless of how the boxed snapshot happens to
-       truncate. `classBodyShapeMatches` also
-       declines whenever a nested identity is present in
-       `classObjectCells` (the boxed-era promoted-cell table) — a real
-       gap found empirically, not hypothesized: `locals[]` caches one
-       boxed copy of an object graph PER VARIABLE that references it,
-       and neither a write through an independently promoted cell for
-       a shared identity nor a deep field-chain assignment
-       (`a.b.c.value = x`) propagates into every OTHER variable's own
-       cached copy of that identity — `assertFrameMirror`'s own
-       caller-level guard already skips this exact staleness for a
-       DIRECTLY promoted variable (`variable in classCells`); a
-       class-typed field has no variable of its own to gate on, so
-       this repeats that protection one level down. A plain top-level
-       class LOCAL has the same gap one level UP: `auto aliasLeaf =
-       mid.leaf;` aliases through a `DotVarExp`, not the bare `VarExp`
-       `registerClassAliasIfPlainVar` requires to promote a cell, so
-       `classObjectCells` never learns about it either.
-       `classBodyShapeMatches` therefore also declines whenever
-       `variable`'s own identity is currently boxed by ANOTHER live
-       variable (`impl.d`'s `classIdentityAliasedByAnotherBinding`,
-       scanning `locals` for a match) — the top-level counterpart of
-       the nested-field decline, evaluated by the same shared gate so
-       `mirrorClassToFrame` and `assertClassFrameMirror` stay
-       symmetric. Both declines are deliberately coarse — an unmirrored
-       local costs nothing while authority stays boxed, while a false
-       negative here would re-crash the interpreter — so each declines
-       a shared identity outright rather than proving a stale read is
-       actually imminent. `classBodyShapeMatches` also declines
-       whenever `value`'s own dynamic class name (`Value.classTypeName`,
-       set once at `new` from the constructed type and never revised)
-       disagrees with `layout.classQualifiedName(class_)` for `class_`
-       — `variable`'s (or a class-typed field's) own STATIC type, not
-       necessarily the object's dynamic one, since a `Base`-typed local
-       can box a `Derived` instance. This is the fix for a real silent
-       GC-heap corruption: `object_table.ObjectTable.storageFor` sizes
-       an identity's body from whichever
-       caller's `class_` reaches it FIRST and returns that SAME block
-       to every later caller unchanged, so a `Base`-typed mirror
-       allocating first and a `Derived`-typed mirror for the SAME
-       identity following it used to get that same too-small block
-       back, and `writeClassBody` would write `Derived`'s wider field
-       layout through it with no bounds check of its own (`place.Place`
-       has none). Declining on a static/dynamic name mismatch — rather
-       than resolving the object's actual dynamic `ClassDeclaration` to
-       size against — costs only mirror coverage for a polymorphic
-       binding: `Value` carries no `ClassDeclaration`, only a name, and
-       a name-to-declaration search (`classDeclarationByQualifiedName`)
-       is not the same guarantee as the exact symbol DMD bound this
-       object's construction to. `ObjectTable.storageFor` also carries
-       its own defense-in-depth check — not the primary guard, since
-       `classBodyShapeMatches` above is what keeps every caller's
-       `class_` for a given identity equal to that identity's own
-       dynamic class — throwing (not an `in` contract, which `-release`
-       strips) if a cache-hit's block size ever disagrees with the
-       requested class's own instance size, so a future caller bug of
-       the identical shape is loud rather than silently corrupting.
-       The mirror's own object-body comparison
-       (`impl.d`'s `assertClassBodyValue`) is a DEDICATED recursive
-       function, not a call to `writeClassBody`: `writeClassBody`'s
-       resolver writes into the REAL nested body (correct for
-       `mirrorClassToFrame`, wrong for an assertion, which must never
-       mutate the body it is comparing against), so
-       `assertClassBodyValue` builds one scratch per graph level and
-       compares each against `classObjectTable`'s own entry instead.
-       CONTRACT — write/verify TIME symmetry: the verify side
-       (`assertClassFrameMirror`) must never re-derive a decline
-       condition that reads mutable walker state; it must be
-       conditioned on what the write side (`mirrorClassToFrame`)
-       actually did for the binding's CURRENT value, not on a fresh
-       re-run of the same predicate. A shared predicate is symmetric
+     - Loads/stores routed through places: whole-aggregate read/write composed
+       over places down to scalar leaves by `place_value.readValue`/`writeValue`
+       (native scalar leaves via `Place.loadScalar`/`storeScalar`; non-union
+       struct and static-array shapes recurse field-by-field/element-by-element
+       via `Place.field`/`index`). A slice composes symmetrically: `readValue`
+       reconstructs one from its native `{length, ptr}` header and elements;
+       `writeValue` (`place_value.writeSliceValue`) allocates NEW backing
+       storage sized to the value's own length
+       (`native_array.NativeArray.allocate`, scan policy chosen once from
+       `layout.typeHasPointers` over the element type, per the Containers
+       contract), writes every element through the same `Place.index`
+       composition the read side uses, and writes the `{length, ptr}` header
+       into the destination place LAST, so an element type `writeValue` cannot
+       compose refuses the whole write before the destination is ever touched.
+       The allocated storage stays reachable only via that header; the write
+       throws rather than silently under-protecting it when the destination is
+       not GC-scanned (the `writeSliceHeader` check, reached through a
+       raw-address overload since a `Place` has no `NativeArray` handle of its
+       own — see `native_array.d`'s header comment on that overload). This does
+       not change `isPlaceComposable`'s verdict for a slice (still `false`):
+       that predicate gates the verified frame mirror, which still mirrors a
+       slice local by header alone (`impl.d`'s `mirrorSliceToFrame`), not by
+       this full place composition.
+     - An enum leaf reads back tagged per the Display format spec rather than as
+       the plain integral value `native_scalar.readScalar` alone gives it:
+       `readValue` resolves the qualified member name (or the non-member
+       `cast(E)N` form) from DMD's own member declarations via
+       `layout.enumMemberQualifiedName`; `writeValue` already stores an enum's
+       bits correctly through the same scalar path, since `Value.asLong` already
+       unwraps an `EnumValue`.
+     - A pointer is a composable LEAF, not a recursion: its own bytes ARE the
+       host address (decision 15), so `readValue` reads it back via
+       `Place.deref.address` (`Place.deref`'s existing pointer arm), boxing a
+       `null` address as `Value.null_` (the same value `impl.d` gives a `null`
+       pointer literal) and any other address as `Value.nativePointerValue`.
+       `writeValue` stores a boxed value's own host address through
+       `Place.storeReference` (`place.d`, shared between a pointer and a class
+       place). This refusal is VALUE-dependent, unlike every type-shape refusal
+       elsewhere in this codec: the pointer TYPE is always accepted, and
+       `writeValue` refuses only a `value` that is not itself a host address —
+       `isLocalPointer`'s allocation-id carrier, the struct-shaped `Pointer`, a
+       function pointer's minted id — since none of those boxed-era stand-ins IS
+       the address decision 15 requires, and this codec has no address to invent
+       for them.
+     - Every mirror-side scratch allocation (`impl.d`'s `assertFrameMirror`/
+       `assertClassFrameMirror`/`assertClassReferenceMirror`) chooses its scan
+       policy mechanically: `layout.typeHasPointers` over the
+       type being composed for the generic composable path, and an explicit
+       `Scan.conservative` (never derived, matching
+       `object_table.allocateBlock`'s own reasoning) for a class body's or a
+       bare reference's scratch, both of which always carry a pointer-shaped
+       fact regardless of one field's own type. `isPlaceComposable` answers
+       `true` for a pointer unconditionally: the type-shape question, matching
+       `readValue`/`writeValue`'s own leaf.
+     - The pointer refusal above is VALUE-dependent, so it must hold on the
+       mirror's write and verify sides too: `impl.d`'s `placeShapeMatches` (the
+       single function both `mirrorToFrame` and `assertFrameMirror` call before
+       ever reaching `writeValue`) has a pointer arm matching `writeValue`'s own
+       condition (`value.isNativePointer || value == Value.null_`), so a `value`
+       this gate declines is skipped identically on both sides — for a bare
+       pointer local and for a pointer FIELD nested in an otherwise-composable
+       struct/union/array reached through the same recursive check.
+     - Class body storage: a dynamic-array local holds a real `{length, ptr}`
+       slice header; a class variable holds a reference (address) to an object
+       body owned by object identity and stored in `object_table.ObjectTable`,
+       keyed on that identity rather than any one variable binding, and composed
+       field-by-field the same way a struct is. `readValue` follows a class
+       place's stored reference via `Place.deref` (a null reference reads back
+       as `Value.null_`) and recurses one `readValue` per `layout.classFields`
+       field (base-to-derived, inherited fields included), naming the class and
+       its inheritance chain from the `ClassDeclaration` itself
+       (`layout.classQualifiedName`/`classHierarchyNames`); the boxed `Value`'s
+       `classIdentity` is the body's own address, not a minted counter.
+     - `place_value.writeClassBody` is the write-side mirror for a body whose
+       address is already known (an `ObjectTable` lookup), recursing
+       `writeValue` per field; `writeValue` itself still refuses a class-typed
+       place — it would have to store a reference, and the address for a given
+       identity is only known to whoever owns the `ObjectTable` (`impl.d`'s
+       `classObjectTable`, wired into the verified frame mirror but not into
+       this generic per-place dispatch) — so that arm stays deferred until the
+       authority switch supplies one.
+     - A class-typed FIELD composes too, an object GRAPH and not only a single
+       object: `writeClassBody` takes an explicit `resolveObjectBody` capability
+       (identity-to-address, the same caller-supplied-policy shape
+       `lvalue_place.placeOfLvalue`'s `resolveBase`/`evalIndex` use; `impl.d`
+       satisfies it from `classObjectTable`) and recurses into a nested field's
+       own body once that address is resolved. `readValue`'s class arm
+       (`place_value.readClassValue`) composes a nested class field with no
+       changes needed, since a field's place is shaped identically to the
+       top-level one.
+     - Cycle policy: both `readClassValue` and `writeClassBody` thread a DFS
+       "currently on this reference chain" identity set (removed on backtrack,
+       so two SIBLING fields sharing one identity — a DAG, not a cycle — still
+       compose independently) and THROW, declining rather than recursing forever
+       or silently truncating, the moment an identity reappears on the path.
+       `place_value.isClassBodyComposable` answers `true` unconditionally for a
+       class-typed field (a TYPE-shape question; recursing into the referenced
+       class's own fields would have no well-founded base case for a
+       self-referencing declaration like `class Node { Node next; }`) rather
+       than recursing the `isPlaceComposable` check it uses for every other
+       field type.
+     - The VALUE-level questions `isClassBodyComposable` cannot ask — an
+       unresolvable identity, a live cycle, or a nested object whose OTHER field
+       is itself not composable — are `impl.d`'s `classBodyShapeMatches`:
+       - It threads the identical identity-keyed DFS guard, recursing into a
+         class-typed field's own value before
+         `mirrorClassToFrame`/`assertClassFrameMirror` ever reach
+         `writeClassBody`, so a cycle declines there deterministically rather
+         than by throwing out of `writeClassBody`'s own recursion (this codebase
+         avoids exceptions for control flow). The DFS set is seeded with the
+         ROOT object's own identity before the walk starts: a field's boxed
+         `Value` is a snapshot taken at assignment time, so a direct
+         self-reference (`n.next = n`) reads back `null` one field further in
+         and would otherwise never re-trip the guard, even though
+         `writeClassBody` resolves that field to the SAME real address as the
+         root and throws on it — seeding the root keeps this gate and
+         `writeClassBody`'s own address-keyed guard agreeing regardless of how
+         the boxed snapshot happens to truncate.
+       - It declines whenever a nested identity is present in `classObjectCells`
+         (the boxed-era promoted-cell table): `locals[]` caches one boxed copy
+         of an object graph PER VARIABLE that references it, and neither a write
+         through an independently promoted cell for a shared identity nor a deep
+         field-chain assignment (`a.b.c.value = x`) propagates into every OTHER
+         variable's own cached copy of that identity. `assertFrameMirror`'s own
+         caller-level guard already skips this exact staleness for a DIRECTLY
+         promoted variable (`variable in classCells`); a class-typed field has
+         no variable of its own to gate on, so this repeats that protection one
+         level down.
+       - A plain top-level class LOCAL has the same gap one level UP: `auto
+         aliasLeaf = mid.leaf;` aliases through a `DotVarExp`, not the bare
+         `VarExp` `registerClassAliasIfPlainVar` requires to promote a cell, so
+         `classObjectCells` never learns about it either.
+         `classBodyShapeMatches` therefore also declines whenever the variable's
+         own identity is currently boxed by ANOTHER live variable (`impl.d`'s
+         `classIdentityAliasedByAnotherBinding`, scanning `locals` for a match)
+         — the top-level counterpart of the nested-field decline, evaluated by
+         the same shared gate so `mirrorClassToFrame` and
+         `assertClassFrameMirror` stay symmetric. Both declines are deliberately
+         coarse — an unmirrored local costs nothing while authority stays boxed,
+         while a false negative here would re-crash the interpreter — so each
+         declines a shared identity outright rather than proving a stale read is
+         actually imminent.
+       - It declines whenever a `value`'s own dynamic class name
+         (`Value.classTypeName`, set once at `new` from the constructed type and
+         never revised) disagrees with `layout.classQualifiedName(class_)` for
+         `class_` — the variable's (or a class-typed field's) own STATIC type,
+         not necessarily the object's dynamic one, since a `Base`-typed local
+         can box a `Derived` instance. This guards against a real silent GC-heap
+         corruption: `object_table.ObjectTable.storageFor` sizes an identity's
+         body from whichever caller's `class_` reaches it FIRST and returns that
+         SAME block to every later caller unchanged, so a `Base`-typed mirror
+         allocating first and a `Derived`-typed mirror for the SAME identity
+         following it would get that same too-small block back, and
+         `writeClassBody` would write `Derived`'s wider field layout through it
+         with no bounds check of its own (`place.Place` has none). Declining on
+         a static/dynamic name mismatch — rather than resolving the object's
+         actual dynamic `ClassDeclaration` to size against — costs only mirror
+         coverage for a polymorphic binding: `Value` carries no
+         `ClassDeclaration`, only a name, and a name-to-declaration search
+         (`classDeclarationByQualifiedName`) is not the same guarantee as the
+         exact symbol DMD bound this object's construction to.
+         `ObjectTable.storageFor` also carries its own defense-in-depth check —
+         not the primary guard, since `classBodyShapeMatches` above is what
+         keeps every caller's `class_` for a given identity equal to that
+         identity's own dynamic class — throwing (not an `in` contract, which
+         `-release` strips) if a cache-hit's block size ever disagrees with the
+         requested class's own instance size, so a future caller bug of the
+         identical shape is loud rather than silently corrupting.
+     - The mirror's own object-body comparison (`impl.d`'s
+       `assertClassBodyValue`) is a DEDICATED recursive function, not a call to
+       `writeClassBody`: `writeClassBody`'s resolver writes into the REAL nested
+       body (correct for `mirrorClassToFrame`, wrong for an assertion, which
+       must never mutate the body it is comparing against), so
+       `assertClassBodyValue` builds one scratch per graph level and compares
+       each against `classObjectTable`'s own entry instead.
+     - CONTRACT — write/verify TIME symmetry: the verify side
+       (`assertClassFrameMirror`) must never re-derive a decline condition that
+       reads mutable walker state; it must be conditioned on what the write side
+       (`mirrorClassToFrame`) actually did for the binding's CURRENT value, not
+       on a fresh re-run of the same predicate. A shared predicate is symmetric
        with the write only at the INSTANT the write ran —
-       `classIdentityAliasedByAnotherBinding` is TIME-VARYING (another
-       binding's own later rebind or null can flip its verdict), so
-       re-running it at read time could proceed where the write
-       declined, comparing a frame slot or `ObjectTable` body
-       `mirrorClassToFrame` never wrote against a freshly composed
-       non-zero expectation — a guaranteed internal `AssertError` on a
-       correct guest program (found via a `Base`/`Derived` alias whose
-       OTHER binding is nulled between the write and a later read).
-       `impl.d`'s `classMirrorEstablished`, a per-variable flag only
-       `mirrorClassToFrame` ever writes (`true` right after an actual
-       write, including a `null` reference; `false` on every decline —
-       every one of its own exits, via `scope(exit)`), is what
-       `assertClassFrameMirror` now consults FIRST, trusting it instead
-       of re-deriving anything; it needs no separate rebind
-       invalidation, since `locals[variable] = value` is written only
-       by `setLocal`, which calls `mirrorClassToFrame` with that SAME
-       value immediately after for every write this walker has, so the
-       flag is always freshly overwritten by the very write that
-       changes a binding, and a fresh activation's own frame starts
-       with no entry — correctly "not yet established" — the same way
-       its frame slots start GC-zeroed. One decline condition is a
-       proven EXCEPTION to this contract, safe to re-derive at verify
-       time: `identity in classObjectCells` (`classBodyShapeMatchesImpl`'s
-       nested-field decline) is MONOTONIC — an identity, once
-       cell-promoted, never leaves `classObjectCells` (only the
-       per-variable `classCells` cache is dropped, on rebind) — so
-       re-checking it at verify time can only ADD a decline over what
-       the write saw, never accept a genuine divergence as a match.
-       `assertClassBodyValue`'s own nested-field recursion re-derives
-       exactly this one condition, closing a DIFFERENT staleness a
-       frozen top-level flag cannot see on its own: a nested field's
-       identity promoted into `classObjectCells` — and mutated through
-       that separate, `ObjectTable`-independent storage, by an entirely
-       different alias — strictly AFTER the owning variable's own
-       mirror last established (found via a `Parent`/`Child` fixture
-       whose `&child.x` promotes and mutates exactly such an identity).
+       `classIdentityAliasedByAnotherBinding` is TIME-VARYING (another binding's
+       own later rebind or null can flip its verdict), so re-running it at read
+       time could proceed where the write declined, comparing a frame slot or
+       `ObjectTable` body `mirrorClassToFrame` never wrote against a freshly
+       composed non-zero expectation — a guaranteed internal `AssertError` on a
+       correct guest program (e.g. a `Base`/`Derived` alias whose OTHER binding
+       is nulled between the write and a later read). `impl.d`'s
+       `classMirrorEstablished`, a per-variable flag only `mirrorClassToFrame`
+       ever writes (`true` right after an actual write, including a `null`
+       reference; `false` on every decline, via `scope(exit)`), is what
+       `assertClassFrameMirror` consults FIRST instead of re-deriving anything;
+       it needs no separate rebind invalidation, since `locals[variable] =
+       value` is written only by `setLocal`, which calls `mirrorClassToFrame`
+       with that SAME value immediately after for every write this walker has,
+       so the flag is always freshly overwritten by the write that changes a
+       binding, and a fresh activation's own frame starts with no entry —
+       correctly "not yet established", the same way its frame slots start
+       GC-zeroed.
+     - One decline condition is a proven EXCEPTION to this contract, safe to
+       re-derive at verify time: `identity in classObjectCells`
+       (`classBodyShapeMatchesImpl`'s nested-field decline) is MONOTONIC — an
+       identity, once cell-promoted, never leaves `classObjectCells` (only the
+       per-variable `classCells` cache is dropped, on rebind) — so re-checking
+       it at verify time can only ADD a decline over what the write saw, never
+       accept a genuine divergence as a match. `assertClassBodyValue`'s own
+       nested-field recursion re-derives exactly this one condition, closing a
+       DIFFERENT staleness a frozen top-level flag cannot see on its own: a
+       nested field's identity promoted into `classObjectCells`, and mutated
+       through that separate, `ObjectTable`-independent storage by an entirely
+       different alias, strictly AFTER the owning variable's own mirror last
+       established (e.g. a `Parent`/`Child` fixture whose `&child.x` promotes
+       and mutates exactly such an identity).
        This contract also retired the all-zero skip
        (`isZeroFilled`, deleted) `assertClassBodyValue`/
        `assertClassReferenceMirror` used to carry: once the verify side
@@ -1316,46 +1276,40 @@ in parallel and never blocks it.
        `has`/`opIndex`, never `storageFor` (which allocates a fresh
        block on a miss) — a verify step must never mutate the shared
        table it is checking.
-       Residual, NOT fixed by this slice (out of scope — authority stays
-       boxed): the `classObjectCells`/
-       `classIdentityAliasedByAnotherBinding` declines above only paper
-       over the symptom for the mirror — an internal assert must never
-       be the reason a program that used to run instead crashes — not
-       the underlying boxed-authority staleness itself (a write through
-       one alias of a shared object graph not propagating into every
-       other alias's own cached copy), a real, pre-existing gap in
-       `locals[]` found while adding this slice's own Matrix fixtures
-       (mutating a linked-list node through a SEPARATE local aliasing
-       an interior node, or a deep field-chain write through one
-       top-level alias, then reading it back through a DIFFERENT
-       binding, reads stale). A union composes as what it
-       actually is: overlapping bytes at DMD's own offsets, with no
-       union-specific arithmetic anywhere. `readValue`/`writeValue`
-       recurse a union's `layout.structFields` exactly as they do a
-       plain struct's (`place_value.structValueAt`, shared by both
-       arms) — every member's `Place.field` already lands at the
-       union's own (overlapping) offset, so reading every member
-       independently is reinterpretation with no reconciliation step,
-       matching the boxed walker's own struct-shaped union `Value`
-       (`impl.d`'s `withUnionFieldWrite`) with no shape change needed.
-       Writing a whole union `Value` (`place_value.writeUnionValue`)
-       writes only the WIDEST declared member's bytes, covering the
-       union's full live extent in one shot — exact given the
-       incoming value's members already agree bit-for-bit, true of
-       every union `Value` this codebase ever constructs, but not a
-       claim about a hypothetically inconsistent one. `isPlaceComposable`
-       recurses a union's own fields exactly like a struct's
-       (`allFieldsComposable`, shared between the two arms), so a
-       union with a slice/class/pointer/`real` member refuses the
-       whole union, matching `isClassBodyComposable`'s one-bad-field-
-       refuses-the-body rule. This makes a composable union local
-       newly eligible for the verified frame mirror above; the mirror
-       stays symmetric with no extra gating because `mirrorToFrame`
-       and `assertFrameMirror` both call the identical deterministic
-       `writeValue` on the identical boxed value, so the two sides can
-       never disagree with each other — independently of whether that
-       boxed value itself agrees with `SystemLinker` (the union
-       default-value gap the Unions contract below still documents).
+     - Residual, NOT fixed by this slice (out of scope — authority stays boxed):
+       the `classObjectCells`/`classIdentityAliasedByAnotherBinding` declines
+       above only paper over the symptom for the mirror — an internal assert
+       must never be the reason a program that used to run instead crashes — not
+       the underlying boxed-authority staleness itself. A write through one
+       alias of a shared object graph does not propagate into every other
+       alias's own cached copy in `locals[]`, a real, pre-existing gap: mutating
+       a linked-list node through a SEPARATE local aliasing an interior node, or
+       a deep field-chain write through one top-level alias, then reading it
+       back through a DIFFERENT binding, reads stale.
+     - Union composition: a union composes as what it actually is — overlapping
+       bytes at DMD's own offsets, with no union-specific arithmetic anywhere.
+       `readValue`/`writeValue` recurse a union's `layout.structFields` exactly
+       as they do a plain struct's (`place_value.structValueAt`, shared by both
+       arms) — every member's `Place.field` already lands at the union's own
+       (overlapping) offset, so reading every member independently is
+       reinterpretation with no reconciliation step, matching the boxed walker's
+       own struct-shaped union `Value` (`impl.d`'s `withUnionFieldWrite`).
+       Writing a whole union `Value` (`place_value.writeUnionValue`) writes only
+       the WIDEST declared member's bytes, covering the union's full live extent
+       in one shot — exact given the incoming value's members already agree
+       bit-for-bit, true of every union `Value` this codebase ever constructs,
+       but not a claim about a hypothetically inconsistent one.
+     - `isPlaceComposable` recurses a union's own fields exactly like a struct's
+       (`allFieldsComposable`, shared between the two arms), so a union with a
+       slice/class/pointer/`real` member refuses the whole union, matching
+       `isClassBodyComposable`'s one-bad-field-refuses-the-body rule. A
+       composable union local is therefore eligible for the verified frame
+       mirror above; the mirror stays symmetric with no extra gating because
+       `mirrorToFrame` and `assertFrameMirror` both call the identical
+       deterministic `writeValue` on the identical boxed value, so the two sides
+       can never disagree with each other — independently of whether that boxed
+       value itself agrees with `SystemLinker` (the union default-value gap the
+       Unions contract below still documents).
    - The authority switch: native storage becomes the sole authority
      for all bindings. Merge gate: no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/
