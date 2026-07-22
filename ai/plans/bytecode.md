@@ -397,10 +397,7 @@ changed:
 1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-2. `file.createWriteRead.Bytecode`: represent string truthiness as the native
-   slice-pointer test in the `std.file` read path; compact string descriptors
-   currently make the generic truthiness lowering refuse it.
-3. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+2. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.
@@ -671,5 +668,4 @@ behaviour.
   string-source shape (e.g. a ternary with a heap-backed arm) still defaults
   to the compact path and misreads; `s.idup` where `s` is already a `string`
   and `string s = p[lo .. hi];` from a pointer source refuse or misread;
-  string truthiness (`if (s)`) is refused; `wstring`/`dstring` sub-slices
-  are refused.
+  `wstring`/`dstring` sub-slices are refused.

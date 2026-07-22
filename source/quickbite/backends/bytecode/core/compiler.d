@@ -351,6 +351,9 @@ private struct Compiler {
         if (_program is null)
         {
             _program = new Program;
+            // Compact string descriptors use data offset zero for null. Keep
+            // it out of the literal pool so even an empty literal is non-null.
+            _program.data ~= 0;
             // A running machine executes this segment directly while lazy
             // compilation can append module slots. Reserve every representable
             // byte now so such appends cannot relocate raw module addresses.
@@ -7158,16 +7161,18 @@ private struct Compiler {
     // length — feeds `compileTruthValue`'s pointer branch. Every other
     // operand goes through `compileTruthValue` directly.
     private Operand compileBoolCondition(Expression expression) {
-        // Check the AST's own static type rather than trust every possible
-        // operand producer to have set `Operand.isString`: a `string[N]`
-        // element read (`a[0]`) yields a real 16-byte {ptr, length} slice
-        // descriptor, not the compact 8-byte one `Operand.isString` denotes
-        // elsewhere, so it cannot carry that flag without corrupting other
-        // consumers (`.length`, `==`) that branch on it. The static type is
-        // reachable here regardless of which producer compiled the operand,
-        // so it catches every string-typed shape uniformly.
-        if (isStringType(expression.type))
-            throw new Exception("Unsupported string truthiness in bytecode core");
+        // Compact string descriptors use a nonzero data offset for every
+        // literal and reserve zero for null. Heap-backed strings already use
+        // an ordinary native descriptor, whose pointer word is the condition.
+        if (isStringType(expression.type)) {
+            if (auto descriptor = dynamicArrayDescriptorOrNull(expression))
+                return compileTruthValue(
+                    Operand(descriptor.offset, ScalarType.void_, false, true),
+                );
+
+            const string_ = compileExpression(expression);
+            return compileTruthValue(Operand(string_.offset, ScalarType.uint_));
+        }
 
         if (isDynamicArrayArgument(expression)) {
             const descriptor = dynamicArrayDescriptor(expression);
@@ -7186,19 +7191,11 @@ private struct Compiler {
     // operand is already canonical. A floating operand goes through
     // `compileFloatingTruthValue` (`operand != 0.0`); it cannot share this
     // path because its zero constant and comparison opcode are type-specific.
-    // A string operand's `offset` holds a compact 8-byte {data offset,
-    // length} descriptor, not a value to compare: refuse rather than let it
-    // fall through to the generic branch below, which would hand that
-    // descriptor to a comparison opcode that reads only its low byte. D's
-    // actual rule (`ptr !is null`) needs a faithful string-null model this
-    // descriptor cannot provide, so real string truthiness is out of scope.
     private Operand compileTruthValue(Operand operand) {
         if (operand.type == ScalarType.bool_)
             return operand;
         if (isFloating(operand.type))
             return compileFloatingTruthValue(operand);
-        if (operand.isString)
-            throw new Exception("Unsupported string truthiness in bytecode core");
         if (!operand.isPointer && !isCompoundIntegerScalar(operand.type))
             return operand;
 

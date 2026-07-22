@@ -202,10 +202,16 @@ private imported!"quickbite.lang".Value reifyStringDescriptor(
 ) @safe pure {
     const offset = scalar!uint(bytes);
     const length = scalar!uint(bytes[uint.sizeof .. $]);
+    const firstStringDataOffset = data.length == arrayLength + 1 &&
+        data[0] == 0 ? 1 : 0;
     if ((offset + length > data.length || length == 0) &&
-        data.length == arrayLength)
+        data.length == arrayLength + firstStringDataOffset)
     {
-        return reifyString(data[index .. index + 1], type);
+        return reifyString(
+            data[index + firstStringDataOffset
+                .. index + firstStringDataOffset + 1],
+            type,
+        );
     }
     return reifyString(data[offset .. offset + length], type);
 }
