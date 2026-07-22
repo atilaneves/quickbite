@@ -1333,7 +1333,6 @@ static foreach (backend; Matrix!(
 // closure-over-the-caller-frame semantics.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("decodeLazyForwardedRangeErrorSeesReaderState." ~ backend.stringof)

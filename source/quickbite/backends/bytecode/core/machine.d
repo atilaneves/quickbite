@@ -22,6 +22,7 @@ package(quickbite.backends.bytecode) RunResult run(
     ref imported!"quickbite.backends.bytecode.core.program".Program program,
     scope CompileFunction compileFunction,
 ) {
+    import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo, Op, noCatchObjectField, noExceptionClass,
         noOutParameterOffset, size, sliceDescriptorSize, stringSliceSize;
@@ -59,10 +60,11 @@ package(quickbite.backends.bytecode) RunResult run(
     size_t ip;
 
     while (true) {
-        if (frames.length != 0)
-            synchronizeRefAliases(stack, frames[$ - 1], base);
-        const instruction = program.functions[functionIndex].code[ip];
-        final switch (instruction.op) with (Op) {
+        try {
+            if (frames.length != 0)
+                synchronizeRefAliases(stack, frames[$ - 1], base);
+            const instruction = program.functions[functionIndex].code[ip];
+            final switch (instruction.op) with (Op) {
             case loadConstant:
                 const ubyte[ulong.sizeof] bytes =
                     scalarBytes(program.constants[instruction.b]);
@@ -1924,6 +1926,25 @@ package(quickbite.backends.bytecode) RunResult run(
                 base = frame.base;
                 ip = frame.ip;
                 break;
+            }
+        } catch (RangeError error) {
+            const selected = selectHandler(
+                handlers,
+                program.catchClauses,
+                program.classes,
+                program.rangeErrorClass,
+            );
+            if (!selected.matched)
+                throw error;
+
+            const handler = selected.handler;
+            const clause = selected.clause;
+            if (clause.objectOffset != noCatchObjectField)
+                throw error;
+            writeBackUnwoundFrames(stack, frames, base, handler.frameDepth);
+            functionIndex = handler.functionIndex;
+            base = handler.base;
+            ip = clause.handlerIp;
         }
     }
 }
@@ -2705,13 +2726,10 @@ private void applyArrayAddAssign4(
 // and `Op.checkStaticArrayIndex` (static-array indexing) both call, so every
 // bounds failure raises byte-for-byte the same diagnostic.
 private void enforceIndexInBounds(in size_t index, in size_t length) @safe pure {
-    import std.conv: text;
+    import core.exception: ArrayIndexError;
 
     if (index >= length)
-        throw new Exception(text(
-            "index [", index, "] is out of bounds for array of length ",
-            length,
-        ));
+        throw new ArrayIndexError(index, length);
 }
 
 // The native address of element `index` within the slice descriptor at

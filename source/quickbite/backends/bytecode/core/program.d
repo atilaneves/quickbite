@@ -677,5 +677,6 @@ package(quickbite.backends.bytecode) struct Program {
     AssertDiagnostic[] assertDiagnostics;
     NativeCall[] nativeCalls;
     ClassInfo[] classes;
+    ushort rangeErrorClass = noExceptionClass;
     CatchClause[] catchClauses;
 }

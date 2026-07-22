@@ -391,16 +391,12 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `decodeLazyForwardedRangeErrorSeesReaderState.Bytecode`: repeated forwarded
-   lazy evaluation over a mutating struct-typed caller local. Its next blocker
-   is matching the reader's runtime `RangeError` through the forwarded lazy
-   call chain.
-2. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
+1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: resolve and call
    the separately compiled archive symbol instead of compiling the rewritten
    source body.
-3. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
+2. `file.createWriteRead.Bytecode`: the `std.stdio.File` and `std.file`
    host-filesystem path.
-4. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
+3. `concurrency.thisTid.Bytecode`: non-root Phobos class construction and the
    host concurrency/runtime path reached by `thisTid`.
 
 This list is a starting order, not a substitute for repository discovery.

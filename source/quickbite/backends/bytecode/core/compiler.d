@@ -1019,6 +1019,8 @@ private struct Compiler {
                 ? cast(ushort) size_t.sizeof
                 : msgOffset,
         );
+        if (classInfoName(class_) == "core.exception.RangeError")
+            _program.rangeErrorClass = index;
         if (baseClass != noExceptionClass)
             _program.classes[index].virtualFunctions =
                 _program.classes[baseClass].virtualFunctions.dup;
