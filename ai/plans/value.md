@@ -104,16 +104,19 @@ deletion (items 2-3).
    aggregate handles, locations/references, callables, and interpreter
    metadata. The extracted `RuntimeValue` carrier's `Array`, `Struct`, and
    `ClassObject` expression aggregates remain recursive boxed trees.
-   `AggregateValue` is their complete common visitor/reconstruction and
-   mutation boundary, consumed by every aggregate operation in `impl` and
-   `ffi_marshal`; its signatures are still `RuntimeValue`-typed. Native
-   typed-address aggregate handles can land only in the authority switch:
-   change every `AggregateValue` consumer and signature, including whole-value
-   reconstruction, while replacing the carrier's data-pointer arms and all
-   local/frame/ref/capture/cross-frame authority with host addresses. A handle
-   with no consumer is speculative, and retaining boxed locals would require
-   parallel aggregate copies — a second authority. `NativeArray`'s FFI address
-   is dynamic-array-only, so it cannot be promoted into that general carrier.
+   `AggregateValue` centralizes the mutation and reconstruction paths already
+   extracted from `impl` and `ffi_marshal`, but it is not yet every aggregate
+   operation: promotion/mirror seeding and refresh, by-value struct argument
+   writeback, and aggregate equality still access `RuntimeValue` directly.
+   Its signatures are still `RuntimeValue`-typed. Native typed-address
+   aggregate handles can land only in the authority switch: replace both every
+   `AggregateValue` consumer and those remaining direct aggregate paths,
+   including whole-value reconstruction, while replacing the carrier's
+   data-pointer arms and all local/frame/ref/capture/cross-frame authority
+   with host addresses. A handle with no complete consumer set is speculative,
+   and retaining boxed locals would require parallel aggregate copies — a
+   second authority. `NativeArray`'s FFI address is dynamic-array-only, so it
+   cannot be promoted into that general carrier.
    `RuntimeValue.Array` owns recursive elements for both static and dynamic
    arrays; neither may be split from the combined switch. Function and
    delegate handles remain separate non-data categories. The expression
@@ -254,12 +257,13 @@ deletion (items 2-3).
     recreate the provenance split that produced `isNativePointer`.)
     The authority switch makes this storage rule authoritative while replacing
     the expression currency's data-pointer arms and recursive aggregate
-    carriers with host-address handles. It changes every aggregate boundary
-    consumer, local/frame/ref/capture/cross-frame authority, and whole-value
-    reconstruction in that one switch; boxed locals cannot coexist as an
-    authority without parallel copies. Function and delegate handles are
-    separate non-data categories. Boxed values survive only as transient
-    rvalues (decisions 7/11), never as storage authority.
+    carriers with host-address handles. It changes the extracted aggregate
+    boundary and the remaining direct aggregate paths (promotion/mirrors,
+    by-value writeback, and equality), local/frame/ref/capture/cross-frame
+    authority, and whole-value reconstruction in that one switch; boxed locals
+    cannot coexist as an authority without parallel copies. Function and
+    delegate handles are separate non-data categories. Boxed values survive
+    only as transient rvalues (decisions 7/11), never as storage authority.
 
     Rationale: simplicity motivates the design. Boxing earns its keep
     only where the frontend cannot type values (Lox, Python — the
@@ -923,11 +927,13 @@ in parallel and never blocks it.
    consumes its returned string. Do not retain `Value` or render a dummy
    `void` result just to reuse the evaluator path.
 
-3. Make the authority switch. The complete `AggregateValue` boundary remains
-   `RuntimeValue`-typed until this one operation changes every consumer and
-   signature, including whole-value reconstruction, to host-address aggregate
-   handles. In the same operation, native storage becomes local/frame,
-   `ref`/`out`/capture, pointer-dereference, and cross-frame-write authority;
+3. Make the authority switch. `AggregateValue` remains `RuntimeValue`-typed;
+   its consumers plus the direct `RuntimeValue` aggregate paths in
+   promotion/mirror seeding and refresh, by-value struct argument writeback,
+   and equality must change together with whole-value reconstruction to
+   host-address aggregate handles. In the same operation, native storage
+   becomes local/frame, `ref`/`out`/capture, pointer-dereference, and
+   cross-frame-write authority;
    all data-pointer arms become the one host-address arm; and cells and aliases
    are deleted. Do not introduce a handle separately, retain boxed locals, or
    split static from dynamic arrays: the former needs parallel copies and the
