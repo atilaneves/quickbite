@@ -401,10 +401,7 @@ private bool instantiatedStructNeedsPreludeFormat(
         return false;
 
     if (search(structType.sym, Loc.initial, Id.opCall) !is null ||
-        search(structType.sym, Loc.initial, Id.apply) !is null ||
-        search(structType.sym, Loc.initial, Id.Fempty) !is null &&
-        search(structType.sym, Loc.initial, Id.Ffront) !is null &&
-        search(structType.sym, Loc.initial, Id.FpopFront) !is null)
+        search(structType.sym, Loc.initial, Id.apply) !is null)
         return false;
 
     foreach (field; structType.sym.fields) {

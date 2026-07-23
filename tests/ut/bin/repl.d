@@ -110,6 +110,23 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
+@("repl.frontend.mapResultExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.repl: ReplCellKind, ReplSession;
+
+    auto session = ReplSession([], true);
+
+    const importCell = session.submit("import std.algorithm;");
+    session.accept(importCell);
+
+    const declaration = session.submit("long[] xs = [1, 2, 3];");
+    session.accept(declaration);
+
+    const cell = session.submit("xs.map!(x => x * 2)");
+    cell.kind.should == ReplCellKind.expression;
+    cell.evalCell.displayIsFormatted.should == true;
+}
+
 @("repl.frontend.enumExpressionUsesPreludeFormatter")
 unittest {
     assertFormatterBackendOutput(["({ enum E { a, b } return E.b; })()"], ["E.b"]);
