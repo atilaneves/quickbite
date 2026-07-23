@@ -13,6 +13,7 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     in imported!"quickbite.backends.bytecode.core.program".ResultType type,
     in ubyte[] data,
     in ubyte[][] heap,
+    in ubyte[][] literalBlocks,
 ) @safe pure {
     import quickbite.lang: Value;
 
@@ -20,7 +21,7 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
         return Value.undisplayable;
 
     if (type.isArray)
-        return reifyArray(bytes, type, data, heap);
+        return reifyArray(bytes, type, data, heap, literalBlocks);
 
     if (type.isStruct)
         return reifyStruct(bytes, type);
@@ -50,6 +51,7 @@ private imported!"quickbite.lang".Value reifyArray(
     in imported!"quickbite.backends.bytecode.core.program".ResultType type,
     in ubyte[] data,
     in ubyte[][] heap,
+    in ubyte[][] literalBlocks,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
     import quickbite.lang: Value;
@@ -59,7 +61,7 @@ private imported!"quickbite.lang".Value reifyArray(
         : scalar!size_t(bytes[size_t.sizeof .. $]);
     auto block = type.isStaticArray
         ? bytes
-        : resolveBlock(scalar!size_t(bytes), heap, data);
+        : resolveBlock(scalar!size_t(bytes), heap, data, literalBlocks);
     if (!type.arrayElementsAreArrays && !type.arrayElementsAreStructs &&
         type.elementEnumMembers.length == 0 &&
         isCharacter(type.elementType))
@@ -79,6 +81,7 @@ private imported!"quickbite.lang".Value reifyArray(
                 type.elementType,
                 data,
                 heap,
+                literalBlocks,
             );
         } else {
             elements ~= type.arrayElementsAreArrays
@@ -87,6 +90,7 @@ private imported!"quickbite.lang".Value reifyArray(
                     type.withScalarArrayElements,
                     data,
                     heap,
+                    literalBlocks,
                 )
                 : type.arrayElementsAreStructs
                 ? reifyArrayStructElement(
@@ -199,12 +203,13 @@ private imported!"quickbite.lang".Value reifyStringDescriptor(
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
     in ubyte[] data,
     in ubyte[][] heap,
+    in ubyte[][] literalBlocks,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program: size;
 
     const pointer = scalar!size_t(bytes);
     const length = scalar!size_t(bytes[size_t.sizeof .. $]);
-    const block = resolveBlock(pointer, heap, data);
+    const block = resolveBlock(pointer, heap, data, literalBlocks);
     const byteLength = length * size(type);
     return reifyString(block[0 .. byteLength], type);
 }
@@ -327,19 +332,22 @@ private ulong scalarKey(
 }
 
 // Resolves a native descriptor pointer to its backing bytes: a VM-owned heap
-// block, or — for a literal-initialised `string`, whose pointer was built by
-// `Op.loadStringLiteral` from `program.data.ptr` plus an offset — a view into
-// the immutable program data segment. Addresses never escape a process, so
-// this classification only ever runs at the reification boundary, never
-// mid-compile.
+// block, a literal-initialised `string`'s own stable `literalBlocks` entry
+// (built by `Op.loadStringLiteral`/`Op.loadDataPointer` from
+// `literalBlocks[index].ptr`), or a view into the legacy `data` segment.
+// Addresses never escape a process, so this classification only ever runs at
+// the reification boundary, never mid-compile.
 private const(ubyte)[] resolveBlock(
     in size_t pointer,
     in ubyte[][] heap,
     in ubyte[] data,
+    in ubyte[][] literalBlocks,
 ) @safe pure {
     foreach (block; heap)
         if (blockPointer(block) == pointer)
             return block;
+    if (auto literal = literalRangeBlock(pointer, literalBlocks))
+        return literal;
     return dataBlock(pointer, data);
 }
 
@@ -351,6 +359,24 @@ private const(ubyte)[] dataBlock(in size_t pointer, in ubyte[] data) @trusted pu
     if (pointer < base || pointer > base + data.length)
         return null;
     return data[pointer - base .. $];
+}
+
+// Recovering each block's own base address to bounds-check `pointer` against
+// it is safe: the range check below rejects any pointer that does not fall
+// within that block's already-rooted slice before it is ever dereferenced.
+// A sub-slice of a literal (`"hello"[1 .. 3]`) shares the literal's block but
+// points partway into it, so this searches by containing range rather than
+// requiring an exact base-address match, mirroring `dataBlock`'s own logic.
+private const(ubyte)[] literalRangeBlock(
+    in size_t pointer,
+    in ubyte[][] literalBlocks,
+) @trusted pure {
+    foreach (block; literalBlocks) {
+        const base = cast(size_t) block.ptr;
+        if (pointer >= base && pointer <= base + block.length)
+            return block[pointer - base .. $];
+    }
+    return null;
 }
 
 // Heap descriptors store native block pointers; comparing them requires taking

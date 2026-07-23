@@ -85,7 +85,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 writeRawPointer(
                     stack,
                     base + instruction.a,
-                    cast(size_t) (program.data.ptr + instruction.b),
+                    cast(size_t) program.literalBlocks[instruction.b].ptr,
                 );
                 ++ip;
                 break;
@@ -215,7 +215,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 writeSliceDescriptorPointer(
                     stack,
                     base + instruction.a,
-                    cast(size_t) (program.data.ptr + instruction.b),
+                    cast(size_t) program.literalBlocks[instruction.b].ptr,
                     instruction.c,
                 );
                 ++ip;

@@ -158,7 +158,12 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
 package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
     loadRealConstant, // a: destination frame offset, b: real constant index
-    loadDataPointer, // a: destination frame offset, b: data offset
+    // a: destination frame offset, b: `literalBlocks` index. Writes the raw
+    // native address of `literalBlocks[b].ptr` — a block that never moves —
+    // into the frame; unlike `data`, an append-growable array, a fresh
+    // per-literal block keeps this pointer valid even after later literals
+    // are compiled.
+    loadDataPointer,
     // Copy `c` bytes from the read-only data segment at offset `b` into the
     // inline static-array slot at frame offset `a` (a value-type byte copy).
     loadStaticArray,
@@ -204,13 +209,16 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     setArrayLengthFromTemplate,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
-    // Write a native dynamic-array descriptor {data.ptr + dataOffset, length}
-    // directly into frame offset a, from a literal's already-known data offset
-    // (b, in bytes) and length (c, in elements). Every `string` value —
-    // literal or not — is an ordinary 16-byte {ptr, length} descriptor
-    // identical to any other `T[]`; this is simply the literal-load opcode for
-    // that shape, avoiding a data-segment-relative form that would need
-    // expanding by its consumers.
+    // Write a native dynamic-array descriptor {literalBlocks[b].ptr, c}
+    // directly into frame offset a, from a literal's `literalBlocks` index
+    // (b) and length in elements (c). Every `string` value — literal or not
+    // — is an ordinary 16-byte {ptr, length} descriptor identical to any
+    // other `T[]`; this is simply the literal-load opcode for that shape. The
+    // pointer is `literalBlocks[b].ptr`, not `data.ptr + b`: `data` is one
+    // append-growable array that reallocates (and moves) as later literals
+    // are compiled, but each `literalBlocks` entry is its own block that
+    // never moves once allocated, so a descriptor materialised from it stays
+    // valid across any later lazy compilation.
     loadStringLiteral,
     // Read the length word of the slice descriptor at frame offset b into the
     // size_t slot at frame offset a.
@@ -671,6 +679,12 @@ package(quickbite.backends.bytecode) struct Program {
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
     ubyte[real.sizeof][] realConstants; // raw bytes for 16-byte real literals
     ubyte[] data; // read-only segment holding string-literal bytes
+    // Stable per-literal blocks backing `Op.loadStringLiteral` and
+    // `Op.loadDataPointer`: each entry is its own GC allocation that never
+    // moves, unlike `data`, an append-growable array whose base address
+    // shifts (and invalidates any pointer baked from it) every time a later
+    // literal is compiled and appended.
+    ubyte[][] literalBlocks;
     ubyte[] moduleData; // mutable VM-owned storage for module-level variables
     AssertDiagnostic[] assertDiagnostics;
     NativeCall[] nativeCalls;

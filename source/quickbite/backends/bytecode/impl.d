@@ -26,6 +26,7 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
                 compilation.program.functions[0].returnType,
                 compilation.program.data,
                 result.heap,
+                compilation.program.literalBlocks,
             );
         }, function_);
     }

@@ -2971,39 +2971,41 @@ private struct Compiler {
         _code ~= Instruction(
             Op.loadStringLiteral,
             destination,
-            literal.dataOffset,
+            literal.blockIndex,
             literal.length,
         );
     }
 
-    // Append `string_`'s code units to the read-only data segment at their
-    // declared element width, returning the segment offset (in bytes) and the
-    // code-unit count (not the byte count, which differs for `wchar`/`dchar`
-    // literals) — the {offset, length} pair every literal-load instruction's
-    // operands share.
+    // Allocate a fresh, stable `literalBlocks` entry holding `string_`'s code
+    // units at their declared element width, returning its block index and
+    // the code-unit count (not the byte count, which differs for
+    // `wchar`/`dchar` literals) — the {index, length} pair every
+    // literal-load instruction's operands share. A dedicated GC allocation
+    // per literal, rather than an offset into one append-growable array,
+    // keeps every earlier literal's pointer valid across the reallocation a
+    // later literal's own append would otherwise trigger; it also already
+    // lands on the element's own alignment, since a fresh GC block is
+    // suitably aligned for any type.
     private StringLiteralData appendStringLiteral(StringExp string_) {
         import quickbite.frontend.dmd.string_literals: stringCodeUnitBytes;
         import std.conv: text;
 
-        // Pad the data segment so a wide (`wchar`/`dchar`) literal's escaping
-        // `.ptr` lands on its element's own alignment; a `char` literal's
-        // width-1 alignment is already satisfied by every offset, so this is
-        // a no-op for it.
-        const misalignment = _program.data.length % string_.sz;
-        if (misalignment != 0)
-            _program.data.length += string_.sz - misalignment;
-
         const bytes = stringCodeUnitBytes(string_);
-        const dataOffset = _program.data.length;
-        if (dataOffset > ushort.max || bytes.length > ushort.max)
+        if (bytes.length > ushort.max)
             throw new Exception(text(
                 "String literal too large for bytecode core: ",
                 expressionChars(string_),
             ));
-        _program.data ~= bytes;
+        _program.literalBlocks ~= bytes.dup;
+        const blockIndex = _program.literalBlocks.length - 1;
+        if (blockIndex > ushort.max)
+            throw new Exception(text(
+                "Too many string literals for bytecode core: ",
+                expressionChars(string_),
+            ));
 
         return StringLiteralData(
-            cast(ushort) dataOffset, cast(ushort) (bytes.length / string_.sz),
+            cast(ushort) blockIndex, cast(ushort) (bytes.length / string_.sz),
         );
     }
 
@@ -3061,25 +3063,32 @@ private struct Compiler {
         return result;
     }
 
-    // Write a compile-time string into the read-only data segment and emit its
-    // native {ptr, length} descriptor, returning the descriptor's frame
-    // offset. Used for synthesised diagnostic messages (`throwString`).
+    // Write a compile-time string into a fresh, stable `literalBlocks` entry
+    // and emit its native {ptr, length} descriptor, returning the
+    // descriptor's frame offset. Used for synthesised diagnostic messages
+    // (`throwString`), whose descriptor a later `throw` dereferences, so it
+    // needs the same stable-address storage as a source-level string
+    // literal, not the append-growable `data` segment.
     private ushort compileStringLiteralBytes(in string text_) {
         import std.conv: text;
 
         const bytes = cast(const(ubyte)[]) text_;
-        const dataOffset = _program.data.length;
-        if (dataOffset > ushort.max || bytes.length > ushort.max)
+        if (bytes.length > ushort.max)
             throw new Exception(text(
                 "String literal too large for bytecode core: ", text_,
             ));
-        _program.data ~= bytes;
+        _program.literalBlocks ~= bytes.dup;
+        const blockIndex = _program.literalBlocks.length - 1;
+        if (blockIndex > ushort.max)
+            throw new Exception(text(
+                "Too many string literals for bytecode core: ", text_,
+            ));
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
             Op.loadStringLiteral,
             offset,
-            cast(ushort) dataOffset,
+            cast(ushort) blockIndex,
             cast(ushort) bytes.length,
         );
         return offset;
@@ -10431,22 +10440,31 @@ private struct Compiler {
         return null;
     }
 
-    // Emit a string literal's bytes plus a NUL terminator into the data
-    // segment, and a `loadDataPointer` instruction pointing `slot` at them.
+    // Emit a string literal's bytes plus a NUL terminator into a fresh,
+    // stable `literalBlocks` entry, and a `loadDataPointer` instruction
+    // pointing `slot` at it. The NUL terminator is an FFI-marshalling
+    // concern, not a representation property of the literal: an `extern(C)`
+    // parameter expects a `const char*`, so the argument's backing bytes need
+    // a terminator the callee can scan for, which a literal lets us bake in
+    // up front instead of copying and appending one at the call site.
     private void emitStringLiteralArgument(in ushort slot, StringExp string_) {
         import quickbite.frontend.dmd.string_literals: stringChars;
         import std.conv: text;
 
         const bytes = cast(const(ubyte)[]) stringChars(string_);
-        const dataOffset = _program.data.length;
-        if (dataOffset > ushort.max || bytes.length + 1 > ushort.max)
+        if (bytes.length + 1 > ushort.max)
             throw new Exception(text(
                 "String literal too large for bytecode core: ",
                 expressionChars(string_),
             ));
-        _program.data ~= bytes;
-        _program.data ~= 0;
-        _code ~= Instruction(Op.loadDataPointer, slot, cast(ushort) dataOffset);
+        _program.literalBlocks ~= bytes.dup ~ cast(ubyte) 0;
+        const blockIndex = _program.literalBlocks.length - 1;
+        if (blockIndex > ushort.max)
+            throw new Exception(text(
+                "Too many string literals for bytecode core: ",
+                expressionChars(string_),
+            ));
+        _code ~= Instruction(Op.loadDataPointer, slot, cast(ushort) blockIndex);
     }
 
     // A native call's argument area is N contiguous fixed-stride slots (see
@@ -13378,11 +13396,12 @@ private struct PointerElementMetadata {
     uint byteStride;
 }
 
-// A string literal's data-segment placement: `dataOffset` in bytes, `length`
-// in elements (code units), matching the native {ptr, length} descriptor's
-// own {offset, length} literal-load operand pair.
+// A string literal's stable-block placement: `blockIndex` into
+// `Program.literalBlocks`, `length` in elements (code units), matching the
+// native {ptr, length} descriptor's own {index, length} literal-load operand
+// pair.
 private struct StringLiteralData {
-    ushort dataOffset;
+    ushort blockIndex;
     ushort length;
 }
 

@@ -3226,3 +3226,34 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+/++
+    A string literal materialised early must stay intact after compiling a
+    separate, not-yet-compiled function whose own (large) string literal
+    grows literal storage: an earlier literal's descriptor must not dangle
+    once later literal storage is (re)allocated.
++/
+static foreach (backend; Matrix!()) {
+    @("stringLiteralSurvivesLazyDataSegmentGrowth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        import std.array: replicate;
+        import std.conv: text;
+
+        // Large enough that the not-yet-compiled `grow`'s own literal forces
+        // a reallocation (not just an in-place growth) of literal storage.
+        const growLiteral = "z".replicate(4096);
+        runBackendSourceFixtureTests!backend(text(`
+            string grow() {
+                return "`, growLiteral, `";
+            }
+
+            unittest {
+                string early = "early";
+                const grown = grow();
+                assert(early == "early");
+                assert(grown.length == `, growLiteral.length, `);
+            }
+        `));
+    }
+}
