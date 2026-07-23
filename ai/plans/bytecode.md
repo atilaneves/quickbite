@@ -397,10 +397,16 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
+1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: `"...".idup` reaches
+   druntime's `_dup`, which allocates through `_d_newarrayU` and then
+   `memcpy`s into the result. A runtime-allocated block has no offset in the
+   program data segment, so the compact string descriptor cannot name it;
+   this row waits on the "Strings are ordinary arrays" migration rather than
+   on any fixture-shaped gap.
+2. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
+3. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
    `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
    `registryLock`'s `new Mutex` reaches its `MonitorProxy` field. Support the
    host-backed synchronisation primitive without treating single-threaded VM
@@ -677,4 +683,9 @@ behaviour.
   string-source shape (e.g. a ternary with a heap-backed arm) still defaults
   to the compact path and misreads; `s.idup` where `s` is already a `string`
   and `string s = p[lo .. hi];` from a pointer source refuse or misread;
-  `wstring`/`dstring` sub-slices are refused.
+  `wstring`/`dstring` sub-slices are refused; a string-typed
+  `_d_newarrayU`/`uninitializedArray` result is refused, because the block it
+  returns lives in VM heap memory and no data-segment offset names it.
+  Compiling that shape anyway writes a heap pointer into a compact slot,
+  whose reader adds its low 32 bits to `data.ptr` and hands the guest a wild
+  address — the shape must stay refused until the migration lands.

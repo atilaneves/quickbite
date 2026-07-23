@@ -3041,14 +3041,15 @@ private struct Compiler {
             ));
         }
 
+        const classIndex = registerClass(classType.sym);
         const offset = allocate(ScalarType.ulong_);
         _code ~= Instruction(
             Op.loadConstant,
             offset,
-            constantIndex(registerClass(classType.sym)),
+            constantIndex(_program.classes[classIndex].nativeTypeInfo),
             cast(ushort) size(ScalarType.ulong_),
         );
-        return Operand(offset, ScalarType.ulong_);
+        return Operand(offset, ScalarType.ulong_, false, true, ScalarType.void_);
     }
 
     private size_t nativeTypeInfoAddress(Type type) {
@@ -3236,10 +3237,6 @@ private struct Compiler {
     private bool stringSourceIsHeapBacked(Expression source) {
         if (tryArrayDuplication(source) !is null)
             return true;
-        if (auto call = source.isCallExp)
-            if (auto function_ = callFunction(call))
-                if (isNewArrayRuntimeCall(function_))
-                    return true;
         if (auto slice = source.isSliceExp)
             return stringSourceIsHeapBacked(slice.e1);
         if (auto cast_ = source.isCastExp)
@@ -11043,11 +11040,23 @@ private struct Compiler {
         return null;
     }
 
+    // `allocArrayDynamic` writes a 16-byte `{void* ptr, size_t length}` slice
+    // descriptor naming VM-owned heap memory. A string-typed result cannot be
+    // expressed that way: `isStringType` results use the compact 8-byte
+    // `{uint dataOffset, uint length}` descriptor, whose first word indexes
+    // `Program.data` rather than addressing memory (`stringSliceToArray`
+    // reconstitutes the address as `data.ptr + dataOffset`). Writing a heap
+    // pointer into that slot makes every later reader treat the pointer's low
+    // 32 bits as a data offset and hand a wild address to the guest -- for
+    // `"...".idup`, straight into druntime's `memcpy` destination. So refuse
+    // the shape until strings become ordinary dynamic arrays (the "Strings are
+    // ordinary arrays" work in `ai/plans/bytecode.md`); a refusal is a matrix
+    // omission, a wild pointer is a segfault.
     private Operand compileNewArrayRuntimeCall(CallExp call) {
         import std.conv: text;
 
         if (call.arguments is null || call.arguments.length == 0 ||
-            (!isDynamicArrayArgument(call) && !isStringType(call.type)))
+            !isDynamicArrayArgument(call))
             throw new Exception(text(
                 "Unsupported new array runtime call in bytecode core: ",
                 expressionChars(call),

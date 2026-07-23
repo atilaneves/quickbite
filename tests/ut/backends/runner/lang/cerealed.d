@@ -1128,6 +1128,10 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Bytecode, Because.unconfirmed,
+        "`.idup` allocates its result through `_d_newarrayU`, which the " ~
+        "compact 8-byte string descriptor cannot name; blocked on strings " ~
+        "becoming ordinary dynamic arrays"),
     Omit!(Interpreter, Because.unconfirmed,
         "std.conv.text slices past the char array's allocated block"),
     Omit!(LLVMJit, Because.unconfirmed),
