@@ -395,7 +395,7 @@ row reaches them:
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
 - Struct aliases and whole-local assignment do not yet cover a static-array
-  whole-object pointer receiver, a class/struct array-field-element pointer
+  whole-object pointer receiver, a class array-field-element pointer
   receiver, repeated/aliased ref-argument address identity, captured structs,
   postblits, or `opAssign` semantics.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice

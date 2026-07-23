@@ -882,9 +882,7 @@ static foreach (backend; Matrix!()) {
 // nested-field decline (a class-typed field whose declared type
 // disagrees with the boxed value's own dynamic class), the recursive
 // sibling of that root-level decline.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.downcastFieldWriteThroughFieldDeclaredAsWiderStaticType." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3146,9 +3144,7 @@ static foreach (backend; Matrix!()) {
 // A class object reached through a class-typed field keeps one identity when
 // copied into a local. Promoting storage through the local must therefore make
 // the write visible through the original field reference too.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.fieldObjectCopiedToLocalSharesAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4114,10 +4110,7 @@ static foreach (backend; Matrix!(
 // A struct static-array field whose elements are structs keeps its inline
 // element storage authoritative after an element field becomes addressable.
 // The mutation must remain visible through whole-field and whole-struct reads.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a struct array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.structStaticArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4607,10 +4600,7 @@ static foreach (backend; Matrix!()) {
 // AA order that loses either side (the aliased original OR the child's own
 // final value) fails. Only Interpreter and SystemLinker (the oracle) are
 // pinned here per the omit-don't-pin convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c = null\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.nestedFunctionRebindOfCapturedAliasedVariableDoesNotCorruptOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -7442,7 +7432,6 @@ static foreach (backend; Matrix!()) {
 // the omit-don't-pin convention (unconfirmed for this shape, matching the
 // other object-graph fixtures' own backend set).
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed-authority staleness: a deep field-chain write through one " ~
         "alias does not refresh another alias's own cached copy of the " ~
