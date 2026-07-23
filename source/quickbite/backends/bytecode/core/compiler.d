@@ -353,9 +353,6 @@ private struct Compiler {
         if (_program is null)
         {
             _program = new Program;
-            // Compact string descriptors use data offset zero for null. Keep
-            // it out of the literal pool so even an empty literal is non-null.
-            _program.data ~= 0;
             // A running machine executes this segment directly while lazy
             // compilation can append module slots. Reserve every representable
             // byte now so such appends cannot relocate raw module addresses.
@@ -2783,8 +2780,7 @@ private struct Compiler {
             }
 
         if (auto dereference = expression.isPtrExp)
-            if (expression.type.toBasetype.ty == TY.Tarray &&
-                !isStringType(expression.type)) {
+            if (expression.type.toBasetype.ty == TY.Tarray) {
                 const pointer = compileExpression(dereference.e1);
                 if (!pointer.isPointer)
                     return null;
@@ -3005,7 +3001,7 @@ private struct Compiler {
         return isCharStringType(expression.type);
     }
 
-    // Emit a string literal's bytes into the data segment and an
+    // Emit a string literal's bytes into a fresh literal block and an
     // `Op.loadStringLiteral` writing the expanded {ptr, length} descriptor
     // directly into the existing frame slot `destination` (as opposed to
     // `compileStringLiteralPointer`'s fresh one).

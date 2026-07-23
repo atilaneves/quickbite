@@ -234,3 +234,11 @@ unittest {
 
     newBackend!Bytecode.eval(expression).should == `"early"`;
 }
+
+// A sub-slice of a heap-backed string points into the middle of a heap block;
+// reification resolves it by containing range, not by exact base address.
+@("heapStringSubSliceReifies.Bytecode")
+@Tags("Bytecode")
+unittest {
+    newBackend!Bytecode.eval(`"hello".idup[1 .. 3]`).should == `"el"`;
+}

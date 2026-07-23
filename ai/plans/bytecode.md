@@ -94,13 +94,15 @@ This is the load-bearing decision; everything else follows from it.
 
 A `string`-typed frame slot is a normal 16-byte native-order slice
 descriptor, identical to every other `T[]`. What is special about strings is
-only their backing storage: literal content lives in the immutable program
-data segment (the VM's `.rodata`), stored at the declared element width
-(`char`/`wchar`/`dchar` code units, not unconditionally UTF-8). Offsets into
-that segment appear in exactly one place — constant-pool entries — and are
-materialised into real pointers by a single literal-load instruction at
-descriptor construction. Frames, fields, and the FFI bridge only ever see
-real pointers. Specialness lives in storage, never in the frame — the same
+only their backing storage: literal content lives in its own stable,
+read-only `Program.literalBlocks` entry, stored at the declared element
+width (`char`/`wchar`/`dchar` code units, not unconditionally UTF-8), one
+block per literal so a block never moves once allocated. A literal's
+`literalBlocks` index appears in exactly one place — constant-pool-like
+operands (`Op.loadDataPointer`/`Op.loadStringLiteral`) — and is materialised
+into a real pointer by a single literal-load instruction at descriptor
+construction. Frames, fields, and the FFI bridge only ever see real
+pointers. Specialness lives in storage, never in the frame — the same
 asymmetry compiled D gives string literals (`.rodata` placement, merged and
 deduped, with no descriptor-shape difference).
 
@@ -117,7 +119,7 @@ inspects a value's origin to decide its shape.
 Not in scope: value interning — D strings are slices with observable `.ptr`
 identity and memory-sharing sub-slices, so canonical-object interning
 contradicts the compiled-D oracle; deduplicating identical literal bytes
-inside the data segment is storage-side, invisible, and compatible.
+across `literalBlocks` entries is storage-side, invisible, and compatible.
 
 ### Runtime type metadata
 Native-layout memory is not enough for the druntime leaves; they also
@@ -361,16 +363,10 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: `"...".idup` reaches
-   druntime's `_dup`, which allocates through `_d_newarrayU` and then
-   `memcpy`s into the result. A runtime-allocated block has no offset in the
-   program data segment, so the compact string descriptor cannot name it;
-   this row waits on the "Strings are ordinary arrays" migration rather than
-   on any fixture-shaped gap.
-2. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
+1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-3. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
+2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
    `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
    `registryLock`'s `new Mutex` reaches its `MonitorProxy` field. Support the
    host-backed synchronisation primitive without treating single-threaded VM
@@ -641,10 +637,3 @@ behaviour.
   requires multiple simultaneous threads. Host runtime calls and single-thread
   concurrency state already reached by existing rows are not covered by that
   deferral.
-- `std.array.array` on a narrow string autodecodes to `dstring`/`dchar[]`
-  by default; compiling that path
-  (`ut.backends.runner.lang.cerealed.stdConvTextRendersCharArrayExpressionRaw`)
-  reaches both a `scalarType` refusal for a bare `dchar[]` local and, past
-  that, a machine.d `readHeapElement` crash inside `Appender!dstring`'s
-  growth path — a general `dchar[]` local/`Appender` gap, not a
-  string-representation one.

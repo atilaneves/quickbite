@@ -7703,3 +7703,26 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// A `string` is just an `immutable(char)[]`, so a `string*` dereference must
+// read the same 16-byte {ptr, length} descriptor a `T[]*` dereference (e.g.
+// `int[]*`) already does: `.length` and whole-array equality through the
+// deref both work.
+static foreach (backend; Matrix!()) {
+    @("pointer.stringPointerDereferenceReadsLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string greeting() {
+                return "hi";
+            }
+
+            unittest {
+                string s = greeting();
+                string* p = &s;
+                assert((*p).length == 2);
+                assert(*p == "hi");
+            }
+        });
+    }
+}

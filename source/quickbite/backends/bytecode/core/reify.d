@@ -343,10 +343,9 @@ private const(ubyte)[] resolveBlock(
     in ubyte[] data,
     in ubyte[][] literalBlocks,
 ) @safe pure {
-    foreach (block; heap)
-        if (blockPointer(block) == pointer)
-            return block;
-    if (auto literal = literalRangeBlock(pointer, literalBlocks))
+    if (auto block = rangeBlock(pointer, heap))
+        return block;
+    if (auto literal = rangeBlock(pointer, literalBlocks))
         return literal;
     return dataBlock(pointer, data);
 }
@@ -364,25 +363,21 @@ private const(ubyte)[] dataBlock(in size_t pointer, in ubyte[] data) @trusted pu
 // Recovering each block's own base address to bounds-check `pointer` against
 // it is safe: the range check below rejects any pointer that does not fall
 // within that block's already-rooted slice before it is ever dereferenced.
-// A sub-slice of a literal (`"hello"[1 .. 3]`) shares the literal's block but
-// points partway into it, so this searches by containing range rather than
-// requiring an exact base-address match, mirroring `dataBlock`'s own logic.
-private const(ubyte)[] literalRangeBlock(
+// A sub-slice of a block (e.g. `"hello"[1 .. 3]` or a heap array slice)
+// shares its owning block's allocation but points partway into it, so this
+// searches by containing range rather than requiring an exact base-address
+// match, mirroring `dataBlock`'s own logic. Shared by both `heap` and
+// `literalBlocks` in `resolveBlock`.
+private const(ubyte)[] rangeBlock(
     in size_t pointer,
-    in ubyte[][] literalBlocks,
+    in ubyte[][] blocks,
 ) @trusted pure {
-    foreach (block; literalBlocks) {
+    foreach (block; blocks) {
         const base = cast(size_t) block.ptr;
         if (pointer >= base && pointer <= base + block.length)
             return block[pointer - base .. $];
     }
     return null;
-}
-
-// Heap descriptors store native block pointers; comparing them requires taking
-// the slice address, while all dereferencing stays through the rooted slice.
-private size_t blockPointer(in ubyte[] block) @trusted pure {
-    return cast(size_t) block.ptr;
 }
 
 private T scalar(T)(in ubyte[] bytes) @safe pure {
