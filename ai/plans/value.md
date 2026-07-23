@@ -106,8 +106,10 @@ deletion (items 2-3).
    `ClassObject` expression aggregates remain recursive boxed trees.
    `AggregateValue` centralizes the mutation and reconstruction paths already
    extracted from `impl` and `ffi_marshal`, but it is not yet every aggregate
-   operation: promotion/mirror seeding and refresh, by-value struct argument
-   writeback, and aggregate equality still access `RuntimeValue` directly.
+   operation. The remaining direct `RuntimeValue` aggregate paths are
+   promotion/mirror seeding and refresh, by-value struct argument writeback,
+   aggregate equality, ordinary array-literal construction, native-array and
+   slice construction, and class construction.
    Its signatures are still `RuntimeValue`-typed. Native typed-address
    aggregate handles can land only in the authority switch: replace both every
    `AggregateValue` consumer and those remaining direct aggregate paths,
@@ -258,9 +260,9 @@ deletion (items 2-3).
     The authority switch makes this storage rule authoritative while replacing
     the expression currency's data-pointer arms and recursive aggregate
     carriers with host-address handles. It changes the extracted aggregate
-    boundary and the remaining direct aggregate paths (promotion/mirrors,
-    by-value writeback, and equality), local/frame/ref/capture/cross-frame
-    authority, and whole-value reconstruction in that one switch; boxed locals
+   boundary and the direct aggregate paths enumerated in decision 7,
+   local/frame/ref/capture/cross-frame authority, and whole-value
+   reconstruction in that one switch; boxed locals
     cannot coexist as an authority without parallel copies. Function and
     delegate handles are separate non-data categories. Boxed values survive
     only as transient rvalues (decisions 7/11), never as storage authority.
@@ -928,9 +930,8 @@ in parallel and never blocks it.
    `void` result just to reuse the evaluator path.
 
 3. Make the authority switch. `AggregateValue` remains `RuntimeValue`-typed;
-   its consumers plus the direct `RuntimeValue` aggregate paths in
-   promotion/mirror seeding and refresh, by-value struct argument writeback,
-   and equality must change together with whole-value reconstruction to
+   its consumers plus the direct `RuntimeValue` aggregate paths enumerated in
+   decision 7 must change together with whole-value reconstruction to
    host-address aggregate handles. In the same operation, native storage
    becomes local/frame, `ref`/`out`/capture, pointer-dereference, and
    cross-frame-write authority;
