@@ -2839,8 +2839,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped scalar field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this nested-static-array union initializer"),
 )) {
     @("union.untouchedSiblingDefaultsFromNestedArrayFirstMemberBits." ~
         backend.stringof)
@@ -2867,8 +2865,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped scalar field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this static-array-of-struct union initializer"),
 )) {
     @("union.untouchedSiblingDefaultsFromStructArrayFirstMemberBits." ~
         backend.stringof)
@@ -2899,8 +2895,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "real DMD's own CTFE engine refuses reinterpretation through the " ~
         "overlapped scalar field"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support this nested-array-of-struct union initializer"),
 )) {
     @("union.untouchedSiblingDefaultsFromNestedStructArrayFirstMemberBits." ~
         backend.stringof)
@@ -3385,10 +3379,7 @@ static foreach (backend; Matrix!()) {
 // The same shape one level down through a static array: `E[2]` ties with
 // `long[2]` at 16 bytes and wins the tie, so the widest-member write
 // composes down to a floating-base enum element.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported static-array struct field in bytecode core: [1.5, 1.5]"),
-)) {
+static foreach (backend; Matrix!()) {
     @("union.floatingBaseEnumArrayMemberDoesNotEscapeTheMirror." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

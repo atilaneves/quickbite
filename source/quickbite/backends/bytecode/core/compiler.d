@@ -4029,7 +4029,10 @@ private struct Compiler {
 
     // Fill a static-array field `T[N]` from a struct-literal element: DMD passes
     // a string literal, a scalar to broadcast to every element, or an array
-    // literal.
+    // literal. The array-literal element type may itself be scalar, a nested
+    // static array, or a struct; `compileStaticArrayLiteral` recurses through
+    // those to their leaves, so the element scalar type is only needed for
+    // the scalar-broadcast fallback below, not up front.
     private void storeStaticArrayField(
         in ushort fieldOffset,
         Type fieldType,
@@ -4037,10 +4040,6 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
         import std.conv: text;
-
-        const elementScalar = scalarType(fieldType.toBasetype.nextOf);
-        const elementSize = size(elementScalar);
-        const count = cast(uint) staticArraySize(fieldType) / elementSize;
 
         if (auto string_ = element.isStringExp) {
             loadStaticString(
@@ -4058,6 +4057,9 @@ private struct Compiler {
 
         // `S(seed)` broadcasts a scalar into all elements of the field.
         if (element.type.toBasetype.ty != TY.Tsarray) {
+            const elementScalar = scalarType(fieldType.toBasetype.nextOf);
+            const elementSize = size(elementScalar);
+            const count = cast(uint) staticArraySize(fieldType) / elementSize;
             const value = compileExpression(element);
             foreach (i; 0 .. count)
                 _code ~= Instruction(
@@ -9553,6 +9555,54 @@ private struct Compiler {
                         elementIndex * sliceDescriptorSize),
                     value.offset,
                     cast(ushort) sliceDescriptorSize,
+                );
+            }
+            return;
+        }
+
+        // A nested static-array element (`float[1][1]`) recurses one level
+        // down: each element is itself an array literal at its own leaf
+        // offset.
+        if (elementType.toBasetype.ty == TY.Tsarray) {
+            const elementSize = cast(uint) staticArraySize(elementType);
+            foreach (elementIndex; 0 .. literal.elements.length) {
+                auto element = (*literal.elements)[elementIndex];
+                auto nested =
+                    arrayLiteralOf(element is null ? literal.basis : element);
+                if (nested is null)
+                    throw new Exception(text(
+                        "Unsupported static array literal element in bytecode core: ",
+                        expressionChars(literal),
+                    ));
+
+                compileStaticArrayLiteral(
+                    cast(ushort) (offset + elementIndex * elementSize),
+                    elementType,
+                    nested,
+                );
+            }
+            return;
+        }
+
+        // A struct element (`Payload[1]`) recurses into its own fields at
+        // their own leaf offsets, reusing the same machinery a plain struct
+        // field uses.
+        if (elementType.toBasetype.ty == TY.Tstruct) {
+            const elementSize = cast(uint) staticArraySize(elementType);
+            foreach (elementIndex; 0 .. literal.elements.length) {
+                auto element = (*literal.elements)[elementIndex];
+                auto structLiteral =
+                    (element is null ? literal.basis : element)
+                        .isStructLiteralExp;
+                if (structLiteral is null)
+                    throw new Exception(text(
+                        "Unsupported static array literal element in bytecode core: ",
+                        expressionChars(literal),
+                    ));
+
+                compileStructLiteralInto(
+                    cast(ushort) (offset + elementIndex * elementSize),
+                    structLiteral,
                 );
             }
             return;
