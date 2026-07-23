@@ -145,6 +145,22 @@ unittest {
     );
 }
 
+@("repl.frontend.retroResultExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.repl: ReplCellKind, ReplSession;
+
+    auto session = ReplSession([], true);
+    const importCell = session.submit("import std.range;");
+    session.accept(importCell);
+    const cell = session.submit("retro(iota(6))");
+    cell.kind.should == ReplCellKind.expression;
+    cell.evalCell.displayIsFormatted.should == true;
+    assertFormatterBackendOutput(
+        ["import std.range;", "retro(iota(6))"],
+        ["Result(Result(0, 6))"],
+    );
+}
+
 @("repl.frontend.enumExpressionUsesPreludeFormatter")
 unittest {
     assertFormatterBackendOutput(["({ enum E { a, b } return E.b; })()"], ["E.b"]);

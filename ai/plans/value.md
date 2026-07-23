@@ -913,9 +913,9 @@ in parallel and never blocks it.
    `__quickbiteFormat(expr)` for a broad set of return types when the
    backend opts in (`Ctfe`, `Interpreter`). Plain template-struct
    instantiations whose fields are recursively formatter-capable are now
-   admitted; the non-context `std.range.iota` and `std.range.stride` results
-   are admitted because their scalar fields are recursively
-   formatter-capable. The next unresolved formatter gate is
+   admitted; the non-context `std.range.iota`, `std.range.stride`, and
+   `std.range.retro` results are admitted because their scalar fields are
+   recursively formatter-capable. The next unresolved formatter gate is
    `std.algorithm.map`'s nested `MapResult`, whose callable carries DMD
    context; other unsupported or context-bearing ranges and template
    instantiations with unsupported fields remain on the interim
