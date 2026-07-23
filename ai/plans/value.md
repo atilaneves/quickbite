@@ -925,15 +925,23 @@ in parallel and never blocks it.
    enclosing frame. Therefore a field-only gate cannot prove that a
    context-bearing value is safe to execute or display, and the formatter
    must not accept it by silently omitting that alias-provided state.
-   Formatter admission for an instantiated template must prove both that
-   every runtime field and behavior-bearing template argument needed by the
-   value is context-free and formatter-supported, and that the chosen
-   rendering has the round-trip or explicit rule-7 justification required by
-   the display spec. The next bounded slice is an AST-only DMD helper that
-   resolves instantiated alias arguments to their declarations and makes
-   the context-free versus context-bearing distinction; only then should
-   stateless and capturing `MapResult` rows be added to the differential
-   matrix. Until that proof exists, keep `MapResult` on the interim path.
+   Formatter admission must prove context-free, formatter-supported fields
+   and behavior-bearing template arguments, plus a round-trip (or explicit
+   rule-7) rendering. DMD exposes only part of that boundary:
+   `TypeStruct.sym.isInstantiated()` yields a `TemplateInstance` with
+   parameter-aligned `tdtypes`; an alias can be resolved to a declaration,
+   and `FuncDeclaration.isNested()`/`closureVars` classify function
+   declarations. That is not a sound general alias proof: a local delegate
+   variable or other expression can carry runtime context absent from its
+   declaration. Even a context-free `fun` would not make `MapResult`
+   displayable: `_input` is its only field, `fun` supplies behavior,
+   `MapResult` is private, and `structDisplay` would emit an incomplete,
+   non-reconstructible constructor. No AST-only gate or behavior test is
+   safe; keep `MapResult` on the interim path. The next slice must define the
+   prelude contract for behavior-bearing templates (round-trip or rule 7),
+   then add a DMD frontend adapter returning resolved alias context plus an
+   explicit reconstructibility decision. Only then add stateless/capturing
+   `MapResult` differential rows.
    Keep expanding the gate per backend (decision 4) until every REPL
    expression is formatter-wrapped and the unformatted evaluator paths can
    be deleted.
