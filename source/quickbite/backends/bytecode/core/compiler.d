@@ -928,7 +928,14 @@ private struct Compiler {
         ushort result;
         bool hasResult;
 
-        if (_currentReturnType.isArray) {
+        if (_currentReturnType.isArray && _currentReturnType.isStaticArray) {
+            // `return arr;` for a `string[N]`/`wstring[N]`/`dstring[N]` result:
+            // the `ret` instruction below copies `staticArraySize` inline bytes
+            // from `result`, not a 16-byte descriptor — `arrayDescriptorOffset`
+            // (the dynamic-array path) would hand back the wrong shape.
+            result = staticArrayReturnOffset(return_.exp);
+            hasResult = true;
+        } else if (_currentReturnType.isArray) {
             result = arrayDescriptorOffset(
                 _currentReturnType.elementType,
                 return_.exp,
@@ -964,6 +971,41 @@ private struct Compiler {
         runExitedFinally(_tryFinallyStack.length);
 
         _code ~= hasResult ? Instruction(Op.ret, result) : Instruction(Op.ret);
+    }
+
+    // The frame offset of a `string[N]`/`wstring[N]`/`dstring[N]`-typed return
+    // expression's own `staticArraySize` inline block. Reuses an existing
+    // static-array local's own offset directly (the common `return xs;` case);
+    // otherwise compiles the expression into a fresh block, mirroring
+    // `compileStaticArrayDeclaration`'s own initializer handling.
+    private ushort staticArrayReturnOffset(Expression source) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        if (auto existing = staticArrayOffsetOf(source))
+            return *existing;
+
+        const totalSize = cast(uint) staticArraySize(source.type);
+        const offset =
+            allocateBytes(totalSize, staticArrayAlign(source.type));
+
+        if (auto literal = arrayLiteralOf(source)) {
+            compileStaticArrayLiteral(offset, source.type, literal);
+            return offset;
+        }
+
+        if (source.type.toBasetype.ty == TY.Tsarray) {
+            const value = compileExpression(source);
+            _code ~= Instruction(
+                Op.copy, offset, value.offset, cast(ushort) totalSize,
+            );
+            return offset;
+        }
+
+        throw new Exception(text(
+            "Unsupported static array return in bytecode core: ",
+            expressionChars(source),
+        ));
     }
 
     // The labels defined lexically within a statement subtree, used to decide
@@ -1560,8 +1602,23 @@ private struct Compiler {
         imported!"dmd.expression".CallExp call,
     ) {
         import dmd.dtemplate: isExpression;
+        import std.conv: text;
 
         auto instance = stringSwitchSelector(call);
+        auto selectorExpression = (*call.arguments)[0];
+
+        // The dispatch below always compares with `sliceEqualOp(1)`, which
+        // reads only `length` BYTES of the descriptor's payload. That is
+        // exact for `char`-element strings but silently wrong for
+        // `wstring`/`dstring`, whose declared length is in ELEMENTS, not
+        // bytes; refuse rather than emit a comparison that would compare
+        // less than the whole string.
+        if (size(dynamicArrayElementType(selectorExpression.type)) != 1)
+            throw new Exception(text(
+                "Unsupported wide string switch in bytecode core: ",
+                expressionChars(selectorExpression),
+            ));
+
         const result = allocate(ScalarType.int_);
         _code ~= Instruction(
             Op.loadConstant, result, constantIndex(cast(ulong) -1), 4,
@@ -1570,7 +1627,6 @@ private struct Compiler {
         // The runtime switch value: an ordinary real descriptor, identical to
         // every other string source, compares against each case string's own
         // real descriptor via the generic `sliceEqualOp`.
-        auto selectorExpression = (*call.arguments)[0];
         const selector = dynamicArrayDescriptor(selectorExpression);
 
         size_t[] matchedJumps;
@@ -2924,6 +2980,14 @@ private struct Compiler {
     private StringLiteralData appendStringLiteral(StringExp string_) {
         import quickbite.frontend.dmd.string_literals: stringCodeUnitBytes;
         import std.conv: text;
+
+        // Pad the data segment so a wide (`wchar`/`dchar`) literal's escaping
+        // `.ptr` lands on its element's own alignment; a `char` literal's
+        // width-1 alignment is already satisfied by every offset, so this is
+        // a no-op for it.
+        const misalignment = _program.data.length % string_.sz;
+        if (misalignment != 0)
+            _program.data.length += string_.sz - misalignment;
 
         const bytes = stringCodeUnitBytes(string_);
         const dataOffset = _program.data.length;

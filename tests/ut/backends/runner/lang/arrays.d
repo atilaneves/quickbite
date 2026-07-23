@@ -2934,9 +2934,9 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
-// Same inverted-bounds invariant, exercised through the general dynamic-array
-// sub-slice path (`subSlice4`/`validateSubSlice`) rather than the compact
-// string descriptor path (`stringSubSlice`/`validateCompactSubSlice`) above.
+// Same inverted-bounds invariant as the `string` sub-slice test above, but
+// through `subSlice4` (4-byte `int` elements) rather than `subSlice1` (1-byte
+// `char` elements) — both share the same generic `validateSubSlice`.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe's own compile-time bounds check reports " ~
@@ -3004,9 +3004,10 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 /++
     Plain reassignment of an already-declared `string` local from another
     `string` local (`b = a;`) must copy the full slice descriptor. A `string`
-    local's slot holds a compact 8-byte {dataOffset, length} descriptor, which
-    the scalar type mapping reports as size 0, so a naive scalar-sized copy
-    would silently write nothing and leave `b` unchanged.
+    local's slot holds the same native 16-byte {ptr, length} descriptor as any
+    other dynamic array, which the scalar type mapping reports as size 0, so a
+    naive scalar-sized copy would silently write nothing and leave `b`
+    unchanged.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromVariableCopiesDescriptor." ~
@@ -3061,7 +3062,8 @@ static foreach (backend; Matrix!()) {
 /++
     Plain reassignment of an already-declared `string` local from a sub-slice
     of another `string` local (`b = a[lo .. hi];`) exercises the same
-    reassignment path with a compact-descriptor sub-slice right-hand side.
+    reassignment path with a native {ptr, length}-descriptor sub-slice
+    right-hand side.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromSubSliceCopiesDescriptor." ~
@@ -3089,9 +3091,9 @@ static foreach (backend; Matrix!()) {
 
 /++
     A sub-slice of a heap-backed `string` (produced by `.idup`, not a
-    data-segment literal) reads the sliced bytes and length from the source's
-    real heap block rather than from a compact {dataOffset, length}
-    descriptor built from the wrong operand width.
+    data-segment literal) reads the sliced bytes and length by resolving the
+    source's native {ptr, length} descriptor to its real heap block, not the
+    program's read-only data segment.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.heapBackedStringSubSliceReadsSlicedBytesAndLength." ~
@@ -3124,10 +3126,10 @@ static foreach (backend; Matrix!()) {
 }
 
 /++
-    Reassigning an already-declared, compact-descriptor `string` local
-    (`b = "x";`) from a heap-backed `string` source (`.idup`) must copy the
-    full 16-byte {ptr, length} descriptor, not the compact 8-byte width,
-    which would only copy the source's low pointer bytes.
+    Reassigning an already-declared `string` local (`b = "x";`) from a
+    heap-backed `string` source (`.idup`) must copy the full 16-byte
+    {ptr, length} descriptor; a partial copy would silently drop bytes of the
+    pointer or the length.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceCopiesDescriptor." ~
@@ -3157,8 +3159,8 @@ static foreach (backend; Matrix!()) {
 }
 
 /++
-    Reassigning a compact-descriptor `string` local from a heap-backed source
-    inside an untaken `if` branch must not touch `b`: the branch never runs.
+    Reassigning a `string` local from a heap-backed source inside an untaken
+    `if` branch must not touch `b`: the branch never runs.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInConditionalLeavesUntakenBranchUnchanged." ~
@@ -3189,9 +3191,9 @@ static foreach (backend; Matrix!()) {
 }
 
 /++
-    Reassigning a compact-descriptor `string` local from a heap-backed source
-    inside a loop body must observe each iteration's own reassignment, not the
-    value the local held before the loop started.
+    Reassigning a `string` local from a heap-backed source inside a loop body
+    must observe each iteration's own reassignment, not the value the local
+    held before the loop started.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInLoopUpdatesEachIteration." ~

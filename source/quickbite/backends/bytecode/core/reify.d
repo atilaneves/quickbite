@@ -78,8 +78,7 @@ private imported!"quickbite.lang".Value reifyArray(
                 block[offset .. offset + sliceDescriptorSize],
                 type.elementType,
                 data,
-                index,
-                length,
+                heap,
             );
         } else {
             elements ~= type.arrayElementsAreArrays
@@ -191,30 +190,23 @@ private imported!"quickbite.lang".Value reifyString(
     }
 }
 
+// A `string[N]` element slot holds the same native `{ptr, length}` slice
+// descriptor as every other dynamic-array value (see `reifyArray`'s own
+// top-level descriptor read); resolve its pointer the same way, via
+// `resolveBlock`, rather than decoding a compact offset-into-`data` layout.
 private imported!"quickbite.lang".Value reifyStringDescriptor(
     in ubyte[] bytes,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
     in ubyte[] data,
-    in size_t index,
-    in size_t arrayLength,
+    in ubyte[][] heap,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program: size;
 
-    const offset = scalar!uint(bytes);
-    const length = scalar!uint(bytes[uint.sizeof .. $]);
+    const pointer = scalar!size_t(bytes);
+    const length = scalar!size_t(bytes[size_t.sizeof .. $]);
+    const block = resolveBlock(pointer, heap, data);
     const byteLength = length * size(type);
-    const firstStringDataOffset = data.length == arrayLength + 1 &&
-        data[0] == 0 ? 1 : 0;
-    if ((offset + byteLength > data.length || length == 0) &&
-        data.length == arrayLength + firstStringDataOffset)
-    {
-        return reifyString(
-            data[index + firstStringDataOffset
-                .. index + firstStringDataOffset + 1],
-            type,
-        );
-    }
-    return reifyString(data[offset .. offset + byteLength], type);
+    return reifyString(block[0 .. byteLength], type);
 }
 
 private imported!"quickbite.lang".Value reifyCharacterArray(
@@ -336,10 +328,10 @@ private ulong scalarKey(
 
 // Resolves a native descriptor pointer to its backing bytes: a VM-owned heap
 // block, or — for a literal-initialised `string`, whose pointer was built by
-// `Op.loadStringLiteral`/`Op.stringSliceToArray` from `program.data.ptr` plus
-// an offset — a view into the immutable program data segment. Addresses
-// never escape a process, so this classification only ever runs at the
-// reification boundary, never mid-compile.
+// `Op.loadStringLiteral` from `program.data.ptr` plus an offset — a view into
+// the immutable program data segment. Addresses never escape a process, so
+// this classification only ever runs at the reification boundary, never
+// mid-compile.
 private const(ubyte)[] resolveBlock(
     in size_t pointer,
     in ubyte[][] heap,
@@ -351,6 +343,9 @@ private const(ubyte)[] resolveBlock(
     return dataBlock(pointer, data);
 }
 
+// Recovering `data`'s own base address to bounds-check `pointer` against it
+// is safe: the range check below rejects any pointer that does not fall
+// within `data`'s already-rooted slice before it is ever dereferenced.
 private const(ubyte)[] dataBlock(in size_t pointer, in ubyte[] data) @trusted pure {
     const base = cast(size_t) data.ptr;
     if (pointer < base || pointer > base + data.length)

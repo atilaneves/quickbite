@@ -401,6 +401,10 @@ row reaches them:
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
+- A `T[N][]`'s rows are materialised as separately heap-allocated inner
+  descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
+  within that row, but a flat pointer walk across rows diverges from compiled
+  D's contiguous layout.
 
 ### TDD and handoff discipline
 

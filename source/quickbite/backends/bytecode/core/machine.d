@@ -2116,10 +2116,14 @@ private auto transcodeUtfString(
 
 // `offset` holds an ordinary {ptr, length} descriptor, so the string's bytes
 // are read straight through the pointer, exactly like any other array read.
+// Safe because `pointer`/`length` were themselves produced by the VM's own
+// slice-descriptor writers (heap allocation or the program's data segment),
+// never by untrusted input, so the read stays within a block the VM itself
+// owns.
 private string stringFromSlice(
     in ubyte[] stack,
     in size_t offset,
-) @trusted {
+) @trusted pure {
     const pointer = scalarValue!size_t(stack, offset);
     const length = scalarValue!size_t(stack, offset + size_t.sizeof);
     return (cast(const(char)*) pointer)[0 .. length].idup;
