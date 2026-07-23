@@ -979,7 +979,6 @@ private struct Compiler {
     // otherwise compiles the expression into a fresh block, mirroring
     // `compileStaticArrayDeclaration`'s own initializer handling.
     private ushort staticArrayReturnOffset(Expression source) {
-        import dmd.astenums: TY;
         import std.conv: text;
 
         if (auto existing = staticArrayOffsetOf(source))
@@ -994,7 +993,12 @@ private struct Compiler {
             return offset;
         }
 
-        if (source.type.toBasetype.ty == TY.Tsarray) {
+        // A `CallExp` returning a `string[N]`/`int[N]`/... by value leaves its
+        // result as an inline `totalSize`-byte block, so copying it is safe.
+        // Any other unrecognized shape (ternary, indexing, ...) may hand back
+        // a pointer/descriptor or a smaller slot instead; refuse rather than
+        // copy the wrong bytes.
+        if (source.isCallExp !is null) {
             const value = compileExpression(source);
             _code ~= Instruction(
                 Op.copy, offset, value.offset, cast(ushort) totalSize,
