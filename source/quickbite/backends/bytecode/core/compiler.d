@@ -324,6 +324,15 @@ private struct Compiler {
                         pointerElementScalar(parameter.type);
             }
 
+        // A function with a named `out(result)` contract gets a synthesized
+        // `result` local (DMD's `vresult`): every `return expr;` in `fbody`
+        // is rewritten to `result = expr; goto Lresult;`, with the ensure
+        // block and a final `return result;` spliced in after it. Declare it
+        // like any other local with no initializer so both the assignment
+        // and the later read resolve to the same frame slot.
+        if (function_.vresult !is null)
+            compileVariableDeclaration(function_.vresult);
+
         compileStatement(function_.fbody);
         // The fall-through return of a void body; unreachable after an
         // explicit return statement.
@@ -2232,13 +2241,18 @@ private struct Compiler {
         // AssignExp; route a struct-field-lvalue form through the assign path.
         // A `checkaction=context` assert temporary (`__assertOp3 = make(5)[0]`)
         // is a scalar construction onto a `VarExp` local, also routed here.
+        // A static array's default-init fill on function entry (an `out
+        // char[4] buf` parameter zeroed to `char.init`) arrives the same way
+        // over a `SliceExp` lvalue (`buf[] = '\xff'`).
         if (auto construct = expression.isConstructExp)
             if (construct.e1.isDotVarExp !is null ||
-                construct.e1.isVarExp !is null)
+                construct.e1.isVarExp !is null ||
+                construct.e1.isSliceExp !is null)
                 return compileAssignExpression(construct);
         if (auto blit = expression.isBlitExp)
             if (blit.e1.isDotVarExp !is null ||
-                blit.e1.isVarExp !is null)
+                blit.e1.isVarExp !is null ||
+                blit.e1.isSliceExp !is null)
                 return compileAssignExpression(blit);
 
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
@@ -6141,6 +6155,7 @@ private struct Compiler {
     }
 
     private Operand compileCastExpression(CastExp cast_) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         if (isComplexDoubleType(cast_.e1.type)) {
@@ -6182,6 +6197,43 @@ private struct Compiler {
         const source = compileExpression(cast_.e1);
         if (cast_.to.toBasetype.isTypeClass !is null)
             return source;
+
+        // `cast(T2[])x`: a dynamic-array-typed cast target (`dchar[]`, ...).
+        // `source` already holds `x`'s slice descriptor; a same-element-size
+        // cast (the common qualifier-only case, e.g. `dstring` to `dchar[]`)
+        // passes the descriptor straight through, mirroring the class
+        // pass-through just above. A genuine element-size reinterpretation
+        // needs a fresh descriptor copy so `rescaleReinterpretedSliceLength`
+        // can adjust the copy's length without touching `x`'s own descriptor.
+        if (cast_.to.toBasetype.ty == TY.Tarray) {
+            if (!isDynamicArrayArgument(cast_.e1) && !isStringType(cast_.e1.type))
+                throw new Exception(text(
+                    "Unsupported array cast in bytecode core: ",
+                    expressionChars(cast_),
+                ));
+
+            const elementIsArray = arrayElementIsArray(cast_.to);
+            const elementType = dynamicArrayElementType(cast_.to);
+            const targetElementSize =
+                dynamicArrayElementSize(cast_.to, elementType, elementIsArray);
+            const sourceElementIsArray = arrayElementIsArray(cast_.e1.type);
+            const sourceElementSize = dynamicArrayElementSize(
+                cast_.e1.type,
+                dynamicArrayElementType(cast_.e1.type),
+                sourceElementIsArray,
+            );
+            if (targetElementSize == sourceElementSize)
+                return source;
+
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy, offset, source.offset, cast(ushort) sliceDescriptorSize,
+            );
+            rescaleReinterpretedSliceLength(
+                offset, elementType, elementIsArray, cast_.e1.type,
+            );
+            return Operand(offset, ScalarType.void_, false, elementType);
+        }
 
         const target = scalarType(cast_.to);
 
@@ -9476,10 +9528,13 @@ private struct Compiler {
         return Operand(element.offset, element.type);
     }
 
-    // `matrix[] = [elem, elem+1]`: the whole-array slice of a multidimensional
-    // static array assigned a row literal whose type matches the array's
-    // element type. Compile the row once into the first row's storage, then
-    // copy it into each remaining row (DMD's block slice-assign broadcast).
+    // `matrix[] = [elem, elem+1]` or `buf[] = fillValue`: the whole-array
+    // slice of a static array assigned a value whose type matches the
+    // array's own element type — a row literal for a multidimensional array
+    // (DMD's block slice-assign broadcast), or a plain scalar for a one-
+    // dimensional array (e.g. DMD's default-init fill of an `out char[4]`
+    // parameter, `buf[] = char.init`). Compile the row/value once into the
+    // first element's storage, then copy it into each remaining element.
     private Operand* tryStaticArrayBroadcast(
         SliceExp slice,
         Expression rhs,
@@ -9498,12 +9553,8 @@ private struct Compiler {
         if (slice.lwr !is null || slice.upr !is null)
             return null;
 
-        auto literal = rhs.isArrayLiteralExp;
-        if (literal is null)
-            return null;
-
-        // The row literal's type must match the array's element type for a
-        // block broadcast; otherwise it is an element-wise assignment.
+        // The rhs's type must match the array's element type for a block
+        // broadcast; otherwise it is an element-wise assignment.
         auto elementType = declaration.type.toBasetype.nextOf;
         if (elementType is null ||
             rhs.type is null ||
@@ -9511,7 +9562,14 @@ private struct Compiler {
             return null;
 
         const rowSize = cast(uint) staticArraySize(elementType);
-        compileStaticArrayLiteral(*slot, elementType, literal);
+        if (auto literal = rhs.isArrayLiteralExp)
+            compileStaticArrayLiteral(*slot, elementType, literal);
+        else {
+            const value = compileExpression(rhs);
+            _code ~= Instruction(
+                Op.copy, *slot, value.offset, cast(ushort) rowSize,
+            );
+        }
 
         const rowCount = cast(uint) (staticArraySize(declaration.type) / rowSize);
         foreach (row; 1 .. rowCount)
