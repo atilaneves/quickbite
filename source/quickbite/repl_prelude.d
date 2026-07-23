@@ -144,7 +144,7 @@ private string pointerDisplay(T)(in T value) @safe pure {
 private string structDisplay(T)(in T value) @safe pure {
     import std.traits: FieldNameTuple, Unqual;
 
-    string rendered = Unqual!T.stringof ~ "(";
+    string rendered = __traits(identifier, Unqual!T) ~ "(";
     static foreach (index, fieldName; FieldNameTuple!T) {
         if (index != 0)
             rendered ~= ", ";

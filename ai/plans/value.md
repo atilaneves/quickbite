@@ -911,10 +911,12 @@ in parallel and never blocks it.
    the round-trip spec, and the `text(value)` catch-all covers only the
    rule-7 no-contract values. Expression cells are synthesized as
    `__quickbiteFormat(expr)` for a broad set of return types when the
-   backend opts in (`Ctfe`, `Interpreter`). The remaining gate exclusions are
-   range and template structs, which still run through the interim
-   `displayString`/`Value.toString` scaffolding. Keep expanding the gate per
-   backend (decision 4) until every REPL expression is
+   backend opts in (`Ctfe`, `Interpreter`). Plain template-struct
+   instantiations whose fields are recursively formatter-capable are now
+   admitted; range structs and template instantiations with unsupported
+   fields remain on the interim `displayString`/`Value.toString`
+   scaffolding. The next formatter gate is range structs. Keep expanding the
+   gate per backend (decision 4) until every REPL expression is
    formatter-wrapped and the unformatted evaluator paths can be deleted.
    Items 2 and 3 are blocked until this wiring lands. The interpreter's
    `std.conv.text` hook is temporary formatter scaffolding, not a general

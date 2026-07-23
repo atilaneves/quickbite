@@ -139,6 +139,14 @@ unittest {
     ], ["Point(1, 2)"]);
 }
 
+@("repl.frontend.templateStructExpressionUsesPreludeFormatter")
+unittest {
+    assertFormatterBackendOutput([
+        "struct Box(T) { T value; }",
+        "Box!long(1)",
+    ], ["Box(1L)"]);
+}
+
 @("repl.frontend.structArrayExpressionUsesPreludeFormatter")
 unittest {
     assertFormatterBackendOutput([

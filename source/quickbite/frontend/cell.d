@@ -379,10 +379,42 @@ private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
 
 private bool structTypeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
     auto structType = type.isTypeStruct;
-    if (structType is null || structType.sym.isInstantiated !is null)
+    if (structType is null)
         return false;
 
+    if (structType.sym.isInstantiated !is null)
+        return instantiatedStructNeedsPreludeFormat(type);
+
     return structNeedsPreludeFormat(type) || ordinaryStructNeedsPreludeFormat(type);
+}
+
+private bool instantiatedStructNeedsPreludeFormat(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.id: Id;
+    import dmd.location: Loc;
+    import dmd.dsymbolsem: search;
+
+    auto structType = type.isTypeStruct;
+    if (structType is null || structType.sym.isNested ||
+        structType.sym.vthis !is null || structType.sym.vthis2 !is null)
+        return false;
+
+    if (search(structType.sym, Loc.initial, Id.opCall) !is null ||
+        search(structType.sym, Loc.initial, Id.apply) !is null ||
+        search(structType.sym, Loc.initial, Id.Fempty) !is null &&
+        search(structType.sym, Loc.initial, Id.Ffront) !is null &&
+        search(structType.sym, Loc.initial, Id.FpopFront) !is null)
+        return false;
+
+    foreach (field; structType.sym.fields) {
+        if (field is null || field.type is null ||
+            field.isThisDeclaration !is null ||
+            !typeNeedsPreludeFormat(field.type))
+            return false;
+    }
+
+    return true;
 }
 
 private bool structNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
