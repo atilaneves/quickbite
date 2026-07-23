@@ -958,9 +958,10 @@ in parallel and never blocks it.
 5. **Representation track (parallel).** Implement decision 15 in
    bounded, independently green slices, then replace boxed local authority
    coherently (decision 17):
-   - Frame and place mirrors exist: per-activation frame blocks whose binding
-     address decoder is the single mechanical boundary between inline and
-     reference slots, including frame-backed `Place` construction and mirror
+   - Frame and place mirrors exist: per-activation frame blocks whose safe
+     binding-address decoder dispatches through the narrowly trusted raw slot
+     primitives between inline and reference slots, including frame-backed
+     `Place` construction and mirror
      storage routing; lvalue
      places
      composing through a variable, fields, indexing, pointer/class

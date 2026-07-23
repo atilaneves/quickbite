@@ -126,7 +126,7 @@ public struct FrameBlock {
     // mechanical decoding of the frame's existing slot representation: it
     // neither owns storage nor decides which representation is authoritative.
     // A caller with no slot is refused rather than inventing an address.
-    public void* bindingAddress(VarDeclaration variable) @trusted {
+    public void* bindingAddress(VarDeclaration variable) @safe {
         if (hasOwningSlot(variable))
             return slotAddress(variable);
 
