@@ -504,6 +504,57 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("ubyteToUshortZeroExtendsHighByte." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte lowByte() {
+                return 0x34;
+            }
+
+            ubyte highByte() {
+                return 0x12;
+            }
+
+            unittest {
+                ubyte lo = lowByte;
+                ubyte hi = highByte;
+
+                // Reconstructing a ushort from two runtime ubytes the way a
+                // little-endian decoder does: each cast(ushort) widening
+                // must zero-fill the high byte, not leave it holding
+                // whatever the destination slot had before.
+                ushort r = 0;
+                r |= cast(ushort) lo;
+                r |= cast(ushort)(hi) << 8;
+                assert(r == 0x1234);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("byteToShortSignExtends." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte negative() {
+                return -5;
+            }
+
+            unittest {
+                byte b = negative;
+
+                // Widening a negative runtime byte to short must sign-fill
+                // the high byte, not zero-fill it.
+                short s = cast(short) b;
+                assert(s == -5);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("mixedSignednessNarrowCompoundDivisionIsUnsigned." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

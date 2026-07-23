@@ -513,6 +513,24 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case signExtend1to2:
+                const ubyte[short.sizeof] signWidenedShort = scalarBytes(
+                    cast(short) scalarValue!byte(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + short.sizeof]
+                    = signWidenedShort;
+                ++ip;
+                break;
+
+            case zeroExtend1to2:
+                const ubyte[ushort.sizeof] zeroWidenedShort = scalarBytes(
+                    cast(ushort) scalarValue!ubyte(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + ushort.sizeof]
+                    = zeroWidenedShort;
+                ++ip;
+                break;
+
             case signExtend1to4:
                 const ubyte[int.sizeof] signWidened = scalarBytes(
                     cast(int) scalarValue!byte(stack, base + instruction.b),

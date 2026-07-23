@@ -13606,6 +13606,9 @@ private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
     import quickbite.backends.bytecode.core.program: Op;
     import std.conv: text;
 
+    if (sourceSize == 1 && targetSize == 2)
+        return signed ? Op.signExtend1to2 : Op.zeroExtend1to2;
+
     if (sourceSize == 1 && targetSize == 4)
         return signed ? Op.signExtend1to4 : Op.zeroExtend1to4;
 

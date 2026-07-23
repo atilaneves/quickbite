@@ -374,6 +374,8 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Write the native address of the absolute stack index held in frame slot b
     // into frame slot a. Backs `.ptr` of a captured static array.
     frameIndexAddress,
+    signExtend1to2, // a: destination frame offset, b: source frame offset
+    zeroExtend1to2, // a: destination frame offset, b: source frame offset
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend2to4, // a: destination frame offset, b: source frame offset
