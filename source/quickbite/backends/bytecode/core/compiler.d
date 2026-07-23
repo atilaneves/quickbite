@@ -2727,6 +2727,20 @@ private struct Compiler {
                 isStringType(cast_.e1.type))
                 return dynamicArrayDescriptorOrNull(cast_.e1);
 
+        // `typeid(T).name` / `object.classinfo.name`: computed at compile
+        // time from the type's own declaration, not read out of a class
+        // object's field storage. Checked before the general class-field
+        // case below, matching `compileExpression`'s own dispatch order, so
+        // a `string name = typeid(T).name;`-shaped source still resolves
+        // here rather than falling into a raw field read off whatever
+        // pointer `typeid(T)` happens to compile to.
+        if (auto dot = expression.isDotVarExp)
+            if (auto name = tryTypeidName(dot)) {
+                auto result = new DynamicArrayLocal;
+                *result = DynamicArrayLocal(name.offset, ScalarType.char_);
+                return result;
+            }
+
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto descriptor = declaration in _dynamicArrayLocals)
@@ -2839,6 +2853,33 @@ private struct Compiler {
             if (auto field = tryStructPointerField(dot))
                 if (field.type.toBasetype.ty == TY.Tarray) {
                     const pointer = structFieldAddress(*field);
+                    const offset =
+                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                    _code ~= Instruction(
+                        Op.pointerLoad16,
+                        offset,
+                        pointer,
+                        compileSizeConstant(0),
+                    );
+                    auto result = new DynamicArrayLocal;
+                    *result = DynamicArrayLocal(
+                        offset,
+                        dynamicArrayElementType(field.type),
+                        false,
+                        true,
+                        pointer,
+                    );
+                    return result;
+                }
+
+        // `box.field` where the field is a dynamic array (a `string`
+        // included): its slice descriptor lives at `classPointer +
+        // field.offset`, read through the same `Op.pointerLoad16` path as a
+        // struct-pointer field.
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryClassPointerField(dot))
+                if (field.type.toBasetype.ty == TY.Tarray) {
+                    const pointer = classFieldAddress(*field);
                     const offset =
                         allocateBytes(sliceDescriptorSize, size_t.sizeof);
                     _code ~= Instruction(
@@ -5094,10 +5135,6 @@ private struct Compiler {
                 ++argumentIndex;
                 continue;
             }
-            if (field.type !is null && isStringType(field.type)) {
-                ++argumentIndex;
-                continue;
-            }
             storeClassField(pointer, field, (*arguments)[argumentIndex]);
             ++argumentIndex;
         }
@@ -5108,12 +5145,14 @@ private struct Compiler {
         VarDeclaration field,
         Expression valueExpression,
     ) {
+        import dmd.astenums: TY;
+
         const fieldPointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         const offset = compileSizeConstant(field.offset);
         _code ~= Instruction(Op.addInt8, fieldPointer, pointer, offset);
 
-        if (isStringType(field.type)) {
+        if (field.type.toBasetype.ty == TY.Tarray) {
             const destination =
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileDynamicArrayInto(

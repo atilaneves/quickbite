@@ -3993,10 +3993,7 @@ static foreach (backend; Matrix!()) {
 // object while its elements live in separate backing storage. Taking an
 // element address and writing through it must remain visible when the whole
 // field is copied and when the whole object is passed onward.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.dynamicArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4022,6 +4019,120 @@ static foreach (backend; Matrix!(
                 int[] field = value.values;
                 assert(field[0] == 99);
                 assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
+// A class `int[]` field: construction through an explicit constructor,
+// reassignment, and reading an element and `.length` back, all driven by
+// element size rather than any string special case.
+static foreach (backend; Matrix!()) {
+    @("classField.intArrayFieldConstructedReassignedAndIndexed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Box {
+                int[] values;
+
+                this(int[] input) {
+                    values = input;
+                }
+            }
+
+            int addOne(int x) {
+                return x + 1;
+            }
+
+            unittest {
+                int first = addOne(9);
+                int second = addOne(19);
+                int third = addOne(29);
+                auto box = new Box([first, second, third]);
+                assert(box.values.length == 3);
+                assert(box.values[1] == 20);
+
+                int fourth = addOne(39);
+                int fifth = addOne(49);
+                box.values = [fourth, fifth];
+                assert(box.values.length == 2);
+                assert(box.values[0] == 40);
+                assert(box.values[1] == 50);
+            }
+        });
+    }
+}
+
+// The `string` sibling of the fixture above: a class `string` field must
+// construct, reassign, and read the same way as any other `T[]` field.
+static foreach (backend; Matrix!()) {
+    @("classField.stringFieldConstructedReassignedAndIndexed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Message {
+                string text;
+
+                this(string input) {
+                    text = input;
+                }
+            }
+
+            string greeting() {
+                return "hi";
+            }
+
+            string farewell() {
+                return "bye";
+            }
+
+            unittest {
+                auto message = new Message(greeting());
+                assert(message.text.length == 2);
+                assert(message.text[0] == 'h');
+
+                message.text = farewell();
+                assert(message.text.length == 3);
+                assert(message.text[1] == 'y');
+            }
+        });
+    }
+}
+
+// A `dstring` (4-byte element) class field, proving the fix generalises by
+// element size rather than being narrowly scoped to `char`/`string`.
+static foreach (backend; Matrix!()) {
+    @("classField.dstringFieldConstructedReassignedAndIndexed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class WideMessage {
+                dstring text;
+
+                this(dstring input) {
+                    text = input;
+                }
+            }
+
+            dstring wideGreeting() {
+                return "hi"d;
+            }
+
+            dstring wideFarewell() {
+                return "bye"d;
+            }
+
+            unittest {
+                auto message = new WideMessage(wideGreeting());
+                assert(message.text.length == 2);
+                assert(message.text[0] == 'h');
+
+                message.text = wideFarewell();
+                assert(message.text.length == 3);
+                assert(message.text[1] == 'y');
             }
         });
     }
