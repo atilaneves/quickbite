@@ -6268,6 +6268,33 @@ private struct Compiler {
         _activeDollarLength = sliceLengthSlot(*descriptor);
         const indexSlot = compileExpression(index.e2);
         _activeDollarLength = savedDollarLength;
+
+        // `&outer[i]` where `outer`'s element is itself a static array
+        // (`int[2][]`): each row is materialised as its own separately
+        // heap-allocated inner array (`innerArrayDescriptor`), so the row's
+        // address is its inner descriptor's `.ptr` field, not a
+        // scalar-strided offset into `outer`'s own backing store. DMD
+        // pre-folds a further constant leaf index into a byte offset added
+        // to this address (`&outer[i][0]` arrives as `&outer[i] + 0`), so
+        // this pointer alone is `&outer[i]`.
+        if (descriptor.elementIsArray &&
+            index.type.toBasetype.ty == TY.Tsarray) {
+            const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.indexLoad16, inner, descriptor.offset, indexSlot.offset,
+            );
+            const pointer =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy, pointer, inner, cast(ushort) size_t.sizeof,
+            );
+            auto result = new Operand;
+            *result = Operand(
+                pointer, ScalarType.ulong_, true, descriptor.elementType,
+            );
+            return result;
+        }
+
         auto result = new Operand;
         *result = pointerToElement(
             descriptor.offset, descriptor.elementType, indexSlot.offset,

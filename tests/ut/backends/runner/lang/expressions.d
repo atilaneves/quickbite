@@ -6532,8 +6532,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "DMD CTFE asserts internally while initializing the nested array"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking a nested static-array element address"),
 )) {
     @("pointer.nestedStaticArrayElementUsesImmediateStride." ~ backend.stringof)
     @Tags(backend.stringof)
