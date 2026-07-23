@@ -311,7 +311,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case sliceEqual1, sliceEqual4:
+            case sliceEqual1, sliceEqual2, sliceEqual4, sliceEqual8:
                 stack[base + instruction.a] = slicesEqual(
                     stack,
                     base + instruction.b,
@@ -2360,7 +2360,13 @@ private uint sliceCopyElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.sliceCopy1 || op == Op.sliceEqual1 ? 1 : 4;
+    if (op == Op.sliceCopy1 || op == Op.sliceEqual1)
+        return 1;
+    if (op == Op.sliceEqual2)
+        return 2;
+    if (op == Op.sliceEqual8)
+        return 8;
+    return 4;
 }
 
 private uint appendElementSize(

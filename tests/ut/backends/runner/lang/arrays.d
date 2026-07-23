@@ -3257,3 +3257,95 @@ static foreach (backend; Matrix!()) {
         `));
     }
 }
+
+// `sliceEqualOp` keys its comparison width on the element size, not always 4
+// bytes: two `short` elements differing only in their high byte must compare
+// unequal, not be over-read as identical 4-byte values.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.shortEqualityComparesFullElementWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            short[] build(short first, short second) {
+                return [first, second];
+            }
+
+            unittest {
+                short[] a = build(cast(short) 0x0102, cast(short) 3);
+                short[] b = build(cast(short) 0x0202, cast(short) 3);
+                short[] same = build(cast(short) 0x0102, cast(short) 3);
+
+                assert(a != b);
+                assert(a == same);
+            }
+        });
+    }
+}
+
+// The same over-read risk applies at 8 bytes: two `long` elements differing
+// only in their high 4 bytes must compare unequal, not be truncated to a
+// 4-byte comparison.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.longEqualityComparesFullElementWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long[] build(long first, long second) {
+                return [first, second];
+            }
+
+            unittest {
+                long[] a = build(0x1_0000_0000L, 2L);
+                long[] b = build(2L, 2L);
+                long[] same = build(0x1_0000_0000L, 2L);
+
+                assert(a != b);
+                assert(a == same);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.wstringEqualityComparesFullElementWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            wstring greeting(int n) {
+                return n == 1 ? "ab"w : "ac"w;
+            }
+
+            unittest {
+                wstring a = greeting(1);
+                wstring b = greeting(1);
+                wstring c = greeting(2);
+
+                assert(a == b);
+                assert(a != c);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dstringEqualityComparesFullElementWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dstring greeting(int n) {
+                return n == 1 ? "ab"d : "ac"d;
+            }
+
+            unittest {
+                dstring a = greeting(1);
+                dstring b = greeting(1);
+                dstring c = greeting(2);
+
+                assert(a == b);
+                assert(a != c);
+            }
+        });
+    }
+}

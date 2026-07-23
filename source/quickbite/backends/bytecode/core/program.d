@@ -275,9 +275,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceFill4,
     // Compare the two slice descriptors at frame offsets b and c, writing one
     // boolean byte to frame offset a: true iff their lengths and all element
-    // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
+    // bytes are equal. The element size is fixed by the opcode (1, 2, 4, or 8
+    // bytes).
     sliceEqual1,
+    sliceEqual2, // 2-byte element (wchar/short): backs `wstring == wstring`
     sliceEqual4,
+    sliceEqual8, // 8-byte element (long/double/pointer arrays)
     // Append the element at frame offset b to the dynamic-array slice descriptor
     // at frame offset a: allocate a fresh heap block of (length + 1) elements,
     // copy the existing elements, write the new element, root the block, and

@@ -1606,22 +1606,13 @@ private struct Compiler {
         imported!"dmd.expression".CallExp call,
     ) {
         import dmd.dtemplate: isExpression;
-        import std.conv: text;
 
         auto instance = stringSwitchSelector(call);
         auto selectorExpression = (*call.arguments)[0];
-
-        // The dispatch below always compares with `sliceEqualOp(1)`, which
-        // reads only `length` BYTES of the descriptor's payload. That is
-        // exact for `char`-element strings but silently wrong for
-        // `wstring`/`dstring`, whose declared length is in ELEMENTS, not
-        // bytes; refuse rather than emit a comparison that would compare
-        // less than the whole string.
-        if (size(dynamicArrayElementType(selectorExpression.type)) != 1)
-            throw new Exception(text(
-                "Unsupported wide string switch in bytecode core: ",
-                expressionChars(selectorExpression),
-            ));
+        const elementType = dynamicArrayElementType(selectorExpression.type);
+        const compareOp = sliceEqualOp(
+            dynamicArrayElementSize(selectorExpression.type, elementType),
+        );
 
         const result = allocate(ScalarType.int_);
         _code ~= Instruction(
@@ -1645,7 +1636,7 @@ private struct Compiler {
             const matches = allocate(ScalarType.bool_);
             const literalOffset = compileStringLiteralPointer(caseString);
             _code ~= Instruction(
-                sliceEqualOp(1), matches, selector.offset, literalOffset,
+                compareOp, matches, selector.offset, literalOffset,
             );
             const skip = emitJumpIfFalse(Operand(matches, ScalarType.bool_));
             _code ~= Instruction(
@@ -9800,13 +9791,10 @@ private struct Compiler {
             );
 
         const bothDynamicArrays = equal.e1.type.toBasetype.ty == TY.Tarray &&
-            equal.e2.type.toBasetype.ty == TY.Tarray;
-        const bothCharArrays = bothDynamicArrays &&
-            dynamicArrayElementType(equal.e1.type) == ScalarType.char_ &&
-            dynamicArrayElementType(equal.e2.type) == ScalarType.char_;
-        if (bothDynamicArrays &&
-            (!isStringType(equal.e1.type) && !isStringType(equal.e2.type) ||
-                bothCharArrays)) {
+            equal.e2.type.toBasetype.ty == TY.Tarray &&
+            dynamicArrayElementType(equal.e1.type) ==
+                dynamicArrayElementType(equal.e2.type);
+        if (bothDynamicArrays) {
             const elementType = dynamicArrayElementType(equal.e1.type);
             const left =
                 arrayDescriptorOffset(elementType, equal.e1);
@@ -12340,7 +12328,11 @@ private struct Compiler {
 
         // A genuine string comparison renders quoted (unlike the generic
         // `tryArrayComparisonAssert`'s `[e0, e1, ...]`), but otherwise shares
-        // the same real-descriptor `sliceEqualOp` mechanism.
+        // the same real-descriptor `sliceEqualOp` mechanism. `isStringOperand`
+        // only accepts `isGenuineCharString` operands, so `sliceEqualOp(1)` is
+        // exact here; `wstring`/`dstring` never reach this function — they
+        // fail `isGenuineCharString` and are caught earlier by the generic
+        // `tryArrayComparisonAssert`, which sizes the comparison itself.
         const lhs = arrayDescriptorOffset(ScalarType.char_, lhsExpression);
         const rhs = arrayDescriptorOffset(ScalarType.char_, rhsExpression);
         const condition = allocate(ScalarType.bool_);
@@ -13606,9 +13598,21 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
 
 private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
     in uint elementSize,
-) @safe @nogc nothrow pure {
+) @safe pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.sliceEqual1 : Op.sliceEqual4;
+    import std.conv: text;
+
+    switch (elementSize) {
+        case 1: return Op.sliceEqual1;
+        case 2: return Op.sliceEqual2;
+        case 4: return Op.sliceEqual4;
+        case 8: return Op.sliceEqual8;
+        default:
+            throw new Exception(text(
+                "Unsupported array element size in bytecode core: ",
+                elementSize,
+            ));
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
