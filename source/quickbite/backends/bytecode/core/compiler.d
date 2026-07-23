@@ -4825,6 +4825,14 @@ private struct Compiler {
                 true,
                 pointerElementScalar(field.type),
             );
+        // A class-reference field (`next` in `Node next;`) loads a real
+        // pointer: mark it so a further `.field` hop (`a.next.value`) can
+        // dereference through it, mirroring how a class-typed local is
+        // exposed as a pointer.
+        if (field.type.toBasetype.ty == TY.Tclass)
+            return Operand(
+                destination, ScalarType.ulong_, true, ScalarType.void_,
+            );
         return Operand(destination, fieldScalar);
     }
 

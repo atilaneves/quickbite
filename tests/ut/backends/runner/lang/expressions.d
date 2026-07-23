@@ -3185,9 +3185,7 @@ static foreach (backend; Matrix!(
 // the middle of the graph is exactly the shape that gap affects -- out of
 // this fixture's scope, which is the mirror's own composition, not that
 // pre-existing boxed-authority limit.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.linkedListNodeMutationVisibleThroughChain." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3231,9 +3229,7 @@ static foreach (backend; Matrix!(
 // that reintroduces that same identity one level down declines the mirror
 // right there, deterministically, instead of reaching `writeClassBody`'s
 // own address-keyed cycle guard and throwing out into this assignment.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.selfReferencingObjectDoesNotCrash." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3264,9 +3260,7 @@ static foreach (backend; Matrix!(
 // same seeded `visiting` set in `classBodyShapeMatches` catches this shape
 // too, since the reintroduced identity is checked against the ROOT's own
 // seed no matter how many field hops away it resurfaces.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.twoNodeRingDoesNotCrash." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3310,7 +3304,6 @@ static foreach (backend; Matrix!(
 // mirror's own verify step must not turn that pre-existing wrong answer
 // into an internal `AssertError` crash.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
         "Known gaps): child's own mirror write refreshes the shared " ~
@@ -3385,7 +3378,6 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // `parent`'s own mirror last established, the identical shape the fixture
 // above exercises through a plain top-level variable instead of an alias.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
         "Known gaps): c's own mirror write refreshes the shared object " ~
@@ -3461,7 +3453,6 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // against its own snapshot must decline the shape outright rather than
 // turn that contradiction into an internal `AssertError`.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
         "Known gaps): the write through parent.left refreshes the shared " ~
@@ -3538,7 +3529,6 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // the whole execution (`impl.d`'s `classObjectTable` field comment), so the
 // rewrite is visible the moment control returns to the caller.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
         "Known gaps): bump's own mirror write refreshes the shared object " ~
@@ -3818,9 +3808,7 @@ static foreach (backend; Matrix!()) {
 // class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
 // coherence contract), which the native mirror's object-graph composition
 // must not disturb.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classField.reassignedObjectFieldObservesNewObjectsFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
