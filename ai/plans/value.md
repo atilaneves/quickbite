@@ -919,9 +919,24 @@ in parallel and never blocks it.
    `std.algorithm.map`'s nested `MapResult`, whose callable carries DMD
    context; other unsupported or context-bearing ranges and template
    instantiations with unsupported fields remain on the interim
-   `displayString`/`Value.toString` scaffolding. Keep expanding the gate per
-   backend (decision 4) until every REPL expression is
-   formatter-wrapped and the unformatted evaluator paths can be deleted.
+   `displayString`/`Value.toString` scaffolding. `MapResult` is not an
+   ordinary recursively-field-formatable struct: it stores only `_input`,
+   while its `fun` alias argument supplies behavior and may refer to an
+   enclosing frame. Therefore a field-only gate cannot prove that a
+   context-bearing value is safe to execute or display, and the formatter
+   must not accept it by silently omitting that alias-provided state.
+   Formatter admission for an instantiated template must prove both that
+   every runtime field and behavior-bearing template argument needed by the
+   value is context-free and formatter-supported, and that the chosen
+   rendering has the round-trip or explicit rule-7 justification required by
+   the display spec. The next bounded slice is an AST-only DMD helper that
+   resolves instantiated alias arguments to their declarations and makes
+   the context-free versus context-bearing distinction; only then should
+   stateless and capturing `MapResult` rows be added to the differential
+   matrix. Until that proof exists, keep `MapResult` on the interim path.
+   Keep expanding the gate per backend (decision 4) until every REPL
+   expression is formatter-wrapped and the unformatted evaluator paths can
+   be deleted.
    Items 2 and 3 are blocked until this wiring lands. The interpreter's
    `std.conv.text` hook is temporary formatter scaffolding, not a general
    Phobos builtin: remove it once the formatter no longer needs that escape
