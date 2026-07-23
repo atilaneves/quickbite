@@ -7,7 +7,7 @@ import quickbite.backends.interpreter.object_table: ObjectTable;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, typeByteSize;
 import quickbite.backends.interpreter.native_scalar: writeScalar, readScalar;
-import quickbite.lang: Value;
+import quickbite.backends.interpreter.runtime_value: Value;
 import std.algorithm.searching: canFind;
 import std.conv: text;
 import std.exception: collectExceptionMsg;

@@ -9,13 +9,12 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends.evaluator:
         Evaluator,
         EvalResult,
-        ReplSession,
-        displayString;
+        ReplSession;
     import quickbite.backends.interpreter.frame_block: FrameBlock;
     import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
     import quickbite.backends.interpreter.module_table: ModuleTable;
     import quickbite.backends.interpreter.object_table: ObjectTable;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
@@ -42,10 +41,9 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.moduleTable = new ModuleTable;
             walker.inUnitTest = function_.isUnitTestDeclaration !is null;
             auto layout = cachedFrameLayout(function_);
-            if (layout.byteLength > 0)
-                walker._activationFrame = FrameBlock.allocate(layout);
+            walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(function_.fbody);
-            return EvalResult(displayString(walker.result, function_));
+            return EvalResult(interpreterDisplayString(walker.result, function_));
         } catch (Exception exception) {
             // The interpreter's own message, verbatim: rewriting it through
             // DMD's CTFE engine (as an earlier revision did) replaced the
@@ -65,8 +63,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.moduleTable = new ModuleTable;
             walker.inUnitTest = true;
             auto layout = cachedFrameLayout(unitTest);
-            if (layout.byteLength > 0)
-                walker._activationFrame = FrameBlock.allocate(layout);
+            walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(unitTest.fbody);
             return EvalResult("");
         } catch (Exception exception) {
@@ -85,8 +82,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.classObjectTable = new ObjectTable;
             walker.moduleTable = new ModuleTable;
             auto layout = cachedFrameLayout(function_);
-            if (layout.byteLength > 0)
-                walker._activationFrame = FrameBlock.allocate(layout);
+            walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(function_.fbody);
             return EvalResult(walker.result.asCharArrayString);
         } catch (Exception exception) {
@@ -119,6 +115,23 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     return isArrayType(type);
 }
 
+private string interpreterDisplayString(
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.frontend.dmd.types: isCharacterArrayType;
+
+    if (value == Value.void_)
+        return "";
+
+    auto returnType = function_.type is null ? null : function_.type.nextOf;
+    if (isCharacterArrayType(returnType))
+        return `"` ~ value.asCharArrayString ~ `"` ~ value.stringTypeAnnotation;
+
+    return value.toString;
+}
+
 private enum LoopControl {
     none,
     break_,
@@ -148,9 +161,9 @@ private struct FieldPathKey {
 }
 
 private class InterpretedException: Exception {
-    public imported!"quickbite.lang".Value object;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value object;
 
-    public this(in imported!"quickbite.lang".Value object) {
+    public this(in imported!"quickbite.backends.interpreter.runtime_value".Value object) {
         const message = object.classFieldNamed("msg").asCharArrayString;
         super(message);
         this.object = object;
@@ -162,6 +175,7 @@ private string statementLabel(imported!"dmd.identifier".Identifier identifier) {
 }
 
 private struct Walker {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.declaration: VarDeclaration;
     import dmd.expression: DivExp, Expression, ModExp;
     import dmd.func: FuncDeclaration;
@@ -174,8 +188,8 @@ private struct Walker {
     import quickbite.backends.interpreter.module_table: ModuleTable;
     import quickbite.backends.interpreter.object_table: ObjectTable;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.frontend.dmd.values: defaultValue;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_values: defaultValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     private Throwable[const(void)*] nativeThrowableRoots;
 
@@ -288,7 +302,7 @@ private struct Walker {
     //   follows a stored reference out of a slot for a class base
     //   (`Place.deref`) or a pointer base alike, and a pointer local whose
     //   mirror declined (a boxed-era carrier with no host address --
-    //   `placeShapeMatches`'s pointer arm) leaves a slot exactly as
+    //   `valueMatchesPlace`'s pointer arm) leaves a slot exactly as
     //   unusable as a declined class local's does.
     //
     // Needs no separate rebind invalidation: `locals[variable] = value` is
@@ -1065,9 +1079,10 @@ private struct Walker {
     // fails a write it cannot perform cleanly, it simply skips it -- a
     // local with no mirror slot at all (aliasing `ref`/`out`/`lazy`), a
     // type `place_value` does not compose, or a value that does not itself
-    // match that type's own shape (e.g. still `void`, a struct/array local
-    // mid-construction holding a transient boxed value of the wrong shape,
-    // or -- a pointer's own value-dependent case, see `placeShapeMatches`'s
+    // match `place_value.valueMatchesPlace` (e.g. still `void`, a
+    // struct/array local mid-construction holding a transient boxed value
+    // of the wrong shape,
+    // or -- a pointer's own value-dependent case, see `valueMatchesPlace`'s
     // pointer arm -- a boxed-era pointer carrier with no host address of
     // its own) is left unmirrored rather than risking `writeValue`
     // throwing; a later matching write re-syncs it.
@@ -1096,7 +1111,7 @@ private struct Walker {
     // both sides compute the same way is invisible to a byte comparison;
     // only declining the shape catches it.
     private void mirrorToFrame(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
+        import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
 
         // `established` becomes `mirrorEstablished[variable]` on every exit
         // from this function (`scope(exit)` below) -- `false` unless an arm
@@ -1120,10 +1135,7 @@ private struct Walker {
             return;
         }
 
-        if (!isPlaceComposable(variable.type))
-            return;
-
-        if (!placeShapeMatches(variable.type, value))
+        if (!valueMatchesPlace(variable.type, value))
             return;
 
         writeValue(mirrorPlace(variable), value);
@@ -1163,7 +1175,7 @@ private struct Walker {
     private void* mirrorAddress(VarDeclaration variable) {
         return variable.isDataseg
             ? moduleTable.storageFor(variable)
-            : _activationFrame.slotAddress(variable);
+            : _activationFrame.bindingAddress(variable);
     }
 
     // The mirror `Place` for a place-composable local's own storage --
@@ -1195,7 +1207,7 @@ private struct Walker {
     //   here, is the authority for it, matching `assertFrameMirror`'s own
     //   identical exclusion.
     // - a boxed value that is not (yet) `isArray` (still `void`, or mid-
-    //   construction), matching `placeShapeMatches`'s equivalent guard for
+    //   construction), matching `valueMatchesPlace`'s equivalent guard for
     //   the composable shapes above.
     // - a non-empty slice whose `arrayNativeAddress` is `null`: a boxed
     //   `Value[]` tree assembled with no backing native block (e.g. a slice
@@ -1222,16 +1234,16 @@ private struct Walker {
         if (variable in arrayCells)
             return false;
 
-        if (!value.isArray)
+        if (!AggregateValue.isArray(value))
             return false;
 
-        const nativeAddress = value.arrayNativeAddress;
-        if (nativeAddress is null && value.length != 0)
+        const nativeAddress = AggregateValue.nativeArrayAddress(value);
+        if (nativeAddress is null && AggregateValue.elementCount(value) != 0)
             return false;
 
         auto arrayType = variable.type.toBasetype.isTypeDArray;
         auto array = NativeArray.borrow(
-            arrayType.next, cast(void*) nativeAddress, value.length);
+            arrayType.next, cast(void*) nativeAddress, AggregateValue.elementCount(value));
 
         array.writeSliceHeader(mirrorAddress(variable));
         return true;
@@ -1250,7 +1262,7 @@ private struct Walker {
     //
     // - a boxed value that is not (yet) `isClassObject`, and not `Value.
     //   null_` either (still `void`) -- the same "not yet this shape" gap
-    //   `placeShapeMatches` guards for the composable shapes above.
+    //   `valueMatchesPlace` guards for the composable shapes above.
     // - a `classIdentity` of 0: `place_value.readValue`'s own class arm
     //   never mints one for a null reference (it reads back `Value.
     //   null_` instead, handled separately below), so an `isClassObject`
@@ -1265,12 +1277,12 @@ private struct Walker {
     // - a class that IS `isClassBodyComposable` (a TYPE-shape question)
     //   but whose current field VALUES do not themselves match
     //   (`classBodyShapeMatches`, the class-body counterpart of
-    //   `placeShapeMatches` above) -- the case a pointer field adds now
+    //   `valueMatchesPlace` above) -- the case a pointer field adds now
     //   that `place_value.isPlaceComposable` accepts a pointer type:
     //   `isClassBodyComposable` says the field's TYPE composes, but
     //   `writeClassBody`'s recursive `writeValue` still refuses a boxed
     //   pointer carrier with no host address (`isLocalPointer`, ...),
-    //   exactly the VALUE-dependent case `placeShapeMatches`'s own pointer
+    //   exactly the VALUE-dependent case `valueMatchesPlace`'s own pointer
     //   arm exists to catch. Without this second check, a class with an
     //   `int*` field pointing at a local (a routine, valid program) would
     //   throw here instead of leaving the local unmirrored.
@@ -1321,10 +1333,10 @@ private struct Walker {
             return true;
         }
 
-        if (!value.isClassObject)
+        if (!AggregateValue.isClass(value))
             return false;
 
-        const identity = value.classIdentity;
+        const identity = AggregateValue.classIdentity(value);
         if (identity == 0)
             return false;
 
@@ -1375,11 +1387,11 @@ private struct Walker {
             if (fieldClassType is null)
                 continue;
 
-            auto fieldValue = value.classFieldAt(index);
+            auto fieldValue = AggregateValue.classFieldAt(value, index);
             if (fieldValue == Value.null_)
                 continue;
 
-            const nestedIdentity = fieldValue.classIdentity;
+            const nestedIdentity = AggregateValue.classIdentity(fieldValue);
             if (nestedIdentity in classMirrorGenerations[variable])
                 continue;
 
@@ -1388,96 +1400,7 @@ private struct Walker {
         }
     }
 
-    // Whether `value`'s shape matches what `place_value.readValue`/
-    // `writeValue` compose for `type` at EVERY depth, not only the top
-    // level: a concrete scalar (`isNumericScalar`/`isCharacter`) for a
-    // native scalar type; a concrete numeric scalar (`isNumericScalar`
-    // alone -- `real` is never `isCharacter`) for `real`, its own leaf
-    // shape (`place_value.isRealType`); `value.isStruct` AND a field count
-    // matching `layout.structFields.length` AND every field's boxed value
-    // itself matching that field's own declared type, for a struct OR
-    // union type (`type.isTypeStruct` does not distinguish them, and
-    // neither does this check -- a union's `Value` is shaped exactly like
-    // a struct's, see `place_value.writeUnionValue`'s own header comment);
-    // `value.isArray` AND a length matching `layout.staticArrayLength` AND
-    // every element's boxed value itself matching the element type, for a
-    // static-array type. A mismatch at any depth fails the whole check --
-    // `writeValue` recurses by position with no bounds check of its own
-    // (`value[i]`, `value.structFieldAt(index)`), so a boxed value shorter
-    // than the type it is being written into would index out of range.
-    // Callers gate this on `isPlaceComposable(type)` first, so `type` is
-    // always one of exactly those FOUR shapes here.
-    private static bool placeShapeMatches(imported!"dmd.mtype".Type type, in Value value) {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-        import quickbite.backends.interpreter.place_value: isRealType;
-        import quickbite.backends.interpreter.layout: structFields, staticArrayLength, declaredType;
-
-        if (isNativeScalarType(type))
-            return value.isNumericScalar || value.isCharacter;
-
-        // `real` is `place_value.isPlaceComposable` but not `native_scalar.
-        // isNativeScalarType` (its own leaf codec -- see `place_value.
-        // readValue`'s header comment): a boxed `real` `Value` is always
-        // `isNumericScalar` (never `isCharacter`, unlike an integral/`bool`
-        // native scalar), so this repeats only the half of the check above
-        // that actually applies.
-        if (isRealType(type))
-            return value.isNumericScalar;
-
-        auto structType = type.isTypeStruct;
-        if (structType !is null) {
-            if (!value.isStruct)
-                return false;
-
-            auto fields = structFields(structType);
-            if (value.structFieldCount != fields.length)
-                return false;
-
-            foreach (index, field; fields)
-                if (!placeShapeMatches(declaredType(field), value.structFieldAt(index)))
-                    return false;
-
-            return true;
-        }
-
-        // A pointer's shape match is VALUE-dependent, unlike every arm
-        // above: the type is always accepted (`isPlaceComposable` now says
-        // so unconditionally for a pointer type), but `place_value.
-        // writeValue`'s own pointer arm still refuses a `value` that is not
-        // itself a host address -- `isLocalPointer`'s allocation-id
-        // carrier, the struct-shaped `Pointer`, a function pointer's
-        // minted id -- since none of those boxed-era stand-ins IS the
-        // address decision 15 requires. Repeating that EXACT condition
-        // here, rather than a shape check of our own, is what keeps
-        // `mirrorToFrame` and `assertFrameMirror` symmetric: both call
-        // this same function before touching `writeValue`, so a `value`
-        // this declines is skipped identically on both sides, and a
-        // `value` this accepts is one `writeValue`'s own arm has already
-        // agreed to accept.
-        if (type.isTypePointer !is null)
-            return value.isNativePointer || value == Value.null_;
-
-        // Reachable only for a composable type (caller gates on
-        // `isPlaceComposable`), which past the scalar, `real`, struct, and
-        // pointer arms leaves exactly a static array -- so `isTypeSArray`
-        // is non-null here.
-        auto arrayType = type.isTypeSArray;
-        assert(arrayType !is null, "placeShapeMatches: non-composable type");
-        if (!value.isArray)
-            return false;
-
-        const length = staticArrayLength(arrayType);
-        if (value.length != length)
-            return false;
-
-        foreach (i; 0 .. length)
-            if (!placeShapeMatches(arrayType.next, value[i]))
-                return false;
-
-        return true;
-    }
-
-    // The class-body counterpart of `placeShapeMatches` above, for
+    // The class-body counterpart of `place_value.valueMatchesPlace`, for
     // exactly the reason a pointer field needs one: `place_value.
     // isClassBodyComposable` only answers whether `class_`'s own field
     // TYPES compose (recursing `isPlaceComposable`, a type-shape
@@ -1489,7 +1412,7 @@ private struct Walker {
     // still refuses a pointer field whose current VALUE is a boxed-era
     // carrier with no host address, exactly like `writeValue`'s own
     // top-level pointer arm. Checking every field's value against its own
-    // declared type through `placeShapeMatches` (recursing into a nested
+    // declared type through `valueMatchesPlace` (recursing into a nested
     // struct/array/pointer field exactly as it already does for the
     // generic composable path) catches that case -- and every other
     // "value does not yet match this field's shape" case a struct/array/
@@ -1497,7 +1420,7 @@ private struct Walker {
     // already checks for a non-class local. `mirrorClassToFrame` and
     // `assertClassFrameMirror` both call this identically, right after
     // their own `isClassBodyComposable` check, so the two stay symmetric
-    // the same way `placeShapeMatches` itself keeps the generic path
+    // the same way `valueMatchesPlace` itself keeps the generic path
     // symmetric: neither side can compose a field value the other
     // declined.
     //
@@ -1559,7 +1482,7 @@ private struct Walker {
     //
     // The fix declines here rather than resolving the object's actual
     // dynamic `ClassDeclaration` to size against: `value`'s only dynamic
-    // information is `classTypeName`, a NAME (`quickbite.lang.Value`
+    // information is `classTypeName`, a NAME (`quickbite.backends.interpreter.runtime_value.Value`
     // carries no `ClassDeclaration` -- it is DMD-free by design), and the
     // walker's own name-to-declaration resolvers
     // (`classDeclarationByQualifiedName` and friends) search by lexical
@@ -1588,13 +1511,14 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: classQualifiedName;
 
-        if (classIdentityAliasedByAnotherBinding(variable, value.classIdentity))
+        if (classIdentityAliasedByAnotherBinding(
+            variable, AggregateValue.classIdentity(value)))
             return false;
 
-        if (value.classTypeName != classQualifiedName(class_))
+        if (AggregateValue.classTypeName(value) != classQualifiedName(class_))
             return false;
 
-        bool[size_t] visiting = [value.classIdentity: true];
+        bool[size_t] visiting = [AggregateValue.classIdentity(value): true];
         return classBodyShapeMatchesImpl(class_, value, visiting);
     }
 
@@ -1635,7 +1559,10 @@ private struct Walker {
             if (other is variable)
                 continue;
 
-            if (otherValue.isClassObject && otherValue.classIdentity == identity)
+            if (
+                AggregateValue.isClass(otherValue)
+                    && AggregateValue.classIdentity(otherValue) == identity
+            )
                 return true;
         }
 
@@ -1652,7 +1579,7 @@ private struct Walker {
     // so it can decline a cycle without ever calling `writeClassBody` at
     // all. Keyed by `Value.classIdentity`, not an address: this function
     // never resolves one (unlike `place_value`'s own guards), it only walks
-    // the boxed VALUE tree, exactly as `placeShapeMatches` already does for
+    // the boxed VALUE tree, exactly as `valueMatchesPlace` already does for
     // every other shape.
     //
     // `visiting` is a "seen ANYWHERE in this graph" set, not the DFS
@@ -1709,15 +1636,16 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout:
             classFields, declaredType, classQualifiedName;
-        import quickbite.backends.interpreter.place_value: isClassBodyComposable;
+        import quickbite.backends.interpreter.place_value:
+            isClassBodyComposable, valueMatchesPlace;
 
         foreach (index, field; classFields(class_)) {
             auto fieldType = declaredType(field);
-            auto fieldValue = value.classFieldAt(index);
+            auto fieldValue = AggregateValue.classFieldAt(value, index);
 
             auto fieldClassType = fieldType.isTypeClass;
             if (fieldClassType is null) {
-                if (!placeShapeMatches(fieldType, fieldValue))
+                if (!valueMatchesPlace(fieldType, fieldValue))
                     return false;
                 continue;
             }
@@ -1725,7 +1653,7 @@ private struct Walker {
             if (fieldValue == Value.null_)
                 continue;
 
-            if (!fieldValue.isClassObject)
+            if (!AggregateValue.isClass(fieldValue))
                 return false;
 
             // The nested-field counterpart of `classBodyShapeMatches`'s own
@@ -1734,10 +1662,11 @@ private struct Walker {
             // narrower than the object it currently references would reach
             // `resolveObjectBody`/`storageFor` with the SAME
             // too-narrow-`class_` hazard the root check exists to close.
-            if (fieldValue.classTypeName != classQualifiedName(fieldClassType.sym))
+            if (AggregateValue.classTypeName(fieldValue)
+                != classQualifiedName(fieldClassType.sym))
                 return false;
 
-            const identity = fieldValue.classIdentity;
+            const identity = AggregateValue.classIdentity(fieldValue);
             if (identity == 0 || (identity in visiting) || (identity in classObjectCells))
                 return false;
 
@@ -1770,7 +1699,7 @@ private struct Walker {
     // reading -- IEEE NaN, and an enum's `EnumValue` boxing against the plain
     // integral `readScalar` returns for its base type.
     private void assertFrameMirror(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
+        import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
         import quickbite.backends.interpreter.place: placeAt;
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
@@ -1794,10 +1723,7 @@ private struct Walker {
             return;
         }
 
-        if (!isPlaceComposable(variable.type))
-            return;
-
-        if (!placeShapeMatches(variable.type, value))
+        if (!valueMatchesPlace(variable.type, value))
             return;
 
         // The expected bytes: `value` written through the identical
@@ -1844,16 +1770,16 @@ private struct Walker {
     private void assertFrameSliceMirror(VarDeclaration variable, in Value value) {
         import quickbite.backends.interpreter.native_array: NativeArray;
 
-        if (!value.isArray)
+        if (!AggregateValue.isArray(value))
             return;
 
-        const nativeAddress = value.arrayNativeAddress;
-        if (nativeAddress is null && value.length != 0)
+        const nativeAddress = AggregateValue.nativeArrayAddress(value);
+        if (nativeAddress is null && AggregateValue.elementCount(value) != 0)
             return;
 
         auto arrayType = variable.type.toBasetype.isTypeDArray;
         auto array = NativeArray.borrow(
-            arrayType.next, cast(void*) nativeAddress, value.length);
+            arrayType.next, cast(void*) nativeAddress, AggregateValue.elementCount(value));
 
         // `Scan.conservative`, unconditionally, rather than reusing the
         // composable path's `Scan.no` scratch above: unlike a composable
@@ -1898,7 +1824,7 @@ private struct Walker {
             return;
         }
 
-        const identity = value.classIdentity;
+        const identity = AggregateValue.classIdentity(value);
 
         // `mirrorEstablished[variable]` is only ever set `true` right
         // after a real write (`mirrorClassToFrame`'s own header comment),
@@ -1997,7 +1923,7 @@ private struct Walker {
 
         foreach (index, field; classFields(classType.sym)) {
             auto fieldPlace = scratchPlace.field(field);
-            auto fieldValue = value.classFieldAt(index);
+            auto fieldValue = AggregateValue.classFieldAt(value, index);
             auto fieldClassType = fieldPlace.type.isTypeClass;
 
             if (fieldClassType is null) {
@@ -2010,7 +1936,7 @@ private struct Walker {
                 continue;
             }
 
-            const nestedIdentity = fieldValue.classIdentity;
+            const nestedIdentity = AggregateValue.classIdentity(fieldValue);
 
             // The verify-time counterpart of `classBodyShapeMatchesImpl`'s
             // own identical nested decline (its own header comment): a
@@ -2236,7 +2162,7 @@ private struct Walker {
         in string className,
         in const(void)* nativeObjectPointer,
     ) const {
-        import quickbite.frontend.dmd.values: defaultValue;
+        import quickbite.backends.interpreter.runtime_values: defaultValue;
         import quickbite.backends.interpreter.layout: classFields;
         import dmd.dclass: ClassDeclaration;
 
@@ -2698,7 +2624,7 @@ private struct Walker {
     private Value runExpression(imported!"dmd.expression".Expression expression) {
         import dmd.astenums: TY;
         import dmd.tokens: EXP;
-        import quickbite.frontend.dmd.values: integerValue, realValue;
+        import quickbite.backends.interpreter.runtime_values: integerValue, realValue;
 
         if (auto integer = expression.isIntegerExp) {
             if (integer.type !is null && integer.type.ty == TY.Tenum)
@@ -2721,13 +2647,13 @@ private struct Walker {
             // (`defaultValue`).  `new S` of a struct with an array field passes
             // this literal as the field's initialiser.
             if (null_.type !is null && null_.type.toBasetype.ty == TY.Tarray)
-                return Value.arrayValue([]);
+                return AggregateValue.reconstructArray([]);
 
             return Value.null_;
         }
 
         if (auto string_ = expression.isStringExp) {
-            import quickbite.frontend.dmd.string_literals: stringValue;
+            import quickbite.backends.interpreter.runtime_string_literals: stringValue;
 
             return stringValue(string_);
         }
@@ -3594,8 +3520,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = call.f;
         auto layout = cachedFrameLayout(call.f);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
         child.result = Value(false);
         child.locals = call.f.isNested ? locals.dup : datasegLocals;
@@ -5801,73 +5726,8 @@ private struct Walker {
             return loadNativePointerElement(pointer.e1.type, value, 0);
 
         if (!value.isLocalPointer) {
-            // Byte-level authority for an array element: once `&a[i]` has
-            // promoted an
-            // `arrayCells` entry for the variable this pointer points into,
-            // its bytes -- not `value`'s own boxed element snapshot taken
-            // at address-of time -- are the true value, so a direct write
-            // to the array (`writeIndexLocation`) after the pointer was
-            // taken is visible here. Every other array pointer (no
-            // promoted cell -- a non-scalar element type, a static array,
-            // or a `&s.field` snapshot) keeps the existing boxed
-            // `pointerTarget` fallback.
             Value cellValue;
-            if (arrayPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a struct-field pointer: once `&s.field`
-            // has promoted a
-            // `structCells` entry, its bytes -- not the boxed field snapshot
-            // `addressOfExpression` took -- are the true value, so a direct
-            // field write (`writeLocation`'s `DotVarExp` arm) after the
-            // pointer was taken is visible here. Every other struct-field
-            // pointer (no promoted cell, a non-scalar field) keeps the
-            // existing boxed `pointerTarget` fallback.
-            if (structFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a struct-static-array-field pointer:
-            // once `&s.arr[i]` has promoted a `structCells` entry, mirroring the
-            // two checks above for the scalar-field and plain-array cases.
-            if (structArrayFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a nested-struct-field pointer: once
-            // `&s.inner.x` has promoted a `structCells` entry, mirroring the
-            // three checks above for the array-element, scalar-field, and
-            // static-array-field cases.
-            if (nestedStructFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for an array-element/nested-struct-field
-            // pointer: once `&a[i].inner.x` has promoted an
-            // `arrayCells` entry, mirroring the nested-struct-field check
-            // above, composed with the array-element case's own
-            // `NativeArray.structElement` view.
-            if (arrayNestedStructFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a class-field pointer: once `&c.field`
-            // has promoted a
-            // `classCells` entry, mirroring `structFieldPointerCellValue`
-            // above for the struct case.
-            if (classFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a nested-class-struct-field pointer
-            // (aggregate composition): once `&c.inner.x` has promoted a
-            // `classCells` entry, mirroring
-            // `nestedStructFieldPointerCellValue` above for the struct-
-            // receiver case.
-            if (nestedClassStructFieldPointerCellValue(value, cellValue))
-                return cellValue;
-
-            // Byte-level authority for a class-static-array-field pointer
-            // (the other aggregate-composition shape): once `&c.arr[i]` has
-            // promoted a
-            // `classCells` entry, mirroring `structArrayFieldPointerCellValue`
-            // above for the struct-receiver case.
-            if (classArrayFieldPointerCellValue(value, cellValue))
+            if (pointerCellValue(value, cellValue))
                 return cellValue;
 
             // A plain LOCAL static array (`int[3] a;`) never gets an
@@ -5899,7 +5759,7 @@ private struct Walker {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType, readScalar;
             import quickbite.backends.interpreter.native_struct: NativeStruct;
-            import quickbite.frontend.dmd.values: defaultValue;
+            import quickbite.backends.interpreter.runtime_values: defaultValue;
 
             auto target = pointer.e1.type.toBasetype.nextOf.toBasetype;
             const targetSize = typeByteSize(target);
@@ -6035,9 +5895,7 @@ private struct Walker {
         // existing raw-value identity semantics. Array-pointer snapshots can
         // contain different element copies while still naming the same
         // allocation and offset; those two fields are their identity.
-        const same = left.isPointer && right.isPointer &&
-                !left.isLocalPointer && !right.isLocalPointer &&
-                !left.isNativePointer && !right.isNativePointer &&
+        const same = isBoxedPointer(left) && isBoxedPointer(right) &&
                 left.pointerAllocation != 0 && right.pointerAllocation != 0
             ? left.pointerAllocation == right.pointerAllocation &&
                 left.pointerElementOffset == right.pointerElementOffset
@@ -6461,7 +6319,7 @@ private struct Walker {
 
         auto result = arguments.dup; // Replaces eligible pointer values below.
         foreach (index, ref argument; result) {
-            if (argument.isPointer && !argument.isNativePointer) {
+            if (isBoxedPointer(argument)) {
                 if (auto variable = arrayPointerVariable(argument)) {
                     if (auto cell = *variable in arrayCells) {
                         const offset = cast(size_t) argument.pointerElementOffset *
@@ -7149,8 +7007,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = (captureLocals || function_.isNested)
             ? locals.dup
@@ -7213,8 +7070,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = locals.dup;
         forkPerFrameCellsInto(child);
@@ -8227,12 +8083,7 @@ private struct Walker {
             return false;
 
         const pointer = runExpression(pointerExpression.e1);
-        if (
-            !pointer.isPointer ||
-            pointer.isLocalPointer ||
-            pointer.isNativePointer ||
-            pointer.pointerAllocation == 0
-        )
+        if (!isBoxedPointer(pointer) || pointer.pointerAllocation == 0)
             return false;
 
         auto variable = pointer.pointerAllocation in arrayAllocationVariables;
@@ -8545,7 +8396,7 @@ private struct Walker {
 
             return variable.isDataseg
                 ? moduleTable.storageFor(variable)
-                : callerFrame.slotAddress(variable);
+                : callerFrame.bindingAddress(variable);
         }
 
         if (callerFrame.hasReferenceSlot(variable)) {
@@ -8562,7 +8413,7 @@ private struct Walker {
             // this codebase ever composes deliberately. Reading THAT back
             // as if it were resolved would hand a caller `0x0` to
             // dereference; decline exactly like "no slot at all" instead.
-            auto forwarded = callerFrame.referenceSlotValue(variable);
+            auto forwarded = callerFrame.bindingAddress(variable);
             if (forwarded !is null) {
                 bindNotVerifiable = true;
                 return forwarded;
@@ -8673,7 +8524,7 @@ private struct Walker {
     // Declines the same way `assertFrameMirror`'s own composable arm does:
     // silently, for a `value` that is not (yet) `isPlaceComposable`'s
     // shape for `parameter.type`, or does not itself match that shape
-    // (`placeShapeMatches`) -- e.g. a still-`void` argument, or a slice-
+    // (`valueMatchesPlace`) -- e.g. a still-`void` argument, or a slice-
     // or class-typed `ref` parameter (neither is `isPlaceComposable`, so
     // this never asserts on either; `bindReferenceSlot` above still fills
     // the reference slot for one, just without this verification).
@@ -8682,15 +8533,12 @@ private struct Walker {
         void* address,
         in Value value,
     ) {
-        import quickbite.backends.interpreter.place_value: isPlaceComposable, writeValue;
+        import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
         import quickbite.backends.interpreter.place: placeAt;
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
 
-        if (!isPlaceComposable(parameter.type))
-            return;
-
-        if (!placeShapeMatches(parameter.type, value))
+        if (!valueMatchesPlace(parameter.type, value))
             return;
 
         const length = typeByteSize(parameter.type);
@@ -9445,7 +9293,7 @@ private struct Walker {
     }
 
     private Value runPowExpression(imported!"dmd.expression".PowExp pow) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
@@ -9470,7 +9318,7 @@ private struct Walker {
     private Value runIntegerComplementExpression(
         imported!"dmd.expression".ComExp complement,
     ) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
@@ -9498,7 +9346,7 @@ private struct Walker {
         in Value rightValue,
         in string operator,
     ) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
@@ -10127,8 +9975,8 @@ private struct Walker {
             if (receiver.isLocalPointer) {
                 const targetValue = localPointerTarget(receiver);
                 writeLocation(dot.e1, targetValue.isClassObject
-                    ? targetValue.withClassField(classFieldIndex(dot, targetValue), value)
-                    : targetValue.withStructField(structFieldIndex(dot), value));
+                    ? AggregateValue.withClassField(targetValue, classFieldIndex(dot, targetValue), value)
+                    : AggregateValue.withStructField(targetValue, structFieldIndex(dot), value));
                 return;
             }
 
@@ -10155,7 +10003,7 @@ private struct Walker {
                 writeClassCellFieldIfPresent(dot.e1, fieldIndex, value);
                 writeLocation(
                     dot.e1,
-                    authoritative.withClassField(fieldIndex, value),
+                    AggregateValue.withClassField(authoritative, fieldIndex, value),
                     /* arrayRefWriteback */ false,
                     /* classFieldRefresh */ true,
                 );
@@ -10179,7 +10027,7 @@ private struct Walker {
             auto unionType = receiverStructType(dot.e1);
             const updated = unionType !is null && unionType.sym.isUnionDeclaration !is null
                 ? withUnionFieldWrite(receiver, unionType, fieldIndex, value)
-                : receiver.withStructField(fieldIndex, value);
+                : AggregateValue.withStructField(receiver, fieldIndex, value);
             writeLocation(dot.e1, updated);
             return;
         }
@@ -10271,55 +10119,7 @@ private struct Walker {
                 return;
             }
 
-            if (writeThroughArrayPointer(pointer, value))
-                return;
-
-            // `&s.field` of a scalar field on a plain struct LOCAL promoted
-            // a `structCells` entry at address-of time: write through it
-            // exactly like SystemLinker's
-            // real aliasing, instead of refusing below.
-            if (writeThroughStructFieldPointer(pointer, value))
-                return;
-
-            // `&s.arr[i]` of a static-array field on a plain struct LOCAL
-            // promoted a `structCells` entry at address-of time
-            // (struct-static-array-field follow-up): write through
-            // it exactly like SystemLinker's real aliasing, instead of
-            // refusing below.
-            if (writeThroughStructArrayFieldPointer(pointer, value))
-                return;
-
-            // `&s.inner.x` of a nested (one level) scalar field on a plain
-            // struct LOCAL promoted a `structCells` entry at address-of time
-            // (nested-struct-field follow-up): write
-            // through it exactly like SystemLinker's real aliasing, instead
-            // of refusing below.
-            if (writeThroughNestedStructFieldPointer(pointer, value))
-                return;
-
-            // `&c.x` of a scalar field on a plain class-typed LOCAL promoted
-            // a `classCells` entry at address-of time
-            // (write-through-pointer slice): write through it
-            // exactly like SystemLinker's real aliasing, instead of refusing
-            // below.
-            if (writeThroughClassFieldPointer(pointer, value))
-                return;
-
-            // `&c.inner.x` of a nested (one level) scalar field on a plain
-            // class-typed LOCAL promoted a `classCells` entry at address-of
-            // time (aggregate composition, write-through-pointer follow-up):
-            // write through it
-            // exactly like SystemLinker's real aliasing, instead of refusing
-            // below.
-            if (writeThroughNestedClassStructFieldPointer(pointer, value))
-                return;
-
-            // `&c.arr[i]` of a static-array field on a plain class-typed
-            // LOCAL promoted a `classCells` entry at address-of time
-            // (write-through-pointer
-            // follow-up): write through it exactly like SystemLinker's real
-            // aliasing, instead of refusing below.
-            if (writeThroughClassArrayFieldPointer(pointer, value))
+            if (writeThroughPromotedPointer(pointer, value))
                 return;
 
             // Every OTHER `&s.field` (addressOfExpression's DotVarExp
@@ -10379,8 +10179,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
         child.result = Value(false);
@@ -10460,8 +10259,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = call.f;
         auto layout = cachedFrameLayout(call.f);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
         child.result = Value(false);
@@ -10519,7 +10317,7 @@ private struct Walker {
         imported!"dmd.mtype".Type type,
         in Value value,
     ) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastValue = castValue,
             CastTarget,
             tryCastTarget;
@@ -10627,7 +10425,7 @@ private struct Walker {
             return true;
         }
 
-        setLocal(*variable, current.withArrayElement(
+        setLocal(*variable, AggregateValue.withArrayElement(*current,
             cast(size_t) pointer.pointerElementOffset,
             value,
         ));
@@ -10699,7 +10497,7 @@ private struct Walker {
             value,
         );
         if (current !is null)
-            setLocal(variable, current.withStructField(fieldIndex, value));
+            setLocal(variable, AggregateValue.withStructField(*current, fieldIndex, value));
         structFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
         return true;
@@ -10748,8 +10546,9 @@ private struct Walker {
         writeScalar(arrayCell.elementType, arrayCell.element(elementIndex), value);
 
         if (current !is null) {
-            const updatedField = current.structFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
-            setLocal(*variable, current.withStructField(*fieldIndex, updatedField));
+            const updatedField = AggregateValue.withArrayElement(
+                AggregateValue.fieldAt(*current, *fieldIndex), elementIndex, value);
+            setLocal(*variable, AggregateValue.withStructField(*current, *fieldIndex, updatedField));
         }
         structArrayFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
@@ -10801,9 +10600,9 @@ private struct Walker {
             nestedCell.field(innerFieldIndex), value);
 
         if (current !is null) {
-            const updatedInner = current.structFieldAt(outerFieldIndex)
-                .withStructField(innerFieldIndex, value);
-            setLocal(variable, current.withStructField(outerFieldIndex, updatedInner));
+            const updatedInner = AggregateValue.withStructField(
+                AggregateValue.fieldAt(*current, outerFieldIndex), innerFieldIndex, value);
+            setLocal(variable, AggregateValue.withStructField(*current, outerFieldIndex, updatedInner));
         }
         nestedStructFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
@@ -10866,7 +10665,7 @@ private struct Walker {
         if (current !is null)
             if (auto currentCell = variable in classCells)
                 if (currentCell.bytes.ptr is cell.bytes.ptr)
-                    setLocal(variable, current.withClassField(fieldIndex, value));
+                    setLocal(variable, AggregateValue.withClassField(*current, fieldIndex, value));
         classFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
         return true;
@@ -10931,9 +10730,9 @@ private struct Walker {
             nestedCell.field(innerFieldIndex), value);
 
         if (current !is null) {
-            const updatedInner = current.classFieldAt(outerFieldIndex)
-                .withStructField(innerFieldIndex, value);
-            setLocal(variable, current.withClassField(outerFieldIndex, updatedInner));
+            const updatedInner = AggregateValue.withStructField(
+                AggregateValue.classFieldAt(*current, outerFieldIndex), innerFieldIndex, value);
+            setLocal(variable, AggregateValue.withClassField(*current, outerFieldIndex, updatedInner));
         }
         nestedClassStructFieldPointerWritebacks[variable] = true;
         uninitializedLocals.remove(variable);
@@ -11002,8 +10801,9 @@ private struct Walker {
         writeScalar(elementType, arrayCell.element(elementIndex), value);
 
         if (current !is null) {
-            const updatedField = current.classFieldAt(*fieldIndex).withArrayElement(elementIndex, value);
-            setLocal(*variable, current.withClassField(*fieldIndex, updatedField));
+            const updatedField = AggregateValue.withArrayElement(
+                AggregateValue.classFieldAt(*current, *fieldIndex), elementIndex, value);
+            setLocal(*variable, AggregateValue.withClassField(*current, *fieldIndex, updatedField));
         }
         classArrayFieldPointerWritebacks[*variable] = true;
         uninitializedLocals.remove(*variable);
@@ -11067,12 +10867,7 @@ private struct Walker {
     private imported!"dmd.declaration".VarDeclaration* arrayPointerVariable(
         in Value pointer,
     ) {
-        if (
-            !pointer.isPointer ||
-            pointer.isLocalPointer ||
-            pointer.isNativePointer ||
-            pointer.pointerAllocation == 0
-        )
+        if (!isBoxedPointer(pointer) || pointer.pointerAllocation == 0)
             return null;
 
         return pointer.pointerAllocation in arrayAllocationVariables;
@@ -11106,11 +10901,11 @@ private struct Walker {
                 // arm closes -- re-derive from the shared cell before folding
                 // in this element's write.
                 const authoritative = classCellOverlaidValue(dot.e1, receiver);
-                const updatedArray = authoritative.classFieldAt(fieldIndex)
-                    .withArrayElement(arrayIndex, value);
+                const updatedArray = AggregateValue.withArrayElement(
+                    AggregateValue.classFieldAt(authoritative, fieldIndex), arrayIndex, value);
                 writeLocation(
                     dot.e1,
-                    authoritative.withClassField(fieldIndex, updatedArray),
+                    AggregateValue.withClassField(authoritative, fieldIndex, updatedArray),
                     /* arrayRefWriteback */ false,
                     /* classFieldRefresh */ true,
                 );
@@ -11119,9 +10914,9 @@ private struct Walker {
 
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpression(dot.e1);
-            const updatedArray = receiver.structFieldAt(fieldIndex)
-                .withArrayElement(arrayIndex, value);
-            writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
+            const updatedArray = AggregateValue.withArrayElement(
+                AggregateValue.fieldAt(receiver, fieldIndex), arrayIndex, value);
+            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
             if (dot.e1.isThisExp !is null)
                 writeThroughThisStructArrayFieldAlias(fieldIndex, arrayIndex, value);
             return;
@@ -11139,7 +10934,7 @@ private struct Walker {
         if (current is null)
             throw new Exception("Unsupported interpreter assignment target.");
 
-        setLocal(variable, current.withArrayElement(arrayIndex, value));
+        setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, value));
         writeThroughSliceAlias(variable, arrayIndex, value);
         writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
@@ -11216,7 +11011,7 @@ private struct Walker {
             isNativeScalarType, readScalar, writeScalar;
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
-        auto updated = receiver.withStructField(fieldIndex, value);
+        auto updated = AggregateValue.withStructField(receiver, fieldIndex, value);
 
         auto fields = structFields(unionType);
         if (fieldIndex >= fields.length)
@@ -11274,7 +11069,7 @@ private struct Walker {
                 continue;
 
             if (isNativeScalarType(sibling.type)) {
-                updated = updated.withStructField(siblingIndex,
+                updated = AggregateValue.withStructField(updated, siblingIndex,
                     readScalar(sibling.type, cell.field(siblingIndex)));
                 continue;
             }
@@ -11284,15 +11079,15 @@ private struct Walker {
                 if (!isNativeScalarType(siblingElementType))
                     continue;
 
-                auto siblingCurrent = updated.structFieldAt(siblingIndex);
+                auto siblingCurrent = AggregateValue.fieldAt(updated, siblingIndex);
                 if (!siblingCurrent.isArray)
                     continue;
 
                 auto siblingArrayCell = cell.arrayField(siblingIndex);
                 foreach (elementIndex; 0 .. siblingCurrent.length)
-                    siblingCurrent = siblingCurrent.withArrayElement(elementIndex,
+                    siblingCurrent = AggregateValue.withArrayElement(siblingCurrent, elementIndex,
                         readScalar(siblingElementType, siblingArrayCell.element(elementIndex)));
-                updated = updated.withStructField(siblingIndex, siblingCurrent);
+                updated = AggregateValue.withStructField(updated, siblingIndex, siblingCurrent);
                 continue;
             }
 
@@ -11300,12 +11095,12 @@ private struct Walker {
             if (siblingStructType is null || siblingStructType.sym.isUnionDeclaration !is null)
                 continue;
 
-            auto siblingCurrent = updated.structFieldAt(siblingIndex);
+            auto siblingCurrent = AggregateValue.fieldAt(updated, siblingIndex);
             if (!siblingCurrent.isStruct)
                 continue;
 
             auto siblingCell = cell.structField(siblingIndex);
-            updated = updated.withStructField(siblingIndex,
+            updated = AggregateValue.withStructField(updated, siblingIndex,
                 structValueFromCell(siblingCurrent, siblingCell));
         }
 
@@ -11396,15 +11191,15 @@ private struct Walker {
                 // arm closes -- re-derive from the shared cell before folding
                 // in this element's write.
                 const authoritative = classCellOverlaidValue(dot.e1, receiver);
-                const source = authoritative.classFieldAt(fieldIndex);
+                const source = AggregateValue.classFieldAt(authoritative, fieldIndex);
                 if (index.lengthVar !is null)
                     setLocal(index.lengthVar, Value(source.length));
                 const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
                 const value = runExpression(rhs);
-                const updatedArray = source.withArrayElement(arrayIndex, value);
+                const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
                 writeLocation(
                     dot.e1,
-                    authoritative.withClassField(fieldIndex, updatedArray),
+                    AggregateValue.withClassField(authoritative, fieldIndex, updatedArray),
                     /* arrayRefWriteback */ false,
                     /* classFieldRefresh */ true,
                 );
@@ -11420,13 +11215,13 @@ private struct Walker {
             // v` right after growing `h.arr` underflowed to size_t.max.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpression(dot.e1);
-            const source = receiver.structFieldAt(fieldIndex);
+            const source = AggregateValue.fieldAt(receiver, fieldIndex);
             if (index.lengthVar !is null)
                 setLocal(index.lengthVar, Value(source.length));
             const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
             const value = runExpression(rhs);
-            const updatedArray = source.withArrayElement(arrayIndex, value);
-            writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
+            const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
+            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
             return value;
         }
 
@@ -11446,7 +11241,7 @@ private struct Walker {
 
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
         const value = runExpression(rhs);
-        setLocal(variable, current.withArrayElement(arrayIndex, value));
+        setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, value));
         writeThroughSliceAlias(variable, arrayIndex, value);
         writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
@@ -11788,9 +11583,10 @@ private struct Walker {
         const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
         const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
         const value = runExpression(rhs);
-        setLocal(variable, current.withArrayElement(
+        setLocal(variable, AggregateValue.withArrayElement(*current,
             outerIndex,
-            (*current)[outerIndex].withArrayElement(innerIndex, value),
+            AggregateValue.withArrayElement(
+                AggregateValue.elementAt(*current, outerIndex), innerIndex, value),
         ));
         const updatedOuter = locals[variable][outerIndex];
         writeThroughArrayCell(variable, outerIndex, updatedOuter);
@@ -12004,7 +11800,7 @@ private struct Walker {
     ) {
         const fieldIndex = structFieldIndex(dot);
         const receiver = runExpression(dot.e1);
-        const current = receiver.structFieldAt(fieldIndex);
+        const current = AggregateValue.fieldAt(receiver, fieldIndex);
 
         const lower = slice.lwr is null
             ? 0
@@ -12022,7 +11818,7 @@ private struct Walker {
                 ? current[index]
                 : block ? copyArrayValue(value) : value[index - lower];
 
-        writeLocation(dot.e1, receiver.withStructField(
+        writeLocation(dot.e1, AggregateValue.withStructField(receiver,
             fieldIndex,
             Value.arrayValue(elements),
         ));
@@ -12105,7 +11901,7 @@ private struct Walker {
     }
 
     private Value runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
-        return Value.arrayValue(
+        return AggregateValue.reconstructArray(
             concatenationElements(cat.e1) ~ concatenationElements(cat.e2),
         );
     }
@@ -12120,8 +11916,8 @@ private struct Walker {
             return [value];
 
         Value[] elements;
-        foreach (index; 0 .. value.length)
-            elements ~= value[index];
+        foreach (index; 0 .. AggregateValue.elementCount(value))
+            elements ~= AggregateValue.elementAt(value, index);
 
         return elements;
     }
@@ -12221,7 +12017,7 @@ private struct Walker {
         imported!"dmd.expression".BinExp assign,
     ) {
         if (assign.e1.isDotVarExp !is null) {
-            const concatenated = Value.arrayValue(
+            const concatenated = AggregateValue.reconstructArray(
                 concatenationElements(assign.e1) ~
                     concatenationElements(assign.e2),
             );
@@ -12236,7 +12032,7 @@ private struct Walker {
                     "Unsupported interpreter array concatenate target.",
                 );
 
-            const concatenated = Value.arrayValue(
+            const concatenated = AggregateValue.reconstructArray(
                 concatenationElements(assign.e1) ~
                     concatenationElements(assign.e2),
             );
@@ -12264,15 +12060,15 @@ private struct Walker {
             throw new Exception("Unsupported interpreter array append target.");
 
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-        const appended = (*current)[arrayIndex]
-            .withAppendedArrayElement(runExpression(rhs));
-        setLocal(variable, current.withArrayElement(arrayIndex, appended));
+        const appended = AggregateValue.withAppendedArrayElement(
+            AggregateValue.elementAt(*current, arrayIndex), runExpression(rhs));
+        setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, appended));
         uninitializedLocals.remove(variable);
         return appended;
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
         import quickbite.frontend.dmd.types: isPointerType;
@@ -12331,7 +12127,7 @@ private struct Walker {
 
         if (auto integer = cast_.e1.isIntegerExp)
             if (integer.type !is null && integer.type.ty == TY.Tenum) {
-                import quickbite.frontend.dmd.values: castIntegerValue;
+                import quickbite.backends.interpreter.runtime_values: castIntegerValue;
 
                 return castIntegerValue(integer, type.ty);
             }
@@ -12462,7 +12258,7 @@ private struct Walker {
     }
 
     private Value boolCastValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.backends.casts:
+        import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
@@ -12550,7 +12346,7 @@ private struct Walker {
             foreach (element; *array.elements)
                 values ~= runExpression(element is null ? array.basis : element);
 
-        return Value.arrayValue(values);
+        return AggregateValue.reconstructArray(values);
     }
 
     private Value structLiteralValue(
@@ -12563,7 +12359,7 @@ private struct Walker {
                     ? structLiteralDefaultFieldValue(literal, index, fields)
                     : structLiteralFieldValue(literal, index, runExpression(element));
 
-        return Value.structValue(structLiteralName(literal), fields);
+        return AggregateValue.reconstructStruct(structLiteralName(literal), fields);
     }
 
     // DMD's `defaultInitLiteral` for a union only ever fills the FIRST
@@ -12701,7 +12497,7 @@ private struct Walker {
             auto siblingCell = cell.arrayField(index);
             foreach (elementIndex; 0 .. siblingCell.length) {
                 auto elementCell = siblingCell.structElement(elementIndex);
-                value = value.withArrayElement(
+                value = AggregateValue.withArrayElement(value,
                     elementIndex,
                     structValueFromCell(value[elementIndex], elementCell),
                 );
@@ -12849,7 +12645,7 @@ private struct Walker {
                         source,
                         index,
                     );
-                return Value.nativeArrayValue(
+                return AggregateValue.reconstructNativeArray(
                     elements,
                     cast(const(ubyte)*) source.asNativePointer + lower *
                         typeByteSize(slice.e1.type.toBasetype.nextOf),
@@ -12897,13 +12693,13 @@ private struct Walker {
         ) {
             import quickbite.backends.interpreter.layout: typeByteSize;
 
-            return Value.nativeArrayValueWithLength(
+            return AggregateValue.reconstructNativeArrayWithLength(
                 (upper - lower) *
                     typeByteSize(slice.e1.type.toBasetype.nextOf),
                 nativeAddress,
             );
         }
-        return source.arraySlice(lower, upper, nativeAddress);
+        return AggregateValue.slice(source, lower, upper, nativeAddress);
     }
 
     private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {
@@ -13219,6 +13015,20 @@ private struct Walker {
         return true;
     }
 
+    // The single ordered route through promoted boxed-pointer cells. Both
+    // direct dereference and compound-assignment/atomic reads use this gate,
+    // so they cannot disagree about which interim mirror is authoritative.
+    private bool pointerCellValue(in Value pointer, out Value value) {
+        return arrayPointerCellValue(pointer, value) ||
+            structFieldPointerCellValue(pointer, value) ||
+            structArrayFieldPointerCellValue(pointer, value) ||
+            nestedStructFieldPointerCellValue(pointer, value) ||
+            arrayNestedStructFieldPointerCellValue(pointer, value) ||
+            classFieldPointerCellValue(pointer, value) ||
+            nestedClassStructFieldPointerCellValue(pointer, value) ||
+            classArrayFieldPointerCellValue(pointer, value);
+    }
+
     // Byte-level authority for a struct-field pointer:
     // once `&s.field` has promoted a `structCells`
     // entry for the struct variable a non-local pointer points into, its
@@ -13232,7 +13042,7 @@ private struct Walker {
     // struct-field address at all -- which keeps the existing boxed
     // `pointerTarget` fallback at each call site.
     private bool structFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto path = pointer.pointerAllocation in fieldPointerPaths;
@@ -13260,7 +13070,7 @@ private struct Walker {
     // field pointer -- no promoted cell, a non-scalar field, or a pointer
     // that was never a class-field address at all.
     private bool classFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto path = pointer.pointerAllocation in fieldPointerPaths;
@@ -13301,7 +13111,7 @@ private struct Walker {
     // never a struct-array-field address at all -- which keeps the existing
     // boxed `pointerTarget` fallback at each call site.
     private bool structArrayFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto variable = pointer.pointerAllocation in structArrayFieldPointerVariables;
@@ -13338,7 +13148,7 @@ private struct Walker {
     // pointer that was never a class-array-field address at all -- which
     // keeps the existing boxed `pointerTarget` fallback at each call site.
     private bool classArrayFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto variable = pointer.pointerAllocation in classArrayFieldPointerVariables;
@@ -13385,7 +13195,7 @@ private struct Walker {
     // nested-struct-field address at all -- which keeps the existing boxed
     // `pointerTarget` fallback at each call site.
     private bool nestedStructFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto path = pointer.pointerAllocation in fieldPointerPaths;
@@ -13421,7 +13231,7 @@ private struct Walker {
     // other pointer, which keeps the existing boxed `pointerTarget` fallback
     // at each call site.
     private bool arrayNestedStructFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto variable = pointer.pointerAllocation in arrayNestedStructFieldPointerVariables;
@@ -13466,7 +13276,7 @@ private struct Walker {
     // at all -- which keeps the existing boxed `pointerTarget` fallback at
     // each call site.
     private bool nestedClassStructFieldPointerCellValue(in Value pointer, out Value value) {
-        if (!pointer.isPointer || pointer.isLocalPointer || pointer.isNativePointer)
+        if (!isBoxedPointer(pointer))
             return false;
 
         auto path = pointer.pointerAllocation in fieldPointerPaths;
@@ -13508,24 +13318,18 @@ private struct Walker {
         }
 
         Value cellValue;
-        if (arrayPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (structFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (structArrayFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (nestedStructFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (arrayNestedStructFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (classFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (nestedClassStructFieldPointerCellValue(pointer, cellValue))
-            return cellValue;
-        if (classArrayFieldPointerCellValue(pointer, cellValue))
+        if (pointerCellValue(pointer, cellValue))
             return cellValue;
 
         return pointer.pointerTarget;
+    }
+
+    // Promoted-cell readers are an interim boxed-authority path: a local
+    // pointer already resolves through its local binding, while a native
+    // pointer reads its host address directly. Only the remaining boxed
+    // pointer carrier needs the identity maps below.
+    private static bool isBoxedPointer(in Value pointer) @safe {
+        return pointer.isPointer && !pointer.isLocalPointer && !pointer.isNativePointer;
     }
 
     private void writePointerTarget(
@@ -13553,51 +13357,7 @@ private struct Walker {
             return;
         }
 
-        // An array-element pointer (`&a[i]`): the same shared-storage
-        // helper `writeLocation`'s `*p = x` arm already calls, so a
-        // compound-assignment/atomic/post-increment write-back
-        // (this function's only callers) refreshes the same `locals`
-        // mirror and, when promoted, the same `arrayCells` entry that
-        // `arrayPointerCellValue` above reads from -- instead of the stale
-        // boxed-value rewrite the fallback below would otherwise perform.
-        if (writeThroughArrayPointer(pointer, value))
-            return;
-
-        // A struct-field pointer (`&s.field`): the same shared-storage
-        // helper `writeLocation`'s `PtrExp` arm already calls, so a
-        // compound-assignment/atomic/post-increment write-back (this
-        // function's only callers) refreshes the same promoted
-        // `structCells` entry that `structFieldPointerCellValue` above reads
-        // from -- instead of the stale boxed-value rewrite the fallback
-        // below would otherwise perform.
-        if (writeThroughStructFieldPointer(pointer, value))
-            return;
-
-        // A struct-static-array-field pointer (`&s.arr[i]`): the array-typed
-        // sibling of the check above, same reasoning.
-        if (writeThroughStructArrayFieldPointer(pointer, value))
-            return;
-
-        // A nested-struct-field pointer (`&s.inner.x`): the one-level-nested
-        // sibling of the two checks above, same reasoning.
-        if (writeThroughNestedStructFieldPointer(pointer, value))
-            return;
-
-        // A class-field pointer (`&c.field`): the class-typed sibling of the
-        // struct-family checks above, same reasoning.
-        if (writeThroughClassFieldPointer(pointer, value))
-            return;
-
-        // A nested-class-struct-field pointer (`&c.inner.x`): the class-
-        // typed sibling of `writeThroughNestedStructFieldPointer`,
-        // same reasoning.
-        if (writeThroughNestedClassStructFieldPointer(pointer, value))
-            return;
-
-        // A class-array-field pointer (`&c.arr[i]`): the class-typed
-        // sibling of `writeThroughStructArrayFieldPointer`, same
-        // reasoning.
-        if (writeThroughClassArrayFieldPointer(pointer, value))
+        if (writeThroughPromotedPointer(pointer, value))
             return;
 
         if (auto address = expression.isAddrExp) {
@@ -13611,6 +13371,19 @@ private struct Walker {
         }
 
         writeLocation(expression, pointer.withPointerTarget(value));
+    }
+
+    // The single ordered route through promoted boxed-pointer writes. Direct
+    // dereference and compound-assignment/atomic write-back use this gate, so
+    // they cannot update different interim authorities.
+    private bool writeThroughPromotedPointer(in Value pointer, in Value value) {
+        return writeThroughArrayPointer(pointer, value) ||
+            writeThroughStructFieldPointer(pointer, value) ||
+            writeThroughStructArrayFieldPointer(pointer, value) ||
+            writeThroughNestedStructFieldPointer(pointer, value) ||
+            writeThroughClassFieldPointer(pointer, value) ||
+            writeThroughNestedClassStructFieldPointer(pointer, value) ||
+            writeThroughClassArrayFieldPointer(pointer, value);
     }
 
     private void writePointerElements(
@@ -13733,8 +13506,7 @@ private struct Walker {
             child.runningCalledFunction = true;
             child.currentFunction = new_.member;
             auto layout = cachedFrameLayout(new_.member);
-            if (layout.byteLength > 0)
-                child._activationFrame = FrameBlock.allocate(layout);
+            child._activationFrame = FrameBlock.allocate(layout);
             child.result = Value(false);
             child.thisValue = structVal;
             child.hasThis = true;
@@ -13758,7 +13530,7 @@ private struct Walker {
                     throw new Exception(text(
                         "Unsupported eval expression: ", new_.op,
                     ));
-                structVal = structVal.withStructField(
+                structVal = AggregateValue.withStructField(structVal,
                     index,
                     runExpression(argument),
                 );
@@ -13873,8 +13645,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = new_.member;
         auto layout = cachedFrameLayout(new_.member);
-        if (layout.byteLength > 0)
-            child._activationFrame = FrameBlock.allocate(layout);
+        child._activationFrame = FrameBlock.allocate(layout);
         child.result = Value(false);
         child.locals = locals.dup;
         forkPerFrameCellsInto(child);
@@ -14075,14 +13846,16 @@ private struct Walker {
                             classValueFromCell(authoritativeSource, *cell, classType.sym);
                 }
 
-            const updatedField = alias_.isClassField
-                ? authoritativeSource.classFieldAt(alias_.fieldIndex)
-                    .withArrayElement(alias_.lower + index, value)
-                : authoritativeSource.structFieldAt(alias_.fieldIndex)
-                    .withArrayElement(alias_.lower + index, value);
+            const updatedField = AggregateValue.withArrayElement(
+                alias_.isClassField
+                    ? AggregateValue.classFieldAt(authoritativeSource, alias_.fieldIndex)
+                    : AggregateValue.fieldAt(authoritativeSource, alias_.fieldIndex),
+                alias_.lower + index,
+                value,
+            );
             const updatedOwner = alias_.isClassField
-                ? authoritativeSource.withClassField(alias_.fieldIndex, updatedField)
-                : authoritativeSource.withStructField(alias_.fieldIndex, updatedField);
+                ? AggregateValue.withClassField(authoritativeSource, alias_.fieldIndex, updatedField)
+                : AggregateValue.withStructField(authoritativeSource, alias_.fieldIndex, updatedField);
             // Struct-static-array-field foreach-ref case: `alias_.source`
             // (the struct owning the field) may
             // already have a `structCells` entry (an earlier `&s.arr[0]` in
@@ -14103,7 +13876,8 @@ private struct Walker {
             return;
         }
 
-        setLocal(alias_.source, source.withArrayElement(alias_.lower + index, value));
+        setLocal(alias_.source, AggregateValue.withArrayElement(
+            *source, alias_.lower + index, value));
         // A slice-expression parameter (bound
         // via `recordParameterSliceAlias`, which never calls
         // `promoteSliceArrayCell`) has no `arrayCells` entry of its own, but
@@ -14131,7 +13905,7 @@ private struct Walker {
         if (source is null)
             throw new Exception("Unsupported interpreter struct field alias target.");
 
-        setLocal(*sourceVariable, source.withArrayElement(index, value));
+        setLocal(*sourceVariable, AggregateValue.withArrayElement(*source, index, value));
         // Once `sourceVariable` has a
         // promoted `arrayCells` entry (needing no address-of at all --
         // `foreach (v; a)` promotes it via `promoteSliceArrayCell`), a
@@ -14506,7 +14280,8 @@ private struct Walker {
         if (source is null)
             throw new Exception("Unsupported interpreter array element alias target.");
 
-        setLocal(alias_.source, source.withArrayElement(alias_.index, value));
+        setLocal(alias_.source, AggregateValue.withArrayElement(
+            *source, alias_.index, value));
         auto sliceAlias = alias_.source in sliceAliases;
         if (sliceAlias is null || (sliceAlias.source in locals) !is null)
             writeThroughSliceAlias(alias_.source, alias_.index, value);
@@ -14564,8 +14339,8 @@ private struct Walker {
 
         if (source !is null)
             setLocal(alias_.source, alias_.isClass
-                ? source.withClassField(alias_.index, value)
-                : source.withStructField(alias_.index, value));
+                ? AggregateValue.withClassField(*source, alias_.index, value)
+                : AggregateValue.withStructField(*source, alias_.index, value));
         // A `ref` local bound directly to an
         // aggregate field (`ref int r = s.x;`, recorded via
         // `recordStructFieldAlias`) must also refresh `alias_.source`'s
@@ -14737,8 +14512,8 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
 }
 
 
-private bool isTruthy(in imported!"quickbite.lang".Value value) {
-    import quickbite.lang: Value;
+private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     if (value == Value.null_)
         return false;
@@ -14778,11 +14553,11 @@ private bool returnsRef(imported!"dmd.func".FuncDeclaration function_) {
 // The `this` a native constructor initialises: the struct's default `.init`.
 // The variable being constructed has no usable value yet, so the evaluated
 // receiver is not a struct (mirrors runMemberFunction's ctor seeding).
-private imported!"quickbite.lang".Value nativeConstructorReceiver(
+private imported!"quickbite.backends.interpreter.runtime_value".Value nativeConstructorReceiver(
     imported!"dmd.func".FuncDeclaration function_,
-    in imported!"quickbite.lang".Value receiver,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
 ) {
-    import quickbite.frontend.dmd.values: defaultValue;
+    import quickbite.backends.interpreter.runtime_values: defaultValue;
 
     auto structDecl = function_.parent is null
         ? null
@@ -14791,12 +14566,12 @@ private imported!"quickbite.lang".Value nativeConstructorReceiver(
 }
 
 
-private imported!"quickbite.lang".Value classDefaultValue(
+private imported!"quickbite.backends.interpreter.runtime_value".Value classDefaultValue(
     imported!"dmd.dclass".ClassDeclaration class_,
     in size_t identity = 0,
 ) {
-    import quickbite.frontend.dmd.values: defaultValue;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_values: defaultValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import quickbite.backends.interpreter.layout: classFields;
 
     string[] fieldNames;
@@ -15170,15 +14945,15 @@ private struct StructArrayFieldAliases {
 
 private struct AssocArraySlotAlias {
     public imported!"dmd.declaration".VarDeclaration source;
-    public imported!"quickbite.lang".Value key;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value key;
 }
 
 
 private struct RuntimeDelegate {
     public imported!"dmd.func".FuncDeclaration function_;
     public size_t functionPointerId;
-    public imported!"quickbite.lang".Value contextPointer;
-    public imported!"quickbite.lang".Value receiver;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value contextPointer;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value receiver;
     public bool hasReceiver;
 }
 

@@ -4,7 +4,7 @@ module quickbite.backends.interpreter.native_scalar;
 private:
 
 
-// A leaf codec between the interpreter's boxed scalar `quickbite.lang.Value`
+// A leaf codec between the interpreter's boxed scalar `quickbite.backends.interpreter.runtime_value.Value`
 // and the host's native byte layout for a D scalar type. This is the first
 // production call site for the native-layout container types
 // (`native_block.d`/`native_array.d`/`native_struct.d`): `impl.d` promotes an
@@ -84,7 +84,7 @@ public bool isNativeScalarType(imported!"dmd.mtype".Type type) @safe {
 public void writeScalar(
     imported!"dmd.mtype".Type type,
     ubyte[] dest,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     import quickbite.backends.interpreter.layout: typeByteSize;
 
@@ -110,7 +110,7 @@ public void writeScalar(
 private void writeScalarBits(
     imported!"dmd.astenums".TY kind,
     ubyte[] dest,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @trusted {
     import core.stdc.string: memcpy;
     import dmd.astenums: TY;
@@ -174,7 +174,7 @@ private void writeScalarBits(
 // input both can receive: a character value's bits are its code point
 // (`castTo!long`), matching that module's own scalar marshalling so the two
 // helpers stay in agreement rather than silently drifting.
-private long scalarLong(in imported!"quickbite.lang".Value value) @safe {
+private long scalarLong(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @safe {
     return value.isCharacter ? value.castTo!long.asLong : value.asLong;
 }
 
@@ -183,7 +183,7 @@ private long scalarLong(in imported!"quickbite.lang".Value value) @safe {
 // native layout. `src.length` must equal `layout.typeByteSize(type)`,
 // enforced the same unconditional-throw way `writeScalar` enforces
 // `dest.length`, for the same reason.
-public imported!"quickbite.lang".Value readScalar(
+public imported!"quickbite.backends.interpreter.runtime_value".Value readScalar(
     imported!"dmd.mtype".Type type,
     in ubyte[] src,
 ) @safe {
@@ -204,13 +204,13 @@ public imported!"quickbite.lang".Value readScalar(
 // same-sized local, then boxes it -- the read-side counterpart of
 // `writeScalarBits`, with the same alignment reasoning for using `memcpy`
 // over a pointer-typed load.
-private imported!"quickbite.lang".Value readScalarBits(
+private imported!"quickbite.backends.interpreter.runtime_value".Value readScalarBits(
     imported!"dmd.astenums".TY kind,
     in ubyte[] src,
 ) @trusted {
     import core.stdc.string: memcpy;
     import dmd.astenums: TY;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     switch (kind) with (TY) {
         case Tbool: {

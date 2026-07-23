@@ -8,7 +8,7 @@ import quickbite.backends.interpreter.module_table: ModuleTable;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar, readScalar;
 import quickbite.backends.interpreter.layout: typeByteSize;
-import quickbite.lang: Value;
+import quickbite.backends.interpreter.runtime_value: Value;
 
 private:
 

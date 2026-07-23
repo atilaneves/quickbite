@@ -51,8 +51,8 @@ public string missingKeyMessage(
     );
 }
 
-public bool isTruthy(in imported!"quickbite.lang".Value value) {
-    import quickbite.lang: Value;
+public bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     if (value == Value.null_)
         return false;
@@ -102,8 +102,8 @@ public bool isClassExpression(
     return type !is null && type.ty == TY.Tclass;
 }
 
-public bool isBoolValue(in imported!"quickbite.lang".Value value) {
-    import quickbite.lang: Value;
+public bool isBoolValue(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     return value == Value(false) || value == Value(true);
 }
@@ -270,12 +270,12 @@ public string invertedEqualityOperator(in char[] operator) {
 }
 
 public string equalityOperandMessage(
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     in bool useBoolMessage,
     imported!"dmd.expression".Expression expression,
 ) {
     import quickbite.frontend.dmd.types: isIntegralExpression;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import std.conv: text;
 
     if (useBoolMessage)
@@ -301,9 +301,9 @@ public string equalityOperandMessage(
 
 public string assertMessage(
     imported!"dmd.expression".Expression expression,
-    scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
 ) {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     if (auto literal = expression.isStringExp)
         return literal.peekString.idup;
@@ -382,10 +382,10 @@ private string dmdAssertFailBoolMessageFromCall(
 
 public string dmdAssertFailMessage(
     imported!"dmd.expression".Expression expression,
-    scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.id: Id;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import std.conv: text;
 
     auto call = expression.isCallExp;
@@ -431,7 +431,7 @@ public string dmdAssertFailMessage(
 private string dmdAssertFailIdentityMessage(
     imported!"dmd.expression".Expression left,
     imported!"dmd.expression".Expression right,
-    scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
 ) {
     if (auto identity = identityExpression(left)) {
         if (assertExpectedTrue(right))
@@ -455,7 +455,7 @@ private bool assertExpectedTrue(imported!"dmd.expression".Expression expression)
 
 private string identityFailureMessage(
     imported!"dmd.expression".IdentityExp identity,
-    scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.tokens: EXP;
     import std.conv: text;
@@ -470,8 +470,8 @@ private string identityFailureMessage(
     );
 }
 
-private string identityOperandMessage(in imported!"quickbite.lang".Value value) {
-    import quickbite.lang: Value;
+private string identityOperandMessage(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import quickbite.backends.interpreter.runtime_value: Value;
     import std.conv: text;
 
     if (value == Value.null_)
@@ -482,10 +482,10 @@ private string identityOperandMessage(in imported!"quickbite.lang".Value value) 
 
 public string equalFailureMessage(
     imported!"dmd.expression".EqualExp equal,
-    scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.tokens: EXP;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import std.conv: text;
 
     const operator = equal.op == EXP.notEqual ? "==" : "!=";
@@ -513,9 +513,9 @@ public string assertFailureMessage(
     imported!"dmd.expression".AssertExp assert_,
     in bool runningCalledFunction,
     in bool inUnitTest,
-    scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
 ) {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import std.conv: text;
 
     // A literal `assert(false)` directly in a unittest body raises the plain

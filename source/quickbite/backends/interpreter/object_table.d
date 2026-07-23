@@ -6,7 +6,7 @@ private:
 
 // The object-lifetime GC storage for class instances: each class object's
 // body gets its own `NativeBlock`, keyed by the object's own stable
-// identity (`quickbite.lang.Value.classIdentity`, minted once per boxed
+// identity (`quickbite.backends.interpreter.runtime_value.Value.classIdentity`, minted once per boxed
 // class object -- see `impl.d`'s `classObjectCells`) rather than by any
 // variable that happens to reference it. Unlike `ModuleTable`, which keys
 // on a `VarDeclaration` because a module variable IS its own storage, many
@@ -96,7 +96,7 @@ public struct ObjectTable {
     // `-release` strips -- precisely the build this kind of silent
     // corruption matters most in -- because a violation here is an
     // internal invariant broken by a caller, not guest-reachable input;
-    // the same "throw for a broken invariant" idiom `quickbite.lang.Value`'s
+    // the same "throw for a broken invariant" idiom `quickbite.backends.interpreter.runtime_value.Value`'s
     // own variant accessors already use (e.g. `classTypeName` on a
     // non-class `Value`).
     public void* storageFor(size_t identity, ClassDeclaration class_) @safe {

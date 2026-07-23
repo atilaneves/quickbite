@@ -65,14 +65,15 @@ private:
 // nothing else in the codebase would recognise. `null` (the default, for
 // the majority of call sites whose place holds no class at all) makes the
 // class arm decline rather than guess.
-public imported!"quickbite.lang".Value readValue(
+public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     size_t delegate(void* bodyAddress) @safe identityOfObjectBody = null,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         staticArrayLength, enumMemberQualifiedName, typeByteSize;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     auto type = place.type;
 
@@ -124,7 +125,7 @@ public imported!"quickbite.lang".Value readValue(
         foreach (i; 0 .. staticArrayLength(arrayType))
             elements ~= readValue(place.index(i), identityOfObjectBody);
 
-        return Value.arrayValue(elements);
+        return AggregateValue.reconstructArray(elements);
     }
 
     auto sliceType = type.isTypeDArray;
@@ -139,7 +140,7 @@ public imported!"quickbite.lang".Value readValue(
         foreach (i; 0 .. header.length)
             elements ~= readValue(place.index(i), identityOfObjectBody);
 
-        return Value.arrayValue(elements);
+        return AggregateValue.reconstructArray(elements);
     }
 
     // A class-typed FIELD is itself a stored reference (identical shape to
@@ -204,14 +205,15 @@ public imported!"quickbite.lang".Value readValue(
 // for why this module must not mint one itself. A caller that supplies
 // none has no class namespace to speak of, so this declines rather than
 // producing a `Value.classValue` whose identity nothing can resolve.
-private imported!"quickbite.lang".Value readClassValue(
+private imported!"quickbite.backends.interpreter.runtime_value".Value readClassValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     bool[size_t] visiting,
     size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
 ) @safe {
     import quickbite.backends.interpreter.layout:
         classFields, classQualifiedName, classHierarchyNames, fieldName;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     // `place.deref` follows this place's own stored reference and keeps
     // the class type, giving a place at the object body's own address
@@ -266,7 +268,7 @@ private imported!"quickbite.lang".Value readClassValue(
     // identity `classBodyShapeMatches` checks) would carry a name that
     // undersells the object's real class and wrongly MATCH where the gate
     // should decline.
-    return Value.classValue(
+    return AggregateValue.reconstructClass(
         classQualifiedName(classType.sym),
         classHierarchyNames(classType.sym),
         fieldNames,
@@ -293,6 +295,86 @@ public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
     import dmd.astenums: TY;
 
     return type.toBasetype.ty == TY.Tfloat80;
+}
+
+
+// Whether `value` has exactly the recursive boxed shape `writeValue` can
+// encode at `type`: a native scalar, `real`, struct/union, static array, or
+// host-address pointer. This is the value-side counterpart to
+// `isPlaceComposable`'s type-side gate, and deliberately calls it itself so
+// mirror writers and scratch verifiers cannot disagree about whether a
+// `writeValue` call is safe. A mismatch is ordinary control flow for the
+// boxed-era mirror: callers leave the shadow untouched rather than relying on
+// `writeValue` to throw after a partial recursive write.
+public bool valueMatchesPlace(
+    imported!"dmd.mtype".Type type,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+) @safe {
+    if (!isPlaceComposable(type))
+        return false;
+
+    return valueMatchesComposablePlace(type, value);
+}
+
+
+// `valueMatchesPlace` has already established that `type` is composable.
+// Keeping that type-side recursion outside this value-side recursion avoids
+// re-walking every nested aggregate at each leaf.
+private bool valueMatchesComposablePlace(
+    imported!"dmd.mtype".Type type,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+) @safe {
+    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+    import quickbite.backends.interpreter.layout:
+        declaredType, staticArrayLength, structFields;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
+
+    if (isNativeScalarType(type))
+        return value.isNumericScalar || value.isCharacter;
+
+    // `real` is `isPlaceComposable` but not a native scalar. Its boxed
+    // representation is always numeric (never character), matching
+    // `writeValue`'s `writeRealBits` arm.
+    if (isRealType(type))
+        return value.isNumericScalar;
+
+    auto structType = type.isTypeStruct;
+    if (structType !is null) {
+        if (!AggregateValue.isStruct(value))
+            return false;
+
+        auto fields = structFields(structType);
+        if (AggregateValue.fieldCount(value) != fields.length)
+            return false;
+
+        foreach (index, field; fields)
+            if (!valueMatchesComposablePlace(
+                declaredType(field),
+                AggregateValue.fieldAt(value, index),
+            ))
+                return false;
+
+        return true;
+    }
+
+    if (type.isTypePointer !is null)
+        return value.isNativePointer || value == Value.null_;
+
+    auto arrayType = type.isTypeSArray;
+    assert(arrayType !is null, "valueMatchesPlace: composable type");
+    if (!AggregateValue.isArray(value))
+        return false;
+
+    const length = staticArrayLength(arrayType);
+    if (AggregateValue.elementCount(value) != length)
+        return false;
+
+    foreach (i; 0 .. length)
+        if (!valueMatchesComposablePlace(arrayType.next, AggregateValue.elementAt(value, i)))
+            return false;
+
+    return true;
 }
 
 
@@ -400,19 +482,20 @@ in (length == real.sizeof)
 // `Value` for a union (`impl.d`'s `withUnionFieldWrite`, which likewise
 // stores a union's `Value` as `Value.structValue` with one entry per
 // declared member, never a smaller "only the live member" shape).
-private imported!"quickbite.lang".Value structValueAt(
+private imported!"quickbite.backends.interpreter.runtime_value".Value structValueAt(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeStruct structType,
     size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
 ) @safe {
     import quickbite.backends.interpreter.layout: structFields;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     Value[] fields;
     foreach (field; structFields(structType))
         fields ~= readValue(place.field(field), identityOfObjectBody);
 
-    return Value.structValue(structTypeName(structType), fields);
+    return AggregateValue.reconstructStruct(structTypeName(structType), fields);
 }
 
 
@@ -458,12 +541,13 @@ private imported!"quickbite.lang".Value structValueAt(
 // shared codec.
 public void writeValue(
     imported!"quickbite.backends.interpreter.place".Place place,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         structFields, staticArrayLength, typeByteSize;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     auto type = place.type;
 
@@ -492,7 +576,7 @@ public void writeValue(
     auto structType = nonUnionStructOf(type);
     if (structType !is null) {
         foreach (index, field; structFields(structType))
-            writeValue(place.field(field), value.structFieldAt(index));
+            writeValue(place.field(field), AggregateValue.fieldAt(value, index));
         return;
     }
 
@@ -505,7 +589,7 @@ public void writeValue(
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null) {
         foreach (i; 0 .. staticArrayLength(arrayType))
-            writeValue(place.index(i), value[i]);
+            writeValue(place.index(i), AggregateValue.elementAt(value, i));
         return;
     }
 
@@ -540,7 +624,7 @@ public void writeValue(
 // is `isNativePointer` or `Value.null_`, so this never reaches
 // `asNativePointer`'s own throwing arm -- it always returns a real host
 // address, or `null`.
-private void* nativePointerAddress(in imported!"quickbite.lang".Value value) @trusted {
+private void* nativePointerAddress(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @trusted {
     return value.asNativePointer;
 }
 
@@ -602,14 +686,15 @@ private void* nativePointerAddress(in imported!"quickbite.lang".Value value) @tr
 private void writeSliceValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeDArray sliceType,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
-    const length = value == Value.null_ ? 0 : value.length;
+    const length = value == Value.null_ ? 0 : AggregateValue.elementCount(value);
 
     auto elementType = sliceType.next;
     auto array = NativeArray.allocate(elementType, length);
@@ -620,7 +705,7 @@ private void writeSliceValue(
     auto elements = Place(scratchHeader.address, sliceType);
 
     foreach (i; 0 .. length)
-        writeValue(elements.index(i), value[i]);
+        writeValue(elements.index(i), AggregateValue.elementAt(value, i));
 
     array.writeSliceHeader(place.address);
 }
@@ -651,8 +736,9 @@ private void writeSliceValue(
 private void writeUnionValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".TypeStruct unionType,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: structFields;
 
     if (!isComposableUnion(unionType))
@@ -665,7 +751,7 @@ private void writeUnionValue(
     const widestIndex = widestUnionFieldIndex(unionType);
     writeValue(
         place.field(structFields(unionType)[widestIndex]),
-        value.structFieldAt(widestIndex),
+        AggregateValue.fieldAt(value, widestIndex),
     );
 }
 
@@ -899,7 +985,7 @@ private bool writeCoversWholeType(imported!"dmd.mtype".Type type) @safe {
 // tests) still terminates rather than overflowing the stack.
 public void writeClassBody(
     imported!"quickbite.backends.interpreter.place".Place bodyPlace,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     void* delegate(size_t identity, imported!"dmd.dclass".ClassDeclaration class_) @safe
         resolveObjectBody,
 ) @safe {
@@ -908,14 +994,15 @@ public void writeClassBody(
 
 private void writeClassBodyImpl(
     imported!"quickbite.backends.interpreter.place".Place bodyPlace,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     void* delegate(size_t identity, imported!"dmd.dclass".ClassDeclaration class_) @safe
         resolveObjectBody,
     bool[size_t] visiting,
 ) @safe {
     import quickbite.backends.interpreter.layout: classFields;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.runtime_value: Value;
 
     auto classType = bodyPlace.type.isTypeClass;
     if (classType is null)
@@ -935,7 +1022,7 @@ private void writeClassBodyImpl(
 
     foreach (index, field; classFields(classType.sym)) {
         auto fieldPlace = bodyPlace.field(field);
-        auto fieldValue = value.classFieldAt(index);
+        auto fieldValue = AggregateValue.classFieldAt(value, index);
 
         if (fieldPlace.type.isTypeClass is null) {
             writeValue(fieldPlace, fieldValue);
@@ -947,7 +1034,7 @@ private void writeClassBodyImpl(
             continue;
         }
 
-        if (!fieldValue.isClassObject || fieldValue.classIdentity == 0)
+        if (!AggregateValue.isClass(fieldValue) || fieldValue.classIdentity == 0)
             throw new Exception(
                 "quickbite.backends.interpreter.place_value.writeClassBody: "
                 ~ "class-typed field requires a Value holding a class "

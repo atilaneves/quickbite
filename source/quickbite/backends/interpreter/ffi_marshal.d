@@ -16,16 +16,16 @@ public import quickbite.ffi.core: NativeCallException;
 // Runs an interpreted delegate that native code called back into (ffi.md
 // §34.16). The Walker supplies it so the marshaller can re-enter the
 // interpreter without this module importing the Walker.
-public alias DelegateInvoker = imported!"quickbite.lang".Value delegate(
-    in imported!"quickbite.lang".Value callee,
-    in imported!"quickbite.lang".Value[] arguments,
+public alias DelegateInvoker = imported!"quickbite.backends.interpreter.runtime_value".Value delegate(
+    in imported!"quickbite.backends.interpreter.runtime_value".Value callee,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
 );
 
 // Session-owned callback roots and callback-id invoker for durable FFI
 // trampolines. The core registry owns libffi closure memory; this table owns
 // interpreter Values and remains valid for the Walker session (§35.4).
 public struct InterpreterInboundTrampolineSession {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import quickbite.ffi: InboundTrampolineRegistry;
 
     private Value[] _callbacks;
@@ -95,20 +95,20 @@ public struct InterpreterInboundTrampolineSession {
 // they stand after the call, for the walker to write back through the
 // pointer value.
 public struct PointerElementsWriteback {
-    public imported!"quickbite.lang".Value pointer;
-    public imported!"quickbite.lang".Value[] elements;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value pointer;
+    public imported!"quickbite.backends.interpreter.runtime_value".Value[] elements;
 }
 
 public bool tryCallNative(
     imported!"dmd.func".FuncDeclaration function_,
-    in imported!"quickbite.lang".Value[] arguments,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
-    in imported!"quickbite.lang".Value[] outParameterInputs,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] outParameterInputs,
     DelegateInvoker invokeDelegate,
     InterpreterInboundTrampolineSession* durableSession,
-    out imported!"quickbite.lang".Value result,
-    out imported!"quickbite.lang".Value[] argumentWritebacks,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value result,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
     out PointerElementsWriteback[] pointerWritebacks,
 ) {
     import quickbite.ffi: callNative;
@@ -130,10 +130,10 @@ public bool tryCallNative(
 
 public bool tryAssignNativeRefReturn(
     imported!"dmd.func".FuncDeclaration function_,
-    in imported!"quickbite.lang".Value[] arguments,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) {
     import quickbite.ffi: assignNativeRefReturn;
 
@@ -149,17 +149,19 @@ public bool tryAssignNativeRefReturn(
 public bool tryCallNativeMember(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
-    in imported!"quickbite.lang".Value receiver,
-    in imported!"quickbite.lang".Value[] arguments,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
-    out imported!"quickbite.lang".Value result,
-    out imported!"quickbite.lang".Value[] argumentWritebacks,
-    out imported!"quickbite.lang".Value receiverWriteback,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value result,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value receiverWriteback,
 ) {
     import quickbite.ffi: callNativeMember;
 
-    if (receiverType is null || !receiver.isStruct)
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+    if (receiverType is null || !AggregateValue.isStruct(receiver))
         return false;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
@@ -191,16 +193,18 @@ public bool tryCallNativeMember(
 public bool tryCallNativeConstructor(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
-    in imported!"quickbite.lang".Value receiver,
-    in imported!"quickbite.lang".Value[] arguments,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
-    out imported!"quickbite.lang".Value result,
-    out imported!"quickbite.lang".Value[] argumentWritebacks,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value result,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
 ) {
     import quickbite.ffi: callNativeMember;
 
-    if (receiverType is null || !receiver.isStruct)
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+    if (receiverType is null || !AggregateValue.isStruct(receiver))
         return false;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
@@ -224,14 +228,14 @@ public bool tryCallNativeConstructor(
 // of the §34.16 closure bridge.
 public bool tryCallNativeDelegate(
     imported!"dmd.mtype".TypeFunction functionType,
-    in imported!"quickbite.lang".Value delegate_,
-    in imported!"quickbite.lang".Value[] arguments,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value delegate_,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
-    in imported!"quickbite.lang".Value[] outParameterInputs,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] outParameterInputs,
     DelegateInvoker invokeDelegate,
-    out imported!"quickbite.lang".Value result,
-    out imported!"quickbite.lang".Value[] argumentWritebacks,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value result,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
 ) {
     import quickbite.ffi: callNativeDelegate;
 
@@ -265,12 +269,12 @@ public bool tryCallNativeDelegate(
 public bool tryCallNativeClassMember(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeClass receiverType,
-    in imported!"quickbite.lang".Value receiver,
-    in imported!"quickbite.lang".Value[] arguments,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
-    out imported!"quickbite.lang".Value result,
-    out imported!"quickbite.lang".Value[] argumentWritebacks,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value result,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
 ) {
     import quickbite.ffi: callNativeClassMember;
 
@@ -302,7 +306,7 @@ private bool mutatesReceiver(
 }
 
 private final class InterpreterNativeMarshaller: NativeMarshaller {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.mtype: Type;
 
     private const(Value)[] _arguments;
@@ -645,7 +649,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
 private void marshalArgument(
     ubyte[] buffer,
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     in bool stableString,
     ref const(char)*[] keepAlive,
     ref ubyte[][] keepAliveBuffers,
@@ -725,6 +729,7 @@ private void marshalArgument(
             // `field.type.toBasetype` performed.
             import quickbite.backends.interpreter.layout: typeByteSize;
             import quickbite.backends.interpreter.native_struct: NativeStruct;
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
             // `NativeStruct.borrow` fabricates its extent from `type`
             // rather than sub-slicing `buffer`, so a too-short `buffer`
@@ -737,7 +742,7 @@ private void marshalArgument(
                 marshalArgument(
                     ns.field(index),
                     ns.fieldDeclaration(index).type.toBasetype,
-                    value.structFieldAt(index),
+                    AggregateValue.fieldAt(value, index),
                     stableString,
                     keepAlive,
                     keepAliveBuffers,
@@ -751,6 +756,7 @@ private void marshalArgument(
             import dmd.mtype: TypeSArray;
             import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
             import quickbite.backends.interpreter.native_array: NativeArray;
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
             auto staticArray = cast(TypeSArray) type;
             auto elementType = staticArray.next.toBasetype;
@@ -765,7 +771,7 @@ private void marshalArgument(
                 marshalArgument(
                     na.element(index),
                     elementType,
-                    value[index],
+                    AggregateValue.elementAt(value, index),
                     stableString,
                     keepAlive,
                     keepAliveBuffers,
@@ -780,7 +786,7 @@ private void marshalArgument(
 
 private long scalarBits(
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe pure {
     import dmd.astenums: TY;
 
@@ -797,7 +803,7 @@ private long scalarBits(
 
 private void* marshalPointerArgument(
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     in bool stableString,
     ref const(char)*[] keepAlive,
 ) {
@@ -836,9 +842,9 @@ private imported!"dmd.mtype".Type pointerElementType(
 // still `= void` (an uninitialized read buffer) marshal as zero bytes.
 private ubyte[] marshalPointerElements(
     imported!"dmd.mtype".Type elementType,
-    in imported!"quickbite.lang".Value pointer,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value pointer,
 ) {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import quickbite.backends.interpreter.native_array: NativeArray;
 
     // Routed through `NativeArray` rather than a hand-rolled
@@ -881,7 +887,7 @@ private void fillPointerCell(ubyte[] cell, in ubyte[] bytes) @trusted {
 // native allocations are reclaimed at process exit, ffi.md §5). Only
 // byte-wide elements have an unambiguous memory image through a type-erased
 // pointer, so anything wider is refused rather than silently truncated.
-private void* pointedAtByteBuffer(in imported!"quickbite.lang".Value value) {
+private void* pointedAtByteBuffer(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
     const offset = cast(size_t) value.pointerElementOffset;
     const length = value.pointerLength - offset;
     auto buffer = byteBuffer(length == 0 ? 1 : length);
@@ -908,7 +914,7 @@ private ubyte[] byteBuffer(in size_t length) @trusted {
 private ubyte[] marshalSliceArgument(
     ubyte[] buffer,
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     ref ubyte[][] keepAliveBuffers,
 ) {
     // Routed through `NativeArray` rather than a hand-rolled
@@ -917,11 +923,12 @@ private ubyte[] marshalSliceArgument(
     // old code did, and reused both
     // to build the handle and to dispatch the recursive marshal.
     import quickbite.backends.interpreter.native_array: NativeArray;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-    if (value.arrayNativeAddress !is null) {
-        *cast(size_t*) buffer.ptr = value.length;
+    if (AggregateValue.nativeArrayAddress(value) !is null) {
+        *cast(size_t*) buffer.ptr = AggregateValue.elementCount(value);
         *cast(const(void)**) (buffer.ptr + size_t.sizeof) =
-            value.arrayNativeAddress;
+            AggregateValue.nativeArrayAddress(value);
         return null;
     }
 
@@ -931,13 +938,13 @@ private ubyte[] marshalSliceArgument(
     auto elementType = type.nextOf.toBasetype;
     if (elementType.ty == TY.Tvoid)
         elementType = Type.tuns8;
-    auto na = NativeArray.allocate(elementType, value.length);
+    auto na = NativeArray.allocate(elementType, AggregateValue.elementCount(value));
     const(char)*[] keepAlive;
-    foreach (index; 0 .. value.length) {
+    foreach (index; 0 .. AggregateValue.elementCount(value)) {
         marshalArgument(
             na.element(index),
             elementType,
-            value[index],
+            AggregateValue.elementAt(value, index),
             false,
             keepAlive,
             keepAliveBuffers,
@@ -952,7 +959,7 @@ private ubyte[] marshalSliceArgument(
     // allocation never moves.
     auto bytes = na.block.bytes;
     keepAliveBuffers ~= bytes;
-    *cast(size_t*) buffer.ptr = value.length;
+    *cast(size_t*) buffer.ptr = AggregateValue.elementCount(value);
     *cast(void**) (buffer.ptr + size_t.sizeof) = bytes.ptr;
     return bytes;
 }
@@ -970,7 +977,7 @@ private bool isMutableScalarSlice(imported!"dmd.mtype".Type type) {
 
 // Reify a mutable slice's (possibly native-mutated) element buffer back into a
 // backend array Value by reusing the {length, ptr} return reification.
-private imported!"quickbite.lang".Value reifySliceWriteback(
+private imported!"quickbite.backends.interpreter.runtime_value".Value reifySliceWriteback(
     imported!"dmd.mtype".Type arrayType,
     ubyte[] bytes,
     in size_t length,
@@ -982,11 +989,11 @@ private imported!"quickbite.lang".Value reifySliceWriteback(
 }
 
 // Marshal a raw ABI return buffer back into a backend value.
-private imported!"quickbite.lang".Value unmarshalValue(
+private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalValue(
     imported!"dmd.mtype".Type type,
     in ubyte[] buffer,
 ) {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.astenums: TY;
     import dmd.mtype: TypeStruct;
     import quickbite.backends.interpreter.layout: typeByteSize;
@@ -1151,11 +1158,12 @@ private bool canReifyFromNative(imported!"dmd.mtype".Type type) {
 
 // A static array laid out inline (e.g. a reserved field inside stat_t): one
 // element after another, no descriptor.
-private imported!"quickbite.lang".Value unmarshalStaticArray(
+private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalStaticArray(
     imported!"dmd.mtype".Type type,
     in ubyte[] buffer,
 ) {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.mtype: TypeSArray;
     import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
     import quickbite.backends.interpreter.native_array: NativeArray;
@@ -1183,15 +1191,16 @@ private imported!"quickbite.lang".Value unmarshalStaticArray(
     foreach (index; 0 .. length)
         elements ~= unmarshalValue(elementType, na.element(index));
 
-    return Value.arrayValue(elements);
+    return AggregateValue.reconstructArray(elements);
 }
 
-private imported!"quickbite.lang".Value unmarshalSlice(
+private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalSlice(
     imported!"dmd.mtype".Type type,
     in ubyte[] buffer,
 ) {
     import quickbite.ffi: isSupportedFfiSlice;
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.astenums: TY;
 
     assert(isSupportedFfiSlice(type));
@@ -1208,7 +1217,7 @@ private imported!"quickbite.lang".Value unmarshalSlice(
                     break;
 
                 default:
-                    return Value.nativeArrayValueWithLength(0, data);
+                    return AggregateValue.reconstructNativeArrayWithLength(0, data);
             }
         }
         return emptySliceValue(type);
@@ -1254,14 +1263,15 @@ private imported!"quickbite.lang".Value unmarshalSlice(
             Value[] elements;
             foreach (index; 0 .. length)
                 elements ~= unmarshalValue(elementType, na.element(index));
-            return Value.nativeArrayValue(elements, data);
+            return AggregateValue.reconstructNativeArray(elements, data);
     }
 }
 
-private imported!"quickbite.lang".Value emptySliceValue(
+private imported!"quickbite.backends.interpreter.runtime_value".Value emptySliceValue(
     imported!"dmd.mtype".Type type,
 ) {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.astenums: TY;
 
     switch (type.nextOf.toBasetype.ty) with (TY) {
@@ -1274,14 +1284,14 @@ private imported!"quickbite.lang".Value emptySliceValue(
             dchar[] empty;
             return Value.stringValue(empty);
         default:
-            return Value.arrayValue([]);
+            return AggregateValue.reconstructArray([]);
     }
 }
 
 // Read a value out of native memory (`*pointer`, e.g. a malloc'd struct
 // like std.stdio.File's Impl, or a scalar inside one): a snapshot Value
 // built from the pointee's bytes.
-public imported!"quickbite.lang".Value unmarshalNative(
+public imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalNative(
     imported!"dmd.mtype".Type type,
     in void* address,
 ) {
@@ -1296,7 +1306,7 @@ public imported!"quickbite.lang".Value unmarshalNative(
 public void marshalNative(
     imported!"dmd.mtype".Type type,
     void* address,
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) {
     import quickbite.backends.interpreter.layout: typeByteSize;
 
@@ -1331,11 +1341,12 @@ private ubyte[] mutableNativeBytes(void* address, in size_t length) @trusted {
     return (cast(ubyte*) address)[0 .. length];
 }
 
-private imported!"quickbite.lang".Value unmarshalStruct(
+private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalStruct(
     imported!"dmd.mtype".TypeStruct type,
     in ubyte[] buffer,
 ) {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: typeByteSize;
     import quickbite.backends.interpreter.native_struct: NativeStruct;
     import std.string: fromStringz;
@@ -1364,14 +1375,14 @@ private imported!"quickbite.lang".Value unmarshalStruct(
             ns.field(index),
         );
 
-    return Value.structValue(fromStringz(type.sym.toChars).idup, fields);
+    return AggregateValue.reconstructStruct(fromStringz(type.sym.toChars).idup, fields);
 }
 
 // Marshal a backend value into a NUL-terminated C string valid for the
 // duration of the native call. A native pointer is passed straight through;
 // a backend char array is copied into a GC-owned NUL-terminated buffer.
-private const(char)* nativeString(in imported!"quickbite.lang".Value value) {
-    import quickbite.lang: Value;
+private const(char)* nativeString(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import quickbite.backends.interpreter.runtime_value: Value;
     import std.string: toStringz;
 
     if (value == Value.null_)
@@ -1390,7 +1401,7 @@ private const(char)* nativeString(in imported!"quickbite.lang".Value value) {
     return value.asCharArrayString.toStringz;
 }
 
-private string pointedAtCString(in imported!"quickbite.lang".Value value) {
+private string pointedAtCString(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
     char[] chars;
     foreach (index; 0 .. value.pointerLength) {
         const character = value.pointerIndex(index).asChar;
@@ -1407,9 +1418,9 @@ private string pointedAtCString(in imported!"quickbite.lang".Value value) {
 // intentionally leaked: native allocations are reclaimed at process exit
 // (ffi.md §5).
 private const(char)* stableNativeString(
-    in imported!"quickbite.lang".Value value,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) {
-    import quickbite.lang: Value;
+    import quickbite.backends.interpreter.runtime_value: Value;
     import core.stdc.stdlib: malloc;
     import core.stdc.string: memcpy;
 

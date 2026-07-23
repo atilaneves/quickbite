@@ -102,9 +102,28 @@ deletion (items 2-3).
    carrier for recursive expression results — the uniform D type returned
    by evaluating an expression: immediate scalar results, native
    aggregate handles, locations/references, callables, and interpreter
-   metadata. That expression currency is distinct from the authoritative
-   storage of an addressable guest value — it is a return type, never an
-   authority (decision 15). The earlier claim that a boxed tagged union
+   metadata. The extracted `RuntimeValue` carrier's `Array`, `Struct`, and
+   `ClassObject` expression aggregates remain recursive boxed trees.
+   `AggregateValue` centralizes the mutation and reconstruction paths already
+   extracted from `impl` and `ffi_marshal`, but it is not yet every aggregate
+   operation. The remaining direct `RuntimeValue` aggregate paths are
+   promotion/mirror seeding and refresh, by-value struct argument writeback,
+   aggregate equality, ordinary array-literal construction, native-array and
+   slice construction, and class construction.
+   Its signatures are still `RuntimeValue`-typed. Native typed-address
+   aggregate handles can land only in the authority switch: replace both every
+   `AggregateValue` consumer and those remaining direct aggregate paths,
+   including whole-value reconstruction, while replacing the carrier's
+   data-pointer arms and all local/frame/ref/capture/cross-frame authority
+   with host addresses. A handle with no complete consumer set is speculative,
+   and retaining boxed locals would require parallel aggregate copies — a
+   second authority. `NativeArray`'s FFI address is dynamic-array-only, so it
+   cannot be promoted into that general carrier.
+   `RuntimeValue.Array` owns recursive elements for both static and dynamic
+   arrays; neither may be split from the combined switch. Function and
+   delegate handles remain separate non-data categories. The expression
+   currency is a return type, never an authority (decision 15).
+   The earlier claim that a boxed tagged union
    is "the natural form" for a tree walker was downgraded: it argues
    against *reimplementing* layout, not against *reusing* it. It is
    **recursive aggregate boxing** (`Struct = Value[] fields`,
@@ -238,8 +257,15 @@ deletion (items 2-3).
     reference it; they never participate in guest identity or address
     arithmetic. (A storage-identity-plus-offset coordinate system would
     recreate the provenance split that produced `isNativePointer`.)
-    Boxed values survive only as the walker's transient rvalue
-    expression currency (decisions 7/11), never as storage authority.
+    The authority switch makes this storage rule authoritative while replacing
+    the expression currency's data-pointer arms and recursive aggregate
+    carriers with host-address handles. It changes the extracted aggregate
+   boundary and the direct aggregate paths enumerated in decision 7,
+   local/frame/ref/capture/cross-frame authority, and whole-value
+   reconstruction in that one switch; boxed locals
+    cannot coexist as an authority without parallel copies. Function and
+    delegate handles are separate non-data categories. Boxed values survive
+    only as transient rvalues (decisions 7/11), never as storage authority.
 
     Rationale: simplicity motivates the design. Boxing earns its keep
     only where the frontend cannot type values (Lox, Python — the
@@ -341,22 +367,24 @@ deletion (items 2-3).
       the partition: language-surface → fix now; representation-
       ceiling → wait.
     - The **representation track** implements decision 15 in bounded,
-      independently green preparation slices with authority unchanged
-      — per-activation frame blocks plumbed in, lvalue evaluation
-      returning places (addresses), loads and stores routed through
-      them — followed by ONE small global authority switch, then
-      deletion of the machinery the switch killed. Not a monolithic
-      rewrite verified only at the end, and not per-shape authority
-      flips (mixed-shape values recreate the two-world coherence seams
-      this redesign exists to kill): preparation changes the behavior
-      of nothing, and the switch is small because everything is
-      already in place. The track rebases onto master as workingness
-      PRs land and absorbs their fixtures as its acceptance tests; the
-      tracks converge when the native-layout authority passes the
-      working interpreter's matrix.
+      independently green preparation slices. Frame and place mirrors do
+      not make an authority switch ready: the one coherent switch must replace
+      the recursive aggregate carrier and all data-pointer arms together with
+      boxed-local authority, pointer identity and dereference,
+      `ref`/`out`/capture binding, and cross-frame writes. `scalarCells` and
+      alias maps cannot remain an authority behind native frame bytes. Not a
+      monolithic rewrite
+      verified only at the end, and not per-shape authority flips
+      (mixed-shape values recreate the two-world coherence seams this
+      redesign exists to kill): replace the whole local-storage path
+      coherently, then delete the machinery it made dead. The track rebases
+      onto master as workingness PRs land and absorbs their fixtures as its
+      acceptance tests; the tracks converge when the native-layout authority
+      passes the working interpreter's matrix.
 
-    Activation storage: one frame block per activation. Contiguous
-    activation storage is field-universal (CPython's fast-locals
+    Activation storage: every activation allocates one frame block, including
+    an activation whose layout has no slots. Contiguous activation storage is
+    field-universal (CPython's fast-locals
     array, JVM/CLR frames, Lua's value stack), and the oracle compiler
     itself is precedent — DMD allocates one GC-heap closure frame per
     activation for captured locals. Per-local blocks are the fallback
@@ -446,6 +474,10 @@ change that makes them false, never prospectively.
   `writeRealBits`); a write composes into a zero-initialised local and
   copies the WHOLE slot, making `real`'s padding deterministic for the
   verified mirror's raw-byte comparison.
+- `place_value.valueMatchesPlace` is the recursive gate for whether a
+  boxed execution value can enter the place writer. It includes both
+  type composability and value shape, so mirror writes and scratch-byte
+  verification cannot route a type/value pair differently.
 - Integer offsetting of a native pointer preserves the native-pointer carrier
   and applies the byte delta already scaled from the expression's static
   pointer type. Do not route it through the boxed pointer's allocation id or
@@ -560,6 +592,12 @@ it (see the Contracts preamble).
   every write path that reaches storage only through an alias table
   (slice alias, array-element alias, struct-field alias, `this` alias)
   must independently refresh the ultimate target variable's cell.
+- Promoted-cell and allocation-identity routing admits only the boxed-pointer
+  predicate. Local pointers resolve through their local binding and native
+  pointers through their host address; neither may enter identity-map routing.
+  Direct dereference and compound-assignment/atomic reads and writes share
+  their respective ordered promoted-cell routes, so they cannot choose
+  different interim authorities.
 - One guest storage location has one identity across bindings, call frames,
   repeated `ref` arguments, and source/alias pairs. A promoted aggregate alias
   shares the caller's memoized pointer id and cell; a field alias shares the
@@ -684,8 +722,11 @@ they die with the machinery at the authority switch:
   widening loads, and aggregates that do not fit; non-fitting writes
   must fail rather than corrupt adjacent storage.
 - Postblit execution is an interpreter expression-execution gap.
-- Recursive activations of one function share one cell (all cell maps
-  key on `VarDeclaration`) — a real divergence.
+- Recursive activations reuse each local declaration's `VarDeclaration`,
+  while boxed cell maps key authority by that declaration.  A pointer saved
+  by an outer activation can therefore resolve to an inner activation's
+  fresh binding rather than the storage it named; only address-keyed native
+  authority removes that ambiguity.
 - Nested-struct and static-array class-field pointers follow the
   variable slot after a reference rebind rather than retaining object
   identity; `ref`-parameter address identity holds only for the
@@ -888,15 +929,22 @@ in parallel and never blocks it.
    consumes its returned string. Do not retain `Value` or render a dummy
    `void` result just to reuse the evaluator path.
 
-3. Remove the *shared* `quickbite.lang.Value` (decision 7): once no
-   backend depends on it as a cross-backend type, relocate the tree-
-   walking interpreter's execution-result carrier to its package, then
-   delete the shared struct and its unit tests together. Do not reproduce
-   a display-oriented general-purpose `Value` privately: the carrier
-   exists only for recursive expression/function execution and uses
-   immediate scalar results plus the native handles, locations,
-   callables, and metadata that execution actually requires. This
-   deletion is decision 15's completion signal.
+3. Make the authority switch. `AggregateValue` remains `RuntimeValue`-typed;
+   its consumers plus the direct `RuntimeValue` aggregate paths enumerated in
+   decision 7 must change together with whole-value reconstruction to
+   host-address aggregate handles. In the same operation, native storage
+   becomes local/frame, `ref`/`out`/capture, pointer-dereference, and
+   cross-frame-write authority;
+   all data-pointer arms become the one host-address arm; and cells and aliases
+   are deleted. Do not introduce a handle separately, retain boxed locals, or
+   split static from dynamic arrays: the former needs parallel copies and the
+   latter leaves a second authority; `NativeArray`'s FFI address is only a
+   dynamic-array shortcut. Function and delegate handles remain separate
+   non-data categories. Expression results need immediate scalars, native
+   handles, locations, callables, and execution metadata only. Once no backend
+   depends on `quickbite.lang.Value` as a cross-backend type, delete the shared
+   struct and its unit tests together. This deletion is decision 15's
+   completion signal.
 
 4. **Workingness track (leads).** Keep the shipping boxed interpreter
    advancing toward the cerealed/dub goal: one language-surface fix plus
@@ -908,9 +956,14 @@ in parallel and never blocks it.
    triage is the partition.
 
 5. **Representation track (parallel).** Implement decision 15 in
-   bounded, independently green slices, then one small authority switch
-   (decision 17):
-   - Preparation is done: per-activation frame blocks; lvalue places
+   bounded, independently green slices, then replace boxed local authority
+   coherently (decision 17):
+   - Frame and place mirrors exist: per-activation frame blocks whose safe
+     binding-address decoder dispatches through the narrowly trusted raw slot
+     primitives between inline and reference slots, including frame-backed
+     `Place` construction and mirror
+     storage routing; lvalue
+     places
      composing through a variable, fields, indexing, pointer/class
      dereference, and address-of — `this` has an arm but no reachable
      caller, since DMD slots `vthis` as neither a parameter nor a body
@@ -923,6 +976,13 @@ in parallel and never blocks it.
      assignment target and a `SymOffExp` naming a function; a
      captured-variable slot cannot resolve a relay through a
      non-referencing intermediate activation.
+   - Item 3's authority switch is the combined carrier and storage migration:
+     aggregate consumers and whole-value reconstruction take host-address
+     handles while pointer creation/dereference, `ref`/`out`, captures, and
+     cross-frame mutation use frame addresses directly. Function/delegate
+     handles stay separate non-data categories. Do not retain `scalarCells`,
+     other cell families, or alias/reverse maps as an authority behind the
+     frames: a mirror plus any of those authorities is still two storage worlds.
    - `object_table.ObjectTable` never evicts: every class identity the
      mirror touches keeps its body pinned for the whole execution,
      because liveness lives in `impl.d`'s boxed copies and nothing
@@ -932,7 +992,8 @@ in parallel and never blocks it.
      object, its lifetime is the collector's and no identity-keyed pin
      exists.
    - The authority switch: native storage becomes the sole authority
-     for all bindings. Merge gate: no new red rows (decision 17).
+     for all bindings as part of that coherent path replacement. Merge gate:
+     no new red rows (decision 17).
    - Deletions once dead, checked by grep going quiet: `scalarCells`/
      `arrayCells`/`structCells`/`classCells`/`classObjectCells` and
      every alias/reverse map, `arrayRebinds`/`classRebinds`,

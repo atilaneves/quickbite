@@ -8,7 +8,7 @@ import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
 import quickbite.backends.interpreter.layout:
     classFields, classInstanceByteSize, fieldByteOffset, structFields, typeByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
-import quickbite.lang: Value;
+import quickbite.backends.interpreter.runtime_value: Value;
 import dmd.expression: Expression, AssignExp;
 import dmd.statement: Statement;
 import dmd.declaration: VarDeclaration;

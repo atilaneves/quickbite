@@ -8,7 +8,7 @@ import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, stru
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
 import quickbite.backends.interpreter.frame_block: FrameBlock;
-import quickbite.lang: Value;
+import quickbite.backends.interpreter.runtime_value: Value;
 
 private:
 
@@ -300,22 +300,25 @@ unittest {
 }
 
 
-@("Place.placeAt.frameBlockSlotAddressAndDeclaredTypeMatchTheVariablesOwnSlot")
+@("Place.placeAt.frameBlockBindingAddressAndDeclaredTypeMatchTheVariablesBinding")
 unittest {
     auto function_ = parseFunction(
-        q{ void quickbitePlaceFrameSlot(int a, long b) {} },
-        "quickbitePlaceFrameSlot",
+        q{ void quickbitePlaceFrameBinding(int a, ref long b) {} },
+        "quickbitePlaceFrameBinding",
     );
     auto layout = computeFrameLayout(function_);
     auto frame = FrameBlock.allocate(layout);
     auto a = (*function_.parameters)[0];
     auto b = (*function_.parameters)[1];
 
+    long target = 0;
+    frame.setReferenceSlot(b, &target);
+
     auto aPlace = placeAt(frame, a);
     auto bPlace = placeAt(frame, b);
 
-    aPlace.address.should == frame.slotAddress(a);
-    bPlace.address.should == frame.slotAddress(b);
+    aPlace.address.should == frame.bindingAddress(a);
+    bPlace.address.should == frame.bindingAddress(b);
 
     // Runtime-computed, not a bare literal passed straight to `Value`.
     int writtenA = 2;
@@ -324,6 +327,12 @@ unittest {
     aPlace.storeScalar(Value(writtenA));
 
     aPlace.loadScalar.asLong.should == writtenA;
+
+    long writtenB = 5;
+    writtenB = writtenB * 13;
+    bPlace.storeScalar(Value(writtenB));
+
+    target.should == writtenB;
 }
 
 
