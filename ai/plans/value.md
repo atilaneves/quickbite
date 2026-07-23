@@ -913,11 +913,13 @@ in parallel and never blocks it.
    `__quickbiteFormat(expr)` for a broad set of return types when the
    backend opts in (`Ctfe`, `Interpreter`). Plain template-struct
    instantiations whose fields are recursively formatter-capable are now
-   admitted; supported range structs whose fields are recursively
-   formatter-capable are also admitted. Unsupported or context-bearing
-   ranges and template instantiations with unsupported fields remain on the
-   interim `displayString`/`Value.toString` scaffolding. Keep expanding the
-   gate per backend (decision 4) until every REPL expression is
+   admitted; the non-context `std.range.iota` result is the first admitted
+   range because its scalar fields are recursively formatter-capable.
+   Unsupported or context-bearing ranges — including
+   `std.algorithm.map`'s nested `MapResult`, whose callable carries DMD
+   context — and template instantiations with unsupported fields remain on
+   the interim `displayString`/`Value.toString` scaffolding. Keep expanding
+   the gate per backend (decision 4) until every REPL expression is
    formatter-wrapped and the unformatted evaluator paths can be deleted.
    Items 2 and 3 are blocked until this wiring lands. The interpreter's
    `std.conv.text` hook is temporary formatter scaffolding, not a general

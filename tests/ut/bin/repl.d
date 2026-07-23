@@ -110,21 +110,23 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
-@("repl.frontend.mapResultExpressionUsesPreludeFormatter")
+@("repl.frontend.iotaResultExpressionUsesPreludeFormatter")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;
 
     auto session = ReplSession([], true);
 
-    const importCell = session.submit("import std.algorithm;");
+    const importCell = session.submit("import std.range;");
     session.accept(importCell);
 
-    const declaration = session.submit("long[] xs = [1, 2, 3];");
-    session.accept(declaration);
-
-    const cell = session.submit("xs.map!(x => x * 2)");
+    const cell = session.submit("iota(3)");
     cell.kind.should == ReplCellKind.expression;
     cell.evalCell.displayIsFormatted.should == true;
+
+    assertFormatterBackendOutput(
+        ["import std.range;", "iota(3)"],
+        ["Result(0, 3)"],
+    );
 }
 
 @("repl.frontend.enumExpressionUsesPreludeFormatter")
