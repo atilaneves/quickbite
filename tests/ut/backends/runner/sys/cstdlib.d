@@ -209,8 +209,6 @@ static foreach (backend; Matrix!(
 // interpreter applies D's statically-scaled integer pointer arithmetic.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host GC allocation"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "body-less GC.malloc is not yet available to the bytecode backend"),
 )) {
     @("gc.malloc.nativePointerArithmetic." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -236,8 +234,6 @@ static foreach (backend; Matrix!(
 // Pointers into one host GC allocation subtract using their native addresses.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host GC allocation"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "body-less GC.malloc is not yet available to the bytecode backend"),
 )) {
     @("gc.malloc.nativePointerDifference." ~ backend.stringof)
     @Tags(backend.stringof)

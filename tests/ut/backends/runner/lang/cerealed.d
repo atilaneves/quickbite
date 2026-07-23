@@ -1128,10 +1128,6 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed,
-        "`.idup` allocates its result through `_d_newarrayU`, which the " ~
-        "compact 8-byte string descriptor cannot name; blocked on strings " ~
-        "becoming ordinary dynamic arrays"),
     Omit!(Interpreter, Because.unconfirmed,
         "std.conv.text slices past the char array's allocated block"),
     Omit!(LLVMJit, Because.unconfirmed),
@@ -1410,12 +1406,7 @@ static foreach (backend; Matrix!(
 // must mutate the caller's `x`, and the caller's next read of `x` must see
 // the mutation without the interpreter's own frame/boxed-local mirror
 // diverging.
-static foreach (backend; Matrix!(
-    // The bytecode core compiles a `lazy` argument's thunk without the
-    // outer local's own slot in scope, so `x++` there falls outside the
-    // `_locals` lookup its post-increment compilation depends on.
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("lazyArgumentMutatesCallerLocal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1436,11 +1427,7 @@ static foreach (backend; Matrix!(
 // a struct (frame-covered as a whole composed value, not a bare scalar), so
 // the frame mirror this exercises is the aggregate write path rather than
 // the scalar one.
-static foreach (backend; Matrix!(
-    // Same bytecode-core gap as the fixture above, over a struct field
-    // instead of a bare scalar.
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("lazyArgumentMutatesCallerStructField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1472,11 +1459,7 @@ static foreach (backend; Matrix!(
 // identities, which makes `mirrorClassToFrame` DECLINE to mirror -- so a
 // desynced flag is not merely a wrong value here but an interpreter crash:
 // a stale-true decision compared against a slot the write never touched.
-static foreach (backend; Matrix!(
-    // Same bytecode-core gap as the fixture above, over a class reference
-    // instead of a bare scalar.
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("lazyArgumentMutatesCallerClassLocal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1513,7 +1496,6 @@ static foreach (backend; Matrix!(
 // live. `first` gates the reentry so the program terminates instead of
 // recursing forever.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     // A lazy class argument re-forced after an intermediate reentrant call
     // does not preserve the caller's original object identity. Pinned on
     // Interpreter by `lazyClassArgumentReentrantCallReturnLosesIdentity`

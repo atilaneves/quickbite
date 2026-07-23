@@ -22,6 +22,24 @@ public imported!"quickbite.lang".Value stringValue(
     }
 }
 
+// The literal's code units at their declared element width: `wchar`/`dchar`
+// units verbatim, `char` units as UTF-8 bytes (already 1 byte wide, so no
+// transcoding). Callers that store the result verbatim in a byte-addressed
+// segment (rather than decoding it) get width-faithful bytes regardless of
+// the literal's element type.
+public const(ubyte)[] stringCodeUnitBytes(
+    imported!"dmd.expression".StringExp string_,
+) {
+    switch (string_.sz) {
+        case wcharCodeUnitWidth:
+            return cast(const(ubyte)[]) stringCodeUnits!wchar(string_);
+        case dcharCodeUnitWidth:
+            return cast(const(ubyte)[]) stringCodeUnits!dchar(string_);
+        default:
+            return cast(const(ubyte)[]) stringChars(string_);
+    }
+}
+
 public T[] stringCodeUnits(T)(
     imported!"dmd.expression".StringExp string_,
 ) {

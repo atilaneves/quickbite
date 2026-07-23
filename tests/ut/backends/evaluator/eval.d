@@ -4,6 +4,7 @@ module ut.backends.evaluator.eval;
 import ut.backends;
 import std.algorithm.iteration: filter;
 import std.algorithm.searching: canFind;
+import std.array: replicate;
 import std.file: readText;
 import std.range: walkLength;
 import std.string: lineSplitter;
@@ -210,4 +211,34 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     unittest {
         newBackend!backend.eval(q{ "abc" }).should == `"abc"`;
     }
+}
+
+// The entry materialises `early` before `later` is compiled. Calling `later`
+// lazily compiles it and adds enough literal data to move the data segment;
+// the already-live slice must still point at valid literal storage.
+@("stringLiteralSurvivesLazyDataSegmentGrowth.Bytecode")
+@Tags("Bytecode")
+unittest {
+    enum laterLiteral = "x".replicate(256);
+    enum expression = `
+        ({
+            string later() {
+                return "` ~ laterLiteral ~ `";
+            }
+
+            string early = "early";
+            later();
+            return early;
+        })()
+    `;
+
+    newBackend!Bytecode.eval(expression).should == `"early"`;
+}
+
+// A sub-slice of a heap-backed string points into the middle of a heap block;
+// reification resolves it by containing range, not by exact base address.
+@("heapStringSubSliceReifies.Bytecode")
+@Tags("Bytecode")
+unittest {
+    newBackend!Bytecode.eval(`"hello".idup[1 .. 3]`).should == `"el"`;
 }

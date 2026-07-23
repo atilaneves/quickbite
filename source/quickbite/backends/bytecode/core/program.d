@@ -55,16 +55,17 @@ package(quickbite.backends.bytecode) struct StructDisplayField {
     string[ulong] enumMembers;
 }
 
-// The static type of a function result: a scalar, a string, a dynamic array,
-// or a by-value struct. A string result is a slice descriptor (byte offset and
-// length into Program.data); a dynamic-array result is a 16-byte {ptr, length}
-// descriptor (its backing memory stays alive through the machine's `heap`
-// root), with `elementType` giving the element scalar. A struct result is an
-// inline block of `structSize` bytes copied back to the caller's destination on
-// return (NRVO-style), just like any other frame block.
+// The static type of a function result: a scalar, a dynamic array (`string`
+// included, its basetype is also `Tarray`), or a by-value struct. A
+// dynamic-array result is a 16-byte {ptr, length} descriptor — for a
+// literal-initialised `string`, pointing into the immutable program data
+// segment; otherwise into the machine's `heap` root, which keeps its backing
+// memory alive — with `elementType` giving the element scalar. A struct
+// result is an inline block of `structSize` bytes copied back to the
+// caller's destination on return (NRVO-style), just like any other frame
+// block.
 package(quickbite.backends.bytecode) struct ResultType {
     ScalarType scalar;
-    bool isString;
     bool isArray;
     ScalarType elementType;
     bool arrayElementsAreArrays;
@@ -106,10 +107,6 @@ package(quickbite.backends.bytecode) struct ResultType {
     }
 }
 
-// Bytes of a string-slice descriptor laid out in the frame: a uint offset
-// into Program.data followed by a uint length.
-package(quickbite.backends.bytecode) enum stringSliceSize = 8;
-
 // Bytes of a dynamic-array slice descriptor laid out in the frame: a native
 // `void* ptr` into VM-owned heap memory followed by a `size_t length`. The
 // native bridge reverses these fields to D's ABI `{length, ptr}` descriptor.
@@ -141,7 +138,7 @@ package(quickbite.backends.bytecode) uint size(in ResultType type)
         return type.structSize;
     if (type.isArray)
         return sliceDescriptorSize;
-    return type.isString ? stringSliceSize : size(type.scalar);
+    return size(type.scalar);
 }
 
 package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
@@ -161,8 +158,12 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
 package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
     loadRealConstant, // a: destination frame offset, b: real constant index
-    loadStringSlice, // a: destination frame offset, b: data offset, c: length
-    loadDataPointer, // a: destination frame offset, b: data offset
+    // a: destination frame offset, b: `literalBlocks` index. Writes the raw
+    // native address of `literalBlocks[b].ptr` — a block that never moves —
+    // into the frame; unlike `data`, an append-growable array, a fresh
+    // per-literal block keeps this pointer valid even after later literals
+    // are compiled.
+    loadDataPointer,
     // Copy `c` bytes from the read-only data segment at offset `b` into the
     // inline static-array slot at frame offset `a` (a value-type byte copy).
     loadStaticArray,
@@ -208,20 +209,17 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     setArrayLengthFromTemplate,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
-    // Expand the compact string descriptor {dataOffset, length} at frame offset
-    // b into a native dynamic-array descriptor {data.ptr + dataOffset, length}
-    // at frame offset a. The backing data remains the immutable program segment.
-    stringSliceToArray,
-    // Form a sub-slice of a compact string descriptor without ever expanding it
-    // to a native pointer: a: destination compact descriptor offset, b: source
-    // compact descriptor offset, c: offset of an adjacent {lo, hi} pair of
-    // size_t bounds. The new descriptor is {srcDataOffset + lo, hi - lo}, both
-    // still uint offsets into the program data segment. Bounds checked against
-    // the source length. Keeps a `string` sub-slice in the compact
-    // representation every other compact-string consumer (`.ptr`, `.length`,
-    // indexing) expects; `stringSliceToArray` above only ever expands a
-    // *read*, never a value stored back into another compact `string` slot.
-    stringSubSlice,
+    // Write a native dynamic-array descriptor {literalBlocks[b].ptr, c}
+    // directly into frame offset a, from a literal's `literalBlocks` index
+    // (b) and length in elements (c). Every `string` value — literal or not
+    // — is an ordinary 16-byte {ptr, length} descriptor identical to any
+    // other `T[]`; this is simply the literal-load opcode for that shape. The
+    // pointer is `literalBlocks[b].ptr`, not `data.ptr + b`: `data` is one
+    // append-growable array that reallocates (and moves) as later literals
+    // are compiled, but each `literalBlocks` entry is its own block that
+    // never moves once allocated, so a descriptor materialised from it stays
+    // valid across any later lazy compilation.
+    loadStringLiteral,
     // Read the length word of the slice descriptor at frame offset b into the
     // size_t slot at frame offset a.
     sliceLength,
@@ -277,15 +275,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceFill4,
     // Compare the two slice descriptors at frame offsets b and c, writing one
     // boolean byte to frame offset a: true iff their lengths and all element
-    // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
+    // bytes are equal. The element size is fixed by the opcode (1, 2, 4, or 8
+    // bytes).
     sliceEqual1,
+    sliceEqual2, // 2-byte element (wchar/short): backs `wstring == wstring`
     sliceEqual4,
-    // Compare the two 8-byte string-slice descriptors {dataOffset, length} at
-    // frame offsets b and c against the read-only data segment, writing one
-    // boolean byte to frame offset a: true iff equal length and identical
-    // bytes. Distinct from sliceEqual* because a string descriptor holds a
-    // data-segment offset, not a native pointer.
-    stringSliceEqual,
+    sliceEqual8, // 8-byte element (long/double/pointer arrays)
     // Append the element at frame offset b to the dynamic-array slice descriptor
     // at frame offset a: allocate a fresh heap block of (length + 1) elements,
     // copy the existing elements, write the new element, root the block, and
@@ -390,6 +385,8 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Write the native address of the absolute stack index held in frame slot b
     // into frame slot a. Backs `.ptr` of a captured static array.
     frameIndexAddress,
+    signExtend1to2, // a: destination frame offset, b: source frame offset
+    zeroExtend1to2, // a: destination frame offset, b: source frame offset
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend2to4, // a: destination frame offset, b: source frame offset
@@ -685,6 +682,12 @@ package(quickbite.backends.bytecode) struct Program {
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
     ubyte[real.sizeof][] realConstants; // raw bytes for 16-byte real literals
     ubyte[] data; // read-only segment holding string-literal bytes
+    // Stable per-literal blocks backing `Op.loadStringLiteral` and
+    // `Op.loadDataPointer`: each entry is its own GC allocation that never
+    // moves, unlike `data`, an append-growable array whose base address
+    // shifts (and invalidates any pointer baked from it) every time a later
+    // literal is compiled and appended.
+    ubyte[][] literalBlocks;
     ubyte[] moduleData; // mutable VM-owned storage for module-level variables
     AssertDiagnostic[] assertDiagnostics;
     NativeCall[] nativeCalls;

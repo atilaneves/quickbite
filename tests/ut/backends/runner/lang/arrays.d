@@ -2934,9 +2934,9 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
-// Same inverted-bounds invariant, exercised through the general dynamic-array
-// sub-slice path (`subSlice4`/`validateSubSlice`) rather than the compact
-// string descriptor path (`stringSubSlice`/`validateCompactSubSlice`) above.
+// Same inverted-bounds invariant as the `string` sub-slice test above, but
+// through `subSlice4` (4-byte `int` elements) rather than `subSlice1` (1-byte
+// `char` elements) — both share the same generic `validateSubSlice`.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe's own compile-time bounds check reports " ~
@@ -3004,9 +3004,10 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 /++
     Plain reassignment of an already-declared `string` local from another
     `string` local (`b = a;`) must copy the full slice descriptor. A `string`
-    local's slot holds a compact 8-byte {dataOffset, length} descriptor, which
-    the scalar type mapping reports as size 0, so a naive scalar-sized copy
-    would silently write nothing and leave `b` unchanged.
+    local's slot holds the same native 16-byte {ptr, length} descriptor as any
+    other dynamic array, which the scalar type mapping reports as size 0, so a
+    naive scalar-sized copy would silently write nothing and leave `b`
+    unchanged.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromVariableCopiesDescriptor." ~
@@ -3061,7 +3062,8 @@ static foreach (backend; Matrix!()) {
 /++
     Plain reassignment of an already-declared `string` local from a sub-slice
     of another `string` local (`b = a[lo .. hi];`) exercises the same
-    reassignment path with a compact-descriptor sub-slice right-hand side.
+    reassignment path with a native {ptr, length}-descriptor sub-slice
+    right-hand side.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromSubSliceCopiesDescriptor." ~
@@ -3089,9 +3091,9 @@ static foreach (backend; Matrix!()) {
 
 /++
     A sub-slice of a heap-backed `string` (produced by `.idup`, not a
-    data-segment literal) reads the sliced bytes and length from the source's
-    real heap block rather than from a compact {dataOffset, length}
-    descriptor built from the wrong operand width.
+    data-segment literal) reads the sliced bytes and length by resolving the
+    source's native {ptr, length} descriptor to its real heap block, not the
+    program's read-only data segment.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.heapBackedStringSubSliceReadsSlicedBytesAndLength." ~
@@ -3124,10 +3126,10 @@ static foreach (backend; Matrix!()) {
 }
 
 /++
-    Reassigning an already-declared, compact-descriptor `string` local
-    (`b = "x";`) from a heap-backed `string` source (`.idup`) must copy the
-    full 16-byte {ptr, length} descriptor, not the compact 8-byte width,
-    which would only copy the source's low pointer bytes.
+    Reassigning an already-declared `string` local (`b = "x";`) from a
+    heap-backed `string` source (`.idup`) must copy the full 16-byte
+    {ptr, length} descriptor; a partial copy would silently drop bytes of the
+    pointer or the length.
 +/
 static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceCopiesDescriptor." ~
@@ -3157,15 +3159,10 @@ static foreach (backend; Matrix!()) {
 }
 
 /++
-    Reassigning a compact-descriptor `string` local from a heap-backed source
-    inside an untaken `if` branch must not touch `b`: the branch never runs.
+    Reassigning a `string` local from a heap-backed source inside an untaken
+    `if` branch must not touch `b`: the branch never runs.
 +/
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "reassigning a compact string local from a heap-backed source " ~
-        "inside a conditional refuses rather than rebind past a lexical " ~
-        "point that does not dominate every later read"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInConditionalLeavesUntakenBranchUnchanged." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3194,16 +3191,11 @@ static foreach (backend; Matrix!(
 }
 
 /++
-    Reassigning a compact-descriptor `string` local from a heap-backed source
-    inside a loop body must observe each iteration's own reassignment, not the
-    value the local held before the loop started.
+    Reassigning a `string` local from a heap-backed source inside a loop body
+    must observe each iteration's own reassignment, not the value the local
+    held before the loop started.
 +/
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "reassigning a compact string local from a heap-backed source " ~
-        "inside a loop body refuses rather than rebind past a lexical " ~
-        "point that does not dominate every later read"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.stringLocalReassignmentFromHeapBackedSourceInLoopUpdatesEachIteration." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3230,6 +3222,129 @@ static foreach (backend; Matrix!(
 
                 assert(firstLength == 1);
                 assert(secondLength == 2);
+            }
+        });
+    }
+}
+
+/++
+    A string literal materialised early must stay intact after compiling a
+    separate, not-yet-compiled function whose own (large) string literal
+    grows literal storage: an earlier literal's descriptor must not dangle
+    once later literal storage is (re)allocated.
++/
+static foreach (backend; Matrix!()) {
+    @("stringLiteralSurvivesLazyDataSegmentGrowth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        import std.array: replicate;
+        import std.conv: text;
+
+        // Large enough that the not-yet-compiled `grow`'s own literal forces
+        // a reallocation (not just an in-place growth) of literal storage.
+        const growLiteral = "z".replicate(4096);
+        runBackendSourceFixtureTests!backend(text(`
+            string grow() {
+                return "`, growLiteral, `";
+            }
+
+            unittest {
+                string early = "early";
+                const grown = grow();
+                assert(early == "early");
+                assert(grown.length == `, growLiteral.length, `);
+            }
+        `));
+    }
+}
+
+// `sliceEqualOp` keys its comparison width on the element size, not always 4
+// bytes: two `short` elements differing only in their high byte must compare
+// unequal, not be over-read as identical 4-byte values.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.shortEqualityComparesFullElementWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            short[] build(short first, short second) {
+                return [first, second];
+            }
+
+            unittest {
+                short[] a = build(cast(short) 0x0102, cast(short) 3);
+                short[] b = build(cast(short) 0x0202, cast(short) 3);
+                short[] same = build(cast(short) 0x0102, cast(short) 3);
+
+                assert(a != b);
+                assert(a == same);
+            }
+        });
+    }
+}
+
+// The same over-read risk applies at 8 bytes: two `long` elements differing
+// only in their high 4 bytes must compare unequal, not be truncated to a
+// 4-byte comparison.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.longEqualityComparesFullElementWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long[] build(long first, long second) {
+                return [first, second];
+            }
+
+            unittest {
+                long[] a = build(0x1_0000_0000L, 2L);
+                long[] b = build(2L, 2L);
+                long[] same = build(0x1_0000_0000L, 2L);
+
+                assert(a != b);
+                assert(a == same);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.wstringEqualityComparesFullElementWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            wstring greeting(int n) {
+                return n == 1 ? "ab"w : "ac"w;
+            }
+
+            unittest {
+                wstring a = greeting(1);
+                wstring b = greeting(1);
+                wstring c = greeting(2);
+
+                assert(a == b);
+                assert(a != c);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dstringEqualityComparesFullElementWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dstring greeting(int n) {
+                return n == 1 ? "ab"d : "ac"d;
+            }
+
+            unittest {
+                dstring a = greeting(1);
+                dstring b = greeting(1);
+                dstring c = greeting(2);
+
+                assert(a == b);
+                assert(a != c);
             }
         });
     }

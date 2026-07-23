@@ -882,9 +882,7 @@ static foreach (backend; Matrix!()) {
 // nested-field decline (a class-typed field whose declared type
 // disagrees with the boxed value's own dynamic class), the recursive
 // sibling of that root-level decline.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.downcastFieldWriteThroughFieldDeclaredAsWiderStaticType." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2838,10 +2836,7 @@ static foreach (backend; Matrix!()) {
 // alias the SAME storage a later direct field write updates. Other backends
 // omitted per the omit-don't-pin convention (unconfirmed there), matching
 // the struct fixture's own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2883,10 +2878,7 @@ static foreach (backend; Matrix!(
 // `pointer.addressOfStructFieldWriteThroughUpdatesField`. Other backends
 // omitted per the omit-don't-pin convention, matching the direct-write class
 // fixture's own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classFieldWriteThroughPointerUpdatesField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2929,10 +2921,7 @@ static foreach (backend; Matrix!(
 // `pointer.structFieldWriteThroughPointerInCalleeIsVisibleToCaller`. Other
 // backends omitted per the omit-don't-pin convention, matching the other
 // class fixtures' own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3155,9 +3144,7 @@ static foreach (backend; Matrix!()) {
 // A class object reached through a class-typed field keeps one identity when
 // copied into a local. Promoting storage through the local must therefore make
 // the write visible through the original field reference too.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.fieldObjectCopiedToLocalSharesAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3194,9 +3181,7 @@ static foreach (backend; Matrix!(
 // the middle of the graph is exactly the shape that gap affects -- out of
 // this fixture's scope, which is the mirror's own composition, not that
 // pre-existing boxed-authority limit.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.linkedListNodeMutationVisibleThroughChain." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3240,9 +3225,7 @@ static foreach (backend; Matrix!(
 // that reintroduces that same identity one level down declines the mirror
 // right there, deterministically, instead of reaching `writeClassBody`'s
 // own address-keyed cycle guard and throwing out into this assignment.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.selfReferencingObjectDoesNotCrash." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3273,9 +3256,7 @@ static foreach (backend; Matrix!(
 // same seeded `visiting` set in `classBodyShapeMatches` catches this shape
 // too, since the reintroduced identity is checked against the ROOT's own
 // seed no matter how many field hops away it resurfaces.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.twoNodeRingDoesNotCrash." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3319,7 +3300,6 @@ static foreach (backend; Matrix!(
 // mirror's own verify step must not turn that pre-existing wrong answer
 // into an internal `AssertError` crash.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
         "Known gaps): child's own mirror write refreshes the shared " ~
@@ -3394,7 +3374,6 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // `parent`'s own mirror last established, the identical shape the fixture
 // above exercises through a plain top-level variable instead of an alias.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
         "Known gaps): c's own mirror write refreshes the shared object " ~
@@ -3470,7 +3449,6 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // against its own snapshot must decline the shape outright rather than
 // turn that contradiction into an internal `AssertError`.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
         "Known gaps): the write through parent.left refreshes the shared " ~
@@ -3547,7 +3525,6 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // the whole execution (`impl.d`'s `classObjectTable` field comment), so the
 // rewrite is visible the moment control returns to the caller.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
         "Known gaps): bump's own mirror write refreshes the shared object " ~
@@ -3675,9 +3652,7 @@ static foreach (backend; Matrix!(
 // returning normally, and the collision it otherwise leaves behind makes
 // `ObjectTable.storageFor` throw on the caller's next differently-sized
 // `new`.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classIdentity.throwingStructConstructorIdentityDoesNotCollideWithCallersNext." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3729,9 +3704,7 @@ static foreach (backend; Matrix!(
 // differently-sized `new` re-mints the identity the constructor's own `new
 // C()` already handed out and `ObjectTable.storageFor` throws on the size
 // disagreement.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classIdentity.throwingClassConstructorIdentityDoesNotCollideWithCallersNext." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3780,9 +3753,7 @@ static foreach (backend; Matrix!(
 // through `writeBackMemberFunctionState`'s existing `InterpretedException`
 // path rather than through a `new`-expression site of its own -- this
 // fixture pins that the scope-exit route really does share that path.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classIdentity.throwingDestructorIdentityDoesNotCollideWithCallersNext." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3833,9 +3804,7 @@ static foreach (backend; Matrix!(
 // class-field reassignment (a reference rebind, `ai/plans/value.md`'s Cell
 // coherence contract), which the native mirror's object-graph composition
 // must not disturb.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classField.reassignedObjectFieldObservesNewObjectsFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3988,10 +3957,7 @@ static foreach (backend; Matrix!(
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,
 // rather than copy the stale boxed mirror into the callee.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class field"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.wholeValueArgumentReadsAuthoritativeCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4027,10 +3993,7 @@ static foreach (backend; Matrix!(
 // object while its elements live in separate backing storage. Taking an
 // element address and writing through it must remain visible when the whole
 // field is copied and when the whole object is passed onward.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.dynamicArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4056,6 +4019,120 @@ static foreach (backend; Matrix!(
                 int[] field = value.values;
                 assert(field[0] == 99);
                 assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
+// A class `int[]` field: construction through an explicit constructor,
+// reassignment, and reading an element and `.length` back, all driven by
+// element size rather than any string special case.
+static foreach (backend; Matrix!()) {
+    @("classField.intArrayFieldConstructedReassignedAndIndexed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Box {
+                int[] values;
+
+                this(int[] input) {
+                    values = input;
+                }
+            }
+
+            int addOne(int x) {
+                return x + 1;
+            }
+
+            unittest {
+                int first = addOne(9);
+                int second = addOne(19);
+                int third = addOne(29);
+                auto box = new Box([first, second, third]);
+                assert(box.values.length == 3);
+                assert(box.values[1] == 20);
+
+                int fourth = addOne(39);
+                int fifth = addOne(49);
+                box.values = [fourth, fifth];
+                assert(box.values.length == 2);
+                assert(box.values[0] == 40);
+                assert(box.values[1] == 50);
+            }
+        });
+    }
+}
+
+// The `string` sibling of the fixture above: a class `string` field must
+// construct, reassign, and read the same way as any other `T[]` field.
+static foreach (backend; Matrix!()) {
+    @("classField.stringFieldConstructedReassignedAndIndexed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Message {
+                string text;
+
+                this(string input) {
+                    text = input;
+                }
+            }
+
+            string greeting() {
+                return "hi";
+            }
+
+            string farewell() {
+                return "bye";
+            }
+
+            unittest {
+                auto message = new Message(greeting());
+                assert(message.text.length == 2);
+                assert(message.text[0] == 'h');
+
+                message.text = farewell();
+                assert(message.text.length == 3);
+                assert(message.text[1] == 'y');
+            }
+        });
+    }
+}
+
+// A `dstring` (4-byte element) class field, proving the fix generalises by
+// element size rather than being narrowly scoped to `char`/`string`.
+static foreach (backend; Matrix!()) {
+    @("classField.dstringFieldConstructedReassignedAndIndexed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class WideMessage {
+                dstring text;
+
+                this(dstring input) {
+                    text = input;
+                }
+            }
+
+            dstring wideGreeting() {
+                return "hi"d;
+            }
+
+            dstring wideFarewell() {
+                return "bye"d;
+            }
+
+            unittest {
+                auto message = new WideMessage(wideGreeting());
+                assert(message.text.length == 2);
+                assert(message.text[0] == 'h');
+
+                message.text = wideFarewell();
+                assert(message.text.length == 3);
+                assert(message.text[1] == 'y');
             }
         });
     }
@@ -4144,10 +4221,7 @@ static foreach (backend; Matrix!(
 // A struct static-array field whose elements are structs keeps its inline
 // element storage authoritative after an element field becomes addressable.
 // The mutation must remain visible through whole-field and whole-struct reads.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a struct array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.structStaticArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4546,10 +4620,7 @@ static foreach (backend; Matrix!()) {
 // to reach it. Rebinding that variable must therefore leave the pointer
 // attached to the old object while subsequent field access follows the new
 // reference.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class field"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.fieldPointerSurvivesReferenceRebind." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4640,10 +4711,7 @@ static foreach (backend; Matrix!()) {
 // AA order that loses either side (the aliased original OR the child's own
 // final value) fails. Only Interpreter and SystemLinker (the oracle) are
 // pinned here per the omit-don't-pin convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c = null\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.nestedFunctionRebindOfCapturedAliasedVariableDoesNotCorruptOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4978,10 +5046,7 @@ static foreach (backend; Matrix!()) {
 // Interpreter returned 100100 -- depth 0's own value corrupting depth 1's
 // read twice over. SystemLinker is the oracle; other backends omitted per
 // the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &c.x\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.recursiveClassDeclarationDropsStaleClassCell." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6515,10 +6580,7 @@ static foreach (backend; Matrix!()) {
 // not only for an indexed element read. Passing the array onward after a
 // pointer write must therefore reconstruct its struct elements from the cell
 // instead of copying the stale boxed mirror into the callee.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support storing a whole struct through a pointer"),
-)) {
+static foreach (backend; Matrix!()) {
     @("array.wholeStructArrayArgumentReadsAuthoritativeCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -6581,8 +6643,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "DMD CTFE asserts internally while initializing the nested array"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking a nested static-array element address"),
 )) {
     @("pointer.nestedStaticArrayElementUsesImmediateStride." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -6609,8 +6669,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "DMD CTFE rejects the nested static-array element pointer cast"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking a nested static-array element address"),
 )) {
     @("pointer.nestedStaticArrayLocalDirectWriteIsVisibleThroughEarlierPointer." ~
         backend.stringof)
@@ -7483,7 +7541,6 @@ static foreach (backend; Matrix!()) {
 // the omit-don't-pin convention (unconfirmed for this shape, matching the
 // other object-graph fixtures' own backend set).
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Interpreter, Because.diverges,
         "boxed-authority staleness: a deep field-chain write through one " ~
         "alias does not refresh another alias's own cached copy of the " ~
@@ -7642,6 +7699,29 @@ static foreach (backend; Matrix!(
                 assert(buf[2] == 43);
                 assert(buf[1] == 0);
                 assert(buf[3] == 0);
+            }
+        });
+    }
+}
+
+// A `string` is just an `immutable(char)[]`, so a `string*` dereference must
+// read the same 16-byte {ptr, length} descriptor a `T[]*` dereference (e.g.
+// `int[]*`) already does: `.length` and whole-array equality through the
+// deref both work.
+static foreach (backend; Matrix!()) {
+    @("pointer.stringPointerDereferenceReadsLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string greeting() {
+                return "hi";
+            }
+
+            unittest {
+                string s = greeting();
+                string* p = &s;
+                assert((*p).length == 2);
+                assert(*p == "hi");
             }
         });
     }

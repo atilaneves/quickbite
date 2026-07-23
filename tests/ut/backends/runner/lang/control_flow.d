@@ -991,6 +991,69 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A wide-string switch must compare the full element width: the selector and
+// the "ab"w case share their first code unit with "ax"w, so a truncated
+// comparison would pick the wrong case.
+static foreach (backend; Matrix!()) {
+    @("switch.wstringCasesCompareFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            wstring pick(int n) {
+                return n == 1 ? "ax"w : "ab"w;
+            }
+
+            int classify(wstring s) {
+                switch (s) {
+                    case "ab"w:
+                        return 1;
+
+                    case "ax"w:
+                        return 2;
+
+                    default:
+                        return 3;
+                }
+            }
+
+            unittest {
+                assert(classify(pick(1)) == 2);
+                assert(classify(pick(2)) == 1);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("switch.dstringCasesCompareFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dstring pick(int n) {
+                return n == 1 ? "ax"d : "ab"d;
+            }
+
+            int classify(dstring s) {
+                switch (s) {
+                    case "ab"d:
+                        return 1;
+
+                    case "ax"d:
+                        return 2;
+
+                    default:
+                        return 3;
+                }
+            }
+
+            unittest {
+                assert(classify(pick(1)) == 2);
+                assert(classify(pick(2)) == 1);
+            }
+        });
+    }
+}
+
 // Interpreter/Bytecode report Switch as an unsupported statement; IR cannot
 // compile the ternary in pick ("Unsupported IR expression").
 static foreach (backend; Matrix!()) {

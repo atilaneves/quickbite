@@ -25,7 +25,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo, Op, noCatchObjectField, noExceptionClass,
-        noOutParameterOffset, size, sliceDescriptorSize, stringSliceSize;
+        noOutParameterOffset, size, sliceDescriptorSize;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -81,23 +81,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case loadStringSlice:
-                // Write the slice descriptor: data offset then length, each a
-                // little-endian uint. reify reads it back at the boundary.
-                stack[base + instruction.a .. base + instruction.a + uint.sizeof]
-                    = scalarBytes(cast(uint) instruction.b);
-                stack[
-                    base + instruction.a + uint.sizeof
-                    .. base + instruction.a + 2 * uint.sizeof
-                ] = scalarBytes(cast(uint) instruction.c);
-                ++ip;
-                break;
-
             case loadDataPointer:
                 writeRawPointer(
                     stack,
                     base + instruction.a,
-                    cast(size_t) (program.data.ptr + instruction.b),
+                    cast(size_t) program.literalBlocks[instruction.b].ptr,
                 );
                 ++ip;
                 break;
@@ -223,39 +211,12 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case stringSliceToArray:
-                const dataOffset = scalarValue!uint(
-                    stack, base + instruction.b,
-                );
-                const stringLength = scalarValue!uint(
-                    stack, base + instruction.b + uint.sizeof,
-                );
+            case loadStringLiteral:
                 writeSliceDescriptorPointer(
                     stack,
                     base + instruction.a,
-                    cast(size_t) (program.data.ptr + dataOffset),
-                    stringLength,
-                );
-                ++ip;
-                break;
-
-            case stringSubSlice:
-                const sourceDataOffset = scalarValue!uint(
-                    stack, base + instruction.b,
-                );
-                const sourceLength = scalarValue!uint(
-                    stack, base + instruction.b + uint.sizeof,
-                );
-                const lo = scalarValue!size_t(stack, base + instruction.c);
-                const hi = scalarValue!size_t(
-                    stack, base + instruction.c + size_t.sizeof,
-                );
-                validateCompactSubSlice(sourceLength, lo, hi);
-                writeCompactStringDescriptor(
-                    stack,
-                    base + instruction.a,
-                    cast(uint) (sourceDataOffset + lo),
-                    cast(uint) (hi - lo),
+                    cast(size_t) program.literalBlocks[instruction.b].ptr,
+                    instruction.c,
                 );
                 ++ip;
                 break;
@@ -350,22 +311,12 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case sliceEqual1, sliceEqual4:
+            case sliceEqual1, sliceEqual2, sliceEqual4, sliceEqual8:
                 stack[base + instruction.a] = slicesEqual(
                     stack,
                     base + instruction.b,
                     base + instruction.c,
                     sliceCopyElementSize(instruction.op),
-                ) ? 1 : 0;
-                ++ip;
-                break;
-
-            case stringSliceEqual:
-                stack[base + instruction.a] = stringSlicesEqual(
-                    stack,
-                    base + instruction.b,
-                    base + instruction.c,
-                    program.data,
                 ) ? 1 : 0;
                 ++ip;
                 break;
@@ -559,6 +510,24 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.a,
                     scalarValue!size_t(stack, base + instruction.b),
                 );
+                ++ip;
+                break;
+
+            case signExtend1to2:
+                const ubyte[short.sizeof] signWidenedShort = scalarBytes(
+                    cast(short) scalarValue!byte(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + short.sizeof]
+                    = signWidenedShort;
+                ++ip;
+                break;
+
+            case zeroExtend1to2:
+                const ubyte[ushort.sizeof] zeroWidenedShort = scalarBytes(
+                    cast(ushort) scalarValue!ubyte(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + ushort.sizeof]
+                    = zeroWidenedShort;
                 ++ip;
                 break;
 
@@ -1667,7 +1636,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     throw new Exception(assertMessage(
                         program.assertDiagnostics[instruction.b],
                         stack[base .. $],
-                        program.data,
                     ));
 
                 ++ip;
@@ -1697,7 +1665,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     throw new Exception(assertMessage(
                         nonzeroDiagnostic,
                         stack[base .. $],
-                        program.data,
                     ));
 
                 ++ip;
@@ -1831,7 +1798,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     throw new Exception(stringFromSlice(
                         stack,
                         base + instruction.a,
-                        program.data,
                     ));
 
                 const handler = selected.handler;
@@ -1862,7 +1828,7 @@ package(quickbite.backends.bytecode) RunResult run(
                         stack[
                             handler.base + clause.nextMessageOffset
                             .. handler.base + clause.nextMessageOffset
-                                + stringSliceSize
+                                + sliceDescriptorSize
                         ] = 0;
                     else
                         writeStringSliceFromData(
@@ -1894,7 +1860,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 );
                 if (!selected.matched)
                     throw new Exception(exceptionMessage(
-                        objectPointer, program.classes, program.data,
+                        objectPointer, program.classes,
                     ));
 
                 const handler = selected.handler;
@@ -1916,7 +1882,7 @@ package(quickbite.backends.bytecode) RunResult run(
                     stack[
                         handler.base + clause.nextMessageOffset
                         .. handler.base + clause.nextMessageOffset
-                            + stringSliceSize
+                            + sliceDescriptorSize
                     ] = 0;
                 writeBackUnwoundFrames(
                     stack, frames, base, handler.frameDepth,
@@ -2148,14 +2114,19 @@ private auto transcodeUtfString(
     return Block(result, count);
 }
 
+// `offset` holds an ordinary {ptr, length} descriptor, so the string's bytes
+// are read straight through the pointer, exactly like any other array read.
+// Safe because `pointer`/`length` were themselves produced by the VM's own
+// slice-descriptor writers (heap allocation or the program's data segment),
+// never by untrusted input, so the read stays within a block the VM itself
+// owns.
 private string stringFromSlice(
     in ubyte[] stack,
     in size_t offset,
-    in ubyte[] data,
-) @safe pure {
-    const dataOffset = scalarValue!uint(stack, offset);
-    const length = scalarValue!uint(stack, offset + uint.sizeof);
-    return (cast(const(char)[]) data[dataOffset .. dataOffset + length]).idup;
+) @trusted pure {
+    const pointer = scalarValue!size_t(stack, offset);
+    const length = scalarValue!size_t(stack, offset + size_t.sizeof);
+    return (cast(const(char)*) pointer)[0 .. length].idup;
 }
 
 private string stringFromData(
@@ -2169,10 +2140,7 @@ private string stringFromData(
 private string exceptionMessage(
     in size_t objectPointer,
     in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
-    in ubyte[] data,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: stringSliceSize;
-
     if (objectPointer == 0)
         return "null";
 
@@ -2182,9 +2150,7 @@ private string exceptionMessage(
         classes[classIndex].msgOffset == ushort.max)
         return "Uncaught exception";
 
-    return stringFromObjectSlice(
-        object + classes[classIndex].msgOffset, data,
-    );
+    return stringFromObjectSlice(object + classes[classIndex].msgOffset);
 }
 
 private ubyte[] exceptionObjectFromString(
@@ -2193,16 +2159,16 @@ private ubyte[] exceptionObjectFromString(
     in size_t sourceOffset,
     in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: stringSliceSize;
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
 
     const messageOffset = classIndex < classes.length &&
         classes[classIndex].msgOffset != ushort.max
         ? classes[classIndex].msgOffset
         : cast(ushort) size_t.sizeof;
-    auto object = new ubyte[](messageOffset + stringSliceSize);
+    auto object = new ubyte[](messageOffset + sliceDescriptorSize);
     object[0 .. size_t.sizeof] = scalarBytes(cast(size_t) classIndex)[];
-    object[messageOffset .. messageOffset + stringSliceSize] =
-        source[sourceOffset .. sourceOffset + stringSliceSize];
+    object[messageOffset .. messageOffset + sliceDescriptorSize] =
+        source[sourceOffset .. sourceOffset + sliceDescriptorSize];
     return object;
 }
 
@@ -2210,13 +2176,10 @@ private ushort objectClassIndex(in size_t objectPointer) @trusted {
     return cast(ushort) objectScalarValue!size_t(cast(const(ubyte)*) objectPointer);
 }
 
-private string stringFromObjectSlice(
-    in ubyte* descriptor,
-    in ubyte[] data,
-) @trusted {
-    const dataOffset = objectScalarValue!uint(descriptor);
-    const length = objectScalarValue!uint(descriptor + uint.sizeof);
-    return (cast(const(char)[]) data[dataOffset .. dataOffset + length]).idup;
+private string stringFromObjectSlice(in ubyte* descriptor) @trusted {
+    const pointer = objectScalarValue!size_t(descriptor);
+    const length = objectScalarValue!size_t(descriptor + size_t.sizeof);
+    return (cast(const(char)*) pointer)[0 .. length].idup;
 }
 
 private void writeStringSliceFromObject(
@@ -2225,7 +2188,7 @@ private void writeStringSliceFromObject(
     in size_t objectPointer,
     in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: stringSliceSize;
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
 
     if (objectPointer == 0)
         return;
@@ -2238,22 +2201,22 @@ private void writeStringSliceFromObject(
 
     const descriptor = object + classes[classIndex].msgOffset;
     destination[
-        destinationOffset .. destinationOffset + stringSliceSize
-    ] = descriptor[0 .. stringSliceSize];
+        destinationOffset .. destinationOffset + sliceDescriptorSize
+    ] = descriptor[0 .. sliceDescriptorSize];
 }
 
-// Copy a compact read-only program-data string descriptor into a frame slot.
+// Copy a real {ptr, length} string descriptor into a frame slot.
 private void writeStringSliceFromData(
     ref ubyte[] destination,
     in size_t destinationOffset,
     in ubyte[] source,
     in size_t sourceOffset,
 ) @safe {
-    import quickbite.backends.bytecode.core.program: stringSliceSize;
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
 
     destination[
-        destinationOffset .. destinationOffset + stringSliceSize
-    ] = source[sourceOffset .. sourceOffset + stringSliceSize];
+        destinationOffset .. destinationOffset + sliceDescriptorSize
+    ] = source[sourceOffset .. sourceOffset + sliceDescriptorSize];
 }
 
 // Write a slice descriptor {ptr, length} at `offset`: the heap block's native
@@ -2327,20 +2290,6 @@ private void writeSliceDescriptorPointer(
         nativeToLittleEndian(length);
 }
 
-// Write a compact string descriptor {dataOffset, length} (each a uint) at
-// `offset`. Never touches a native pointer, so a sub-slice-of-a-sub-slice
-// chain stays entirely in program-data-relative offsets.
-private void writeCompactStringDescriptor(
-    ref ubyte[] stack,
-    in size_t offset,
-    in uint dataOffset,
-    in uint length,
-) @safe {
-    stack[offset .. offset + uint.sizeof] = scalarBytes(dataOffset);
-    stack[offset + uint.sizeof .. offset + 2 * uint.sizeof] =
-        scalarBytes(length);
-}
-
 private uint elementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
@@ -2407,33 +2356,17 @@ private void validateSubSlice(
         ));
 }
 
-// Same bounds check as `validateSubSlice`, but against a compact string
-// descriptor's uint length rather than a full descriptor's size_t length.
-private void validateCompactSubSlice(
-    in uint length,
-    in size_t lo,
-    in size_t hi,
-) @safe {
-    import std.conv: text;
-
-    if (lo > hi)
-        throw new Exception(text(
-            "slice [", lo, " .. ", hi,
-            "] has a larger lower index than upper index",
-        ));
-
-    if (hi > length)
-        throw new Exception(text(
-            "slice [", lo, " .. ", hi,
-            "] extends past source array of length ", length,
-        ));
-}
-
 private uint sliceCopyElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.sliceCopy1 || op == Op.sliceEqual1 ? 1 : 4;
+    if (op == Op.sliceCopy1 || op == Op.sliceEqual1)
+        return 1;
+    if (op == Op.sliceEqual2)
+        return 2;
+    if (op == Op.sliceEqual8)
+        return 8;
+    return 4;
 }
 
 private uint appendElementSize(
@@ -2661,22 +2594,6 @@ private bool slicesEqual(
     const byteCount = leftLength * elementSize;
     return (cast(const(ubyte)*) leftPointer)[0 .. byteCount] ==
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
-}
-
-// True iff the two string-slice descriptors {dataOffset, length} hold the same
-// length and identical bytes within the read-only data segment.
-private bool stringSlicesEqual(
-    in ubyte[] stack,
-    in size_t leftOffset,
-    in size_t rightOffset,
-    in ubyte[] data,
-) @safe pure {
-    const leftDataOffset = scalarValue!uint(stack, leftOffset);
-    const leftLength = scalarValue!uint(stack, leftOffset + uint.sizeof);
-    const rightDataOffset = scalarValue!uint(stack, rightOffset);
-    const rightLength = scalarValue!uint(stack, rightOffset + uint.sizeof);
-    return data[leftDataOffset .. leftDataOffset + leftLength] ==
-        data[rightDataOffset .. rightDataOffset + rightLength];
 }
 
 // Copy the source slice's elements into the destination slice's backing
@@ -2922,7 +2839,6 @@ private string assertMessage(
     in imported!"quickbite.backends.bytecode.core.program".AssertDiagnostic
         diagnostic,
     in ubyte[] frame,
-    in ubyte[] data,
 ) @safe {
     import std.conv: text;
 
@@ -2953,11 +2869,11 @@ private string assertMessage(
 
     if (diagnostic.isString)
         return text(
-            stringOperandText(frame, diagnostic.lhs, data),
+            stringOperandText(frame, diagnostic.lhs),
             " ",
             invertedOperator(diagnostic.operator),
             " ",
-            stringOperandText(frame, diagnostic.rhs, data),
+            stringOperandText(frame, diagnostic.rhs),
         );
 
     const lhs = diagnostic.lhsIsNull
@@ -2978,11 +2894,10 @@ private string assertMessage(
 private string stringOperandText(
     in ubyte[] frame,
     in size_t offset,
-    in ubyte[] data,
 ) @safe {
     import std.conv: text;
 
-    return text(`"`, stringFromSlice(frame, offset, data), `"`);
+    return text(`"`, stringFromSlice(frame, offset), `"`);
 }
 
 // Render a dynamic-array operand as `[e0, e1, ...]`, reading the slice

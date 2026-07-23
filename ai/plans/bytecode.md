@@ -77,9 +77,8 @@ This is the load-bearing decision; everything else follows from it.
   a descriptor crossing the bridge unswapped (`int[]*`, a struct with a slice
   field passed by reference) reads ptr-as-length on the native side. The flip
   touches every descriptor read/write site (`subSlice*`, `indexLoad*`, bounds
-  checks), needs a bridge round-trip test of a struct containing a slice
-  field, and sequences with the string-descriptor retirement below, which
-  touches the same sites.
+  checks) and needs a bridge round-trip test of a struct containing a slice
+  field.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
@@ -93,67 +92,34 @@ This is the load-bearing decision; everything else follows from it.
 
 ### Strings are ordinary arrays
 
-A `string`-typed frame slot must be a normal 16-byte native-order slice
+A `string`-typed frame slot is a normal 16-byte native-order slice
 descriptor, identical to every other `T[]`. What is special about strings is
-only their backing storage: literal content lives in the immutable program
-data segment (the VM's `.rodata`), stored at the declared element width
-(`char`/`wchar`/`dchar` code units, not unconditionally UTF-8). Offsets into
-that segment appear in exactly one place — constant-pool entries — and are
-materialised into real pointers by a single literal-load instruction at
-descriptor construction. Frames, fields, and the FFI bridge only ever see
-real pointers. Specialness lives in storage, never in the frame — the same
+only their backing storage: literal content lives in its own stable,
+read-only `Program.literalBlocks` entry, stored at the declared element
+width (`char`/`wchar`/`dchar` code units, not unconditionally UTF-8), one
+block per literal so a block never moves once allocated. A literal's
+`literalBlocks` index appears in exactly one place — constant-pool-like
+operands (`Op.loadDataPointer`/`Op.loadStringLiteral`) — and is materialised
+into a real pointer by a single literal-load instruction at descriptor
+construction. Frames, fields, and the FFI bridge only ever see real
+pointers. Specialness lives in storage, never in the frame — the same
 asymmetry compiled D gives string literals (`.rodata` placement, merged and
 deduped, with no descriptor-shape difference).
 
 Consequences, all by construction: sub-slices, indexing, `.ptr`, assignment,
-bounds checks, and copying reuse the generic dynamic-array paths with zero
+bounds checks, copying, and truthiness (`if (s)` / `assert(s)` compile as the
+ordinary `ptr !is null` pointer test — `null` and `""` are distinguishable by
+the pointer word) reuse the generic dynamic-array paths with zero
 string-specific opcodes; heap-backed strings (`.idup`, appends) are not a
 second representation, just a different pointee, so no provenance predicate
-or compile-time rebinding exists; `null` and `""` are distinguishable by the
-pointer word, giving real string truthiness; `wstring`/`dstring` need no
-gates because storage matches stride. Type never selects a representation;
-nothing inspects a value's origin to decide its shape.
+or compile-time rebinding exists; `wstring`/`dstring` need no gates because
+storage matches stride. Type never selects a representation; nothing
+inspects a value's origin to decide its shape.
 
-The current implementation predates this contract: a string local holds a
-compact 8-byte {data offset, length} descriptor expanded at each use —
-bootstrap scaffolding from the first string-literal lowering, and the root of
-an entire silent-misread bug family. Migration slices, each independently
-green, folded into and sequenced with the descriptor word-order flip above:
-
-1. Width-faithful literal storage: store code units at the declared element
-   width (`stringCodeUnits!T` exists, unused); pool entries carry
-   {offset, length} in elements; add `loadStringLiteral` (today's
-   `stringSliceToArray`, run once at literal load instead of per consumer).
-   The deferred wide-string gap falls out here rather than being its own
-   project.
-2. String locals become dynamic-array locals through the generic declaration,
-   parameter, and reassignment paths. This slice deletes rather than adds:
-   the reassignment `copySize` special case, the heap-rebind branch and its
-   map surgery, `stringSourceIsHeapBacked`, `_stringLocals`. The
-   conditional-reassignment refusal rows go green because the bug's
-   precondition (two slot widths) no longer exists.
-3. Consumer cleanup: retire `Op.stringSubSlice`, `validateCompactSubSlice`,
-   `compactStringLengthSlot`, `tryStringIndex` (the generic
-   `tryDynamicArrayIndex` catches strings), and `compileStringPointer`'s
-   expansion; sweep every remaining `isStringType` gate in compiler.d — each
-   is either dead or a bug.
-4. Truthiness and null: with a real pointer word, `if (s)` / `assert(s)`
-   compiles as the ordinary pointer test.
-
-Done means: `stringSliceSize`, `_stringLocals`, `Op.stringSubSlice`,
-`Op.stringSliceToArray`, `compileStringPointer`'s compact expansion, and
-`stringSourceIsHeapBacked` no longer exist, and the string suite runs through
-the same compiler paths as the `int[]` suite. The done-criterion is
-greps-return-nothing on purpose: the failure mode of half-migrations is both
-representations surviving. Costs, named: one extra instruction per literal
-load (bench checkpoint), 2-4x data-segment growth per wide-string literal
-(rare), and the CTFE-boundary reifier learns to classify data-segment
-pointers back into offsets at the boundary only (offsets are the portable
-currency; addresses never escape a process). Not in scope: value interning —
-D strings are slices with observable `.ptr` identity and memory-sharing
-sub-slices, so canonical-object interning contradicts the compiled-D oracle;
-deduplicating identical literal bytes inside the data segment is
-storage-side, invisible, and compatible.
+Not in scope: value interning — D strings are slices with observable `.ptr`
+identity and memory-sharing sub-slices, so canonical-object interning
+contradicts the compiled-D oracle; deduplicating identical literal bytes
+across `literalBlocks` entries is storage-side, invisible, and compatible.
 
 ### Runtime type metadata
 Native-layout memory is not enough for the druntime leaves; they also
@@ -397,16 +363,10 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `stdConvTextRendersCharArrayExpressionRaw.Bytecode`: `"...".idup` reaches
-   druntime's `_dup`, which allocates through `_d_newarrayU` and then
-   `memcpy`s into the result. A runtime-allocated block has no offset in the
-   program data segment, so the compact string descriptor cannot name it;
-   this row waits on the "Strings are ordinary arrays" migration rather than
-   on any fixture-shaped gap.
-2. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
+1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
    the separately compiled archive symbol through the bytecode native bridge,
    instead of compiling the rewritten source body.
-3. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
+2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
    `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
    `registryLock`'s `new Mutex` reaches its `MonitorProxy` field. Support the
    host-backed synchronisation primitive without treating single-threaded VM
@@ -430,11 +390,17 @@ row reaches them:
   remain unchecked.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
-- Struct aliases and whole-local assignment do not yet cover all heap fields,
-  pointer receivers, captured structs, postblits, and `opAssign` semantics.
+- Struct aliases and whole-local assignment do not yet cover a static-array
+  whole-object pointer receiver, a class array-field-element pointer
+  receiver, repeated/aliased ref-argument address identity, captured structs,
+  postblits, or `opAssign` semantics.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
+- A `T[N][]`'s rows are materialised as separately heap-allocated inner
+  descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
+  within that row, but a flat pointer walk across rows diverges from compiled
+  D's contiguous layout.
 
 ### TDD and handoff discipline
 
@@ -634,17 +600,14 @@ lifetime as the dependency bytecode cache.
 - The captured-parent materialisation is only for such nested functions. A
   nested struct method's own `this` remains its current receiver, even when
   that receiver also carries a context pointer.
-- `capturedThisStructDeclaration` is keyed only on `vthis` plus the enclosing
-  parent being a (non-nested) struct method, so a nested function that reads
-  BOTH an enclosing local and `this.field` is also claimed by this
-  `this`-receiver shape, even though its true DMD context is a frame/closure
-  environment covering the local, not the struct receiver. This is safe
-  rather than silently wrong: claiming the shape skips building a captured-
-  locals environment for the function, so the local's own read never
-  resolves and throws its own "Unsupported variable" diagnostic before any
-  receiver value is used (`struct.nestedFunctionReadsCapturedLocalAndThisField`
-  pins this). A pure-local capture (no `this` use at all) inside a struct
-  method throws the identical diagnostic for the same reason.
+- `capturedThisStructDeclaration` declines the `this`-receiver shape whenever
+  the nested function also has a captured local (`hasCapturedOuterLocal`),
+  even though `vthis` is set: the function instead gets an ordinary nested
+  frame/closure context, and `vthis` is registered into that same captured-
+  offsets map alongside the captured locals, so `this.field` resolves through
+  the closure environment like any other captured variable. This covers both
+  a nested function that reads an enclosing local and `this.field` together
+  and a pure-local capture with no `this` use at all.
 
 The compiled-D exposing behaviour is:
 
@@ -674,18 +637,3 @@ behaviour.
   requires multiple simultaneous threads. Host runtime calls and single-thread
   concurrency state already reached by existing rows are not covered by that
   deferral.
-- Strings currently violate the "Strings are ordinary arrays" contract (see
-  Core Architecture): a local holds the compact 8-byte {data offset, length}
-  descriptor, patched around by char-only gates, the
-  `stringSourceIsHeapBacked` provenance predicate, and a heap rebind that is
-  refused outside straight-line code. Interim gaps until the migration
-  slices land, all deleted rather than fixed by them: an unrecognised
-  string-source shape (e.g. a ternary with a heap-backed arm) still defaults
-  to the compact path and misreads; `s.idup` where `s` is already a `string`
-  and `string s = p[lo .. hi];` from a pointer source refuse or misread;
-  `wstring`/`dstring` sub-slices are refused; a string-typed
-  `_d_newarrayU`/`uninitializedArray` result is refused, because the block it
-  returns lives in VM heap memory and no data-segment offset names it.
-  Compiling that shape anyway writes a heap pointer into a compact slot,
-  whose reader adds its low 32 bits to `data.ptr` and hands the guest a wild
-  address — the shape must stay refused until the migration lands.
