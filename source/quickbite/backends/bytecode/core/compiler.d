@@ -3077,7 +3077,7 @@ private struct Compiler {
             constantIndex(_program.classes[classIndex].nativeTypeInfo),
             cast(ushort) size(ScalarType.ulong_),
         );
-        return Operand(offset, ScalarType.ulong_, false, true, ScalarType.void_);
+        return Operand(offset, ScalarType.ulong_, true, ScalarType.void_);
     }
 
     private size_t nativeTypeInfoAddress(Type type) {
