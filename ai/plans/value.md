@@ -902,123 +902,126 @@ All test additions/changes require approval first (AGENTS.md).
 ## Remaining work
 
 The contract flip (decision 1) and frontend-answered `:t` (decision 5)
-are done. Ordering below follows the priority ladder in Status: the
-workingness track (item 4) leads; the representation track (item 5) runs
-in parallel and never blocks it.
+are done. The current cerealed frontier is
+`dynamicArray.castSignedBytesToUbytesPreservesRawBits`
+(`interpreter.md` §9.10/§10). Recursive aggregate boxing cannot preserve that
+cast's aliasing and raw-bit interpretation. The native-layout authority switch
+is therefore the next value-track objective. Formatter and backend-cleanup
+work does not precede it. Item numbers remain stable for existing
+cross-references; document order is execution priority.
 
-1. Complete the prelude formatter wiring (decision 3). The formatter
-   *surface* is done — scalars, arrays, structs, enums, AAs render per
-   the round-trip spec, and the `text(value)` catch-all covers only the
-   rule-7 no-contract values. Expression cells are synthesized as
-   `__quickbiteFormat(expr)` for a broad set of return types when the
-   backend opts in (`Ctfe`, `Interpreter`). Plain template structs and
-   context-free range results are admitted. `std.algorithm.map`'s nested
-   `MapResult` remains excluded because its behavior-bearing private state
-   cannot be reconstructibly displayed. Define the prelude contract for
-   behavior-bearing templates before admitting them.
-   Keep expanding the gate per backend (decision 4) until every REPL
-   expression is formatter-wrapped and the unformatted evaluator paths can
-   be deleted.
-   Items 2 and 3 are blocked until this wiring lands. The interpreter's
-   `std.conv.text` hook is temporary formatter scaffolding, not a general
-   Phobos builtin: remove it once the formatter no longer needs that escape
-   hatch.
+### Item 5 — Make the authority switch
 
-2. Complete the unittest/expression split for IR and Bytecode (decision 12).
-   CTFE and Interpreter already execute unittest bodies directly and return
-   only success/diagnostic. Then delete the private reify -> `Value` ->
-   `toString` scaffolding per backend (decision 4) as each gains the
-   formatter. Only a REPL expression cell executes the prelude formatter and
-   consumes its returned string. Do not retain `Value` or render a dummy
-   `void` result just to reuse the evaluator path.
+`AggregateValue` remains
+   `RuntimeValue`-typed; its consumers plus the direct `RuntimeValue`
+   aggregate paths enumerated in decision 7 must change together with
+   whole-value reconstruction to host-address aggregate handles. In the same
+   operation, native storage becomes local/frame, `ref`/`out`/capture,
+   pointer-dereference, and cross-frame-write authority; all data-pointer arms
+   become the one host-address arm; and cells and aliases are deleted. Do not
+   introduce a handle separately, retain boxed locals, or split static from
+   dynamic arrays: the former needs parallel copies and the latter leaves a
+   second authority; `NativeArray`'s FFI address is only a dynamic-array
+   shortcut. Function and delegate handles remain separate non-data
+   categories. Expression results need immediate scalars, native handles,
+   locations, callables, and execution metadata only.
 
-3. Make the authority switch. `AggregateValue` remains `RuntimeValue`-typed;
-   its consumers plus the direct `RuntimeValue` aggregate paths enumerated in
-   decision 7 must change together with whole-value reconstruction to
-   host-address aggregate handles. In the same operation, native storage
-   becomes local/frame, `ref`/`out`/capture, pointer-dereference, and
-   cross-frame-write authority;
-   all data-pointer arms become the one host-address arm; and cells and aliases
-   are deleted. Do not introduce a handle separately, retain boxed locals, or
-   split static from dynamic arrays: the former needs parallel copies and the
-   latter leaves a second authority; `NativeArray`'s FFI address is only a
-   dynamic-array shortcut. Function and delegate handles remain separate
-   non-data categories. Expression results need immediate scalars, native
-   handles, locations, callables, and execution metadata only. Once no backend
-   depends on `quickbite.lang.Value` as a cross-backend type, delete the shared
-   struct and its unit tests together. This deletion is decision 15's
-   completion signal.
+   Implement decision 15 in bounded, independently green preparatory slices,
+   then replace boxed local authority coherently (decision 17):
 
-4. **Workingness track (leads).** Keep the shipping boxed interpreter
-   advancing toward the cerealed/dub goal: one language-surface fix plus
-   its oracle-backed fixture per small, short-lived PR, merged
-   continuously. Correctness fixes to boxed machinery are in order; only
-   new FFI marshalling rungs and new representation-ceiling machinery
-   are frozen (decision 17) — a project blocked on those gets a gap
-   fixture and re-earns when the switch lands. `interpreter.md` §8
-   triage is the partition.
-
-5. **Representation track (parallel).** Implement decision 15 in
-   bounded, independently green slices, then replace boxed local authority
-   coherently (decision 17):
    - Frame and place mirrors exist: per-activation frame blocks whose safe
      binding-address decoder dispatches through the narrowly trusted raw slot
      primitives between inline and reference slots, including frame-backed
-     `Place` construction and mirror
-     storage routing; lvalue
-     places
-     composing through a variable, fields, indexing, pointer/class
-     dereference, and address-of — `this` has an arm but no reachable
-     caller, since DMD slots `vthis` as neither a parameter nor a body
-     local and `resolveBase` therefore always declines it; `ref`/`out`
-     and captured-variable reference slots; and load/store through places
-     for scalars, enums, pointers, `real`, structs, unions, slices,
-     class object bodies, and dataseg storage, each verified against
-     the still-authoritative boxed value on write. Composition gaps
-     carried to the switch: `placeOfLvalue` refuses a `SliceExp`
-     assignment target and a `SymOffExp` naming a function; a
-     captured-variable slot cannot resolve a relay through a
-     non-referencing intermediate activation.
-   - Item 3's authority switch is the combined carrier and storage migration:
-     aggregate consumers and whole-value reconstruction take host-address
-     handles while pointer creation/dereference, `ref`/`out`, captures, and
-     cross-frame mutation use frame addresses directly. Function/delegate
-     handles stay separate non-data categories. Do not retain `scalarCells`,
-     other cell families, or alias/reverse maps as an authority behind the
-     frames: a mirror plus any of those authorities is still two storage worlds.
-   - `object_table.ObjectTable` never evicts: every class identity the
-     mirror touches keeps its body pinned for the whole execution,
-     because liveness lives in `impl.d`'s boxed copies and nothing
-     reports it back, and a wrong eviction silently splits one object
-     into two bodies. Nothing to do before the switch, which dissolves
-     the question instead of answering it: once a native block IS the
-     object, its lifetime is the collector's and no identity-keyed pin
-     exists.
-   - The authority switch: native storage becomes the sole authority
-     for all bindings as part of that coherent path replacement. Merge gate:
-     no new red rows (decision 17).
-   - Deletions once dead, checked by grep going quiet: `scalarCells`/
-     `arrayCells`/`structCells`/`classCells`/`classObjectCells` and
-     every alias/reverse map, `arrayRebinds`/`classRebinds`,
-     `forkPerFrameCellsInto`/`mergePerFrameCellsFrom` and the rest of
-     the cell lifecycle dispatch, parameter writeback, `ffi_marshal.d`,
-     and the pointer-kind predicates (`isNativePointer`,
-     `isLocalPointer`) — plus the interim contract sections above.
-   Success criteria, in order:
-   - the `interpreter.md` §9.10 shims are deleted one by one, each
-     deletion proven by its ratchet fixtures staying green through the
-     real path (`emplaceRef` executes its actual body; `memcpy` and
-     the `gc_*` hooks route through ordinary FFI);
-   - the parked representation-ceiling gap fixtures (§9.10 "gap
-     fixtures") re-earn `Interpreter` in their matrices;
-   - the cerealed frontier resumes on the new representation, and the
-     latency A/B against the boxed baseline is measured on real suites
-     once they run — a hoped-for improvement, not an assumed one.
+     `Place` construction and mirror storage routing; lvalue places compose
+     through a variable, fields, indexing, pointer/class dereference, and
+     address-of. `this` has an arm but no reachable caller, since DMD slots
+     `vthis` as neither a parameter nor a body local and `resolveBase`
+     therefore always declines it. `ref`/`out` and captured-variable
+     reference slots exist, as do loads and stores through places for scalars,
+     enums, pointers, `real`, structs, unions, slices, class object bodies,
+     and dataseg storage, each verified against the still-authoritative boxed
+     value on write. Composition gaps carried to the switch:
+     `placeOfLvalue` refuses a `SliceExp` assignment target and a `SymOffExp`
+     naming a function; a captured-variable slot cannot resolve a relay
+     through a non-referencing intermediate activation.
+   - The combined carrier and storage migration makes aggregate consumers and
+     whole-value reconstruction take host-address handles while pointer
+     creation/dereference, `ref`/`out`, captures, and cross-frame mutation use
+     frame addresses directly. Function/delegate handles stay separate
+     non-data categories. Do not retain `scalarCells`, other cell families,
+     or alias/reverse maps as an authority behind the frames: a mirror plus
+     any of those authorities is still two storage worlds.
+   - `object_table.ObjectTable` never evicts before the switch: every class
+     identity the mirror touches keeps its body pinned for the whole
+     execution, because liveness lives in `impl.d`'s boxed copies and nothing
+     reports it back. Once a native block is the object, its lifetime is the
+     collector's and no identity-keyed pin exists.
+   - Merge gate: no new red rows (decision 17).
+   - Delete dead machinery, checked by grep going quiet:
+     `scalarCells`/`arrayCells`/`structCells`/`classCells`/
+     `classObjectCells`, every alias/reverse map,
+     `arrayRebinds`/`classRebinds`, `forkPerFrameCellsInto`/
+     `mergePerFrameCellsFrom` and the rest of the cell lifecycle dispatch,
+     parameter writeback, `ffi_marshal.d`, and the pointer-kind predicates
+     (`isNativePointer`, `isLocalPointer`).
 
-6. Open design questions carried forward: lifetime contracts for
-   blocks borrowed from arbitrary C owners; what a guest pointer into
-   a grown array should observe, and whether that deserves a
-   diagnostic rather than compiled D's silent staleness.
+   Success criteria, in order:
+
+   - `dynamicArray.castSignedBytesToUbytesPreservesRawBits` re-earns
+     `Interpreter`, then the cerealed benchmark identifies the next frontier;
+   - the `interpreter.md` §9.10 shims are deleted one by one, each deletion
+     proven by its ratchet fixtures staying green through the real path
+     (`emplaceRef` executes its actual body; `memcpy` and the `gc_*` hooks
+     route through ordinary FFI);
+   - the other parked representation-ceiling gap fixtures re-earn
+     `Interpreter` in their matrices;
+   - the cerealed frontier resumes on the new representation, and the latency
+     A/B against the boxed baseline is measured on real suites once they run.
+
+### Item 4 — Workingness track
+
+While preparatory authority-switch slices proceed, keep the shipping boxed
+interpreter advancing toward the cerealed/dub goal: one language-surface fix
+plus its oracle-backed fixture per small, short-lived PR, merged continuously.
+Correctness fixes to boxed machinery are in order; only new FFI marshalling
+rungs and new representation-ceiling machinery are frozen (decision 17) — a
+project blocked on those gets a gap fixture and re-earns when the switch lands.
+`interpreter.md` §8 triage is the partition.
+
+### Item 1 — Prelude formatter wiring
+
+Complete the prelude formatter wiring (decision 3) after the cerealed critical
+path. The formatter surface covers scalars, arrays, structs, enums, AAs, plain
+template structs, and context-free range results. `std.algorithm.map`'s nested
+`MapResult` remains excluded because its behavior-bearing private state cannot
+be reconstructibly displayed. Define the prelude contract for behavior-bearing
+templates before admitting them. Then expand the gate per backend (decision 4)
+until every REPL expression is formatter-wrapped and the unformatted evaluator
+paths can be deleted. The interpreter's `std.conv.text` hook is temporary
+formatter scaffolding, not a general Phobos builtin: remove it once the
+formatter no longer needs that escape hatch.
+
+### Item 2 — Unittest/expression split
+
+Complete the unittest/expression split for IR and Bytecode (decision 12) after
+their formatter wiring. CTFE and Interpreter already execute unittest bodies
+directly and return only success/diagnostic. Delete the private reify ->
+`Value` -> `toString` scaffolding per backend (decision 4) as each gains the
+formatter. Only a REPL expression cell executes the prelude formatter and
+consumes its returned string. Do not retain `Value` or render a dummy `void`
+result just to reuse the evaluator path.
+
+### Item 3 — Delete the shared value
+
+Delete the shared `quickbite.lang.Value` and its unit tests once the authority
+switch and per-backend formatter migrations leave no consumers. This deletion
+is decision 15's completion signal.
+
+### Item 6 — Open design questions
+
+Determine the lifetime contracts for blocks borrowed from arbitrary C owners,
+what a guest pointer into a grown array should observe, and whether that
+deserves a diagnostic rather than compiled D's silent staleness.
 
 ## Out of scope
 
