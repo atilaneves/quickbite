@@ -1071,7 +1071,7 @@ private struct Walker {
         if (classType is null || classType.sym is null)
             return false;
 
-        return object.classHasType(className(classType.sym));
+        return AggregateValue.hasClassType(object, className(classType.sym));
     }
 
     // Single write path for a local's boxed value; native-storage mirroring
@@ -2946,10 +2946,10 @@ private struct Walker {
 
             if (
                 hasThis &&
-                thisValue.isClassObject &&
-                thisValue.hasClassFieldNamed(name)
+                AggregateValue.isClass(thisValue) &&
+                AggregateValue.hasClassFieldNamed(thisValue, name)
             )
-                return thisValue.classFieldNamed(name);
+                return AggregateValue.classFieldNamed(thisValue, name);
         }
 
         if (auto var = expression.isVarExp) {
@@ -6877,12 +6877,13 @@ private struct Walker {
 
         const left = runExpression((*call.arguments)[1]);
         const right = runExpression((*call.arguments)[2]);
-        if (left.length != right.length)
+        if (AggregateValue.length(left) != AggregateValue.length(right))
             throw new Exception("Unsupported eval call.");
 
         Value[] elements;
-        foreach (index; 0 .. left.length)
-            elements ~= left[index] + right[index];
+        foreach (index; 0 .. AggregateValue.length(left))
+            elements ~= AggregateValue.elementAt(left, index) +
+                AggregateValue.elementAt(right, index);
 
         return writeBackSliceElements(target, elements);
     }
@@ -6907,16 +6908,16 @@ private struct Walker {
             ? 0
             : cast(size_t) runExpression(slice.lwr).asLong;
         const upper = slice.upr is null
-            ? current.length
+            ? AggregateValue.length(*current)
             : cast(size_t) runExpression(slice.upr).asLong;
         if (upper - lower != elements.length)
             throw new Exception("Unsupported eval call.");
 
         Value[] updated;
-        foreach (index; 0 .. current.length)
+        foreach (index; 0 .. AggregateValue.length(*current))
             updated ~= index >= lower && index < upper
                 ? elements[index - lower]
-                : (*current)[index];
+                : AggregateValue.elementAt(*current, index);
 
         setLocal(variable, Value.arrayValue(updated));
         uninitializedLocals.remove(variable);
@@ -7252,7 +7253,10 @@ private struct Walker {
         // fields.  When the receiver is already a valid struct (e.g.
         // MapResult created from a StructLiteralExp with elements), use it
         // as-is to preserve any hidden context fields.
-        if (function_.isConstructorFunction && !receiver.isStruct) {
+        if (
+            function_.isConstructorFunction &&
+            !AggregateValue.isStruct(receiver)
+        ) {
             auto structDecl = function_.constructorStructDeclaration;
             child.thisValue = structDecl !is null
                 ? defaultValue(structDecl.type)
@@ -7381,7 +7385,10 @@ private struct Walker {
     // existing cell in this frame always wins for the same reason as the
     // forward allocation-id merge above.
     private void mergeReturnedArrayCell(ref Walker child) {
-        if (!child.result.isArray || child.result.arrayAllocationId == 0)
+        if (
+            !AggregateValue.isArray(child.result) ||
+            child.result.arrayAllocationId == 0
+        )
             return;
 
         const id = child.result.arrayAllocationId;
@@ -9696,10 +9703,10 @@ private struct Walker {
         imported!"dmd.expression".Expression receiverExpression,
         in Value boxedValue,
     ) {
-        if (!boxedValue.isClassObject)
+        if (!AggregateValue.isClass(boxedValue))
             return boxedValue;
 
-        auto cell = boxedValue.classIdentity in classObjectCells;
+        auto cell = AggregateValue.classIdentity(boxedValue) in classObjectCells;
         if (cell is null)
             return boxedValue;
 
@@ -9739,10 +9746,10 @@ private struct Walker {
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
 
-        if (!target.isClassObject)
+        if (!AggregateValue.isClass(target))
             return false;
 
-        auto cell = target.classIdentity in classObjectCells;
+        auto cell = AggregateValue.classIdentity(target) in classObjectCells;
         if (cell is null)
             return false;
 
@@ -9772,8 +9779,8 @@ private struct Walker {
             ))
                 return false;
 
-            const fieldValue = target.classFieldAt(fieldIndex);
-            if (!fieldValue.isArray)
+            const fieldValue = AggregateValue.classFieldAt(target, fieldIndex);
+            if (!AggregateValue.isArray(fieldValue))
                 return false;
 
             const offset = fieldByteOffset(field);
@@ -9784,12 +9791,12 @@ private struct Walker {
                 staticArrayLength(field.type.toBasetype.isTypeSArray),
             );
             Value result = fieldValue;
-            foreach (elementIndex; 0 .. fieldValue.length) {
+            foreach (elementIndex; 0 .. AggregateValue.length(fieldValue)) {
                 Value elementValue;
                 if (structType !is null) {
                     auto elementCell = arrayCell.structElement(elementIndex);
                     elementValue = structValueFromCell(
-                        fieldValue[elementIndex],
+                        AggregateValue.elementAt(fieldValue, elementIndex),
                         elementCell,
                     );
                 } else
@@ -9815,8 +9822,8 @@ private struct Walker {
             ))
                 return false;
 
-            const fieldValue = target.classFieldAt(fieldIndex);
-            if (!fieldValue.isArray)
+            const fieldValue = AggregateValue.classFieldAt(target, fieldIndex);
+            if (!AggregateValue.isArray(fieldValue))
                 return false;
 
             auto arrayCell = classSliceField(*cell, classType.sym, fieldIndex);
@@ -9836,8 +9843,8 @@ private struct Walker {
         // caller's already-computed boxed field value.
         auto nestedStructType = field.type.toBasetype.isTypeStruct;
         if (nestedStructType !is null && nestedStructType.sym.isUnionDeclaration is null) {
-            const fieldValue = target.classFieldAt(fieldIndex);
-            if (!fieldValue.isStruct)
+            const fieldValue = AggregateValue.classFieldAt(target, fieldIndex);
+            if (!AggregateValue.isStruct(fieldValue))
                 return false;
 
             const offset = fieldByteOffset(field);

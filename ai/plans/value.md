@@ -927,8 +927,12 @@ cross-references; document order is execution priority.
    dynamic arrays: the former needs parallel copies and the latter leaves a
    second authority; `NativeArray`'s FFI address is only a dynamic-array
    shortcut. Function and delegate handles remain separate non-data
-   categories. Expression results need immediate scalars, native handles,
-   locations, callables, and execution metadata only.
+   categories. `AggregateValue` is the only migration boundary for ordinary
+   aggregate reads in execution paths (including class dispatch/member lookup
+   and array-op length/indexing); boxed-era promotion and mirror internals
+   remain outside it until the combined switch deletes them. Expression
+   results need immediate scalars, native handles, locations, callables, and
+   execution metadata only.
 
    Implement decision 15 in bounded, independently green preparatory slices,
    then replace boxed local authority coherently (decision 17):
