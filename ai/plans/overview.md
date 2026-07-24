@@ -28,8 +28,8 @@ set runs a safe superset.
 The live design is `source/quickbite/backends/` behind the frontend in
 `source/quickbite/frontend/` (dmd-as-a-library; public `quickbite.*` APIs
 must not expose `dmd.*` types). The old `quickbite.executor` /
-`quickbite.ir` / `executors/` layer survives only as glue for the
-first-generation IR/bytecode internals and dies with them.
+`quickbite.ir` layer remains coupled to the first-generation IR/bytecode
+internals and dies with them.
 
 A backend must not fall back to another backend for execution or
 diagnostics: unsupported behaviour must be reported as an explicit

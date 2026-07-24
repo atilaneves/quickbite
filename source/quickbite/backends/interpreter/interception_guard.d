@@ -63,9 +63,9 @@ public bool isLegalInterception(
 
 // dmd exposes no direct "does this body contain asm" query; walk the
 // statement tree with dmd's own generic recursive statement visitor (used
-// elsewhere in dmd, e.g. `resetExpressionObjState` in
-// `executors/dmd_codegen.d`, to rewrite/traverse arbitrary control flow) and
-// look for a `CompoundAsmStatement` (the whole `asm { ... }` block). Quickbite
+// elsewhere in dmd, e.g. `resetExpressionObjState`, to rewrite/traverse
+// arbitrary control flow) and look for a `CompoundAsmStatement` (the whole
+// `asm { ... }` block). Quickbite
 // runs dmd frontend-only (`-version=NoBackend`): the individual instructions
 // inside an `asm { ... }` block are only resolved into real `AsmStatement`/
 // `InlineAsmStatement` nodes as part of code generation, which never runs

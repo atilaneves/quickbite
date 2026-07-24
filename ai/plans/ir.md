@@ -95,9 +95,9 @@ not yet covered anywhere in the current CTFE-backed language tests.
   frontend or lowering layer; the IR executor should consume only IR-native
   structures.
 - Build the backend IR pipeline from scratch. Existing modules such as
-  `quickbite.ir`, `quickbite.frontend.lowering`, and `quickbite.executors.ir`
-  may be read for context, but the new backend must not route through them or
-  reuse them as its implementation.
+  `quickbite.ir` and `quickbite.frontend.lowering` may be read for context,
+  but the new backend must not route through them or reuse them as its
+  implementation.
 - Keep the first backend modules under `quickbite.backends.ir`: a pure IR data
   language module, a compiler module that lowers DMD expressions to that IR,
   and a VM module that runs only that IR. Prefer `compiler.d`, `language.d`,
@@ -484,9 +484,8 @@ is added when a test requires control flow.
 - The positive rule for module-backed execution: `runTests`, `runTestResults`,
   and `runTestSummary` consume the semantically analysed DMD `Module` they
   receive. They do not construct a source string, do not call `parseModule`,
-  and do not wrap code in a synthetic function. The legacy `IrExecutor.eval`
-  in `quickbite.executors.ir` demonstrates the anti-pattern; the new backend
-  must not copy it.
+  and do not wrap code in a synthetic function. The new backend must not
+  introduce that reparsing path.
 - The positive rule for `Backend.eval(string)`: parse and semantically analyse
   the expression through the frontend expression path, then lower that DMD AST
   to IR. This mirrors the bytecode backend's starting path. Do not implement
