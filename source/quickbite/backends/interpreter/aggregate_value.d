@@ -84,6 +84,15 @@ public struct AggregateValue {
         return value.isClassObject;
     }
 
+    // Aggregate reads stay behind this boundary so the authority switch can
+    // replace recursive RuntimeValue access with native-layout handles in one
+    // place. Scalars deliberately remain RuntimeValue operations.
+    public static size_t length(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    ) @safe pure {
+        return value.length;
+    }
+
     public static size_t classIdentity(
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     ) @safe pure {
@@ -127,6 +136,49 @@ public struct AggregateValue {
         in size_t index,
     ) @safe pure {
         return value[index];
+    }
+
+    public static bool hasClassFieldNamed(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in string name,
+    ) @safe pure nothrow {
+        return value.hasClassFieldNamed(name);
+    }
+
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value classFieldNamed(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in string name,
+    ) @safe pure {
+        return value.classFieldNamed(name);
+    }
+
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value withClassFieldNamed(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in string name,
+        in imported!"quickbite.backends.interpreter.runtime_value".Value field,
+    ) pure {
+        return value.withClassFieldNamed(name, field);
+    }
+
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value withAppendedClassField(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in string name,
+        in imported!"quickbite.backends.interpreter.runtime_value".Value field,
+    ) pure {
+        return value.withAppendedClassField(name, field);
+    }
+
+    public static string[] classTypeNames(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    ) @safe pure {
+        return value.classTypeNames;
+    }
+
+    public static bool hasClassType(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        in string name,
+    ) @safe pure nothrow {
+        return value.classHasType(name);
     }
 
     public static imported!"quickbite.backends.interpreter.runtime_value".Value withArrayElement(

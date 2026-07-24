@@ -152,6 +152,14 @@ private struct StructFieldAlias {
     public bool isClass;
 }
 
+// The evaluated indices within one `ref`/`out` call argument.  The ordinary
+// expression walk records them as it evaluates the argument; binding the
+// callee's reference slot later composes its address from those exact results
+// rather than evaluating an index expression again.
+private struct EvaluatedReferenceArgument {
+    public size_t[const(void)*] indices;
+}
+
 // Stable identity for storage reached from one root variable by a sequence of
 // DMD field indices.  The path is owned and immutable because keys stored in
 // an associative array must not change after insertion.
@@ -164,7 +172,9 @@ private class InterpretedException: Exception {
     public imported!"quickbite.backends.interpreter.runtime_value".Value object;
 
     public this(in imported!"quickbite.backends.interpreter.runtime_value".Value object) {
-        const message = object.classFieldNamed("msg").asCharArrayString;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        const message = AggregateValue.classFieldNamed(object, "msg").asCharArrayString;
         super(message);
         this.object = object;
     }
@@ -194,6 +204,12 @@ private struct Walker {
     private Throwable[const(void)*] nativeThrowableRoots;
 
     private Value[VarDeclaration] locals;
+
+    // Non-null only while `runRefArgumentExpression` is walking one call
+    // argument.  `runIndexExpression` records its already-evaluated result in
+    // the active argument's identity-keyed table; nested calls save and
+    // restore this pointer around their own argument evaluation.
+    private size_t[const(void)*]* _evaluatedReferenceArgumentIndices;
 
     // Authoritative native bytes for an address-taken scalar local:
     // populated eagerly the moment `&local` is taken (see
@@ -2073,7 +2089,7 @@ private struct Walker {
         imported!"dmd.expression".Expression expression,
     ) {
         auto object = runExpression(expression);
-        if (!object.isClassObject)
+        if (!AggregateValue.isClass(object))
             throw new Exception("Unsupported throw expression.");
         if (hasPendingFinallyBodyException)
             throw new InterpretedException(chainExceptionObject(
@@ -2114,7 +2130,8 @@ private struct Walker {
             exception.nativeThrowableObjectPointer,
         );
         if (exception.chainedNext !is null)
-            object = object.withClassFieldNamed(
+            object = AggregateValue.withClassFieldNamed(
+                object,
                 "_nextInChainPtr",
                 nativeExceptionObject(exception.chainedNext),
             );
@@ -2129,8 +2146,11 @@ private struct Walker {
     ) {
         if (auto class_ = dynamicClassDeclarationByName(className))
             return withNativeExceptionObjectPointer(
-                classDefaultValue(class_)
-                    .withClassFieldNamed("msg", Value(message)),
+                AggregateValue.withClassFieldNamed(
+                    classDefaultValue(class_),
+                    "msg",
+                    Value(message),
+                ),
                 nativeObjectPointer,
             );
 
@@ -2144,8 +2164,11 @@ private struct Walker {
         // of `nativeExceptionRoot`'s name-prefix guess.
         if (auto class_ = classDeclarationByQualifiedName(className))
             return withNativeExceptionObjectPointer(
-                classDefaultValue(class_)
-                    .withClassFieldNamed("msg", Value(message)),
+                AggregateValue.withClassFieldNamed(
+                    classDefaultValue(class_),
+                    "msg",
+                    Value(message),
+                ),
                 nativeObjectPointer,
             );
 
@@ -2182,19 +2205,26 @@ private struct Walker {
             fields ~= defaultValue(field.type);
         }
 
-        return withNativeExceptionObjectPointer(Value.classValue(
-            className,
-            nativeExceptionTypeNames(className),
-            fieldNames,
-            fields,
-        ).withClassFieldNamed("msg", Value(message)), nativeObjectPointer);
+        return withNativeExceptionObjectPointer(
+            AggregateValue.withClassFieldNamed(
+                Value.classValue(
+                    className,
+                    nativeExceptionTypeNames(className),
+                    fieldNames,
+                    fields,
+                ),
+                "msg",
+                Value(message),
+            ),
+            nativeObjectPointer,
+        );
     }
 
     private Value nativeExceptionCatchObject(
         imported!"dmd.statement".Catch catch_,
         in Value object,
     ) {
-        if (!object.hasClassFieldNamed(nativeExceptionObjectPointerField))
+        if (!AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
             return object;
 
         auto classType = catch_.type.toBasetype.isTypeClass;
@@ -2210,26 +2240,27 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: classFields;
 
-        if (!object.hasClassFieldNamed(nativeExceptionObjectPointerField))
+        if (!AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
             return object;
 
-        const pointer = object
-            .classFieldNamed(nativeExceptionObjectPointerField)
-            .asNativePointer;
+        const pointer = AggregateValue.classFieldNamed(
+            object,
+            nativeExceptionObjectPointerField,
+        ).asNativePointer;
         string[] fieldNames;
         Value[] fields;
         foreach (field; classFields(class_)) {
             const name = variableName(field);
             fieldNames ~= name;
             fields ~= isSyntheticNativeExceptionField(name) &&
-                object.hasClassFieldNamed(name)
-                ? object.classFieldNamed(name)
+                AggregateValue.hasClassFieldNamed(object, name)
+                ? AggregateValue.classFieldNamed(object, name)
                 : nativeClassFieldValue(field, pointer);
         }
 
         return withNativeExceptionObjectPointer(Value.classValue(
-            object.classTypeName,
-            object.classTypeNames,
+            AggregateValue.classTypeName(object),
+            AggregateValue.classTypeNames(object),
             fieldNames,
             fields,
         ), pointer);
@@ -2265,23 +2296,26 @@ private struct Walker {
         if (nativeObjectPointer is null)
             return object;
 
-        if (object.hasClassFieldNamed(nativeExceptionObjectPointerField))
-            return object.withClassFieldNamed(
+        if (AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
+            return AggregateValue.withClassFieldNamed(
+                object,
                 nativeExceptionObjectPointerField,
                 Value.nativePointerValue(cast(void*) nativeObjectPointer),
             );
 
-        return object.withAppendedClassField(
+        return AggregateValue.withAppendedClassField(
+            object,
             nativeExceptionObjectPointerField,
             Value.nativePointerValue(cast(void*) nativeObjectPointer),
         );
     }
 
     private Value chainExceptionObject(in Value thrown, in Value next) const {
-        if (!thrown.isClassObject || !thrown.hasClassFieldNamed("_nextInChainPtr"))
+        if (!AggregateValue.isClass(thrown) ||
+            !AggregateValue.hasClassFieldNamed(thrown, "_nextInChainPtr"))
             return thrown;
 
-        return thrown.withClassFieldNamed("_nextInChainPtr", next);
+        return AggregateValue.withClassFieldNamed(thrown, "_nextInChainPtr", next);
     }
 
     private bool isThrowableConstructor(
@@ -2304,16 +2338,20 @@ private struct Walker {
         in Value object,
         in Value[] arguments,
     ) const {
-        if (!object.isClassObject || arguments.length == 0)
+        if (!AggregateValue.isClass(object) || arguments.length == 0)
             return object;
 
-        auto result = object.withClassFieldNamed("msg", arguments[0]);
+        auto result = AggregateValue.withClassFieldNamed(object, "msg", arguments[0]);
         if (
             arguments.length >= 4 &&
-            arguments[3].isClassObject &&
-            result.hasClassFieldNamed("_nextInChainPtr")
+            AggregateValue.isClass(arguments[3]) &&
+            AggregateValue.hasClassFieldNamed(result, "_nextInChainPtr")
         )
-            result = result.withClassFieldNamed("_nextInChainPtr", arguments[3]);
+            result = AggregateValue.withClassFieldNamed(
+                result,
+                "_nextInChainPtr",
+                arguments[3],
+            );
 
         return result;
     }
@@ -2322,11 +2360,12 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
+        in EvaluatedReferenceArgument[] evaluatedArguments,
     ) {
         if (!hasThis)
             throw new Exception("Unsupported eval call.");
 
-        if (thisValue.isClassObject && isThrowableConstructor(function_)) {
+        if (AggregateValue.isClass(thisValue) && isThrowableConstructor(function_)) {
             thisValue = applyThrowableConstructor(thisValue, arguments);
             return thisValue;
         }
@@ -2342,6 +2381,7 @@ private struct Walker {
                 thisValue,
                 arguments,
                 argumentExpressions,
+                evaluatedArguments,
             );
             return thisValue;
         }
@@ -2837,7 +2877,7 @@ private struct Walker {
             return Value.undisplayable;
 
         if (auto arrayLength = expression.isArrayLengthExp)
-            return Value(runExpression(arrayLength.e1).length);
+            return Value(AggregateValue.length(runExpression(arrayLength.e1)));
 
         if (auto slice = expression.isSliceExp)
             return runSliceExpression(slice);
@@ -2919,6 +2959,8 @@ private struct Walker {
             if (variable is null)
                 return runSymbolDeclarationVarExpression(var);
 
+            // Mutable because frame/layout APIs take DMD declarations.
+            auto referenceVariable = variable;
             variable = refLocalStorageVariable(variable);
 
             // the magic __ctfe variable is true under AST interpretation,
@@ -2940,6 +2982,26 @@ private struct Walker {
                     return defaultValue(variable);
 
                 throw new Exception(uninitializedVariableMessage(variable, currentFunction));
+            }
+
+            // A filled reference slot is the caller's scalar storage. Read
+            // it before the legacy parameter-cell fallback so `ref`/`out`
+            // mutation is immediately visible across the call boundary.
+            import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+            if (
+                referenceVariable.isReference &&
+                _activationFrame.hasReferenceSlot(referenceVariable) &&
+                _activationFrame.bindingAddress(referenceVariable) !is null &&
+                isNativeScalarType(referenceVariable.type)
+            ) {
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue;
+                import quickbite.backends.interpreter.layout: declaredType;
+
+                return readValue(Place(
+                    _activationFrame.bindingAddress(referenceVariable),
+                    declaredType(referenceVariable),
+                ));
             }
 
             // Byte-level authority: once `&variable` has
@@ -2977,6 +3039,21 @@ private struct Walker {
                         return structValueFromCell(*current, *cell);
 
             if (auto current = variable in locals) {
+                // The frame is already the complete native representation
+                // for an ordinary scalar binding.  Once its owning slot has
+                // been established, read it back instead of treating the
+                // boxed local as storage.  Promoted cells remain above until
+                // the combined authority switch removes their lifecycle.
+                import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                if (
+                    hasMirrorSlot(variable) &&
+                    mirrorEstablished.get(variable, false) &&
+                    isNativeScalarType(variable.type)
+                )
+                    return readValue(mirrorPlace(variable));
+
                 assertFrameMirror(variable, *current);
                 return *current;
             }
@@ -3510,10 +3587,16 @@ private struct Walker {
 
         Value[] arguments;
         Expression[] argumentExpressions;
+        EvaluatedReferenceArgument[] evaluatedArguments;
         if (call.arguments !is null)
-            foreach (argument; *call.arguments) {
-                arguments ~= runExpression(argument);
+            foreach (index, argument; *call.arguments) {
+                EvaluatedReferenceArgument evaluated;
+                arguments ~= index < call.f.parameters.length &&
+                    (*call.f.parameters)[index].isReference
+                    ? runRefArgumentExpression(argument, evaluated)
+                    : runExpression(argument);
                 argumentExpressions ~= argument;
+                evaluatedArguments ~= evaluated;
             }
 
         Walker child;
@@ -3535,6 +3618,7 @@ private struct Walker {
             _activationFrame,
             &mirrorEstablished,
             &classMirrorGenerations,
+            evaluatedArguments,
         );
 
         try {
@@ -3890,6 +3974,8 @@ private struct Walker {
     }
 
     private Value localPointerValue(VarDeclaration variable) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
         if (auto alias_ = variable in structFieldAliases)
             if (auto id = directFieldPathKey(alias_.source, alias_.index)
                     in fieldPathAddressAllocations)
@@ -3898,6 +3984,18 @@ private struct Walker {
                     *id,
                     0,
                 );
+
+        // A normal scalar local already owns native frame storage. Its
+        // address is the guest pointer; do not create a second scalar cell
+        // merely to manufacture a pointer identity. Aliasing slots and
+        // pre-initialization address-taking keep the legacy carrier until
+        // their bind/read paths join the authority switch.
+        if (
+            isNativeScalarType(variable.type) &&
+            hasMirrorSlot(variable) &&
+            mirrorEstablished.get(variable, false)
+        )
+            return Value.nativePointerValue(mirrorAddress(variable));
 
         promoteScalarCell(variable);
 
@@ -3950,6 +4048,13 @@ private struct Walker {
         // from stale/defaulted bytes instead. Only true stack locals get
         // cells.
         if (variable.isDataseg)
+            return;
+
+        // Owning frame storage is already the scalar's native authority once
+        // initialized; `localPointerValue` returns that address directly.
+        // Keep a cell only for an aliasing/pre-init binding that cannot yet
+        // name such a slot.
+        if (hasMirrorSlot(variable) && mirrorEstablished.get(variable, false))
             return;
 
         if (variable in scalarCells)
@@ -5793,7 +5898,7 @@ private struct Walker {
         const target = pointer.isNativePointer
             ? loadNativePointerElement(pointerType, pointer, 0)
             : pointerTargetValue(pointer);
-        if (target.isArray)
+        if (AggregateValue.isArray(target))
             return target;
 
         Value[] elements;
@@ -5805,20 +5910,20 @@ private struct Walker {
 
     private Value[] arrayElements(in Value value) {
         Value[] elements;
-        foreach (index; 0 .. value.length)
-            elements ~= value[index];
+        foreach (index; 0 .. AggregateValue.length(value))
+            elements ~= AggregateValue.elementAt(value, index);
 
         return elements;
     }
 
     private Value[] arrayPointerElements(in Value value) {
-        return value.isArray
+        return AggregateValue.isArray(value)
             ? value.arrayAllocationElements
             : arrayElements(value);
     }
 
     private long arrayPointerOffset(in Value value, in long offset) {
-        return value.isArray
+        return AggregateValue.isArray(value)
             ? cast(long) value.arrayAllocationOffset + offset
             : offset;
     }
@@ -5899,7 +6004,7 @@ private struct Walker {
                 left.pointerAllocation != 0 && right.pointerAllocation != 0
             ? left.pointerAllocation == right.pointerAllocation &&
                 left.pointerElementOffset == right.pointerElementOffset
-            : left.isStruct && right.isStruct
+            : AggregateValue.isStruct(left) && AggregateValue.isStruct(right)
                 ? equalValues(left, right)
                 : left == right;
         if (identity.op == EXP.notIdentity)
@@ -6010,6 +6115,7 @@ private struct Walker {
 
         Value[] arguments;
         Expression[] argumentExpressions;
+        EvaluatedReferenceArgument[] evaluatedArguments;
         if (call.arguments !is null) {
             foreach (index, argument; *call.arguments) {
                 auto parameter = call.f is null ||
@@ -6017,12 +6123,15 @@ private struct Walker {
                     index >= call.f.parameters.length
                     ? null
                     : (*call.f.parameters)[index];
-                arguments ~= parameter !is null && parameterIsLazy(parameter)
-                    ? Value.undisplayable
-                    : parameter !is null && parameter.isReference
-                        ? runRefArgumentExpression(argument)
-                        : runExpression(argument);
+                EvaluatedReferenceArgument evaluated;
+                if (parameter !is null && parameterIsLazy(parameter))
+                    arguments ~= Value.undisplayable;
+                else if (parameter !is null && parameter.isReference)
+                    arguments ~= runRefArgumentExpression(argument, evaluated);
+                else
+                    arguments ~= runExpression(argument);
                 argumentExpressions ~= argument;
+                evaluatedArguments ~= evaluated;
             }
         }
 
@@ -6067,6 +6176,7 @@ private struct Walker {
                         call.f,
                         arguments,
                         argumentExpressions,
+                        evaluatedArguments,
                     );
 
                 auto function_ = resolveMemberFunction(call.f, receiver);
@@ -6179,6 +6289,7 @@ private struct Walker {
                     receiver,
                     arguments,
                     argumentExpressions,
+                    evaluatedArguments,
                 );
             }
         }
@@ -6247,14 +6358,27 @@ private struct Walker {
                     thisValue,
                     arguments,
                     argumentExpressions,
+                    evaluatedArguments,
                 );
 
-            return runFunction(call.f, arguments, argumentExpressions);
+            return runFunction(
+                call.f,
+                arguments,
+                argumentExpressions,
+                false,
+                evaluatedArguments,
+            );
         }
 
         if (auto var = call.e1.isVarExp)
             if (auto function_ = var.var.isFuncDeclaration)
-                return runFunction(function_, arguments, argumentExpressions);
+                return runFunction(
+                    function_,
+                    arguments,
+                    argumentExpressions,
+                    false,
+                    evaluatedArguments,
+                );
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
             if (isZeroFormalCall(function_) && arguments.length == 5) {
@@ -6278,9 +6402,16 @@ private struct Walker {
                     thisValue,
                     arguments,
                     argumentExpressions,
+                    evaluatedArguments,
                 );
 
-            return runFunction(function_, arguments, argumentExpressions);
+            return runFunction(
+                function_,
+                arguments,
+                argumentExpressions,
+                false,
+                evaluatedArguments,
+            );
         }
 
         if (auto variable = lazyCallVariable(call))
@@ -6296,13 +6427,24 @@ private struct Walker {
             );
 
         if (callee.isFunctionPointer && callee.functionPointerId in delegates)
-            return runDelegateCall(callee, arguments, argumentExpressions);
+            return runDelegateCall(
+                callee,
+                arguments,
+                argumentExpressions,
+                evaluatedArguments,
+            );
 
         if (callee.isFunctionPointer) {
             auto function_ = callee.functionPointerId in functionPointers;
             if (function_ is null)
                 throw new Exception("Unsupported eval call.");
-            return runFunction(*function_, arguments, argumentExpressions);
+            return runFunction(
+                *function_,
+                arguments,
+                argumentExpressions,
+                false,
+                evaluatedArguments,
+            );
         }
 
         throw new Exception("Unsupported eval call.");
@@ -6358,11 +6500,17 @@ private struct Walker {
     // with whatever the callee actually wrote once the call returns.
     private Value runRefArgumentExpression(
         imported!"dmd.expression".Expression argument,
+        out EvaluatedReferenceArgument evaluated,
     ) {
         auto var = argument.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable !is null && variable in uninitializedLocals)
             return Value.void_;
+
+        auto previous = _evaluatedReferenceArgumentIndices;
+        _evaluatedReferenceArgumentIndices = &evaluated.indices;
+        scope(exit)
+            _evaluatedReferenceArgumentIndices = previous;
 
         return runExpression(argument);
     }
@@ -6408,6 +6556,7 @@ private struct Walker {
         in Value callee,
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
+        in EvaluatedReferenceArgument[] evaluatedArguments = null,
     ) {
         auto runtime = callee.functionPointerId in delegates;
         if (runtime is null)
@@ -6420,9 +6569,16 @@ private struct Walker {
                 delegateReceiver(*runtime),
                 arguments,
                 argumentExpressions,
+                evaluatedArguments,
             );
 
-        return runFunction(runtime.function_, arguments, argumentExpressions);
+        return runFunction(
+            runtime.function_,
+            arguments,
+            argumentExpressions,
+            false,
+            evaluatedArguments,
+        );
     }
 
     // Call a native delegate the interpreter holds as an opaque
@@ -6557,8 +6713,9 @@ private struct Walker {
         import std.utf: decode;
 
         string encoded;
-        foreach (index; 0 .. source.length)
-            encoded ~= cast(char) source[index].castTo!long.asLong;
+        foreach (index; 0 .. AggregateValue.length(source))
+            encoded ~= cast(char) AggregateValue.elementAt(source, index)
+                .castTo!long.asLong;
 
         Value[] values;
         size_t index;
@@ -6572,8 +6729,9 @@ private struct Walker {
         import std.utf: decode;
 
         wstring encoded;
-        foreach (index; 0 .. source.length)
-            encoded ~= cast(wchar) source[index].castTo!long.asLong;
+        foreach (index; 0 .. AggregateValue.length(source))
+            encoded ~= cast(wchar) AggregateValue.elementAt(source, index)
+                .castTo!long.asLong;
 
         Value[] values;
         size_t index;
@@ -6587,11 +6745,12 @@ private struct Walker {
         import std.utf: encode;
 
         Value[] values;
-        foreach (index; 0 .. source.length) {
+        foreach (index; 0 .. AggregateValue.length(source)) {
             char[4] encoded;
             const length = encode(
                 encoded,
-                cast(dchar) source[index].castTo!long.asLong,
+                cast(dchar) AggregateValue.elementAt(source, index)
+                    .castTo!long.asLong,
             );
             foreach (unit; encoded[0 .. length])
                 values ~= Value(unit);
@@ -6604,7 +6763,7 @@ private struct Walker {
         FuncDeclaration function_,
         in Value receiver,
     ) {
-        if (!receiver.isClassObject)
+        if (!AggregateValue.isClass(receiver))
             return function_;
 
         auto class_ = dynamicClass(receiver);
@@ -6624,7 +6783,7 @@ private struct Walker {
     }
 
     private imported!"dmd.dclass".ClassDeclaration dynamicClass(in Value value) {
-        return dynamicClassDeclarationByName(value.classTypeName);
+        return dynamicClassDeclarationByName(AggregateValue.classTypeName(value));
     }
 
     private imported!"dmd.dclass".ClassDeclaration dynamicClassDeclarationByName(
@@ -6997,6 +7156,7 @@ private struct Walker {
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in bool captureLocals = false,
+        in EvaluatedReferenceArgument[] evaluatedArguments = null,
     ) {
         prepareDirectAggregateFieldRefArgumentAliases(
             function_,
@@ -7024,6 +7184,7 @@ private struct Walker {
             _activationFrame,
             &mirrorEstablished,
             &classMirrorGenerations,
+            evaluatedArguments,
         );
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
         registerDirectAggregateFieldRefArgumentAliases(
@@ -7060,6 +7221,7 @@ private struct Walker {
         in Value receiver,
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
+        in EvaluatedReferenceArgument[] evaluatedArguments = null,
     ) {
         prepareDirectAggregateFieldRefArgumentAliases(
             function_,
@@ -7109,6 +7271,7 @@ private struct Walker {
             _activationFrame,
             &mirrorEstablished,
             &classMirrorGenerations,
+            evaluatedArguments,
         );
         registerRefAggregateArgumentAliases(function_, argumentExpressions, child);
         registerDirectAggregateFieldRefArgumentAliases(
@@ -8098,6 +8261,7 @@ private struct Walker {
         FrameBlock callerFrame = FrameBlock.init,
         bool[VarDeclaration]* callerMirrorEstablished = null,
         size_t[size_t][VarDeclaration]* callerMirrorGenerations = null,
+        in EvaluatedReferenceArgument[] evaluatedArguments = null,
     ) {
         if (arguments.length == 0) {
             if (function_.parameters !is null && function_.parameters.length != 0)
@@ -8145,6 +8309,9 @@ private struct Walker {
                 bindReferenceSlot(
                     parameter,
                     argumentExpressions[index],
+                    index < evaluatedArguments.length
+                        ? evaluatedArguments[index].indices
+                        : null,
                     callerFrame,
                     callerMirrorEstablished,
                     arguments[index],
@@ -8210,6 +8377,7 @@ private struct Walker {
     private void bindReferenceSlot(
         VarDeclaration parameter,
         Expression argumentExpression,
+        const(size_t[const(void)*]) evaluatedIndices,
         FrameBlock callerFrame,
         bool[VarDeclaration]* callerMirrorEstablished,
         in Value argumentValue,
@@ -8253,7 +8421,7 @@ private struct Walker {
                     callerMirrorEstablished,
                     bindNotVerifiable,
                 ),
-                &constantIndex,
+                (expression) => evaluatedIndex(expression, evaluatedIndices),
             ).address;
         } catch (Exception) {
             return;
@@ -8451,29 +8619,22 @@ private struct Walker {
             || (variable in classCells) !is null;
     }
 
-    // The `evalIndex` `bindReferenceSlot` above supplies to
-    // `placeOfLvalue`: DMD's own already-folded integer constant
-    // (`IntegerExp`) for an `IndexExp`'s index subexpression, and nothing
-    // else. Deliberately never runs the walker's own expression evaluator
-    // on a runtime index: the boxed argument snapshot `arguments[index]`
-    // in `bindFunctionParameters` (via `runRefArgumentExpression` in
-    // `runCallExpression`) has ALREADY evaluated the WHOLE argument
-    // expression once, including any index subexpression a `ref arr[i]`
-    // argument contains. Re-evaluating a non-constant index here, for the
-    // sole purpose of composing an address for a slot nothing yet reads,
-    // would evaluate that subexpression a SECOND time -- firing a real,
-    // user-visible side effect twice for a side-effecting index (e.g.
-    // `arr[f()]`), a genuine shipping-behaviour change this slice must
-    // never cause. A compile-time constant needs no evaluation at all
-    // (DMD has already folded it), so reading it directly carries no such
-    // risk; anything else simply declines the whole composition rather
-    // than risk it.
-    private size_t constantIndex(Expression expr) @trusted {
-        auto integer = expr.isIntegerExp;
+    // The call-argument walk records each runtime index before returning the
+    // boxed argument value, so address composition reuses the exact result
+    // without re-evaluating a side-effecting subexpression. A folded integer
+    // needs no entry; unsupported/synthetic calls have neither and decline.
+    private size_t evaluatedIndex(
+        Expression expression,
+        const(size_t[const(void)*]) evaluatedIndices,
+    ) @trusted {
+        if (auto evaluated = cast(const(void)*) expression in evaluatedIndices)
+            return *evaluated;
+
+        auto integer = expression.isIntegerExp;
         if (integer is null)
             throw new Exception(
-                "quickbite.backends.interpreter.impl.Walker.constantIndex: "
-                ~ "non-constant index",
+                "quickbite.backends.interpreter.impl.Walker.evaluatedIndex: "
+                ~ "index was not evaluated with its ref argument",
             );
 
         return cast(size_t) integer.getInteger;
@@ -9166,21 +9327,24 @@ private struct Walker {
         if (left.isNumericScalar && right.isNumericScalar)
             return left.asReal == right.asReal;
 
-        if (left.isArray && right.isArray)
+        if (AggregateValue.isArray(left) && AggregateValue.isArray(right))
             return equalArrayValues(left, right);
 
-        if (left.isStruct && right.isStruct)
+        if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right))
             return equalStructValues(left, right);
 
         return left == right;
     }
 
     private bool equalArrayValues(in Value left, in Value right) {
-        if (left.length != right.length)
+        if (AggregateValue.length(left) != AggregateValue.length(right))
             return false;
 
-        foreach (index; 0 .. left.length)
-            if (!equalValues(left[index], right[index]))
+        foreach (index; 0 .. AggregateValue.length(left))
+            if (!equalValues(
+                AggregateValue.elementAt(left, index),
+                AggregateValue.elementAt(right, index),
+            ))
                 return false;
 
         return true;
@@ -9196,12 +9360,15 @@ private struct Walker {
     // (mirroring `equalArrayValues`) so each field gets the same
     // numeric-scalar coercion a top-level `==` already applies.
     private bool equalStructValues(in Value left, in Value right) {
-        const count = left.structFieldCount;
-        if (count != right.structFieldCount)
+        const count = AggregateValue.fieldCount(left);
+        if (count != AggregateValue.fieldCount(right))
             return false;
 
         foreach (index; 0 .. count)
-            if (!equalValues(left.structFieldAt(index), right.structFieldAt(index)))
+            if (!equalValues(
+                AggregateValue.fieldAt(left, index),
+                AggregateValue.fieldAt(right, index),
+            ))
                 return false;
 
         return true;
@@ -9461,7 +9628,7 @@ private struct Walker {
             const target = receiver.isLocalPointer
                 ? localPointerTarget(receiver)
                 : receiver;
-            if (target.isClassObject) {
+            if (AggregateValue.isClass(target)) {
                 const fieldIndex = classFieldIndex(dot, target);
 
                 // `dot.e1`'s own
@@ -9475,9 +9642,9 @@ private struct Walker {
                 if (classCellFieldValue(dot.e1, fieldIndex, target, cellValue))
                     return cellValue;
 
-                return target.classFieldAt(fieldIndex);
+                return AggregateValue.classFieldAt(target, fieldIndex);
             }
-            return target.structFieldAt(structFieldIndex(dot));
+            return AggregateValue.fieldAt(target, structFieldIndex(dot));
         }
 
         throw new Exception("Unsupported interpreter field read.");
@@ -9707,8 +9874,8 @@ private struct Walker {
     ) {
         if (classInfo.e1.isTypeExp is null) {
             const receiver = runExpression(classInfo.e1);
-            if (receiver.isClassObject)
-                return Value.typeName(receiver.classTypeName);
+            if (AggregateValue.isClass(receiver))
+                return Value.typeName(AggregateValue.classTypeName(receiver));
         }
 
         return Value.typeName(typeInfoName(classInfo.e1.type));
@@ -9718,8 +9885,8 @@ private struct Walker {
         imported!"dmd.expression".Expression ownerExpression,
     ) {
         const receiver = runExpression(classInfoNameOwnerExpression(ownerExpression));
-        if (receiver.isClassObject)
-            return Value(receiver.classTypeName);
+        if (AggregateValue.isClass(receiver))
+            return Value(AggregateValue.classTypeName(receiver));
 
         throw new Exception("Unsupported interpreter field read.");
     }
@@ -9786,8 +9953,8 @@ private struct Walker {
                 "` is `null`",
             ));
 
-        if (value.isClassObject)
-            return typeidValue(typeid_, value.classTypeName);
+        if (AggregateValue.isClass(value))
+            return typeidValue(typeid_, AggregateValue.classTypeName(value));
 
         return typeidValue(typeid_, typeInfoName(expression.type));
     }
@@ -9916,7 +10083,34 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported interpreter assignment target.");
 
+            // Mutable because frame/layout APIs take DMD declarations.
+            auto referenceVariable = variable;
             variable = refLocalStorageVariable(variable);
+
+            // A bound scalar ref/out parameter already names its caller's
+            // storage through this activation's reference slot. Write that
+            // place directly instead of allocating a parameter scalar cell
+            // and waiting for return-time writeback to make it observable.
+            import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+            if (
+                referenceVariable.isReference &&
+                _activationFrame.hasReferenceSlot(referenceVariable) &&
+                _activationFrame.bindingAddress(referenceVariable) !is null &&
+                isNativeScalarType(referenceVariable.type)
+            ) {
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue, writeValue;
+                import quickbite.backends.interpreter.layout: declaredType;
+
+                auto place = Place(
+                    _activationFrame.bindingAddress(referenceVariable),
+                    declaredType(referenceVariable),
+                );
+                writeValue(place, storageValue(referenceVariable.type, value));
+                setLocal(referenceVariable, readValue(place));
+                uninitializedLocals.remove(referenceVariable);
+                return;
+            }
 
             // A native extern __gshared global's memory is the single source of
             // truth (ffi.md §35.2): write through to the resolved symbol and do
@@ -10169,10 +10363,16 @@ private struct Walker {
 
         Value[] arguments;
         imported!"dmd.expression".Expression[] argumentExpressions;
+        EvaluatedReferenceArgument[] evaluatedArguments;
         if (call.arguments !is null)
-            foreach (argument; *call.arguments) {
-                arguments ~= runExpression(argument);
+            foreach (index, argument; *call.arguments) {
+                EvaluatedReferenceArgument evaluated;
+                arguments ~= index < function_.parameters.length &&
+                    (*function_.parameters)[index].isReference
+                    ? runRefArgumentExpression(argument, evaluated)
+                    : runExpression(argument);
                 argumentExpressions ~= argument;
+                evaluatedArguments ~= evaluated;
             }
 
         Walker child;
@@ -10195,6 +10395,7 @@ private struct Walker {
             _activationFrame,
             &mirrorEstablished,
             &classMirrorGenerations,
+            evaluatedArguments,
         );
 
         try {
@@ -10232,10 +10433,16 @@ private struct Walker {
 
         Value[] arguments;
         imported!"dmd.expression".Expression[] argumentExpressions;
+        EvaluatedReferenceArgument[] evaluatedArguments;
         if (call.arguments !is null)
-            foreach (argument; *call.arguments) {
-                arguments ~= runExpression(argument);
+            foreach (index, argument; *call.arguments) {
+                EvaluatedReferenceArgument evaluated;
+                arguments ~= index < call.f.parameters.length &&
+                    (*call.f.parameters)[index].isReference
+                    ? runRefArgumentExpression(argument, evaluated)
+                    : runExpression(argument);
                 argumentExpressions ~= argument;
+                evaluatedArguments ~= evaluated;
             }
 
         if (hasNoAvailableSource(call.f)) {
@@ -10275,6 +10482,7 @@ private struct Walker {
             _activationFrame,
             &mirrorEstablished,
             &classMirrorGenerations,
+            evaluatedArguments,
         );
 
         try {
@@ -12290,7 +12498,7 @@ private struct Walker {
         if (classType is null || classType.sym is null)
             throw new Exception("Unsupported class cast target.");
 
-        return value.classHasType(className(classType.sym))
+        return AggregateValue.hasClassType(value, className(classType.sym))
             ? nativeExceptionObjectWithClassFields(classType.sym, value)
             : Value.null_;
     }
@@ -12310,10 +12518,10 @@ private struct Walker {
             return true;
         }
 
-        if (!value.isClassObject)
+        if (!AggregateValue.isClass(value))
             return false;
 
-        result = value.classHasType("Throwable")
+        result = AggregateValue.hasClassType(value, "Throwable")
             ? value
             : Value.null_;
         return true;
@@ -12913,6 +13121,9 @@ private struct Walker {
 
         // matches CTFE, which formats the index as unsigned
         arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
+        if (_evaluatedReferenceArgumentIndices !is null)
+            (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index] =
+                arrayIndex;
 
         // covers both array-backed pointers and druntime hook results such
         // as `_d_aaGetRvalueX` slot pointers, which DMD dereferences with a
@@ -14513,6 +14724,7 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
 
 
 private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     if (value == Value.null_)
@@ -14521,8 +14733,8 @@ private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value"
     if (value.isPointer)
         return true;
 
-    if (value.isArray)
-        return value.length != 0;
+    if (AggregateValue.isArray(value))
+        return AggregateValue.length(value) != 0;
 
     if (value == Value(false))
         return false;
