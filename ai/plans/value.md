@@ -911,37 +911,11 @@ in parallel and never blocks it.
    the round-trip spec, and the `text(value)` catch-all covers only the
    rule-7 no-contract values. Expression cells are synthesized as
    `__quickbiteFormat(expr)` for a broad set of return types when the
-   backend opts in (`Ctfe`, `Interpreter`). Plain template-struct
-   instantiations whose fields are recursively formatter-capable are now
-   admitted; the non-context `std.range.iota`, `std.range.stride`, and
-   `std.range.retro` results are admitted because their scalar fields are
-   recursively formatter-capable. The next unresolved formatter gate is
-   `std.algorithm.map`'s nested `MapResult`, whose callable carries DMD
-   context; other unsupported or context-bearing ranges and template
-   instantiations with unsupported fields remain on the interim
-   `displayString`/`Value.toString` scaffolding. `MapResult` is not an
-   ordinary recursively-field-formatable struct: it stores only `_input`,
-   while its `fun` alias argument supplies behavior and may refer to an
-   enclosing frame. Therefore a field-only gate cannot prove that a
-   context-bearing value is safe to execute or display, and the formatter
-   must not accept it by silently omitting that alias-provided state.
-   Formatter admission must prove context-free, formatter-supported fields
-   and behavior-bearing template arguments, plus a round-trip (or explicit
-   rule-7) rendering. DMD exposes only part of that boundary:
-   `TypeStruct.sym.isInstantiated()` yields a `TemplateInstance` with
-   parameter-aligned `tdtypes`; an alias can be resolved to a declaration,
-   and `FuncDeclaration.isNested()`/`closureVars` classify function
-   declarations. That is not a sound general alias proof: a local delegate
-   variable or other expression can carry runtime context absent from its
-   declaration. Even a context-free `fun` would not make `MapResult`
-   displayable: `_input` is its only field, `fun` supplies behavior,
-   `MapResult` is private, and `structDisplay` would emit an incomplete,
-   non-reconstructible constructor. No AST-only gate or behavior test is
-   safe; keep `MapResult` on the interim path. The next slice must define the
-   prelude contract for behavior-bearing templates (round-trip or rule 7),
-   then add a DMD frontend adapter returning resolved alias context plus an
-   explicit reconstructibility decision. Only then add stateless/capturing
-   `MapResult` differential rows.
+   backend opts in (`Ctfe`, `Interpreter`). Plain template structs and
+   context-free range results are admitted. `std.algorithm.map`'s nested
+   `MapResult` remains excluded because its behavior-bearing private state
+   cannot be reconstructibly displayed. Define the prelude contract for
+   behavior-bearing templates before admitting them.
    Keep expanding the gate per backend (decision 4) until every REPL
    expression is formatter-wrapped and the unformatted evaluator paths can
    be deleted.
