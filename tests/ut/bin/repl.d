@@ -110,6 +110,57 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
+@("repl.frontend.iotaResultExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.repl: ReplCellKind, ReplSession;
+
+    auto session = ReplSession([], true);
+
+    const importCell = session.submit("import std.range;");
+    session.accept(importCell);
+
+    const cell = session.submit("iota(3)");
+    cell.kind.should == ReplCellKind.expression;
+    cell.evalCell.displayIsFormatted.should == true;
+
+    assertFormatterBackendOutput(
+        ["import std.range;", "iota(3)"],
+        ["Result(0, 3)"],
+    );
+}
+
+@("repl.frontend.strideResultExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.repl: ReplCellKind, ReplSession;
+
+    auto session = ReplSession([], true);
+    const importCell = session.submit("import std.range;");
+    session.accept(importCell);
+    const cell = session.submit("stride(iota(6), 2)");
+    cell.kind.should == ReplCellKind.expression;
+    cell.evalCell.displayIsFormatted.should == true;
+    assertFormatterBackendOutput(
+        ["import std.range;", "stride(iota(6), 2)"],
+        ["Result(Result(0, 6), 2UL)"],
+    );
+}
+
+@("repl.frontend.retroResultExpressionUsesPreludeFormatter")
+unittest {
+    import quickbite.frontend.repl: ReplCellKind, ReplSession;
+
+    auto session = ReplSession([], true);
+    const importCell = session.submit("import std.range;");
+    session.accept(importCell);
+    const cell = session.submit("retro(iota(6))");
+    cell.kind.should == ReplCellKind.expression;
+    cell.evalCell.displayIsFormatted.should == true;
+    assertFormatterBackendOutput(
+        ["import std.range;", "retro(iota(6))"],
+        ["Result(Result(0, 6))"],
+    );
+}
+
 @("repl.frontend.enumExpressionUsesPreludeFormatter")
 unittest {
     assertFormatterBackendOutput(["({ enum E { a, b } return E.b; })()"], ["E.b"]);
@@ -137,6 +188,14 @@ unittest {
     assertFormatterBackendOutput([
         "({ struct Point { int x; int y; } return Point(1, 2); })()",
     ], ["Point(1, 2)"]);
+}
+
+@("repl.frontend.templateStructExpressionUsesPreludeFormatter")
+unittest {
+    assertFormatterBackendOutput([
+        "struct Box(T) { T value; }",
+        "Box!long(1)",
+    ], ["Box(1L)"]);
 }
 
 @("repl.frontend.structArrayExpressionUsesPreludeFormatter")

@@ -911,11 +911,14 @@ in parallel and never blocks it.
    the round-trip spec, and the `text(value)` catch-all covers only the
    rule-7 no-contract values. Expression cells are synthesized as
    `__quickbiteFormat(expr)` for a broad set of return types when the
-   backend opts in (`Ctfe`, `Interpreter`). The remaining gate exclusions are
-   range and template structs, which still run through the interim
-   `displayString`/`Value.toString` scaffolding. Keep expanding the gate per
-   backend (decision 4) until every REPL expression is
-   formatter-wrapped and the unformatted evaluator paths can be deleted.
+   backend opts in (`Ctfe`, `Interpreter`). Plain template structs and
+   context-free range results are admitted. `std.algorithm.map`'s nested
+   `MapResult` remains excluded because its behavior-bearing private state
+   cannot be reconstructibly displayed. Define the prelude contract for
+   behavior-bearing templates before admitting them.
+   Keep expanding the gate per backend (decision 4) until every REPL
+   expression is formatter-wrapped and the unformatted evaluator paths can
+   be deleted.
    Items 2 and 3 are blocked until this wiring lands. The interpreter's
    `std.conv.text` hook is temporary formatter scaffolding, not a general
    Phobos builtin: remove it once the formatter no longer needs that escape
