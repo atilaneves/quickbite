@@ -34,15 +34,13 @@ The pipeline has three stages — keep them separate when reasoning:
    composes regardless: the child's product is an object file, and
    loading must happen in the parent (results, exceptions, GC).
 
-`source/quickbite/executors/` (including the `DmdCodegenRam` hand-rolled
-ELF loader in `dmd_codegen.d`) is legacy reference code kept as
-inspiration; it will be deleted. Two facts worth keeping from it for any
-future stage-3 work: its RAM loader registered nothing with druntime —
-no `.eh_frame`, GC ranges, or module ctors — and a loader without those
-cannot pass the runner matrix (catching assert `Throwable`s requires
-unwinding through generated frames); and its ~3000-line hand-enumerated
-`pragma(mangle)` support shim existed precisely because its input objects
-were not self-contained — the ownership problem slice 2 solves upstream.
+The deleted legacy RAM loader established two constraints for any future
+stage-3 work: it registered nothing with druntime — no `.eh_frame`, GC
+ranges, or module ctors — and a loader without those cannot pass the
+runner matrix (catching assert `Throwable`s requires unwinding through
+generated frames). Its hand-enumerated `pragma(mangle)` support shim also
+showed that its input objects were not self-contained — the ownership
+problem slice 2 solves upstream.
 
 ## Current state (2026-06-11, slice 2: fork + lightning rod)
 
