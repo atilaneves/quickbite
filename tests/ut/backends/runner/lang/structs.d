@@ -2180,18 +2180,12 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `with (s) { ... }` lowers an unqualified field to `(*__withSym).field`,
-// the same `DotVarExp`-over-`PtrExp` shape `emitFieldPointerRefArgument`
-// matches, so it hijacked this case with a copy-in/copy-out that raced the
-// live aliasing the direct `s.value` argument already had to the same
-// storage: the copy's post-call write-back overwrote `s.value`'s live
-// update with its own stale pre-call snapshot, so only one of the two
-// increments stuck. `emitFieldPointerRefArgument` now declines a
-// `with`-statement dereference base so `referenceOffset`'s
-// `_withDerefBases` live-aliasing path handles it instead.
+// `with (s) { ... }` lowers an unqualified field to `(*__withSym).field`;
+// this must alias the direct `s.value` argument's live storage rather than
+// composing a separate copy, so both increments land on the same `int`.
+// `referenceOffset`'s `_withDerefBases` live-aliasing path handles this.
 // `Interpreter` fails this same fixture with its own, separate composition
-// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
-// above).
+// bug (unconfirmed/uncharacterized).
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
         "Interpreter also produces 1 instead of 2 here, via its own " ~
@@ -2220,12 +2214,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Sibling of the fixture above: a `with`-statement field `ref` argument to
-// a function that mutates then throws. The copy-in/copy-out write-back only
-// ran on normal return, so unwinding through the throw silently discarded
-// the mutation instead of leaving it visible in the caller's struct (which
-// the live-aliasing path leaves visible unconditionally, since the mutation
-// lands directly in the caller's frame storage during the call).
+// Sibling of the fixture above: a `with`-statement field `ref` argument to a
+// function that mutates then throws. Live aliasing must leave the mutation
+// visible unconditionally, since it lands directly in the caller's frame
+// storage during the call, regardless of how the call itself unwinds.
 static foreach (backend; Matrix!()) {
     @("with.fieldRefArgumentWriteBackSurvivesUnwind." ~ backend.stringof)
     @Tags(backend.stringof)

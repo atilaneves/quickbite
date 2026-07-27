@@ -359,11 +359,12 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   failure into the smallest D-language fixture backed by `SystemLinker`, then
   follow the normal approval rule before adding or changing that test.
 
-The `Because.unconfirmed` queue is now empty. Search all backend matrices and
-characterization pins for remaining Bytecode exclusions. Preserve only
-exclusions that are genuine oracle characterizations or architectural
-non-goals with an explicit reason. An unsupported implementation is not, by
-itself, a permanent divergence from the compiled-D oracle.
+The ordered starter list above is done. Continue by searching all backend
+matrices and characterization pins for remaining Bytecode exclusions.
+Preserve only exclusions that are genuine oracle characterizations or
+architectural non-goals with an explicit reason. An unsupported
+implementation is not, by itself, a permanent divergence from the compiled-D
+oracle.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
@@ -398,6 +399,20 @@ row reaches them:
   `sliceCopy` opcode's pointer-range overlap check ever runs, so the check
   never sees the true aliasing (unlike the dynamic-array path, whose rhs
   descriptor shares the real backing pointer).
+
+`concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
+stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
+`atomicLoad(scheduler)` (an 8-byte `Scheduler` reference) is usually served
+by the already-supported `RDX`/`RAX` atomic-load inline-asm shape
+(`tryCompileAtomicLoadAsm`, `compiler.d`), but order-dependently -- confirmed
+with `bin/ut --seed 543485028` -- the same call site is sometimes compiled
+with a second, distinct shape using 32-bit `EDX`/`EAX` value registers
+instead, which the bytecode core does not recognise. Why the same 8-byte
+load takes either shape is not yet characterized; do not add a same-shaped
+`EDX`/`EAX` opcode without first confirming (e.g. against a disassembled
+`SystemLinker` build of this exact fixture) that a 4-byte-wide native atomic
+read is actually the correct oracle behaviour for this call, rather than a
+truncation of the real 8-byte reference.
 
 `file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
 `Omit!(Bytecode, Because.refusal, "Unsupported ref argument in bytecode
