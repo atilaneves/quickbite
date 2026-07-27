@@ -2151,9 +2151,11 @@ static foreach (backend; Matrix!(
 // the field reached through the pointer (`PtrExp`/`DotVarExp`). Same rule --
 // the address is composed from a slot the write side may never have filled,
 // so composition must decline rather than deref whatever the slot happens to
-// hold. `Bytecode` supports a pointer-carried field as a `ref` argument via
-// `emitFieldPointerRefArgument`.
-static foreach (backend; Matrix!()) {
+// hold. `Bytecode` refuses a pointer-carried field as a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: (*carrier).value"),
+)) {
     @("refArgument.pointerCarriedFieldArgumentComposesSafely." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2173,46 +2175,6 @@ static foreach (backend; Matrix!()) {
                 Holder* carrier = &holder;
                 setTo(carrier.value, 66);
                 assert(holder.value == 66);
-            }
-        });
-    }
-}
-
-// Two sibling `ref` arguments reaching the SAME field through the SAME
-// pointer (`bumpBoth(carrier.value, carrier.value)`) must alias each other,
-// the same way `emitStructPointerRefArgument`'s whole-struct-pointer case
-// already dedups. `emitFieldPointerRefArgument` computed a fresh field
-// address per argument and never recognised the two as the same location,
-// silently dropping one argument's write-back instead of composing a
-// correct answer.
-// `Interpreter` fails this same fixture with its own, separate composition
-// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
-// above).
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Interpreter also produces 1 instead of 2 here, via its own " ~
-        "separate ref-argument composition path -- not characterized yet"),
-)) {
-    @("refArgument.pointerCarriedFieldArgumentDedupsAliasedArguments." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Holder {
-                int[] elements;
-                int value;
-            }
-
-            void bumpBoth(ref int x, ref int y) {
-                x = x + 1;
-                y = y + 1;
-            }
-
-            unittest {
-                Holder holder;
-                Holder* carrier = &holder;
-                bumpBoth(carrier.value, carrier.value);
-                assert(holder.value == 2);
             }
         });
     }
@@ -2288,178 +2250,6 @@ static foreach (backend; Matrix!()) {
                     }
                 }
                 assert(s.value == 1);
-            }
-        });
-    }
-}
-
-// Two value-equal but syntactically distinct pointers reaching the same
-// field (`Holder* q = p;`) cannot be proven aliased or distinct from their
-// spelling alone. `emitFieldPointerRefArgument`'s dedup key only unified two
-// arguments spelled through the literally same pointer expression, so this
-// silently computed 1 instead of 2 instead of recognising it could not
-// prove the two pointer-carried field arguments apart. It now declines
-// whenever another `ref` argument in the same call is a struct-field access
-// that is not provably the same (pointer declaration, field) pair.
-// `Interpreter` fails this same fixture with its own, separate composition
-// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
-// above).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: p.value"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "Interpreter also produces 1 instead of 2 here, via its own " ~
-        "separate ref-argument composition path -- not characterized yet"),
-)) {
-    @("refArgument.pointerCarriedFieldArgumentsThroughAliasedPointersDecline." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Holder {
-                int value;
-            }
-
-            void bumpBoth(ref int x, ref int y) {
-                x = x + 1;
-                y = y + 1;
-            }
-
-            unittest {
-                Holder holder;
-                Holder* p = &holder;
-                Holder* q = p;
-                bumpBoth(p.value, q.value);
-                assert(holder.value == 2);
-            }
-        });
-    }
-}
-
-// A direct field argument and a pointer-carried field argument reaching the
-// same underlying storage (`carrier = &holder`): the direct argument is a
-// live alias to `holder`, so the pointer-carried argument's post-call
-// write-back silently clobbered it instead of composing a correct answer.
-// General aliasing analysis between an arbitrary runtime pointer and a
-// direct struct local is undecidable here, so `emitFieldPointerRefArgument`
-// now declines whenever another `ref` argument in the same call is any
-// other struct-field access.
-// `Interpreter` fails this same fixture with its own, separate composition
-// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
-// above).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: carrier.value"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "Interpreter also produces 1 instead of 2 here, via its own " ~
-        "separate ref-argument composition path -- not characterized yet"),
-)) {
-    @("refArgument.directAndPointerCarriedFieldArgumentsOnSameStorageDecline." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Holder {
-                int value;
-            }
-
-            void bumpBoth(ref int x, ref int y) {
-                x = x + 1;
-                y = y + 1;
-            }
-
-            unittest {
-                Holder holder;
-                Holder* carrier = &holder;
-                bumpBoth(holder.value, carrier.value);
-                assert(holder.value == 2);
-            }
-        });
-    }
-}
-
-// A whole-struct `ref` sibling (`ref Holder h`) alongside a pointer-carried
-// field `ref` argument reaching the SAME struct's storage (`carrier =
-// &holder`): the sibling-gathering loop in `emitFieldPointerRefArgument` only
-// declined against a sibling shaped as a struct field access (`DotVarExp`),
-// so a bare whole-struct argument -- live-aliased through
-// `referenceOffset`/`_structLocals` -- slipped past unchecked and the
-// pointer-carried argument's post-call write-back silently clobbered the
-// live alias's mutation instead of composing a correct answer.
-// `emitFieldPointerRefArgument` now declines whenever another `ref` argument
-// in the same call is struct- or struct-pointer-typed, not just when it is a
-// `DotVarExp`.
-// `Interpreter` fails this same fixture with its own, separate composition
-// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
-// above).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: (*carrier).value"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "Interpreter also produces 1 instead of 2 here, via its own " ~
-        "separate ref-argument composition path -- not characterized yet"),
-)) {
-    @("refArgument.wholeStructRefSiblingAliasesPointerCarriedFieldArgument." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Holder {
-                int value;
-            }
-
-            void bumpBoth(ref Holder h, ref int v) {
-                h.value = h.value + 1;
-                v = v + 1;
-            }
-
-            unittest {
-                Holder holder;
-                Holder* carrier = &holder;
-                bumpBoth(holder, carrier.value);
-                assert(holder.value == 2);
-            }
-        });
-    }
-}
-
-// The implicit `this` receiver of a struct method call, alongside a
-// pointer-carried field `ref` argument reaching the SAME struct's storage:
-// the receiver is a live-aliased whole-struct channel that never appears in
-// `call.arguments`, so the sibling-gathering loop in `compileCall` never saw
-// it and `emitFieldPointerRefArgument` had no way to decline against it,
-// silently letting the pointer-carried argument's write-back clobber the
-// receiver's mutation. `emitFieldPointerRefArgument` now declines outright
-// whenever the call has a struct method receiver.
-// `Interpreter` fails this same fixture with its own, separate composition
-// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
-// above).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: (*carrier).value"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "Interpreter also produces 1 instead of 2 here, via its own " ~
-        "separate ref-argument composition path -- not characterized yet"),
-)) {
-    @("refArgument.structMethodReceiverAliasesPointerCarriedFieldArgument." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Holder {
-                int value;
-
-                void bump(ref int v) {
-                    value = value + 1;
-                    v = v + 1;
-                }
-            }
-
-            unittest {
-                Holder holder;
-                Holder* carrier = &holder;
-                holder.bump(carrier.value);
-                assert(holder.value == 2);
             }
         });
     }

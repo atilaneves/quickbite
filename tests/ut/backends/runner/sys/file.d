@@ -12,7 +12,7 @@ import std.conv: text;
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
     Omit!(Bytecode, Because.refusal,
-        "Unsupported inline asm instruction sequence"),
+        "Unsupported ref argument in bytecode core: (*this._p).refs"),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)

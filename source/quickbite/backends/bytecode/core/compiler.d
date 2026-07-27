@@ -202,15 +202,6 @@ private struct Compiler {
         ushort valueOffset;
         ushort pointerOffset;
         ushort valueSize;
-        // The remaining fields are `emitFieldPointerRefArgument`'s own dedup
-        // key: `pointerOffset` there holds a freshly computed field address
-        // (a distinct frame slot per call site even when it addresses the
-        // same field through the same pointer), so aliasing detection needs
-        // the address's own inputs -- the base pointer's offset and the
-        // field's byte offset -- instead.
-        bool isFieldPointer;
-        ushort basePointerOffset;
-        ushort fieldOffset;
     }
 
     private static struct MethodReceiver {
@@ -10442,17 +10433,6 @@ private struct Compiler {
                 expressionChars(call),
             ));
 
-        // Every `ref` argument expression in this call, gathered once so
-        // `emitFieldPointerRefArgument` can tell whether it is the only
-        // struct/field-shaped `ref` argument reaching this call (see its own
-        // doc comment for why that matters for soundness).
-        Expression[] referenceArguments;
-        if (call.arguments !is null)
-            foreach (argumentIndex; 0 .. call.arguments.length)
-                if (layout.isReference[nextArgumentIndex + argumentIndex])
-                    referenceArguments ~=
-                        (*call.arguments)[argumentIndex];
-
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
@@ -10494,15 +10474,6 @@ private struct Compiler {
                         slot,
                         (*call.arguments)[argumentIndex],
                         structPointerRefWriteBacks,
-                    ))
-                        continue;
-                if (layout.isReference[nextArgumentIndex + argumentIndex])
-                    if (emitFieldPointerRefArgument(
-                        slot,
-                        (*call.arguments)[argumentIndex],
-                        structPointerRefWriteBacks,
-                        referenceArguments,
-                        layout.hasThis,
                     ))
                         continue;
                 emitCallArgument(
@@ -11685,8 +11656,7 @@ private struct Compiler {
         const pointerOffset = _locals[declaration];
         const valueSize = cast(ushort) staticArraySize(argument.type);
         foreach (writeBack; writeBacks)
-            if (!writeBack.isFieldPointer &&
-                writeBack.pointerOffset == pointerOffset &&
+            if (writeBack.pointerOffset == pointerOffset &&
                 writeBack.valueSize == valueSize) {
                 _code ~= Instruction(
                     Op.loadConstant,
@@ -11712,164 +11682,6 @@ private struct Compiler {
         );
         writeBacks ~= StructPointerRefWriteBack(
             valueOffset, pointerOffset, valueSize,
-        );
-        return true;
-    }
-
-    // A `ref` argument to a field reached through a dereferenced pointer
-    // field (`_p.refs`, DMD's sugar for `(*_p).refs`): the field lives at
-    // `pointer + field.offset` in VM-owned heap memory, outside the frame, so
-    // load it into a fresh slot for the callee to mutate and copy the
-    // mutation back to that address once the call returns. Two sibling
-    // arguments reaching the same field through the same pointer (e.g.
-    // `bumpBoth(carrier.value, carrier.value)`) must dedup onto one slot the
-    // same way `emitStructPointerRefArgument` does, or the second argument's
-    // mutation silently overwrites the first's write-back address instead of
-    // aliasing it.
-    //
-    // Two declines, both load-bearing:
-    //
-    // - `(*__withSym).field` inside `with (subject) { ... }` matches this
-    //   same `DotVarExp`-over-`PtrExp` shape, but `__withSym` is a synthetic
-    //   pointer bound to `&subject`'s *frame* storage, not VM-owned heap
-    //   memory: the copy-in/copy-out here would silently race the live
-    //   aliasing that `referenceOffset`/`structBaseOffsetOrNull` already give
-    //   that case via `_withDerefBases`. Decline so that path handles it.
-    //
-    // - Whether two pointer expressions denote the same storage in general
-    //   is undecidable here (`Holder* q = p;` makes `p` and `q` alias without
-    //   any syntactic clue, and a direct field argument like `holder.value`
-    //   aliases `carrier.value` whenever `carrier == &holder`). Rather than
-    //   attempt real alias analysis, only proceed when this is provably the
-    //   sole channel in this call that could reach this struct's storage:
-    //   decline outright whenever the call has a struct method receiver
-    //   (`this` is itself a live-aliased whole-struct channel this fast path
-    //   has no visibility into), and decline whenever another `ref` argument
-    //   could plausibly alias -- a struct field access (`DotVarExp`) that is
-    //   not provably this *same* (pointer declaration, field) pair, or a bare
-    //   whole-struct/struct-pointer `ref` argument (`VarExp`, live-aliased via
-    //   `_structLocals`/`referenceOffset` or copied in/out via
-    //   `emitStructPointerRefArgument`). Two occurrences of the exact same
-    //   pointer-local-and-field pair are still recognised as the same
-    //   location and dedup below, same as before.
-    private bool emitFieldPointerRefArgument(
-        in ushort slot,
-        Expression argument,
-        ref StructPointerRefWriteBack[] writeBacks,
-        Expression[] siblingReferenceArguments,
-        in bool callHasStructReceiver,
-    ) {
-        import dmd.astenums: TY;
-
-        auto dot = argument.isDotVarExp;
-        auto deref = dot is null ? null : dot.e1.isPtrExp;
-        auto field = dot is null ? null : dot.var.isVarDeclaration;
-        if (deref is null || field is null)
-            return false;
-
-        // The implicit `this` receiver of a struct method call is a
-        // live-aliased channel to the whole struct's storage that never
-        // appears in `siblingReferenceArguments` (it isn't one of
-        // `call.arguments`), so it cannot be checked against below; decline
-        // rather than risk racing its own live aliasing or write-back.
-        if (callHasStructReceiver)
-            return false;
-
-        auto pointerVariable = deref.e1.isVarExp;
-        auto pointerDeclaration =
-            pointerVariable is null ? null : pointerVariable.var.isVarDeclaration;
-
-        // A `with`-statement dereference base: decline unconditionally in
-        // favour of the live-aliasing `_withDerefBases` path.
-        if (pointerDeclaration !is null &&
-            pointerDeclaration in _withDerefBases)
-            return false;
-
-        // Decline unless every other `ref` argument sharing this call is
-        // either unrelated to struct/field storage, or provably the exact
-        // same (pointer declaration, field) pair as this one.
-        foreach (sibling; siblingReferenceArguments) {
-            if (sibling is argument)
-                continue;
-
-            if (auto siblingDot = sibling.isDotVarExp) {
-                auto siblingDeref = siblingDot.e1.isPtrExp;
-                auto siblingField = siblingDot.var.isVarDeclaration;
-                VarDeclaration siblingPointerDeclaration;
-                if (siblingDeref !is null)
-                    if (auto siblingVariable = siblingDeref.e1.isVarExp)
-                        siblingPointerDeclaration =
-                            siblingVariable.var.isVarDeclaration;
-
-                const sameKey =
-                    siblingDeref !is null &&
-                    siblingField is field &&
-                    pointerDeclaration !is null &&
-                    siblingPointerDeclaration is pointerDeclaration;
-                if (!sameKey)
-                    return false;
-                continue;
-            }
-
-            // A bare `ref` sibling naming a whole struct, or a struct
-            // reached through a pointer local (the shape
-            // `emitStructPointerRefArgument` copies in/out), could alias
-            // this field's storage through a binding this fast path cannot
-            // rule out; decline rather than assume it doesn't.
-            if (sibling.type !is null &&
-                (sibling.type.toBasetype.ty == TY.Tstruct ||
-                    structPointerDeclaration(sibling.type) !is null))
-                return false;
-        }
-
-        const pointer = compileExpression(deref.e1);
-        if (!pointer.isPointer)
-            return false;
-
-        const valueSize = size(scalarType(field.type));
-        if (valueSize == 0 || valueSize > ulong.sizeof)
-            return false;
-
-        const fieldOffset = cast(ushort) field.offset;
-        foreach (writeBack; writeBacks)
-            if (writeBack.isFieldPointer &&
-                writeBack.basePointerOffset == pointer.offset &&
-                writeBack.fieldOffset == fieldOffset &&
-                writeBack.valueSize == valueSize) {
-                _code ~= Instruction(
-                    Op.loadConstant,
-                    slot,
-                    constantIndex(writeBack.valueOffset),
-                    cast(ushort) size(ScalarType.uint_),
-                );
-                return true;
-            }
-
-        const fieldPointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.addInt8,
-            fieldPointer,
-            pointer.offset,
-            compileSizeConstant(field.offset),
-        );
-
-        const valueOffset = allocateBytes(valueSize, valueSize);
-        _code ~= Instruction(
-            pointerLoadOp(valueSize),
-            valueOffset,
-            fieldPointer,
-            compileSizeConstant(0),
-        );
-        _code ~= Instruction(
-            Op.loadConstant,
-            slot,
-            constantIndex(valueOffset),
-            cast(ushort) size(ScalarType.uint_),
-        );
-        writeBacks ~= StructPointerRefWriteBack(
-            valueOffset, fieldPointer, cast(ushort) valueSize,
-            true, pointer.offset, fieldOffset,
         );
         return true;
     }

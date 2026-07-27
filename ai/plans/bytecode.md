@@ -391,17 +391,30 @@ row reaches them:
   descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
   within that row, but a flat pointer walk across rows diverges from compiled
   D's contiguous layout.
+- Static-array bounded sub-slice assignment does not detect overlap with its
+  own rhs when the rhs is a sub-slice of the same array (`buff[1..4] =
+  buff[0..3]`): `compileSourceSlice` routes a static-array rhs through
+  `compileStaticArrayAsDynamicInto`, which heap-copies it before the shared
+  `sliceCopy` opcode's pointer-range overlap check ever runs, so the check
+  never sees the true aliasing (unlike the dynamic-array path, whose rhs
+  descriptor shares the real backing pointer).
 
 `file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
-`Omit!(Bytecode, Because.refusal, "Unsupported inline asm instruction
-sequence")`. The blocker: `std.stdio.File`'s refcounting is `shared`, and
-DMD's `core.atomic` lowers `atomicOp!"+="` on this platform to inline x86 asm
+`Omit!(Bytecode, Because.refusal, "Unsupported ref argument in bytecode
+core: (*this._p).refs")`. Two blockers, in order: (1)
+`atomicOp!"+="(_p.refs, 1)` passes `_p.refs` (a field reached by
+dereferencing the pointer field `File.Impl* _p`) as a `ref` argument, and
+`referenceOffset` (`compiler.d`) has no case for a `ref` argument reached
+through a dereferenced pointer field -- only a plain local, a `this`/
+struct-field lvalue, and a bare pointer dereference are handled; and, once
+that is addressed, (2) `std.stdio.File`'s refcounting is `shared`, and DMD's
+`core.atomic` lowers `atomicOp!"+="` on this platform to inline x86 asm
 (`lock xchg` followed by a plain store) rather than a compiler intrinsic; the
-bytecode core has no inline-asm support at all. Candidate fixes: implement
-the specific `lock`-prefixed read-modify-write/store instruction sequence
-`core.atomic` emits, or recognise `atomicOp`/`atomicLoad`/`atomicStore` by
-symbol (like the `std.math` builtins) and lower them to dedicated VM atomic
-ops instead of compiling the inline asm body.
+bytecode core has no inline-asm support at all. Candidate fixes for (2):
+implement the specific `lock`-prefixed read-modify-write/store instruction
+sequence `core.atomic` emits, or recognise `atomicOp`/`atomicLoad`/
+`atomicStore` by symbol (like the `std.math` builtins) and lower them to
+dedicated VM atomic ops instead of compiling the inline asm body.
 
 ### TDD and handoff discipline
 
