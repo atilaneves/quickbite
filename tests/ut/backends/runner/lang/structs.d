@@ -3426,3 +3426,58 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+// A `return`-scope struct method whose body reduces to `return
+// &this.field;` (DMD's lowering of `return this.field.ptr;` for a
+// static-array field) returns a pointer that must alias the receiver's own
+// storage, not a transient copy. `std.internal.cstring.tempCString`'s
+// `TempCStringBuffer` (`@disable this(this)`, NRVO-constructed through a
+// `= void` factory) exposed this: bytecode core's calling convention copies
+// a struct receiver into the callee's own frame (so field writes can be
+// written back), and the machine places every direct callee's frame at the
+// same offset past the caller's own frame (`base + callerFrameSize`,
+// `core/machine.d`'s `call`/`callIndirect` case). Two such `.ptr`-style
+// calls as sibling arguments to the same call therefore share that one
+// reused frame: the second call's own receiver copy overwrites the memory
+// the first call's still-unread returned pointer points into, so both
+// pointers end up reading the second receiver's bytes.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "DMD's CTFE interpreter refuses to read through a pointer into a " ~
+        "`= void`-initialized array once part of it is still uninitialized"),
+)) {
+    @("pointer.siblingReturnScopeReceiverCallsDoNotAlias." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Buf {
+                @disable this();
+                @disable this(this);
+                char[8] _buff;
+
+                @property const(char)* ptr() const return {
+                    return _buff.ptr;
+                }
+
+                static Buf trustedVoidInit() { Buf res = void; return res; }
+            }
+
+            Buf make(char c) {
+                auto res = Buf.trustedVoidInit();
+                res._buff[0] = c;
+                res._buff[1] = 0;
+                return res;
+            }
+
+            int identity(const(char)* a, const(char)* b) {
+                return (*a == 'x' && *b == 'y') ? 1 : 0;
+            }
+
+            unittest {
+                assert(identity(make('x').ptr, make('y').ptr) == 1);
+            }
+        });
+    }
+}

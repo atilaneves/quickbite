@@ -393,19 +393,19 @@ row reaches them:
   D's contiguous layout.
 
 `file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
-`Omit!(Bytecode, Because.unconfirmed)`. `std.stdio.File`'s open path reaches
-`std.internal.cstring.tempCString`, whose `TempCStringBuffer` is `@disable
-this(this)` and constructed through a static `trustedVoidInit` factory
-(`Buf res = void; return res;`, NRVO). Calling its `ptr` property on two such
-values and passing both results as arguments to the same call (e.g.
-`fopen(namez, modez)`, or even a plain bytecode-compiled two-argument
-function) makes the first argument's property call read stale/default
-memory instead of the value written after construction; each value read
-individually, or the same shapes combined via only one such value per call,
-is correct. The next step is finding where the bytecode compiler stages a
-method/property-call receiver for a `@disable this(this)`+NRVO-constructed
-struct argument and confirming it does not reuse a single slot across
-sibling arguments in one call's argument list.
+`Omit!(Bytecode, Because.unconfirmed)`. The sibling-receiver-aliasing bug
+that used to block this row (two `return`-scope struct-receiver calls, e.g.
+`tempCString(...).ptr` twice, as sibling arguments of the same call) is
+fixed (`compiler.d`'s `tryReceiverFieldAddressCall`, regression test
+`pointer.siblingReturnScopeReceiverCallsDoNotAlias` in
+`tests/ut/backends/runner/lang/structs.d`). The row now fails past that,
+inside `std.stdio.File`'s refcounting: `atomicOp!"+="(_p.refs, 1)` passes
+`_p.refs` (a field reached by dereferencing the pointer field `File.Impl*
+_p`) as a `ref` argument, and `referenceOffset` (`compiler.d`) has no case
+for a `ref` argument that is a struct field reached through a dereferenced
+pointer field — only a plain local, a `this`/struct-field lvalue, and a bare
+pointer dereference are handled. The next step is extending
+`referenceOffset` to resolve `(*pointerField).field`-shaped ref arguments.
 
 ### TDD and handoff discipline
 

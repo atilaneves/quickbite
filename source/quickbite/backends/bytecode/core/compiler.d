@@ -4453,6 +4453,52 @@ private struct Compiler {
         return result;
     }
 
+    // A struct method whose entire body is `return &this.field;` (or the
+    // equivalent DMD lowering of `return this.field.ptr;` for a static-array
+    // field, an `AddrExp` over a `DotVarExp` on `ThisExp`) returns a pointer
+    // that must alias the receiver's own storage. The ordinary call
+    // mechanism instead copies the receiver by value into the callee's own
+    // frame (so field mutations can be written back) and computes the
+    // address relative to that copy; because the machine places every
+    // direct callee's frame at the same offset past the caller's own frame
+    // (`base + callerFrameSize`), a second sibling call sharing the same
+    // caller reuses that exact memory before the first call's returned
+    // pointer is read, aliasing the two "receiver" addresses together. Skip
+    // the call and compute the address directly against the receiver's own
+    // stable caller-frame location instead.
+    private Operand* tryReceiverFieldAddressCall(
+        CallExp call,
+        FuncDeclaration function_,
+    ) {
+        if (thisStructDeclaration(function_) is null)
+            return null;
+        if (!isPointerType(call.type))
+            return null;
+
+        auto returned = provenFinalReturnExpression(function_.fbody);
+        if (auto address = returned is null ? null : returned.isAddrExp)
+            returned = address.e1;
+        auto dot = returned is null ? null : returned.isDotVarExp;
+        if (dot is null || dot.e1.isThisExp is null)
+            return null;
+        auto field = dot.var.isVarDeclaration;
+        if (field is null || !field.isField)
+            return null;
+
+        const receiverOffset = methodReceiverOffset(call);
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.frameAddress,
+            pointer,
+            cast(ushort) (receiverOffset + field.offset),
+        );
+        auto result = new Operand;
+        *result = Operand(
+            pointer, ScalarType.ulong_, true, pointerElementScalar(call.type),
+        );
+        return result;
+    }
+
     private Operand classMethodReceiver(CallExp call) {
         import std.conv: text;
 
@@ -10158,6 +10204,11 @@ private struct Compiler {
         import std.conv: text;
 
         auto function_ = callFunction(call);
+
+        if (function_ !is null)
+            if (auto receiverAddress =
+                    tryReceiverFieldAddressCall(call, function_))
+                return *receiverAddress;
 
         if (auto expression = immediateLambdaReturn(call))
             return compileExpression(expression);
