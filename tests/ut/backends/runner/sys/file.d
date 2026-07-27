@@ -11,7 +11,8 @@ import std.conv: text;
 // host test's sandbox object.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
-    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported inline asm instruction sequence"),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)

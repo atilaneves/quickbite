@@ -2152,10 +2152,7 @@ static foreach (backend; Matrix!(
 // the address is composed from a slot the write side may never have filled,
 // so composition must decline rather than deref whatever the slot happens to
 // hold. `Bytecode` refuses a pointer-carried field as a `ref` argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: (*carrier).value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("refArgument.pointerCarriedFieldArgumentComposesSafely." ~
         backend.stringof)
     @Tags(backend.stringof)

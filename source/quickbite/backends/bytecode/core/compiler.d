@@ -10428,6 +10428,13 @@ private struct Compiler {
                         structPointerRefWriteBacks,
                     ))
                         continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitFieldPointerRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        structPointerRefWriteBacks,
+                    ))
+                        continue;
                 emitCallArgument(
                     slot,
                     layout.isReference[nextArgumentIndex + argumentIndex],
@@ -11634,6 +11641,58 @@ private struct Compiler {
         );
         writeBacks ~= StructPointerRefWriteBack(
             valueOffset, pointerOffset, valueSize,
+        );
+        return true;
+    }
+
+    // A `ref` argument to a field reached through a dereferenced pointer
+    // field (`_p.refs`, DMD's sugar for `(*_p).refs`): the field lives at
+    // `pointer + field.offset` in VM-owned heap memory, outside the frame, so
+    // load it into a fresh slot for the callee to mutate and copy the
+    // mutation back to that address once the call returns.
+    private bool emitFieldPointerRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref StructPointerRefWriteBack[] writeBacks,
+    ) {
+        auto dot = argument.isDotVarExp;
+        auto deref = dot is null ? null : dot.e1.isPtrExp;
+        auto field = dot is null ? null : dot.var.isVarDeclaration;
+        if (deref is null || field is null)
+            return false;
+
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            return false;
+
+        const valueSize = size(scalarType(field.type));
+        if (valueSize > ulong.sizeof)
+            return false;
+
+        const fieldPointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.addInt8,
+            fieldPointer,
+            pointer.offset,
+            compileSizeConstant(field.offset),
+        );
+
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        _code ~= Instruction(
+            pointerLoadOp(valueSize),
+            valueOffset,
+            fieldPointer,
+            compileSizeConstant(0),
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= StructPointerRefWriteBack(
+            valueOffset, fieldPointer, cast(ushort) valueSize,
         );
         return true;
     }
