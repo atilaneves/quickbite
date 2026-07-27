@@ -363,10 +363,7 @@ Continue through the remaining `Because.unconfirmed` queue in this order,
 re-reading the matrices before each promotion because the source may have
 changed:
 
-1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
-   the separately compiled archive symbol through the bytecode native bridge,
-   instead of compiling the rewritten source body.
-2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
+1. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
    `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
    `registryLock`'s `new Mutex` reaches its `MonitorProxy` field. Support the
    host-backed synchronisation primitive without treating single-threaded VM

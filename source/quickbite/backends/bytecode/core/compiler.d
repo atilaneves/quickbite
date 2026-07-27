@@ -16,8 +16,10 @@ package(quickbite.backends.bytecode) struct Compilation {
 // core that sees DMD types.
 package(quickbite.backends.bytecode) Compilation compile(
     imported!"dmd.func".FuncDeclaration entry,
+    in string[] archiveImportPaths = null,
 ) {
     auto compiler = new Compiler;
+    compiler._archiveImportPaths = archiveImportPaths;
     compiler.registerFunction(entry);
     // A literal-false assert directly in a unittest body must throw
     // "unittest failure" (DMD's _d_unittest hook); the same assert in a
@@ -55,6 +57,13 @@ private struct Compiler {
     import dmd.statement: Catch, Statement;
 
     private Program* _program;
+    // Import paths whose modules are defined by a separately compiled
+    // archive already loaded into the process: a function declared under one
+    // of these is compiled as a native call regardless of its parsed body
+    // (see `isArchiveBackedFunction`), since that body is a source-rewrite
+    // artifact and the archive's own compiled definition is the one that
+    // actually runs.
+    private const(string)[] _archiveImportPaths;
     private FuncDeclaration[] _functions;
     private size_t[FuncDeclaration] _functionIndices;
     private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
@@ -10136,11 +10145,13 @@ private struct Compiler {
             return *native;
 
         const layout = parameterLayout(function_);
-        if (function_.fbody is null && !layout.hasClassThis)
+        const isNativeLeaf =
+            function_.fbody is null || isArchiveBackedFunction(function_);
+        if (isNativeLeaf && !layout.hasClassThis)
             if (auto native = tryCompileNativeCall(call, function_, layout))
                 return *native;
 
-        if (function_.fbody is null && !layout.hasClassThis)
+        if (isNativeLeaf && !layout.hasClassThis)
             throw new Exception(text(
                 "`",
                 function_.ident is null
@@ -10326,6 +10337,32 @@ private struct Compiler {
         return Operand(destination, returnType.scalar);
     }
 
+    // A function declared under an archive import path is defined by a
+    // separately compiled archive already loaded into the process: its
+    // parsed body (if any) is a source-rewrite artifact from parsing the
+    // snippet's on-disk import, not the definition that actually runs.
+    private bool isArchiveBackedFunction(FuncDeclaration function_) {
+        import std.algorithm.searching: any, startsWith;
+        import std.path: absolutePath, buildNormalizedPath, dirSeparator;
+
+        if (_archiveImportPaths.length == 0)
+            return false;
+
+        auto module_ = function_.getModule;
+        if (module_ is null)
+            return false;
+
+        const path =
+            module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
+        // Match whole path components: a bare prefix check would classify a
+        // sibling directory like <root>-extra/ as under <root>.
+        return _archiveImportPaths.any!((root) {
+            const normalised = root.absolutePath.buildNormalizedPath;
+            return path == normalised ||
+                path.startsWith(normalised ~ dirSeparator);
+        });
+    }
+
     // A null return always falls through to the call site's unconditional
     // no-available-source throw, never a different path, so it is safe to
     // emit earlier arguments before a later one turns out unsupported.
@@ -10337,22 +10374,23 @@ private struct Compiler {
         import dmd.astenums: TY;
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
-        if ((returnTy != TY.Tbool &&
-             returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
-             returnTy != TY.Tuns64 &&
-             returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
-             returnTy != TY.Tpointer && returnTy != TY.Tarray &&
-             returnTy != TY.Tstruct) ||
-            call.arguments is null)
+        if (returnTy != TY.Tbool &&
+            returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
+            returnTy != TY.Tuns64 &&
+            returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
+            returnTy != TY.Tpointer && returnTy != TY.Tarray &&
+            returnTy != TY.Tstruct)
             return null;
 
-        const argumentArea = allocateNativeArgumentArea(call.arguments.length);
-        auto argumentTypes = new Type[call.arguments.length];
-        auto outParameterOffsets = new ushort[call.arguments.length];
+        // `call.arguments` is null, not merely empty, for a no-argument call.
+        const argumentCount = call.arguments is null ? 0 : call.arguments.length;
+        const argumentArea = allocateNativeArgumentArea(argumentCount);
+        auto argumentTypes = new Type[argumentCount];
+        auto outParameterOffsets = new ushort[argumentCount];
         // Every argument must be a scalar `int`/`long`/`size_t`, a
         // string-literal `const(char)*`, a `&local` out parameter, or a
         // pointer local passed by value; any other shape bails.
-        foreach (index; 0 .. call.arguments.length) {
+        foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
                 (argumentArea + index * nativeArgumentSlotSize);

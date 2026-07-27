@@ -13,7 +13,6 @@ import ut.backends;
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
     Omit!(Interpreter, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("runTests.archiveBackedImportLinksFromArchive." ~ backend.stringof)
     @Tags(backend.stringof)
