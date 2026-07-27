@@ -359,7 +359,7 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   failure into the smallest D-language fixture backed by `SystemLinker`, then
   follow the normal approval rule before adding or changing that test.
 
-The ordered starter list above is done. Continue by searching all backend
+There is no ordered starter queue anymore. Continue by searching all backend
 matrices and characterization pins for remaining Bytecode exclusions.
 Preserve only exclusions that are genuine oracle characterizations or
 architectural non-goals with an explicit reason. An unsupported

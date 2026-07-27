@@ -123,3 +123,129 @@ unittest {
         ).should == true;
     }
 }
+
+// A class method under an archive import path: unlike the struct-method
+// case above, `layout.hasClassThis` used to skip both the native-call
+// attempt and the "no available source" refusal, silently falling through
+// to compiling the archive module's own stale rewritten source instead of
+// declining. The on-disk source is rewritten to a visibly wrong body after
+// the archive is built, so a passing (declining) run is distinguishable
+// from a silent compile of that wrong body.
+@("runTests.archiveBackedClassMethodDeclinesRatherThanRunningStaleSource.Bytecode")
+@Tags(Bytecode.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.algorithm.searching: canFind;
+    import std.conv: text;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    with(immutable Sandbox()) {
+        const importPath = "imports";
+        enum depModule = "dep_archive_class_method";
+        const depPath = buildPath(importPath, depModule ~ ".d");
+        writeFile(depPath, text(
+            "module ", depModule, ";\n",
+            "class C { int base = 40; int add(int x) { return base + x; } }\n",
+        ));
+        const archivePath = inSandboxPath("lib" ~ depModule ~ ".a");
+        const build = execute([
+            "dmd",
+            "-lib",
+            "-fPIC",
+            "-of=" ~ archivePath,
+            inSandboxPath(depPath),
+        ]);
+        build.status.should == 0;
+
+        writeFile(depPath, text(
+            "module ", depModule, ";\n",
+            "class C { int base = 999; int add(int x) { return 0; } }\n",
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            text(
+                "import ", depModule, ";\n",
+                "unittest {\n",
+                "    auto c = new C;\n",
+                "    assert(c.add(2) == 42);\n",
+                "}\n",
+            ),
+            [inSandboxPath(importPath)],
+        );
+        auto runner = new Bytecode(
+            [archivePath],
+            [inSandboxPath(importPath)],
+        );
+        const results = runner.runTests(moduleResult.module_);
+
+        results.length.should == 1;
+        results[0].passed.should == false;
+        results[0].message.canFind(
+            "is an archive-backed method",
+        ).should == true;
+    }
+}
+
+// Taking a delegate of an archive-backed struct method (`&s.add`) reaches
+// `registerFunction`/`compileFunctionBody` directly, bypassing
+// `compileCall`'s own guard entirely (that guard only runs for a direct
+// call expression). Without a guard at that chokepoint too, this silently
+// compiled and ran the archive module's stale rewritten source.
+@("runTests.archiveBackedDelegateDeclinesRatherThanRunningStaleSource.Bytecode")
+@Tags(Bytecode.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.algorithm.searching: canFind;
+    import std.conv: text;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    with(immutable Sandbox()) {
+        const importPath = "imports";
+        enum depModule = "dep_archive_delegate_method";
+        const depPath = buildPath(importPath, depModule ~ ".d");
+        writeFile(depPath, text(
+            "module ", depModule, ";\n",
+            "struct S { int base; int add(int x) { return base + x; } }\n",
+        ));
+        const archivePath = inSandboxPath("lib" ~ depModule ~ ".a");
+        const build = execute([
+            "dmd",
+            "-lib",
+            "-fPIC",
+            "-of=" ~ archivePath,
+            inSandboxPath(depPath),
+        ]);
+        build.status.should == 0;
+
+        writeFile(depPath, text(
+            "module ", depModule, ";\n",
+            "struct S { int base; int add(int x) { return 0; } }\n",
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            text(
+                "import ", depModule, ";\n",
+                "unittest {\n",
+                "    S s;\n",
+                "    s.base = 40;\n",
+                "    auto dg = &s.add;\n",
+                "    assert(dg(2) == 42);\n",
+                "}\n",
+            ),
+            [inSandboxPath(importPath)],
+        );
+        auto runner = new Bytecode(
+            [archivePath],
+            [inSandboxPath(importPath)],
+        );
+        const results = runner.runTests(moduleResult.module_);
+
+        results.length.should == 1;
+        results[0].passed.should == false;
+        results[0].message.canFind(
+            "is an archive-backed method",
+        ).should == true;
+    }
+}
