@@ -1238,6 +1238,60 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The static-array bounded sub-slice write-through path above went straight
+// to an unchecked `pointerSlice` opcode, silently writing past the array's
+// own frame storage for an out-of-range upper bound instead of raising the
+// `RangeError` compiled D raises. Bounds check it the same way a
+// dynamic-array sub-slice does (`Op.subSlice*`'s `validateSubSlice`).
+// `Ctfe`'s own compile-time bounds check reports its own divergent wording;
+// see the sibling pin below.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+)) {
+    @("staticArray.partialSliceAssignmentPastLengthThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[8] buff = "--------";
+                size_t start = cast(size_t) seed(6);
+                size_t stop = start + 4;
+
+                buff[start .. stop] = "xyzw";
+            }
+        }).shouldThrowWithMessage(
+            "slice [6 .. 10] extends past source array of length 8",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.partialSliceAssignmentPastLengthThrowsRangeError." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[8] buff = "--------";
+                size_t start = cast(size_t) seed(6);
+                size_t stop = start + 4;
+
+                buff[start .. stop] = "xyzw";
+            }
+        }).shouldThrowWithMessage(
+            "slice `[6..10]` exceeds array bounds `[0..8]`",
+        );
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("staticArray.nestedElementReadWithRuntimeIndicesReadsRealArray." ~
         backend.stringof)

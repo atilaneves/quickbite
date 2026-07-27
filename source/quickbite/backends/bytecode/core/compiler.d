@@ -202,6 +202,15 @@ private struct Compiler {
         ushort valueOffset;
         ushort pointerOffset;
         ushort valueSize;
+        // The remaining fields are `emitFieldPointerRefArgument`'s own dedup
+        // key: `pointerOffset` there holds a freshly computed field address
+        // (a distinct frame slot per call site even when it addresses the
+        // same field through the same pointer), so aliasing detection needs
+        // the address's own inputs -- the base pointer's offset and the
+        // field's byte offset -- instead.
+        bool isFieldPointer;
+        ushort basePointerOffset;
+        ushort fieldOffset;
     }
 
     private static struct MethodReceiver {
@@ -4474,11 +4483,22 @@ private struct Compiler {
             return null;
         if (!isPointerType(call.type))
             return null;
+        // Only a bare `return &this.field;` body qualifies: any preceding
+        // statement could have side effects (e.g. `++count; return
+        // &count;`), and this fast path never calls `compileCall`, so it
+        // must not skip anything that runs before the return.
+        if (!isBareReturnStatement(function_.fbody))
+            return null;
+        // A call with arguments would need those argument expressions
+        // evaluated; this fast path has no call-argument emission at all.
+        if (call.arguments !is null && call.arguments.length > 0)
+            return null;
 
         auto returned = provenFinalReturnExpression(function_.fbody);
-        if (auto address = returned is null ? null : returned.isAddrExp)
-            returned = address.e1;
-        auto dot = returned is null ? null : returned.isDotVarExp;
+        auto address = returned is null ? null : returned.isAddrExp;
+        if (address is null)
+            return null;
+        auto dot = address.e1.isDotVarExp;
         if (dot is null || dot.e1.isThisExp is null)
             return null;
         auto field = dot.var.isVarDeclaration;
@@ -4497,6 +4517,23 @@ private struct Compiler {
             pointer, ScalarType.ulong_, true, pointerElementScalar(call.type),
         );
         return result;
+    }
+
+    // True when `statement` is exactly a single `return` statement (through
+    // any wrapping `ScopeStatement`/single-element `CompoundStatement`), with
+    // nothing preceding it. `tryReceiverFieldAddressCall` requires this: it
+    // has no mechanism to compile a preceding statement's side effects.
+    private bool isBareReturnStatement(Statement statement) {
+        if (statement is null)
+            return false;
+        if (auto scope_ = statement.isScopeStatement)
+            return isBareReturnStatement(scope_.statement);
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements is null || compound.statements.length != 1)
+                return false;
+            return isBareReturnStatement((*compound.statements)[0]);
+        }
+        return statement.isReturnStatement !is null;
     }
 
     private Operand classMethodReceiver(CallExp call) {
@@ -9713,9 +9750,28 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
+        // Bounds check `[lo .. hi]` against the array's own known length the
+        // same way a dynamic-array sub-slice does (`Op.subSlice*`'s
+        // `validateSubSlice`, matching compiled D's `RangeError` wording
+        // byte for byte): build a throwaway {pointer, length} descriptor over
+        // `base` and go through `subSliceOp` instead of the unchecked
+        // `pointerSliceOp`, so an out-of-range bound throws instead of
+        // silently writing past the array's frame storage.
+        const sourceDescriptor =
+            allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy, sourceDescriptor, base.offset, cast(ushort) size_t.sizeof,
+        );
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (sourceDescriptor + size_t.sizeof),
+            compileSizeConstant(length),
+            cast(ushort) size_t.sizeof,
+        );
+
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
-            pointerSliceOp(elementSize), destination, base.offset, bounds,
+            subSliceOp(elementSize), destination, sourceDescriptor, bounds,
         );
 
         if (elementSize == uint.sizeof &&
@@ -11615,7 +11671,8 @@ private struct Compiler {
         const pointerOffset = _locals[declaration];
         const valueSize = cast(ushort) staticArraySize(argument.type);
         foreach (writeBack; writeBacks)
-            if (writeBack.pointerOffset == pointerOffset &&
+            if (!writeBack.isFieldPointer &&
+                writeBack.pointerOffset == pointerOffset &&
                 writeBack.valueSize == valueSize) {
                 _code ~= Instruction(
                     Op.loadConstant,
@@ -11649,7 +11706,12 @@ private struct Compiler {
     // field (`_p.refs`, DMD's sugar for `(*_p).refs`): the field lives at
     // `pointer + field.offset` in VM-owned heap memory, outside the frame, so
     // load it into a fresh slot for the callee to mutate and copy the
-    // mutation back to that address once the call returns.
+    // mutation back to that address once the call returns. Two sibling
+    // arguments reaching the same field through the same pointer (e.g.
+    // `bumpBoth(carrier.value, carrier.value)`) must dedup onto one slot the
+    // same way `emitStructPointerRefArgument` does, or the second argument's
+    // mutation silently overwrites the first's write-back address instead of
+    // aliasing it.
     private bool emitFieldPointerRefArgument(
         in ushort slot,
         Expression argument,
@@ -11666,8 +11728,23 @@ private struct Compiler {
             return false;
 
         const valueSize = size(scalarType(field.type));
-        if (valueSize > ulong.sizeof)
+        if (valueSize == 0 || valueSize > ulong.sizeof)
             return false;
+
+        const fieldOffset = cast(ushort) field.offset;
+        foreach (writeBack; writeBacks)
+            if (writeBack.isFieldPointer &&
+                writeBack.basePointerOffset == pointer.offset &&
+                writeBack.fieldOffset == fieldOffset &&
+                writeBack.valueSize == valueSize) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
 
         const fieldPointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -11693,6 +11770,7 @@ private struct Compiler {
         );
         writeBacks ~= StructPointerRefWriteBack(
             valueOffset, fieldPointer, cast(ushort) valueSize,
+            true, pointer.offset, fieldOffset,
         );
         return true;
     }

@@ -394,26 +394,14 @@ row reaches them:
 
 `file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
 `Omit!(Bytecode, Because.refusal, "Unsupported inline asm instruction
-sequence")`. The sibling-receiver-aliasing bug that used to block this row is
-fixed (`compiler.d`'s `tryReceiverFieldAddressCall`, regression test
-`pointer.siblingReturnScopeReceiverCallsDoNotAlias`). The ref-argument gap
-past that -- `atomicOp!"+="(_p.refs, 1)` passing `_p.refs` (a field reached by
-dereferencing the pointer field `File.Impl* _p`) as a `ref` argument, which
-`referenceOffset` had no case for -- is also fixed: the call-argument chain in
-`compileCall` (`compiler.d`) gains `emitFieldPointerRefArgument`, alongside
-`emitStructPointerRefArgument`/`emitDynamicArrayRefArgument`, to load the
-field through `pointer + field.offset` into a fresh slot and write the
-mutation back to that address once the call returns (regression: promoted
-`refArgument.pointerCarriedFieldArgumentComposesSafely` in
-`tests/ut/backends/runner/lang/structs.d`, all backends). The row now fails
-past that: `std.stdio.File`'s refcounting is `shared`, and DMD's `core.atomic`
-lowers `atomicOp!"+="` on this platform to inline x86 asm (`lock xchg`
-followed by a plain store) rather than a compiler intrinsic; the bytecode
-core has no inline-asm support at all. The next step is either implementing
+sequence")`. The blocker: `std.stdio.File`'s refcounting is `shared`, and
+DMD's `core.atomic` lowers `atomicOp!"+="` on this platform to inline x86 asm
+(`lock xchg` followed by a plain store) rather than a compiler intrinsic; the
+bytecode core has no inline-asm support at all. Candidate fixes: implement
 the specific `lock`-prefixed read-modify-write/store instruction sequence
-`core.atomic` emits, or recognising `atomicOp`/`atomicLoad`/`atomicStore` by
-symbol (like the `std.math` builtins) and lowering them to dedicated VM
-atomic ops instead of compiling the inline asm body.
+`core.atomic` emits, or recognise `atomicOp`/`atomicLoad`/`atomicStore` by
+symbol (like the `std.math` builtins) and lower them to dedicated VM atomic
+ops instead of compiling the inline asm body.
 
 ### TDD and handoff discipline
 

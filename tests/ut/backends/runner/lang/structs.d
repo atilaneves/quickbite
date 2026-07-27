@@ -2151,7 +2151,8 @@ static foreach (backend; Matrix!(
 // the field reached through the pointer (`PtrExp`/`DotVarExp`). Same rule --
 // the address is composed from a slot the write side may never have filled,
 // so composition must decline rather than deref whatever the slot happens to
-// hold. `Bytecode` refuses a pointer-carried field as a `ref` argument.
+// hold. `Bytecode` supports a pointer-carried field as a `ref` argument via
+// `emitFieldPointerRefArgument`.
 static foreach (backend; Matrix!()) {
     @("refArgument.pointerCarriedFieldArgumentComposesSafely." ~
         backend.stringof)
@@ -2172,6 +2173,46 @@ static foreach (backend; Matrix!()) {
                 Holder* carrier = &holder;
                 setTo(carrier.value, 66);
                 assert(holder.value == 66);
+            }
+        });
+    }
+}
+
+// Two sibling `ref` arguments reaching the SAME field through the SAME
+// pointer (`bumpBoth(carrier.value, carrier.value)`) must alias each other,
+// the same way `emitStructPointerRefArgument`'s whole-struct-pointer case
+// already dedups. `emitFieldPointerRefArgument` computed a fresh field
+// address per argument and never recognised the two as the same location,
+// silently dropping one argument's write-back instead of composing a
+// correct answer.
+// `Interpreter` fails this same fixture with its own, separate composition
+// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
+// above).
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Interpreter also produces 1 instead of 2 here, via its own " ~
+        "separate ref-argument composition path -- not characterized yet"),
+)) {
+    @("refArgument.pointerCarriedFieldArgumentDedupsAliasedArguments." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] elements;
+                int value;
+            }
+
+            void bumpBoth(ref int x, ref int y) {
+                x = x + 1;
+                y = y + 1;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* carrier = &holder;
+                bumpBoth(carrier.value, carrier.value);
+                assert(holder.value == 2);
             }
         });
     }
@@ -3474,6 +3515,86 @@ static foreach (backend; Matrix!(
 
             unittest {
                 assert(identity(make('x').ptr, make('y').ptr) == 1);
+            }
+        });
+    }
+}
+
+// A struct method whose entire body is `return p;` (a plain pointer FIELD
+// GETTER, not `&this.field`) must return the pointer VALUE stored in the
+// field, not the field's own address. `tryReceiverFieldAddressCall` matched
+// any bare `DotVarExp` return on `this`, including one that never went
+// through an `AddrExp`, and replaced it with the receiver's field address --
+// wrong for a method that already returns a pointer.
+static foreach (backend; Matrix!()) {
+    @("pointer.receiverFieldGetterReturnsStoredPointerNotFieldAddress." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int* p;
+                int* get() { return p; }
+            }
+
+            unittest {
+                int value = 42;
+                Holder h;
+                h.p = &value;
+                assert(*h.get() == 42);
+            }
+        });
+    }
+}
+
+// A struct method matching `tryReceiverFieldAddressCall`'s return shape but
+// with a side-effecting statement before the final `return &this.field;`
+// must still run that statement: the fast path never calls `compileCall`, so
+// it must decline whenever anything precedes the return.
+static foreach (backend; Matrix!()) {
+    @("pointer.receiverFieldAddressCallRunsPrecedingSideEffect." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int count;
+                int* next() { ++count; return &count; }
+            }
+
+            unittest {
+                Counter c;
+                c.next();
+                assert(c.count == 1);
+            }
+        });
+    }
+}
+
+// A struct method matching `tryReceiverFieldAddressCall`'s return shape but
+// called with an argument must still evaluate that argument: the fast path
+// has no call-argument emission at all, so an argument with a side effect
+// (here mutating a `ref` parameter) was silently skipped.
+static foreach (backend; Matrix!()) {
+    @("pointer.receiverFieldAddressCallEvaluatesItsArgument." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box {
+                int value;
+                int* addr(int ignored) { return &value; }
+            }
+
+            int bump(ref int calls) {
+                return ++calls;
+            }
+
+            unittest {
+                Box b;
+                int calls;
+                b.addr(bump(calls));
+                assert(calls == 1);
             }
         });
     }
