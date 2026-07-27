@@ -10348,8 +10348,27 @@ private struct Compiler {
             return *native;
 
         const layout = parameterLayout(function_);
-        const isNativeLeaf =
-            function_.fbody is null || isArchiveBackedFunction(function_);
+        const isArchiveBacked = isArchiveBackedFunction(function_);
+        // Neither path below is safe for a receiver-bearing archive-backed
+        // method: `tryCompileNativeCall` never resolves a receiver, so a
+        // struct method reaches the native call with no `this` argument at
+        // all, and a class method (`layout.hasClassThis`, which skips the
+        // native-call attempt below) falls through to `registerFunction`
+        // and compiles the archive module's stale rewritten source body --
+        // exactly what an archive-backed function's whole point is to never
+        // do. Decline loudly rather than crash or run the wrong body.
+        if (isArchiveBacked && (layout.hasThis || layout.hasClassThis))
+            throw new Exception(text(
+                "`",
+                function_.ident is null
+                    ? expressionChars(call)
+                    : function_.ident.toString,
+                "` is an archive-backed method: routing a receiver-bearing ",
+                "call through the native bridge or its stale rewritten ",
+                "source is unsupported",
+            ));
+
+        const isNativeLeaf = function_.fbody is null || isArchiveBacked;
         if (isNativeLeaf && !layout.hasClassThis)
             if (auto native = tryCompileNativeCall(call, function_, layout))
                 return *native;

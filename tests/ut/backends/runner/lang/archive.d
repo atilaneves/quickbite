@@ -65,3 +65,61 @@ static foreach (backend; Matrix!(
         }
     }
 }
+
+// A struct method under an archive import path is still an archive-backed
+// function per `isArchiveBackedFunction`, but the bytecode native bridge has
+// no receiver-passing mechanism for it: routing the call through
+// `tryCompileNativeCall` reaches the archive's real `S.add` with no `this`
+// argument at all. This must decline loudly, not crash the process by
+// calling into native code with a missing receiver.
+@("runTests.archiveBackedStructMethodDeclinesRatherThanCrashing.Bytecode")
+@Tags(Bytecode.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.algorithm.searching: canFind;
+    import std.conv: text;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    with(immutable Sandbox()) {
+        const importPath = "imports";
+        enum depModule = "dep_archive_struct_method";
+        const depPath = buildPath(importPath, depModule ~ ".d");
+        writeFile(depPath, text(
+            "module ", depModule, ";\n",
+            "struct S { int base; int add(int x) { return base + x; } }\n",
+        ));
+        const archivePath = inSandboxPath("lib" ~ depModule ~ ".a");
+        const build = execute([
+            "dmd",
+            "-lib",
+            "-fPIC",
+            "-of=" ~ archivePath,
+            inSandboxPath(depPath),
+        ]);
+        build.status.should == 0;
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            text(
+                "import ", depModule, ";\n",
+                "unittest {\n",
+                "    S s;\n",
+                "    s.base = 40;\n",
+                "    assert(s.add(2) == 42);\n",
+                "}\n",
+            ),
+            [inSandboxPath(importPath)],
+        );
+        auto runner = new Bytecode(
+            [archivePath],
+            [inSandboxPath(importPath)],
+        );
+        const results = runner.runTests(moduleResult.module_);
+
+        results.length.should == 1;
+        results[0].passed.should == false;
+        results[0].message.canFind(
+            "is an archive-backed method",
+        ).should == true;
+    }
+}
