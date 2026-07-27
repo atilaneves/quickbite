@@ -8132,6 +8132,13 @@ private struct Compiler {
             if (auto broadcast = tryStaticArrayBroadcast(slice, assign.e2))
                 return *broadcast;
 
+        // `arr[lo .. hi] = rhs` for a static array: write through a real
+        // pointer into `arr`'s own frame storage instead of a throwaway heap
+        // copy.
+        if (auto slice = assign.e1.isSliceExp)
+            if (auto store = tryStaticArraySliceAssign(slice, assign.e2))
+                return *store;
+
         // `arr[lo .. hi] = rhs` for a dynamic array: copy the rhs elements into
         // the existing backing memory (write-through to the original array).
         if (auto slice = assign.e1.isSliceExp)
@@ -9602,6 +9609,86 @@ private struct Compiler {
                 *slot,
                 cast(ushort) rowSize,
             );
+
+        auto result = new Operand;
+        *result = Operand.init;
+        return result;
+    }
+
+    // `arr[lo .. hi] = rhs` where `arr` is a static array and the rhs is
+    // itself a slice: `arr` otherwise resolves through
+    // `dynamicArrayDescriptorOrNull` into a throwaway heap copy
+    // (`compileStaticArrayAsDynamicInto`), so writing the destination through
+    // that descriptor would never reach `arr`'s real frame storage. Build the
+    // destination directly from a real pointer into `arr`'s own memory
+    // instead, the same way `tryDynamicArrayElementAssign` already does for a
+    // single element (`staticArrayElementPointer`). Null if `slice.e1` is not
+    // a static-array location, or its element isn't one of the widths
+    // `sliceCopyOp` copies correctly (1 or 4 bytes; wider elements still need
+    // general slice-copy support).
+    private Operand* tryStaticArraySliceAssign(
+        SliceExp slice,
+        Expression rhs,
+    ) {
+        // `tryStaticArrayRuntimeAddress` resolves a `DotVarExp` to any
+        // struct field's own frame offset, static array or not (e.g. a
+        // `char*` field): guard with the same static-array type check
+        // `tryStaticArrayRuntimeIndex`/`tryStaticArrayRuntimeElementAssign`
+        // already require, or a non-array field's address would be
+        // misread as if it were the field's own array storage.
+        if (!indexesStaticArray(slice.e1))
+            return null;
+
+        auto base = tryStaticArrayRuntimeAddress(slice.e1);
+        if (base is null)
+            return null;
+
+        if (arrayElementIsArray(slice.e1.type))
+            return null;
+
+        const elementType = dynamicArrayElementType(slice.e1.type);
+        const elementSize = size(elementType);
+        if (elementSize != 1 && elementSize != 4)
+            return null;
+
+        const length = staticArrayLength(slice.e1.type);
+        const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const lo = slice.lwr is null
+            ? compileSizeConstant(0)
+            : compileExpression(slice.lwr).offset;
+        _code ~= Instruction(Op.copy, bounds, lo, cast(ushort) size_t.sizeof);
+        const hi = slice.upr is null
+            ? compileSizeConstant(length)
+            : compileExpression(slice.upr).offset;
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (bounds + size_t.sizeof),
+            hi,
+            cast(ushort) size_t.sizeof,
+        );
+
+        const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            pointerSliceOp(elementSize), destination, base.offset, bounds,
+        );
+
+        if (elementSize == uint.sizeof &&
+            rhs.type !is null &&
+            rhs.type.toBasetype.isTypeBasic !is null) {
+            const value = compileExpression(rhs);
+            _code ~= Instruction(Op.sliceFill4, destination, value.offset);
+
+            auto result = new Operand;
+            *result = Operand.init;
+            return result;
+        }
+
+        const source = compileSourceSlice(elementType, rhs);
+        _code ~= Instruction(
+            sliceCopyOp(elementSize),
+            destination,
+            source,
+        );
 
         auto result = new Operand;
         *result = Operand.init;

@@ -368,9 +368,13 @@ itself, a permanent divergence from the compiled-D oracle.
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
 
-- Scalar slice fill is limited to 4-byte basic elements; other widths,
-  aggregate elements, and static-array slice fills still need general
-  semantics.
+- Scalar slice fill is limited to 4-byte basic elements; other widths and
+  aggregate elements still need general semantics. Static-array bounded
+  sub-slice assignment (`arr[lo .. hi] = rhs`, both a plain local and a
+  struct field) now writes through the array's own frame storage for 1- and
+  4-byte elements when `rhs` is itself a slice; wider elements (`sliceCopyOp`
+  only distinguishes 1 vs. 4 bytes) and a bare scalar broadcast into a
+  non-4-byte element still need general semantics.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
@@ -387,6 +391,21 @@ row reaches them:
   descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
   within that row, but a flat pointer walk across rows diverges from compiled
   D's contiguous layout.
+
+`file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
+`Omit!(Bytecode, Because.unconfirmed)`. `std.stdio.File`'s open path reaches
+`std.internal.cstring.tempCString`, whose `TempCStringBuffer` is `@disable
+this(this)` and constructed through a static `trustedVoidInit` factory
+(`Buf res = void; return res;`, NRVO). Calling its `ptr` property on two such
+values and passing both results as arguments to the same call (e.g.
+`fopen(namez, modez)`, or even a plain bytecode-compiled two-argument
+function) makes the first argument's property call read stale/default
+memory instead of the value written after construction; each value read
+individually, or the same shapes combined via only one such value per call,
+is correct. The next step is finding where the bytecode compiler stages a
+method/property-call receiver for a `@disable this(this)`+NRVO-constructed
+struct argument and confirming it does not reuse a single slot across
+sibling arguments in one call's argument list.
 
 ### TDD and handoff discipline
 
