@@ -10502,6 +10502,7 @@ private struct Compiler {
                         (*call.arguments)[argumentIndex],
                         structPointerRefWriteBacks,
                         referenceArguments,
+                        layout.hasThis,
                     ))
                         continue;
                 emitCallArgument(
@@ -11740,22 +11741,38 @@ private struct Compiler {
     //   any syntactic clue, and a direct field argument like `holder.value`
     //   aliases `carrier.value` whenever `carrier == &holder`). Rather than
     //   attempt real alias analysis, only proceed when this is provably the
-    //   sole struct/field-shaped `ref` argument reaching this call: decline
-    //   whenever another `ref` argument is itself a struct field access
-    //   (`DotVarExp`) that is not provably this *same* (pointer declaration,
-    //   field) pair. Two occurrences of the exact same pointer-local-and-field
-    //   pair are still recognised as the same location and dedup below, same
-    //   as before.
+    //   sole channel in this call that could reach this struct's storage:
+    //   decline outright whenever the call has a struct method receiver
+    //   (`this` is itself a live-aliased whole-struct channel this fast path
+    //   has no visibility into), and decline whenever another `ref` argument
+    //   could plausibly alias -- a struct field access (`DotVarExp`) that is
+    //   not provably this *same* (pointer declaration, field) pair, or a bare
+    //   whole-struct/struct-pointer `ref` argument (`VarExp`, live-aliased via
+    //   `_structLocals`/`referenceOffset` or copied in/out via
+    //   `emitStructPointerRefArgument`). Two occurrences of the exact same
+    //   pointer-local-and-field pair are still recognised as the same
+    //   location and dedup below, same as before.
     private bool emitFieldPointerRefArgument(
         in ushort slot,
         Expression argument,
         ref StructPointerRefWriteBack[] writeBacks,
         Expression[] siblingReferenceArguments,
+        in bool callHasStructReceiver,
     ) {
+        import dmd.astenums: TY;
+
         auto dot = argument.isDotVarExp;
         auto deref = dot is null ? null : dot.e1.isPtrExp;
         auto field = dot is null ? null : dot.var.isVarDeclaration;
         if (deref is null || field is null)
+            return false;
+
+        // The implicit `this` receiver of a struct method call is a
+        // live-aliased channel to the whole struct's storage that never
+        // appears in `siblingReferenceArguments` (it isn't one of
+        // `call.arguments`), so it cannot be checked against below; decline
+        // rather than risk racing its own live aliasing or write-back.
+        if (callHasStructReceiver)
             return false;
 
         auto pointerVariable = deref.e1.isVarExp;
@@ -11775,24 +11792,33 @@ private struct Compiler {
             if (sibling is argument)
                 continue;
 
-            auto siblingDot = sibling.isDotVarExp;
-            if (siblingDot is null)
+            if (auto siblingDot = sibling.isDotVarExp) {
+                auto siblingDeref = siblingDot.e1.isPtrExp;
+                auto siblingField = siblingDot.var.isVarDeclaration;
+                VarDeclaration siblingPointerDeclaration;
+                if (siblingDeref !is null)
+                    if (auto siblingVariable = siblingDeref.e1.isVarExp)
+                        siblingPointerDeclaration =
+                            siblingVariable.var.isVarDeclaration;
+
+                const sameKey =
+                    siblingDeref !is null &&
+                    siblingField is field &&
+                    pointerDeclaration !is null &&
+                    siblingPointerDeclaration is pointerDeclaration;
+                if (!sameKey)
+                    return false;
                 continue;
+            }
 
-            auto siblingDeref = siblingDot.e1.isPtrExp;
-            auto siblingField = siblingDot.var.isVarDeclaration;
-            VarDeclaration siblingPointerDeclaration;
-            if (siblingDeref !is null)
-                if (auto siblingVariable = siblingDeref.e1.isVarExp)
-                    siblingPointerDeclaration =
-                        siblingVariable.var.isVarDeclaration;
-
-            const sameKey =
-                siblingDeref !is null &&
-                siblingField is field &&
-                pointerDeclaration !is null &&
-                siblingPointerDeclaration is pointerDeclaration;
-            if (!sameKey)
+            // A bare `ref` sibling naming a whole struct, or a struct
+            // reached through a pointer local (the shape
+            // `emitStructPointerRefArgument` copies in/out), could alias
+            // this field's storage through a binding this fast path cannot
+            // rule out; decline rather than assume it doesn't.
+            if (sibling.type !is null &&
+                (sibling.type.toBasetype.ty == TY.Tstruct ||
+                    structPointerDeclaration(sibling.type) !is null))
                 return false;
         }
 
