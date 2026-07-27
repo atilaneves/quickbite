@@ -245,7 +245,70 @@ unittest {
         results.length.should == 1;
         results[0].passed.should == false;
         results[0].message.canFind(
-            "is an archive-backed method",
+            "is an archive-backed function reached by address",
+        ).should == true;
+    }
+}
+
+// A function pointer to an archive-backed FREE function (`&theAnswer`, no
+// receiver at all) also reaches `compileFunctionBody` by address: a direct
+// call would go through `compileCall`'s native-leaf path and never reach
+// here, so any archive-backed function arriving here was registered by
+// address instead, regardless of whether it has a receiver. Confirms the
+// `compileFunctionBody` guard declines unconditionally, not just for the
+// receiver-bearing shapes above.
+@("runTests.archiveBackedFunctionPointerDeclinesRatherThanRunningStaleSource.Bytecode")
+@Tags(Bytecode.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.algorithm.searching: canFind;
+    import std.conv: text;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    with(immutable Sandbox()) {
+        const importPath = "imports";
+        enum depModule = "dep_archive_function_pointer";
+        const depPath = buildPath(importPath, depModule ~ ".d");
+        writeFile(depPath, text(
+            "module ", depModule, ";\n",
+            "int theAnswer() { return 42; }\n",
+        ));
+        const archivePath = inSandboxPath("lib" ~ depModule ~ ".a");
+        const build = execute([
+            "dmd",
+            "-lib",
+            "-fPIC",
+            "-of=" ~ archivePath,
+            inSandboxPath(depPath),
+        ]);
+        build.status.should == 0;
+
+        writeFile(depPath, text(
+            "module ", depModule, ";\n",
+            "int theAnswer() { return 0; }\n",
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            text(
+                "import ", depModule, ";\n",
+                "unittest {\n",
+                "    auto fp = &theAnswer;\n",
+                "    assert(fp() == 42);\n",
+                "}\n",
+            ),
+            [inSandboxPath(importPath)],
+        );
+        auto runner = new Bytecode(
+            [archivePath],
+            [inSandboxPath(importPath)],
+        );
+        const results = runner.runTests(moduleResult.module_);
+
+        results.length.should == 1;
+        results[0].passed.should == false;
+        results[0].message.canFind(
+            "is an archive-backed function reached by address",
         ).should == true;
     }
 }

@@ -218,30 +218,27 @@ private struct Compiler {
 
         auto function_ = _functions[index];
 
-        // A receiver-bearing archive-backed function reaches here without
-        // going through `compileCall`'s own guard (see there for the direct
-        // struct-method-call case, which must decline before ever trying a
-        // native call) whenever it is registered by address instead of
-        // called directly -- `&s.method` (`emitDelegateValue`), a function
-        // pointer, or virtual-dispatch table registration. Compiling the
-        // body here would run the archive module's stale rewritten source,
-        // exactly what this mechanism exists to never do; decline the same
-        // way regardless of entry point.
+        // A receiver-less archive-backed function's direct call always goes
+        // through `compileCall`'s native-leaf path and never reaches here;
+        // any archive-backed function that does reach `compileFunctionBody`
+        // was therefore registered by address instead -- `&s.method`
+        // (`emitDelegateValue`), `&freeFunction` (`functionPointer`), or
+        // virtual-dispatch table registration. Compiling the body here would
+        // run the archive module's stale rewritten source, exactly what
+        // this mechanism exists to never do; decline unconditionally,
+        // regardless of receiver kind or entry point.
         if (isArchiveBackedFunction(function_)) {
-            const guardLayout = parameterLayout(function_);
-            if (guardLayout.hasThis || guardLayout.hasClassThis) {
-                import std.conv: text;
+            import std.conv: text;
 
-                throw new Exception(text(
-                    "`",
-                    function_.ident is null
-                        ? text(function_.toPrettyChars)
-                        : function_.ident.toString,
-                    "` is an archive-backed method: routing a ",
-                    "receiver-bearing call through the native bridge or ",
-                    "its stale rewritten source is unsupported",
-                ));
-            }
+            throw new Exception(text(
+                "`",
+                function_.ident is null
+                    ? text(function_.toPrettyChars)
+                    : function_.ident.toString,
+                "` is an archive-backed function reached by address: ",
+                "routing it through the native bridge or its stale ",
+                "rewritten source is unsupported",
+            ));
         }
 
         _code = null;
