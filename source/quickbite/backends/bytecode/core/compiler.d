@@ -10441,6 +10441,18 @@ private struct Compiler {
                 "Missing bytecode parameter layout for call: ",
                 expressionChars(call),
             ));
+
+        // Every `ref` argument expression in this call, gathered once so
+        // `emitFieldPointerRefArgument` can tell whether it is the only
+        // struct/field-shaped `ref` argument reaching this call (see its own
+        // doc comment for why that matters for soundness).
+        Expression[] referenceArguments;
+        if (call.arguments !is null)
+            foreach (argumentIndex; 0 .. call.arguments.length)
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    referenceArguments ~=
+                        (*call.arguments)[argumentIndex];
+
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
@@ -10489,6 +10501,7 @@ private struct Compiler {
                         slot,
                         (*call.arguments)[argumentIndex],
                         structPointerRefWriteBacks,
+                        referenceArguments,
                     ))
                         continue;
                 emitCallArgument(
@@ -11712,16 +11725,76 @@ private struct Compiler {
     // same way `emitStructPointerRefArgument` does, or the second argument's
     // mutation silently overwrites the first's write-back address instead of
     // aliasing it.
+    //
+    // Two declines, both load-bearing:
+    //
+    // - `(*__withSym).field` inside `with (subject) { ... }` matches this
+    //   same `DotVarExp`-over-`PtrExp` shape, but `__withSym` is a synthetic
+    //   pointer bound to `&subject`'s *frame* storage, not VM-owned heap
+    //   memory: the copy-in/copy-out here would silently race the live
+    //   aliasing that `referenceOffset`/`structBaseOffsetOrNull` already give
+    //   that case via `_withDerefBases`. Decline so that path handles it.
+    //
+    // - Whether two pointer expressions denote the same storage in general
+    //   is undecidable here (`Holder* q = p;` makes `p` and `q` alias without
+    //   any syntactic clue, and a direct field argument like `holder.value`
+    //   aliases `carrier.value` whenever `carrier == &holder`). Rather than
+    //   attempt real alias analysis, only proceed when this is provably the
+    //   sole struct/field-shaped `ref` argument reaching this call: decline
+    //   whenever another `ref` argument is itself a struct field access
+    //   (`DotVarExp`) that is not provably this *same* (pointer declaration,
+    //   field) pair. Two occurrences of the exact same pointer-local-and-field
+    //   pair are still recognised as the same location and dedup below, same
+    //   as before.
     private bool emitFieldPointerRefArgument(
         in ushort slot,
         Expression argument,
         ref StructPointerRefWriteBack[] writeBacks,
+        Expression[] siblingReferenceArguments,
     ) {
         auto dot = argument.isDotVarExp;
         auto deref = dot is null ? null : dot.e1.isPtrExp;
         auto field = dot is null ? null : dot.var.isVarDeclaration;
         if (deref is null || field is null)
             return false;
+
+        auto pointerVariable = deref.e1.isVarExp;
+        auto pointerDeclaration =
+            pointerVariable is null ? null : pointerVariable.var.isVarDeclaration;
+
+        // A `with`-statement dereference base: decline unconditionally in
+        // favour of the live-aliasing `_withDerefBases` path.
+        if (pointerDeclaration !is null &&
+            pointerDeclaration in _withDerefBases)
+            return false;
+
+        // Decline unless every other `ref` argument sharing this call is
+        // either unrelated to struct/field storage, or provably the exact
+        // same (pointer declaration, field) pair as this one.
+        foreach (sibling; siblingReferenceArguments) {
+            if (sibling is argument)
+                continue;
+
+            auto siblingDot = sibling.isDotVarExp;
+            if (siblingDot is null)
+                continue;
+
+            auto siblingDeref = siblingDot.e1.isPtrExp;
+            auto siblingField = siblingDot.var.isVarDeclaration;
+            VarDeclaration siblingPointerDeclaration;
+            if (siblingDeref !is null)
+                if (auto siblingVariable = siblingDeref.e1.isVarExp)
+                    siblingPointerDeclaration =
+                        siblingVariable.var.isVarDeclaration;
+
+            const sameKey =
+                siblingDeref !is null &&
+                siblingField is field &&
+                pointerDeclaration !is null &&
+                siblingPointerDeclaration is pointerDeclaration;
+            if (!sameKey)
+                return false;
+        }
 
         const pointer = compileExpression(deref.e1);
         if (!pointer.isPointer)

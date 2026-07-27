@@ -2218,6 +2218,166 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `with (s) { ... }` lowers an unqualified field to `(*__withSym).field`,
+// the same `DotVarExp`-over-`PtrExp` shape `emitFieldPointerRefArgument`
+// matches, so it hijacked this case with a copy-in/copy-out that raced the
+// live aliasing the direct `s.value` argument already had to the same
+// storage: the copy's post-call write-back overwrote `s.value`'s live
+// update with its own stale pre-call snapshot, so only one of the two
+// increments stuck. `emitFieldPointerRefArgument` now declines a
+// `with`-statement dereference base so `referenceOffset`'s
+// `_withDerefBases` live-aliasing path handles it instead.
+// `Interpreter` fails this same fixture with its own, separate composition
+// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
+// above).
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Interpreter also produces 1 instead of 2 here, via its own " ~
+        "separate ref-argument composition path -- not characterized yet"),
+)) {
+    @("with.fieldRefArgumentAliasesLiveStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            void bumpBoth(ref int x, ref int y) {
+                x = x + 1;
+                y = y + 1;
+            }
+
+            unittest {
+                Holder s;
+                s.value = 0;
+                with (s) bumpBoth(s.value, value);
+                assert(s.value == 2);
+            }
+        });
+    }
+}
+
+// Sibling of the fixture above: a `with`-statement field `ref` argument to
+// a function that mutates then throws. The copy-in/copy-out write-back only
+// ran on normal return, so unwinding through the throw silently discarded
+// the mutation instead of leaving it visible in the caller's struct (which
+// the live-aliasing path leaves visible unconditionally, since the mutation
+// lands directly in the caller's frame storage during the call).
+static foreach (backend; Matrix!()) {
+    @("with.fieldRefArgumentWriteBackSurvivesUnwind." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            void bumpThenThrow(ref int x) {
+                x = x + 1;
+                throw new Exception("boom");
+            }
+
+            unittest {
+                Holder s;
+                s.value = 0;
+                with (s) {
+                    try {
+                        bumpThenThrow(value);
+                    } catch (Exception e) {
+                    }
+                }
+                assert(s.value == 1);
+            }
+        });
+    }
+}
+
+// Two value-equal but syntactically distinct pointers reaching the same
+// field (`Holder* q = p;`) cannot be proven aliased or distinct from their
+// spelling alone. `emitFieldPointerRefArgument`'s dedup key only unified two
+// arguments spelled through the literally same pointer expression, so this
+// silently computed 1 instead of 2 instead of recognising it could not
+// prove the two pointer-carried field arguments apart. It now declines
+// whenever another `ref` argument in the same call is a struct-field access
+// that is not provably the same (pointer declaration, field) pair.
+// `Interpreter` fails this same fixture with its own, separate composition
+// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
+// above).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: p.value"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "Interpreter also produces 1 instead of 2 here, via its own " ~
+        "separate ref-argument composition path -- not characterized yet"),
+)) {
+    @("refArgument.pointerCarriedFieldArgumentsThroughAliasedPointersDecline." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            void bumpBoth(ref int x, ref int y) {
+                x = x + 1;
+                y = y + 1;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* p = &holder;
+                Holder* q = p;
+                bumpBoth(p.value, q.value);
+                assert(holder.value == 2);
+            }
+        });
+    }
+}
+
+// A direct field argument and a pointer-carried field argument reaching the
+// same underlying storage (`carrier = &holder`): the direct argument is a
+// live alias to `holder`, so the pointer-carried argument's post-call
+// write-back silently clobbered it instead of composing a correct answer.
+// General aliasing analysis between an arbitrary runtime pointer and a
+// direct struct local is undecidable here, so `emitFieldPointerRefArgument`
+// now declines whenever another `ref` argument in the same call is any
+// other struct-field access.
+// `Interpreter` fails this same fixture with its own, separate composition
+// bug (unconfirmed/uncharacterized; out of scope for the bytecode-core fix
+// above).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported ref argument in bytecode core: carrier.value"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "Interpreter also produces 1 instead of 2 here, via its own " ~
+        "separate ref-argument composition path -- not characterized yet"),
+)) {
+    @("refArgument.directAndPointerCarriedFieldArgumentsOnSameStorageDecline." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            void bumpBoth(ref int x, ref int y) {
+                x = x + 1;
+                y = y + 1;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* carrier = &holder;
+                bumpBoth(holder.value, carrier.value);
+                assert(holder.value == 2);
+            }
+        });
+    }
+}
+
 // A cell-promoted local (address taken, so `scalarCells` -- not the frame slot
 // -- is authoritative for it) passed as a `ref` argument. The frame slot is
 // deliberately left stale by `writeBackLocalPointerTargets`, while the boxed
