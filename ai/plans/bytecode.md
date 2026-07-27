@@ -359,22 +359,11 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   failure into the smallest D-language fixture backed by `SystemLinker`, then
   follow the normal approval rule before adding or changing that test.
 
-Continue through the remaining `Because.unconfirmed` queue in this order,
-re-reading the matrices before each promotion because the source may have
-changed:
-
-1. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
-   `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
-   `registryLock`'s `new Mutex` reaches its `MonitorProxy` field. Support the
-   host-backed synchronisation primitive without treating single-threaded VM
-   execution as permission to elide its compiled-D initialisation semantics.
-
-This list is a starting order, not a substitute for repository discovery.
-After it is empty, search all backend matrices and characterization pins for
-remaining Bytecode exclusions. Preserve only exclusions that are genuine
-oracle characterizations or architectural non-goals with an explicit reason.
-An unsupported implementation is not, by itself, a permanent divergence from
-the compiled-D oracle.
+The `Because.unconfirmed` queue is now empty. Search all backend matrices and
+characterization pins for remaining Bytecode exclusions. Preserve only
+exclusions that are genuine oracle characterizations or architectural
+non-goals with an explicit reason. An unsupported implementation is not, by
+itself, a permanent divergence from the compiled-D oracle.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:

@@ -281,6 +281,13 @@ private struct Compiler {
         if (layout.hasClassThis) {
             _hasClassThis = true;
             _classThisOffset = layout.classThisOffset;
+            // A nested function (an IIFE guarding a `@trusted` block is the
+            // common druntime shape) that reads the enclosing class method's
+            // `this` receives it through the same captured-frame-offset
+            // mechanism as any other captured outer local, mirroring the
+            // struct-receiver case just above.
+            if (function_.vthis !is null)
+                _capturedOffsets[function_.vthis] = layout.classThisOffset;
         }
         if (function_.parameters !is null)
             foreach (parameterIndex; 0 .. function_.parameters.length) {
@@ -4937,6 +4944,17 @@ private struct Compiler {
             );
             return Operand(destination, ScalarType.void_);
         }
+
+        // A struct-typed field (`MonitorProxy m_proxy` in `Mutex`) lives
+        // inline in the class block rather than behind a separate pointer:
+        // its own address is the field's address, with no load to perform.
+        // Mark it as a further-dereferenceable pointer so a nested `.field`
+        // hop (`this.m_proxy.link`) resolves against it.
+        if (field.type.toBasetype.ty == TY.Tstruct)
+            return Operand(
+                classFieldAddress(field), ScalarType.ulong_, true,
+                ScalarType.void_,
+            );
 
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);

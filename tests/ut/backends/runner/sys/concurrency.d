@@ -21,7 +21,6 @@ enum thisTidSource = q{
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "CTFE cannot run std.concurrency's thisTid (no host threads)"),
     Omit!(Interpreter, Because.diverges, "see sibling pin below (matches oracle or raises structured Unsupported diagnostic)"),
-    Omit!(Bytecode, Because.unconfirmed),
 )) {
     @("concurrency.thisTid." ~ backend.stringof)
     @Tags(backend.stringof)
