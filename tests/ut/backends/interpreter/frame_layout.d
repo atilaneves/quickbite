@@ -4,9 +4,40 @@ module ut.backends.interpreter.frame_layout;
 import ut;
 import ut.backends.interpreter: parseFunction, parseNestedFunction;
 import quickbite.backends.interpreter.frame_layout:
-    FrameLayout, computeFrameLayout, cachedFrameLayout, capturedVariables;
+    FrameLayout, computeFrameLayout, cachedFrameLayout, capturedVariables,
+    isReferenceParameter;
 
 private:
+
+
+@("isReferenceParameter.templateInstantiatedRefSharedUsesCanonicalParameter")
+unittest {
+    auto function_ = parseFunction(
+        q{ void quickbiteSharedRef(ref shared(int) value) {} },
+        "quickbiteSharedRef",
+    );
+
+    auto parameter = (*function_.parameters)[0];
+    isReferenceParameter(function_, 0, parameter).should == true;
+}
+
+
+@("isReferenceParameter.capturedLocalIsNotAParameter")
+unittest {
+    auto nested = parseNestedFunction(
+        q{
+            void quickbiteCapturedNotParameter() {
+                int captured;
+                void nested() { captured++; }
+            }
+        },
+        "quickbiteCapturedNotParameter",
+        "nested",
+    );
+
+    auto captured = capturedVariables(nested)[0];
+    isReferenceParameter(nested, 0, captured).should == false;
+}
 
 
 @("computeFrameLayout.parametersPackedInOrderAlignedToTheirOwnType")

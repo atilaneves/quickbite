@@ -129,8 +129,15 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
         if (auto symbol = operand.isSymOffExp)
             return symOffTarget(symbol, resolveBase);
 
+        if (auto cast_ = operand.isCastExp)
+            if (auto address = castExpOperand(cast_).isAddrExp)
+                return placeOfLvalue(addrExpOperand(address), resolveBase, evalIndex);
+
         return placeOfLvalue(operand, resolveBase, evalIndex).deref;
     }
+
+    if (auto cast_ = expr.isCastExp)
+        return placeOfLvalue(castExpOperand(cast_), resolveBase, evalIndex);
 
     throw new Exception(
         "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
@@ -257,6 +264,18 @@ private imported!"dmd.expression".Expression ptrExpBase(
     imported!"dmd.expression".PtrExp ptr,
 ) @trusted {
     return ptr.e1;
+}
+
+private imported!"dmd.expression".Expression castExpOperand(
+    imported!"dmd.expression".CastExp cast_,
+) @trusted {
+    return cast_.e1;
+}
+
+private imported!"dmd.expression".Expression addrExpOperand(
+    imported!"dmd.expression".AddrExp address,
+) @trusted {
+    return address.e1;
 }
 
 

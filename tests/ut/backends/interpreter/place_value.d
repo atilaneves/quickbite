@@ -12,6 +12,7 @@ import quickbite.backends.interpreter.layout:
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar;
 import quickbite.backends.interpreter.object_table: ObjectTable;
+import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 import quickbite.backends.interpreter.runtime_value: Value;
 import dmd.dclass: ClassDeclaration;
 import dmd.mtype: Type;
@@ -68,7 +69,10 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    const readBack = readValue(root);
+    AggregateValue.isStruct(readBack).should == true;
+    AggregateValue.fieldAt(readBack, 0).should == Value(writtenX);
+    AggregateValue.fieldAt(readBack, 1).should == Value(writtenY);
 }
 
 
@@ -98,7 +102,13 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    const readBack = readValue(root);
+    AggregateValue.isStruct(readBack).should == true;
+    const nested = AggregateValue.fieldAt(readBack, 0);
+    AggregateValue.isStruct(nested).should == true;
+    AggregateValue.fieldAt(nested, 0).should == Value(writtenX);
+    AggregateValue.fieldAt(nested, 1).should == Value(writtenY);
+    AggregateValue.fieldAt(readBack, 1).should == Value(writtenZ);
 }
 
 
@@ -125,7 +135,13 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    const readBack = readValue(root);
+    AggregateValue.isStruct(readBack).should == true;
+    const elements = AggregateValue.fieldAt(readBack, 0);
+    AggregateValue.isArray(elements).should == true;
+    AggregateValue.elementAt(elements, 0).should == Value(first);
+    AggregateValue.elementAt(elements, 1).should == Value(second);
+    AggregateValue.elementAt(elements, 2).should == Value(third);
 }
 
 
@@ -198,7 +214,10 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    const readBack = readValue(root);
+    AggregateValue.isStruct(readBack).should == true;
+    AggregateValue.fieldAt(readBack, 0).should == Value.enumValue("Colour.blue", 2);
+    AggregateValue.fieldAt(readBack, 1).should == Value(writtenX);
 }
 
 
@@ -221,25 +240,20 @@ unittest {
     const offset = fieldByteOffset(yField);
     writeScalar(yField.type, block.bytes[offset .. offset + typeByteSize(yField.type)], Value(writtenY));
 
-    readValue(root).structFieldAt(1).asLong.should == writtenY;
+    AggregateValue.fieldAt(readValue(root), 1).asLong.should == writtenY;
 }
 
 
-// Unlike `readValue`, `writeValue` still refuses a class-typed place
-// outright -- writing one would mean storing a reference, and the only
-// legal reference for an object identity is the address `object_table.
-// ObjectTable` handed out for it, which this module has no access to (see
-// `writeValue`'s own header comment). `writeValue` never touches `place`'s
-// address before reaching this refusal, so a bare `Place(null, classType)`
-// is safe here, unlike the class-composing tests below, which need a real
-// allocated slot.
+// A class place stores only an object body address or null. A `void` value
+// carries neither, so it must refuse before touching this bare place.
 @("place_value.writeValue.classTypeThrows")
 unittest {
     auto classType = classTypeOf(q{ class C { int x; } }, "C");
     auto place = Place(null, classType);
 
     writeValue(place, Value.void_).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
+        "quickbite.backends.interpreter.place_value.writeValue: class place "
+        ~ "requires an object pointer or null",
     );
 }
 
@@ -291,7 +305,9 @@ unittest {
     *cast(void**) referenceSlot.address = bodyBlock.address;
     auto referencePlace = placeAt(referenceSlot, classType);
 
-    readValue(referencePlace, addressAsIdentity).should == written;
+    auto readBack = readValue(referencePlace, addressAsIdentity);
+    AggregateValue.classFieldAt(readBack, 0).should == Value(writtenX);
+    AggregateValue.classFieldAt(readBack, 1).should == Value(writtenY);
 }
 
 
@@ -385,7 +401,14 @@ unittest {
     *cast(void**) referenceSlot.address = bodyBlock.address;
     auto referencePlace = placeAt(referenceSlot, classType);
 
-    readValue(referencePlace, addressAsIdentity).should == written;
+    auto readBack = readValue(referencePlace, addressAsIdentity);
+    auto point = AggregateValue.classFieldAt(readBack, 0);
+    AggregateValue.fieldAt(point, 0).should == Value(writtenA);
+    AggregateValue.fieldAt(point, 1).should == Value(writtenB);
+    auto array = AggregateValue.classFieldAt(readBack, 1);
+    foreach (index, value; [first, second, third])
+        AggregateValue.elementAt(array, index).should == Value(value);
+    AggregateValue.classFieldAt(readBack, 2).should == Value.enumValue("Colour.green", 1);
 }
 
 
@@ -718,7 +741,11 @@ unittest {
 
     writeValue(place, written);
 
-    readValue(place).should == written;
+    auto readBack = readValue(place);
+    AggregateValue.elementCount(readBack).should == 3;
+    AggregateValue.elementAt(readBack, 0).should == Value(first);
+    AggregateValue.elementAt(readBack, 1).should == Value(second);
+    AggregateValue.elementAt(readBack, 2).should == Value(third);
 }
 
 
@@ -743,7 +770,7 @@ unittest {
     header.length.should == 0;
     (header.ptr is null).should == true;
 
-    readValue(place).should == Value.arrayValue([]);
+    AggregateValue.length(readValue(place)).should == 0;
 }
 
 
@@ -779,7 +806,14 @@ unittest {
 
     writeValue(place, written);
 
-    readValue(place).should == written;
+    auto readBack = readValue(place);
+    AggregateValue.elementCount(readBack).should == 2;
+    auto readFirst = AggregateValue.elementAt(readBack, 0);
+    AggregateValue.fieldAt(readFirst, 0).should == Value(firstX);
+    AggregateValue.fieldAt(readFirst, 1).should == Value(firstY);
+    auto readSecond = AggregateValue.elementAt(readBack, 1);
+    AggregateValue.fieldAt(readSecond, 0).should == Value(secondX);
+    AggregateValue.fieldAt(readSecond, 1).should == Value(secondY);
 }
 
 
@@ -801,13 +835,16 @@ unittest {
     auto written = Value.arrayValue([Value(9), Value(8)]);
     writeValue(place, written);
 
-    readValue(place).should == written;
+    auto readBack = readValue(place);
+    AggregateValue.length(readBack).should == 2;
+    AggregateValue.elementAt(readBack, 0).should == Value(9);
+    AggregateValue.elementAt(readBack, 1).should == Value(8);
 }
 
 
-// An element type `writeValue` cannot compose (a class element, here --
-// see `writeValue`'s own header comment for why class-typed places always
-// refuse) must refuse the WHOLE slice write, not silently leave part of
+// An element value `writeValue` cannot compose (a class-typed `void` value,
+// here -- a class place accepts only an object body address or null) must
+// refuse the WHOLE slice write, not silently leave part of
 // the array written -- `place`'s own header is the LAST thing
 // `writeSliceValue` writes, so a throw partway through the element loop
 // must leave `place` exactly as it was beforehand, still describing
@@ -825,11 +862,12 @@ unittest {
     auto original = Value.arrayValue([]);
     writeValue(place, original);
 
-    writeValue(place, Value.arrayValue([Value.null_])).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
+    writeValue(place, Value.arrayValue([Value.void_])).shouldThrowWithMessage(
+        "quickbite.backends.interpreter.place_value.writeValue: class place "
+        ~ "requires an object pointer or null",
     );
 
-    readValue(place).should == original;
+    AggregateValue.length(readValue(place)).should == 0;
 }
 
 
@@ -887,7 +925,17 @@ unittest {
     const attr = GC.getAttr(GC.addrOf(header.ptr));
     (attr & GC.BlkAttr.NO_SCAN).should == 0;
 
-    readValue(place).should == written;
+    const readBack = readValue(place);
+    AggregateValue.isArray(readBack).should == true;
+    AggregateValue.elementCount(readBack).should == 2;
+    foreach (rowIndex; 0 .. AggregateValue.elementCount(readBack)) {
+        const row = AggregateValue.elementAt(readBack, rowIndex);
+        AggregateValue.isArray(row).should == true;
+        AggregateValue.elementCount(row).should == written[rowIndex].length;
+        foreach (columnIndex; 0 .. AggregateValue.elementCount(row))
+            AggregateValue.elementAt(row, columnIndex).should ==
+                written[rowIndex][columnIndex];
+    }
 }
 
 
@@ -923,7 +971,11 @@ unittest {
 
     auto root = placeAt(headerBlock, sliceType);
 
-    readValue(root).should == Value.arrayValue([Value(first), Value(second), Value(third)]);
+    auto readBack = readValue(root);
+    AggregateValue.elementCount(readBack).should == 3;
+    AggregateValue.elementAt(readBack, 0).should == Value(first);
+    AggregateValue.elementAt(readBack, 1).should == Value(second);
+    AggregateValue.elementAt(readBack, 2).should == Value(third);
 }
 
 
@@ -964,7 +1016,16 @@ unittest {
     writeValue(root.index(0), firstPoint);
     writeValue(root.index(1), secondPoint);
 
-    readValue(root).should == Value.arrayValue([firstPoint, secondPoint]);
+    auto readBack = readValue(root);
+    readBack.isNativeAggregate.should == true;
+    AggregateValue.elementCount(readBack).should == 2;
+
+    auto readFirst = AggregateValue.elementAt(readBack, 0);
+    AggregateValue.fieldAt(readFirst, 0).should == Value(firstX);
+    AggregateValue.fieldAt(readFirst, 1).should == Value(firstY);
+    auto readSecond = AggregateValue.elementAt(readBack, 1);
+    AggregateValue.fieldAt(readSecond, 0).should == Value(secondX);
+    AggregateValue.fieldAt(readSecond, 1).should == Value(secondY);
 }
 
 
@@ -987,7 +1048,7 @@ unittest {
 
     writeValue(root.field(fields[0]), Value(writtenI));
 
-    readValue(root).structFieldAt(1).asLong.should == cast(short) writtenI;
+    AggregateValue.fieldAt(readValue(root), 1).asLong.should == cast(short) writtenI;
 }
 
 
@@ -1009,8 +1070,8 @@ unittest {
 
     writeValue(root.field(fields[1]), Value(writtenS));
 
-    readValue(root).structFieldAt(0).asLong.should == cast(int) cast(ushort) writtenS;
-    readValue(root).structFieldAt(0).asLong.shouldNotEqual(cast(int) writtenS);
+    AggregateValue.fieldAt(readValue(root), 0).asLong.should == cast(int) cast(ushort) writtenS;
+    AggregateValue.fieldAt(readValue(root), 0).asLong.shouldNotEqual(cast(int) writtenS);
 }
 
 
@@ -1033,7 +1094,10 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    const readBack = readValue(root);
+    AggregateValue.isStruct(readBack).should == true;
+    AggregateValue.fieldAt(readBack, 0).should == Value(writtenI);
+    AggregateValue.fieldAt(readBack, 1).should == Value(cast(short) writtenI);
 }
 
 
@@ -1056,7 +1120,9 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    auto readBack = readValue(root);
+    AggregateValue.fieldAt(readBack, 0).should == Value(cast(short) writtenI);
+    AggregateValue.fieldAt(readBack, 1).should == Value(writtenI);
 }
 
 
@@ -1089,7 +1155,10 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    auto readBack = readValue(root);
+    AggregateValue.fieldAt(readBack, 0).should == Value(writtenI);
+    AggregateValue.fieldAt(readBack, 1).should == Value(cast(short) writtenI);
+    AggregateValue.fieldAt(readBack, 2).should == Value(writtenTag);
 }
 
 
@@ -1118,7 +1187,11 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    auto readBack = readValue(root);
+    AggregateValue.fieldAt(readBack, 0).should == Value(writtenTag);
+    auto unionValue = AggregateValue.fieldAt(readBack, 1);
+    AggregateValue.fieldAt(unionValue, 0).should == Value(writtenI);
+    AggregateValue.fieldAt(unionValue, 1).should == Value(cast(short) writtenI);
 }
 
 
@@ -1222,7 +1295,7 @@ unittest {
 
 
 // A pointer place's own bytes ARE the host address (`ai/plans/value.md`
-// decision 15) -- writing a `Value.nativePointerValue` and reading it back
+// decision 15) -- writing a `Value.pointerValue` and reading it back
 // must round-trip that exact address, with no element recursion at all.
 @("place_value.writeValue.readValue.pointerRoundTripsHostAddress")
 unittest {
@@ -1231,7 +1304,7 @@ unittest {
     auto root = placeAt(block, pointerType);
 
     auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-    auto written = Value.nativePointerValue(pointee.address);
+    auto written = Value.pointerValue(pointee.address);
 
     writeValue(root, written);
 
@@ -1241,7 +1314,7 @@ unittest {
 
 // A stored `null` address reads back as `Value.null_` -- the same value
 // `impl.d` produces for a `null` pointer literal (`isNullExp`'s non-array
-// arm) -- not an invented `nativePointerValue(null)` shape.
+// arm) -- not an invented `pointerValue(null)` shape.
 @("place_value.writeValue.readValue.pointerRoundTripsNull")
 unittest {
     auto pointerType = Type.tint32.pointerTo;
@@ -1276,11 +1349,13 @@ unittest {
     writtenX = writtenX * 4 + 1;
 
     auto written = Value.structValue(
-        "PointerHolder", [Value.nativePointerValue(pointee.address), Value(writtenX)]);
+        "PointerHolder", [Value.pointerValue(pointee.address), Value(writtenX)]);
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    auto readBack = readValue(root);
+    AggregateValue.fieldAt(readBack, 0).should == Value.pointerValue(pointee.address);
+    AggregateValue.fieldAt(readBack, 1).should == Value(writtenX);
 
     const attr = GC.getAttr(native.block.address);
     (attr & GC.BlkAttr.NO_SCAN).should == 0;
@@ -1300,39 +1375,31 @@ unittest {
     auto second = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
 
     auto written = Value.arrayValue([
-        Value.nativePointerValue(first.address),
-        Value.nativePointerValue(second.address),
+        Value.pointerValue(first.address),
+        Value.pointerValue(second.address),
     ]);
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    auto readBack = readValue(root);
+    AggregateValue.elementAt(readBack, 0).should == Value.pointerValue(first.address);
+    AggregateValue.elementAt(readBack, 1).should == Value.pointerValue(second.address);
 }
 
 
-// Unlike a native pointer or `Value.null_`, a boxed pointer carrier with no
-// host address of its own (here, `Value.localPointerValue`, the
-// allocation-id carrier) has nothing `writeValue` can store -- it must
-// refuse the write, value-dependently, and leave `place`'s existing
-// address untouched rather than fabricate one.
-@("place_value.writeValue.pointerWithBoxedNonHostAddressValueRefusesAndLeavesDestinationUnchanged")
+// Pointer places accept exactly the sole data-pointer carrier: a host address.
+// The stored bytes must preserve that address without an identity side table.
+@("place_value.writeValue.pointerHostAddressRoundTripsWithoutIdentityCarrier")
 unittest {
     auto pointerType = Type.tint32.pointerTo;
     auto block = NativeBlock.allocate(typeByteSize(pointerType), NativeBlock.Scan.conservative);
     auto root = placeAt(block, pointerType);
 
     auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-    auto original = Value.nativePointerValue(pointee.address);
-    writeValue(root, original);
+    auto pointer = Value.pointerValue(pointee.address);
+    writeValue(root, pointer);
 
-    writeValue(root, Value.localPointerValue(7)).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.writeValue: pointer "
-        ~ "place requires a Value holding a host address (a native pointer "
-        ~ "or null), not a boxed pointer carrier with no host address to "
-        ~ "store",
-    );
-
-    readValue(root).should == original;
+    readValue(root).should == pointer;
 }
 
 
@@ -1353,10 +1420,10 @@ unittest {
     writtenPointee = writtenPointee * 3 + 2;
     writeScalar(pointerType.nextOf, pointee.bytes, Value(writtenPointee));
 
-    writeValue(root, Value.nativePointerValue(pointee.address));
+    writeValue(root, Value.pointerValue(pointee.address));
 
     auto readBack = readValue(root);
-    auto pointeePlace = Place(readBack.asNativePointer, pointerType.nextOf);
+    auto pointeePlace = Place(readBack.pointerAddress, pointerType.nextOf);
 
     readValue(pointeePlace).asLong.should == writtenPointee;
 }
@@ -1410,7 +1477,10 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    const readBack = readValue(root);
+    AggregateValue.isStruct(readBack).should == true;
+    AggregateValue.fieldAt(readBack, 0).should == Value('x');
+    AggregateValue.fieldAt(readBack, 1).should == Value(writtenR);
 }
 
 
@@ -1434,7 +1504,9 @@ unittest {
 
     writeValue(root, written);
 
-    readValue(root).should == written;
+    auto readBack = readValue(root);
+    AggregateValue.elementAt(readBack, 0).should == Value(first);
+    AggregateValue.elementAt(readBack, 1).should == Value(second);
 }
 
 
@@ -1485,38 +1557,35 @@ unittest {
 
 
 // `enum E : real` and `enum E : double` are legal D, and `writeValue` can
-// write either (their base types are scalars this module knows). `readValue`
-// cannot bring them back: `Value.enumValue` carries `long` bits. A shape
-// that composes in one direction only is not composable, so all three of
-// the predicate and the two directions decline it together.
-@("place_value.isPlaceComposable.falseForRealBasedEnum")
+// Floating-base enums use their underlying floating scalar as the execution
+// carrier. Typed native storage retains the enum type, so reads and writes
+// still preserve the complete guest representation without forcing the
+// integral-only `Value.enumValue` tag.
+@("place_value.isPlaceComposable.trueForRealBasedEnum")
 unittest {
     auto enumType = enumTypeOf(q{ enum E: real { a = 1.0L } }, "E");
-    isPlaceComposable(enumType).should == false;
+    isPlaceComposable(enumType).should == true;
 }
 
 
-@("place_value.isPlaceComposable.falseForDoubleBasedEnum")
+@("place_value.isPlaceComposable.trueForDoubleBasedEnum")
 unittest {
     auto enumType = enumTypeOf(q{ enum E: double { a = 1.0 } }, "E");
-    isPlaceComposable(enumType).should == false;
+    isPlaceComposable(enumType).should == true;
 }
 
 
-@("place_value.readValue.declinesRealBasedEnum")
+@("place_value.readValue.realBasedEnumReturnsUnderlyingScalar")
 unittest {
     auto enumType = enumTypeOf(q{ enum E: real { a = 1.0L } }, "E");
     auto block = NativeBlock.allocate(typeByteSize(enumType), NativeBlock.Scan.no);
     auto root = placeAt(block, enumType);
 
-    readValue(root).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.readValue: enum with a "
-        ~ "floating base type has no Value.enumValue representation",
-    );
+    readValue(root).should == Value(0.0L);
 }
 
 
-@("place_value.writeValue.declinesDoubleBasedEnum")
+@("place_value.writeValue.readValue.doubleBasedEnumRoundTripsUnderlyingScalar")
 unittest {
     auto enumType = enumTypeOf(q{ enum E: double { a = 1.0 } }, "E");
     auto block = NativeBlock.allocate(typeByteSize(enumType), NativeBlock.Scan.no);
@@ -1525,23 +1594,20 @@ unittest {
     double written = 0.5;
     written = written + 0.5;
 
-    writeValue(root, Value(written)).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.writeValue: enum with a "
-        ~ "floating base type has no Value.enumValue representation",
-    );
+    writeValue(root, Value(written));
+
+    readValue(root).should == Value(written);
 }
 
 
-// A struct whose enum field has a floating base type declines as a whole,
-// the same way one non-composable field already refuses a whole struct --
-// so `impl.d`'s mirror never reaches the field at all.
-@("place_value.isPlaceComposable.falseForStructWithRealBasedEnumField")
+// Floating-base enum leaves also compose when nested in a struct.
+@("place_value.isPlaceComposable.trueForStructWithRealBasedEnumField")
 unittest {
     auto type = structTypeOf(q{
         enum E: real { a = 1.0L }
         struct S { int tag; E e; }
     }, "S");
-    isPlaceComposable(type).should == false;
+    isPlaceComposable(type).should == true;
 }
 
 
@@ -1706,7 +1772,7 @@ unittest {
 
 
 // No capability, no class: a caller with no identity namespace of its own
-// gets a decline rather than a `Value` whose identity nothing can resolve.
+// receives the native body address, which is the authoritative identity.
 @("place_value.readValue.declinesClassWithoutAnIdentityCapability")
 unittest {
     auto classType = classTypeOf(q{ class C { int x; } }, "C");
@@ -1717,10 +1783,7 @@ unittest {
     *cast(void**) referenceSlot.address = bodyBlock.address;
     auto referencePlace = placeAt(referenceSlot, classType);
 
-    readValue(referencePlace).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.readValue: a class place "
-        ~ "needs an identityOfObjectBody capability to name the object it reads",
-    );
+    readValue(referencePlace).should == Value.pointerValue(bodyBlock.address);
 }
 
 
@@ -1737,5 +1800,5 @@ unittest {
 
     writeValue(root, Value.null_);
 
-    readValue(root).should == Value.arrayValue([]);
+    AggregateValue.length(readValue(root)).should == 0;
 }

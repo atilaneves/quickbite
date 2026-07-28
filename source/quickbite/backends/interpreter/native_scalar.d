@@ -23,12 +23,12 @@ private:
 // requires `real`; excluding it keeps this codec's claims honest rather
 // than silently wrong on a host whose padding differs.
 //
-// `ffi_marshal.d`'s `marshalArgument`/`unmarshalValue` route their
+// `native_call_adapter.d`'s `marshalArgument`/`unmarshalValue` route their
 // exact-size scalar arms through `writeScalar`/`readScalar` too, so this is
 // the interpreter's single scalar<->bytes authority across both the
 // native-layout container call site above and the FFI marshaller: the
 // interpreter must not grow a second set of D layout rules. One case stays
-// on `ffi_marshal.d`'s own byte splat: a native
+// on `native_call_adapter.d`'s own byte splat: a native
 // closure/callback result buffer for a narrow scalar return type is widened
 // by libffi to its `ffi_arg` width and must carry a sign/zero-extended copy
 // of the value across the WHOLE widened buffer for ABI correctness, which
@@ -168,7 +168,7 @@ private void writeScalarBits(
 
 
 // The integer bits behind an integral/`bool`/character `Value`, widened to
-// `long` -- agrees with `ffi_marshal.d`'s own local `scalarBits` helper
+// `long` -- agrees with `native_call_adapter.d`'s own local `scalarBits` helper
 // (still used there for its one remaining unconsolidated case, the widened
 // closure-result buffer -- see this module's header comment) for every
 // input both can receive: a character value's bits are its code point

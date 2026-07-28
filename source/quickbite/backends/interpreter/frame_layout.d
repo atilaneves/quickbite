@@ -75,7 +75,7 @@ public struct FrameLayout {
 // slot used.
 public FrameLayout computeFrameLayout(
     imported!"dmd.func".FuncDeclaration function_,
-) @safe {
+) @trusted {
     import quickbite.backends.interpreter.layout: typeByteSize, typeAlignment, typeIsSized, declaredType;
     import dmd.declaration: VarDeclaration;
 
@@ -96,8 +96,8 @@ public FrameLayout computeFrameLayout(
             maxAlignment = alignment;
     }
 
-    foreach (parameter; activationParameters(function_)) {
-        if (parameterIsReference(parameter)) {
+    foreach (index, parameter; activationParameters(function_)) {
+        if (isReferenceParameter(function_, index, parameter)) {
             place(
                 parameter,
                 (void*).sizeof,
@@ -239,8 +239,31 @@ private imported!"dmd.declaration".VarDeclaration[] activationParameters(
 // `VarDeclaration.isReference` (`(storage_class & (STC.ref_ | STC.out_))
 // != 0`), already `@safe` in DMD itself, so no `@trusted` boundary is
 // needed here.
-private bool parameterIsReference(imported!"dmd.declaration".VarDeclaration parameter) @safe {
-    return parameter.isReference;
+public bool isReferenceParameter(
+    imported!"dmd.func".FuncDeclaration function_,
+    in size_t index,
+    imported!"dmd.declaration".VarDeclaration parameter,
+) @trusted {
+    import dmd.astenums: STC;
+
+    if ((parameter.storage_class & STC.parameter) == STC.none)
+        return false;
+    if (parameter.isReference)
+        return true;
+    if (!parameter.type.isShared)
+        return false;
+
+    auto functionType = function_.type is null
+        ? null
+        : function_.type.toBasetype.isTypeFunction;
+    auto canonical = functionType is null
+        ? null
+        : functionType.parameterList.parameters;
+    if (canonical is null || index >= canonical.length)
+        return false;
+
+    enum refLike = STC.ref_ | STC.out_ | STC.auto_;
+    return ((*canonical)[index].storageClass & refLike) != STC.none;
 }
 
 

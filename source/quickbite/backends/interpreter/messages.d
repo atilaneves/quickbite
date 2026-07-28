@@ -296,7 +296,41 @@ public string equalityOperandMessage(
     if (value.isStringDisplayArray)
         return value.dText;
 
+    if (value.isNativeAggregate) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.frontend.dmd.types: isCharacterArrayType;
+
+        if (AggregateValue.isArray(value) &&
+            isCharacterArrayType(expression.type)) {
+            string characters;
+            foreach (index; 0 .. AggregateValue.elementCount(value))
+                characters ~= AggregateValue.elementAt(value, index).asUtf8Character;
+            return `"` ~ characters ~ `"`;
+        }
+
+        if (AggregateValue.isArray(value))
+            return nativeArrayText(value);
+    }
+
     return text(value);
+}
+
+
+private string nativeArrayText(
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+) {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+    string result = "[";
+    foreach (index; 0 .. AggregateValue.elementCount(value)) {
+        if (index)
+            result ~= ", ";
+        const element = AggregateValue.elementAt(value, index);
+        result ~= element.isNativeAggregate && AggregateValue.isArray(element)
+            ? nativeArrayText(element)
+            : element.dText;
+    }
+    return result ~ "]";
 }
 
 public string assertMessage(
@@ -309,13 +343,27 @@ public string assertMessage(
         return literal.peekString.idup;
 
     if (expression.isVarExp !is null)
-        return eval(expression).asCharArrayString;
+        return charArrayString(eval(expression));
 
     if (auto cast_ = expression.isCastExp)
         if (cast_.e1.isVarExp !is null)
-            return eval(expression).asCharArrayString;
+            return charArrayString(eval(expression));
 
     assert(0);
+}
+
+private string charArrayString(
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+) {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+    if (!value.isNativeAggregate)
+        return value.asCharArrayString;
+
+    char[] result;
+    foreach (index; 0 .. AggregateValue.elementCount(value))
+        result ~= AggregateValue.elementAt(value, index).asUtf8Character;
+    return result.idup;
 }
 
 public string dmdAssertFailBoolMessage(

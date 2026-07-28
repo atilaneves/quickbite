@@ -1,4 +1,4 @@
-module quickbite.backends.interpreter.ffi_marshal;
+module quickbite.backends.interpreter.native_call_adapter;
 
 // The interpreter's materialize/reify (ffi.md §5): the boxed Value <-> ABI byte
 // conversion the FFI core injects through NativeMarshaller. Track B owns this
@@ -65,6 +65,7 @@ public struct InterpreterInboundTrampolineSession {
         ubyte[] resultBuffer,
     ) {
         import dmd.astenums: TY;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import dmd.mtype: Type;
         import quickbite.backends.interpreter.layout: typeByteSize;
 
@@ -72,10 +73,17 @@ public struct InterpreterInboundTrampolineSession {
         Value[] callbackArguments;
         foreach (index, parameterType; parameterTypes) {
             const argumentSize = typeByteSize(parameterType);
-            callbackArguments ~= unmarshalValue(
-                parameterType,
-                (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
-            );
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.place_value:
+                isPlaceComposable, readValue;
+
+            callbackArguments ~= isPlaceComposable(parameterType) &&
+                    parameterType.toBasetype.isTypeClass is null
+                ? readValue(Place(argumentBuffers[index], parameterType))
+                : unmarshalValue(
+                    parameterType,
+                    (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
+                );
         }
         const callbackResult = _invokeDelegate(
             _callbacks[callbackId], callbackArguments,
@@ -85,18 +93,29 @@ public struct InterpreterInboundTrampolineSession {
 
         const(char)*[] keepAlive;
         ubyte[][] keepAliveBuffers;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            valueMatchesPlace, writeValue;
+        if (
+            resultBuffer.length == typeByteSize(returnType) &&
+            valueMatchesPlace(returnType, callbackResult)
+        ) {
+            writeValue(Place(resultBuffer.ptr, returnType), callbackResult);
+            return;
+        }
         marshalArgument(resultBuffer, returnType, callbackResult, false,
             keepAlive, keepAliveBuffers);
     }
 }
 
-// A native write through a pointer into interpreter-managed array memory
-// (e.g. posix read filling `buf.ptr + offset`): the pointed-at elements as
-// they stand after the call, for the walker to write back through the
-// pointer value.
-public struct PointerElementsWriteback {
-    public imported!"quickbite.backends.interpreter.runtime_value".Value pointer;
-    public imported!"quickbite.backends.interpreter.runtime_value".Value[] elements;
+// A typed, rooted address crossing the interpreter/native-call boundary.
+// `owner` keeps interpreter-owned storage alive; `address` is the ABI operand
+// itself and never denotes a recursively boxed aggregate snapshot.
+public struct NativeOperand {
+    public imported!"dmd.mtype".Type type;
+    public void* address;
+    public imported!"quickbite.backends.interpreter.native_block".NativeBlock owner;
+    public imported!"quickbite.backends.interpreter.native_block".NativeBlock retained;
 }
 
 public bool tryCallNative(
@@ -109,7 +128,6 @@ public bool tryCallNative(
     InterpreterInboundTrampolineSession* durableSession,
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
     out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
-    out PointerElementsWriteback[] pointerWritebacks,
 ) {
     import quickbite.ffi: callNative;
 
@@ -124,7 +142,6 @@ public bool tryCallNative(
 
     result = marshaller.result;
     argumentWritebacks = marshaller.writebacks;
-    pointerWritebacks = marshaller.pointerWritebacks;
     return true;
 }
 
@@ -143,6 +160,26 @@ public bool tryAssignNativeRefReturn(
         marshaller,
         argumentTypes,
         addressOfLocalArguments,
+    );
+}
+
+public bool tryNativeRefReturnAddress(
+    imported!"dmd.func".FuncDeclaration function_,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+    out void* resultAddress,
+) {
+    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.ffi: nativeRefReturnAddress;
+
+    auto marshaller = new InterpreterNativeMarshaller(arguments, Value.void_);
+    return nativeRefReturnAddress(
+        function_,
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+        resultAddress,
     );
 }
 
@@ -263,7 +300,7 @@ public bool tryCallNativeDelegate(
 }
 
 // A member call on a native class reference (ffi.md §34.12). The receiver is an
-// opaque native handle (NativePointer); virtual dispatch happens in the core via
+// opaque native handle (Pointer); virtual dispatch happens in the core via
 // the object's vtable. The object is mutated in place through the shared pointer,
 // so there is no receiver writeback.
 public bool tryCallNativeClassMember(
@@ -278,7 +315,10 @@ public bool tryCallNativeClassMember(
 ) {
     import quickbite.ffi: callNativeClassMember;
 
-    if (receiverType is null || !receiver.isNativePointer)
+    if (
+        receiverType is null ||
+        !receiver.isPointer && !receiver.isNativeAggregate
+    )
         return false;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
@@ -305,11 +345,20 @@ private bool mutatesReceiver(
     return type !is null && type.isMutable;
 }
 
+private bool isNativeAggregateType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    const base = type.toBasetype;
+    return base.isTypeStruct !is null ||
+        base.isTypeSArray !is null ||
+        base.isTypeDArray !is null;
+}
+
 private final class InterpreterNativeMarshaller: NativeMarshaller {
     import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.mtype: Type;
 
-    private const(Value)[] _arguments;
+    private Value[] _arguments;
     // The current value behind each `&local` argument (Value.void_ elsewhere),
     // marshalled into the out-parameter cell before the call so in-out callees
     // read the caller's value rather than zeroes (ffi.md §35.6).
@@ -317,6 +366,8 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     private Value _receiver;
     private Value _refResultValue;
     private Value _result;
+    private NativeOperand[] _argumentOperands;
+    private NativeOperand _resultOperand;
     private Value[] _writebacks;
     // The receiver's ABI buffer, retained so the (possibly mutated) bytes can
     // be reified back into a Value after the call (ffi.md §34.9). The buffer is
@@ -333,15 +384,6 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         size_t length;
     }
     private SliceWriteback[] _sliceWritebacks;
-    // Native buffers marshalled for pointer-into-array arguments, retained so
-    // native writes through them (e.g. posix read filling a buffer) are
-    // reified back through the pointer value after the call.
-    private static struct PointerBufferWriteback {
-        Type elementType;
-        Value pointer;
-        ubyte[] bytes;
-    }
-    private PointerBufferWriteback[] _pointerWritebacks;
     // Runs an interpreted delegate passed into native code, supplied by the
     // Walker so the reverse bridge (ffi.md §34.16) can re-enter the interpreter.
     private DelegateInvoker _invokeDelegate;
@@ -353,19 +395,38 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         DelegateInvoker invokeDelegate = null,
         InterpreterInboundTrampolineSession* durableSession = null,
     ) {
-        _arguments = arguments;
+        _arguments = arguments.dup;
         _outParameterInputs = outParameterInputs;
         _invokeDelegate = invokeDelegate;
         _durableSession = durableSession;
     }
 
     public this(in Value[] arguments, in Value receiver) {
-        _arguments = arguments;
+        _arguments = arguments.dup;
         _receiver = receiver;
         _refResultValue = receiver;
     }
 
-    public Value result() const {
+    public Value result() {
+        if (_resultOperand.address !is null) {
+            if (isNativeAggregateType(_resultOperand.type)) {
+                import quickbite.backends.interpreter.native_aggregate:
+                    NativeAggregate;
+
+                return Value.nativeAggregateValue(NativeAggregate(
+                    _resultOperand.type,
+                    _resultOperand.owner,
+                ));
+            }
+
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.place_value: readValue;
+
+            return readValue(Place(
+                _resultOperand.address,
+                _resultOperand.type,
+            ));
+        }
         return _result;
     }
 
@@ -379,7 +440,14 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     }
 
     public Value receiverWriteback() {
-        return unmarshalValue(_receiverType, _receiverBuffer);
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            isPlaceComposable, readValue;
+
+        return isPlaceComposable(_receiverType) &&
+                _receiverType.toBasetype.isTypeClass is null
+            ? readValue(Place(_receiverBuffer.ptr, _receiverType))
+            : unmarshalValue(_receiverType, _receiverBuffer);
     }
 
     public override bool canRepresent(Type type, in Direction direction) {
@@ -393,10 +461,9 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         // An out cell is filled from and reified back into raw native bytes,
         // never boxed as a by-value union (ffi.md §35.10). A union whose
         // members are all fixed-size scalars (or scalar static arrays) has its
-        // overlapped bytes round-trip verbatim through marshalArgument's
-        // declaration-order field walk and unmarshalStruct's field-by-field
-        // snapshot, so accept it here even though canMarshalToNative refuses a
-        // by-value union — an interpreter-boxed union cannot reproduce
+        // overlapped bytes round-trip as a complete native span, so accept it
+        // here even though canMarshalToNative refuses a by-value union — an
+        // interpreter-boxed union cannot reproduce
         // overlapped bytes from per-member values (ffi.md §35.7), but the out
         // cell never marshals from one. Everything else keeps the strict
         // both-directions check.
@@ -404,32 +471,6 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
             return true;
         return canMarshalToNative(pointedToType) &&
             canReifyFromNative(pointedToType);
-    }
-
-    public PointerElementsWriteback[] pointerWritebacks() {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_array: NativeArray;
-
-        // Routed through `NativeArray` rather than a hand-rolled
-        // `index * elementSize` walk, mirroring `unmarshalSlice`'s default
-        // arm. `writeback.bytes` is this module's own previously-marshalled
-        // buffer (see `marshalPointerElements`), so `NativeArray.borrow`'s
-        // wrap-without-copy is exactly the old direct sub-slice.
-        PointerElementsWriteback[] result;
-        foreach (writeback; _pointerWritebacks) {
-            const elementSize = typeByteSize(writeback.elementType);
-            const length = writeback.bytes.length / elementSize;
-            auto na = NativeArray.borrow(
-                writeback.elementType,
-                cast(void*) writeback.bytes.ptr,
-                length,
-            );
-            Value[] elements;
-            foreach (index; 0 .. length)
-                elements ~= unmarshalValue(writeback.elementType, na.element(index));
-            result ~= PointerElementsWriteback(writeback.pointer, elements);
-        }
-        return result;
     }
 
     public override void fillArgument(
@@ -441,39 +482,14 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ref ubyte[][] keepAliveBuffers,
     ) {
         import dmd.astenums: TY;
-
-        // A non-char pointer into interpreter-managed array memory (e.g.
-        // posix read's `void*` receiving `buf.ptr + n`): marshal the
-        // pointed-at elements into a native buffer and track it, so bytes the
-        // callee writes reify back through the pointer value after the call.
-        if (
-            type.ty == TY.Tpointer &&
-            type.nextOf.toBasetype.ty != TY.Tchar &&
-            _arguments[index].isPointer &&
-            !_arguments[index].isNativePointer &&
-            !_arguments[index].isLocalPointer
-        ) {
-            auto elementType = pointerElementType(type);
-            auto bytes = marshalPointerElements(
-                elementType,
-                _arguments[index],
-            );
-            keepAliveBuffers ~= bytes;
-            fillPointerCell(buffer, bytes);
-            _pointerWritebacks ~= PointerBufferWriteback(
-                elementType,
-                _arguments[index],
-                bytes,
-            );
-            return;
-        }
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
         // A mutable scalar slice is marshalled through its own element buffer
         // and tracked for writeback; everything else (and immutable/nested
         // slices) marshals copy-only (ffi.md §34.10).
         if (
             isMutableScalarSlice(type) &&
-            _arguments[index].arrayNativeAddress is null
+            AggregateValue.nativeArrayAddress(_arguments[index]) is null
         ) {
             auto bytes = marshalSliceArgument(
                 buffer,
@@ -501,7 +517,82 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     }
 
     public override const(void)* argumentAddress(in size_t index, Type type) {
-        return null;
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.layout:
+            typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            valueMatchesPlace, writeValue;
+
+        if (
+            type.toBasetype.ty == TY.Tpointer &&
+            type.toBasetype.nextOf.toBasetype.ty == TY.Tchar &&
+            AggregateValue.isArray(_arguments[index])
+        ) {
+            auto chars = NativeBlock.allocate(
+                AggregateValue.length(_arguments[index]) + 1,
+                NativeBlock.Scan.no,
+            );
+            foreach (elementIndex; 0 .. AggregateValue.length(_arguments[index]))
+                chars.bytes[elementIndex] = cast(ubyte) AggregateValue.elementAt(
+                    _arguments[index],
+                    elementIndex,
+                ).asLong;
+            auto slot = NativeBlock.allocate(
+                (void*).sizeof,
+                NativeBlock.Scan.conservative,
+            );
+            writeValue(
+                Place(slot.address, type),
+                Value.pointerValue(chars.address),
+            );
+            if (_argumentOperands.length < _arguments.length)
+                _argumentOperands.length = _arguments.length;
+            _argumentOperands[index] = NativeOperand(
+                type,
+                slot.address,
+                slot,
+                chars,
+            );
+            pinnedNativeBlocks ~= chars;
+            return _argumentOperands[index].address;
+        }
+
+        if (
+            type.toBasetype.ty == TY.Tarray &&
+            !isMutableScalarSlice(type) &&
+            !_arguments[index].isNativeAggregate &&
+            AggregateValue.isArray(_arguments[index])
+        ) {
+            Value[] elements;
+            foreach (elementIndex; 0 .. AggregateValue.length(_arguments[index]))
+                elements ~= AggregateValue.elementAt(
+                    _arguments[index],
+                    elementIndex,
+                );
+            _arguments[index] = AggregateValue.reconstructArray(type, elements);
+        }
+
+        if (!valueMatchesPlace(type, _arguments[index]))
+            return null;
+
+        auto owner = NativeBlock.allocate(
+            typeByteSize(type),
+            typeHasPointers(type)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
+        writeValue(Place(owner.address, type), _arguments[index]);
+        if (_argumentOperands.length < _arguments.length)
+            _argumentOperands.length = _arguments.length;
+        _argumentOperands[index] = NativeOperand(
+            type,
+            owner.address,
+            owner,
+        );
+        return _argumentOperands[index].address;
     }
 
     public override void fillReceiver(
@@ -513,6 +604,13 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     ) {
         _receiverBuffer = buffer;
         _receiverType = type;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            valueMatchesPlace, writeValue;
+        if (valueMatchesPlace(type, _receiver)) {
+            writeValue(Place(buffer.ptr, type), _receiver);
+            return;
+        }
         marshalArgument(
             buffer,
             type,
@@ -528,7 +626,24 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     }
 
     public override void* resultAddress(Type type) {
-        return null;
+        import quickbite.backends.interpreter.place_value:
+            isPlaceComposable;
+
+        if (!isPlaceComposable(type) || type.toBasetype.isTypeClass !is null)
+            return null;
+
+        import quickbite.backends.interpreter.layout:
+            typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+
+        auto owner = NativeBlock.allocate(
+            typeByteSize(type),
+            typeHasPointers(type)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
+        _resultOperand = NativeOperand(type, owner.address, owner);
+        return _resultOperand.address;
     }
 
     public override void writeRefResult(
@@ -539,6 +654,14 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         ref ubyte[][] keepAliveBuffers,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            valueMatchesPlace, writeValue;
+
+        if (valueMatchesPlace(type, _refResultValue)) {
+            writeValue(Place(address, type), _refResultValue);
+            return;
+        }
 
         marshalArgument(
             mutableNativeBytes(address, typeByteSize(type)),
@@ -553,7 +676,13 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     public override const(void)* receiverObjectPointer() {
         // The class receiver is held as an opaque native handle; its object
         // pointer is passed as hidden `this` and read for vtable dispatch.
-        return cast(const(void)*) _receiver.asNativePointer;
+        if (_receiver.isNativeAggregate) {
+            import quickbite.backends.interpreter.aggregate_value:
+                AggregateValue;
+
+            return AggregateValue.nativeClassBodyAddress(_receiver);
+        }
+        return cast(const(void)*) _receiver.pointerAddress;
     }
 
     public override void invokeClosure(
@@ -574,10 +703,17 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         Value[] callbackArguments;
         foreach (index, parameterType; parameterTypes) {
             const argumentSize = typeByteSize(parameterType);
-            callbackArguments ~= unmarshalValue(
-                parameterType,
-                (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
-            );
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.place_value:
+                isPlaceComposable, readValue;
+
+            callbackArguments ~= isPlaceComposable(parameterType) &&
+                    parameterType.toBasetype.isTypeClass is null
+                ? readValue(Place(argumentBuffers[index], parameterType))
+                : unmarshalValue(
+                    parameterType,
+                    (cast(const(ubyte)*) argumentBuffers[index])[0 .. argumentSize],
+                );
         }
 
         const callbackResult =
@@ -588,6 +724,16 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
 
         const(char)*[] keepAlive;
         ubyte[][] keepAliveBuffers;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            valueMatchesPlace, writeValue;
+        if (
+            resultBuffer.length == typeByteSize(returnType) &&
+            valueMatchesPlace(returnType, callbackResult)
+        ) {
+            writeValue(Place(resultBuffer.ptr, returnType), callbackResult);
+            return;
+        }
         marshalArgument(
             resultBuffer,
             returnType,
@@ -612,7 +758,14 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         // slot yields a native pointer, a scalar out slot (`int*`) yields the
         // scalar value (ffi.md §34.8).
         ensureWritebacks;
-        _writebacks[index] = unmarshalValue(pointedToType, cell);
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            isPlaceComposable, readValue;
+
+        _writebacks[index] = isPlaceComposable(pointedToType) &&
+                pointedToType.toBasetype.isTypeClass is null
+            ? readValue(Place(cast(void*) cell.ptr, pointedToType))
+            : unmarshalValue(pointedToType, cell);
     }
 
     public override void fillOutParameterCell(
@@ -628,6 +781,17 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         if (index >= _outParameterInputs.length ||
             _outParameterInputs[index] == Value.void_)
             return;
+
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value:
+            valueMatchesPlace, writeValue;
+        if (valueMatchesPlace(pointedToType, _outParameterInputs[index])) {
+            writeValue(
+                Place(cell.ptr, pointedToType),
+                _outParameterInputs[index],
+            );
+            return;
+        }
 
         marshalArgument(
             cell,
@@ -656,6 +820,35 @@ private void marshalArgument(
 ) {
     import dmd.astenums: TY;
     import dmd.mtype: TypeStruct;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+    // Native aggregate handles already own the exact ABI bytes their static
+    // type describes.  Preserve that one storage world across the FFI seam:
+    // copying the complete type-sized span is the ABI argument operation,
+    // whereas recursively materialising fields would recreate a boxed
+    // aggregate traversal.  A different Type object keeps the established
+    // fallback below, since its qualifier or view conversion may require the
+    // existing per-kind handling.
+    if (value.isNativeAggregate) {
+        const aggregate = AggregateValue.native(value);
+        if (
+            aggregate.type is type &&
+            (
+                type.ty == TY.Tarray ||
+                type.ty == TY.Tsarray ||
+                type.ty == TY.Tstruct
+            )
+        ) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            copyNativeAggregateArgument(
+                buffer,
+                aggregate.address,
+                typeByteSize(type),
+            );
+            return;
+        }
+    }
 
     switch (type.ty) {
         // native_scalar.writeScalar is `layout.d`'s single scalar<->bytes
@@ -711,8 +904,15 @@ private void marshalArgument(
 
         case TY.Tclass:
             // A class reference is an opaque native handle (ffi.md §34.12),
-            // passed through as the object pointer.
-            *cast(void**) buffer.ptr = value.asNativePointer;
+            // passed through as the object pointer. An interpreter-allocated
+            // NativeAggregate retains its reference slot as the expression
+            // root, so expose its body pointer here without discarding that
+            // root in the caller's local binding.
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+            *cast(void**) buffer.ptr = value.isNativeAggregate
+                ? AggregateValue.nativeClassBodyAddress(value)
+                : value.pointerAddress;
             return;
 
         case TY.Tarray:
@@ -784,6 +984,21 @@ private void marshalArgument(
     }
 }
 
+
+// `source` is the NativeAggregate's live DMD-sized storage and `length` is
+// that same Type's DMD byte size.  The caller checks that `buffer` contains
+// at least those bytes before this raw ABI boundary copies them.
+private void copyNativeAggregateArgument(
+    ubyte[] buffer,
+    const(void)* source,
+    in size_t length,
+) @trusted {
+    import core.stdc.string: memcpy;
+
+    assert(buffer.length >= length);
+    memcpy(buffer.ptr, source, length);
+}
+
 private long scalarBits(
     imported!"dmd.mtype".Type type,
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
@@ -819,10 +1034,7 @@ private void* marshalPointerArgument(
         return cast(void*) text;
     }
 
-    if (value.isPointer && !value.isNativePointer && !value.isLocalPointer)
-        return pointedAtByteBuffer(value);
-
-    return value.asNativePointer;
+    return value.pointerAddress;
 }
 
 // The element type behind a pointer parameter; a type-erased `void*` reads
@@ -840,41 +1052,6 @@ private imported!"dmd.mtype".Type pointerElementType(
 // Marshal the elements a backend array pointer points at (from its offset to
 // the end of the allocation) into a GC buffer for a native call. Elements
 // still `= void` (an uninitialized read buffer) marshal as zero bytes.
-private ubyte[] marshalPointerElements(
-    imported!"dmd.mtype".Type elementType,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value pointer,
-) {
-    import quickbite.backends.interpreter.runtime_value: Value;
-    import quickbite.backends.interpreter.native_array: NativeArray;
-
-    // Routed through `NativeArray` rather than a hand-rolled
-    // `new ubyte[](length * elementSize)` + `index * elementSize` walk,
-    // mirroring `marshalSliceArgument` below. `NativeArray.allocate`
-    // zeroes via `GC.calloc` exactly as `new ubyte[]` did, so an element
-    // still `= void` that this loop `continue`s past stays zero.
-    const offset = cast(size_t) pointer.pointerElementOffset;
-    const length = pointer.pointerLength - offset;
-    auto na = NativeArray.allocate(elementType, length);
-
-    const(char)*[] keepAlive;
-    ubyte[][] keepAliveBuffers;
-    foreach (index; 0 .. length) {
-        const element = pointer.pointerIndex(index);
-        if (element == Value.void_)
-            continue;
-        marshalArgument(
-            na.element(index),
-            elementType,
-            element,
-            true,
-            keepAlive,
-            keepAliveBuffers,
-        );
-    }
-
-    return na.block.bytes;
-}
-
 // Writing the buffer's address into the pointer-sized argument cell is the
 // same reinterpretation every other marshalling site performs.
 private void fillPointerCell(ubyte[] cell, in ubyte[] bytes) @trusted {
@@ -887,22 +1064,6 @@ private void fillPointerCell(ubyte[] cell, in ubyte[] bytes) @trusted {
 // native allocations are reclaimed at process exit, ffi.md §5). Only
 // byte-wide elements have an unambiguous memory image through a type-erased
 // pointer, so anything wider is refused rather than silently truncated.
-private void* pointedAtByteBuffer(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
-    const offset = cast(size_t) value.pointerElementOffset;
-    const length = value.pointerLength - offset;
-    auto buffer = byteBuffer(length == 0 ? 1 : length);
-    foreach (index; 0 .. length) {
-        const element = value.pointerIndex(index);
-        const bits = element.isChar ? element.asChar : element.asLong;
-        if (bits < 0 || bits > ubyte.max)
-            throw new Exception(
-                "Unsupported non-byte element behind a type-erased native pointer argument.",
-            );
-        buffer[index] = cast(ubyte) bits;
-    }
-    return buffer.ptr;
-}
-
 // The buffer deliberately leaks (see pointedAtByteBuffer); bounds are the
 // allocation's own size.
 private ubyte[] byteBuffer(in size_t length) @trusted {
@@ -1021,11 +1182,11 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalV
 
         case TY.Tfloat80:  return Value(*cast(const real*) buffer.ptr);
         case TY.Tpointer:
-            return Value.nativePointerValue(*cast(void**) buffer.ptr);
+            return Value.pointerValue(*cast(void**) buffer.ptr);
         case TY.Tclass:
             // A returned class reference reifies as an opaque native handle
             // (ffi.md §34.12); the object pointer is the return value itself.
-            return Value.nativePointerValue(*cast(void**) buffer.ptr);
+            return Value.pointerValue(*cast(void**) buffer.ptr);
         case TY.Tarray:
             return unmarshalSlice(type, buffer);
         case TY.Tsarray:
@@ -1143,8 +1304,8 @@ private bool canReifyFromNative(imported!"dmd.mtype".Type type) {
             return canReifyFromNative(type.nextOf.toBasetype);
 
         case Tstruct:
-            // Unions reify field-by-field from the same overlapped bytes — a
-            // bit-faithful snapshot — so they need no special case here.
+            // Struct result/out bytes are retained as one native span, so a
+            // union does not need a separate field-reification rule here.
             auto sym = (cast(TypeStruct) type).sym;
             foreach (field; sym.fields)
                 if (!canReifyFromNative(field.type.toBasetype))
@@ -1162,36 +1323,19 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
     imported!"dmd.mtype".Type type,
     in ubyte[] buffer,
 ) {
-    import quickbite.backends.interpreter.runtime_value: Value;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.mtype: TypeSArray;
     import quickbite.backends.interpreter.layout: staticArrayLength, typeByteSize;
-    import quickbite.backends.interpreter.native_array: NativeArray;
 
-    // Routed through `NativeArray` rather than a hand-rolled
-    // `index * elementSize` walk. `elementType` is resolved to its
-    // basetype up front, exactly as the old code did, and reused both to
-    // build the handle and to dispatch the recursive unmarshal.
     auto staticArray = cast(TypeSArray) type;
     auto elementType = staticArray.next.toBasetype;
     const length = staticArrayLength(staticArray);
 
-    // `NativeArray.borrow` fabricates its extent from `elementType`/`length`
-    // rather than sub-slicing `buffer`, so a too-short `buffer` would
-    // silently read/write past its end instead of range-erroring the way
-    // the old hand-rolled sub-slice did. Restore that fail-fast.
+    // Preserve the existing short-buffer diagnostic before making the
+    // whole-value native copy. The result stays an inline static-array
+    // block, rather than an element-by-element reification.
     assert(buffer.length >= length * typeByteSize(elementType));
-    // `cast(void*)` strips `buffer`'s `const` only to satisfy `borrow`'s
-    // signature; this function only ever READS through `na` (elements feed
-    // `unmarshalValue(..., in ubyte[])` below), never writes back into
-    // `buffer`.
-    auto na = NativeArray.borrow(elementType, cast(void*) buffer.ptr, length);
-
-    Value[] elements;
-    foreach (index; 0 .. length)
-        elements ~= unmarshalValue(elementType, na.element(index));
-
-    return AggregateValue.reconstructArray(elements);
+    return AggregateValue.copyFromBytes(type, buffer);
 }
 
 private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalSlice(
@@ -1217,7 +1361,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
                     break;
 
                 default:
-                    return AggregateValue.reconstructNativeArrayWithLength(0, data);
+                    return AggregateValue.reconstructNativeArrayWithLength(type, 0, data);
             }
         }
         return emptySliceValue(type);
@@ -1240,30 +1384,11 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
             return Value.stringValue(chars[0 .. length].dup);
 
         default:
-            // Routed through `NativeArray` rather than a hand-rolled
-            // `index * elementSize` walk. `data` is native memory this
-            // function did not allocate -- exactly `NativeArray.borrow`'s own
-            // documented precondition, vouched for here by the native call
-            // that filled this return buffer. No length precondition to
-            // assert here (unlike `unmarshalStruct`/`unmarshalStaticArray`):
-            // `data`'s allocation size is not derived from any parameter
-            // this function holds, and the old code's own `(cast(const(
-            // ubyte)*) data)[0 .. length * elementSize]` was an equally
-            // unchecked raw-pointer slice, not a bounds-checked sub-slice of
-            // a caller-supplied array -- there is no old fail-fast to
-            // restore.
-            //
-            // `cast(void*)` strips `data`'s `const` only to satisfy
-            // `borrow`'s signature; this function only ever READS through
-            // `na` (elements feed `unmarshalValue(..., in ubyte[])` below),
-            // never writes back through `data`.
-            import quickbite.backends.interpreter.native_array: NativeArray;
-
-            auto na = NativeArray.borrow(elementType, cast(void*) data, length);
-            Value[] elements;
-            foreach (index; 0 .. length)
-                elements ~= unmarshalValue(elementType, na.element(index));
-            return AggregateValue.reconstructNativeArray(elements, data);
+            // A native slice result is already a valid `{length, ptr}` view.
+            // Keep that header and foreign element address directly rather
+            // than reifying elements into a recursive array only to build
+            // another native header from them.
+            return AggregateValue.reconstructNativeArrayWithLength(type, length, data);
     }
 }
 
@@ -1284,7 +1409,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value emptySlice
             dchar[] empty;
             return Value.stringValue(empty);
         default:
-            return AggregateValue.reconstructArray([]);
+            return AggregateValue.reconstructArray(type, []);
     }
 }
 
@@ -1296,6 +1421,12 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalNa
     in void* address,
 ) {
     import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.place_value:
+        isPlaceComposable, readValue;
+
+    if (isPlaceComposable(type) && type.toBasetype.isTypeClass is null)
+        return readValue(Place(cast(void*) address, type));
 
     return unmarshalValue(type, nativeBytes(address, typeByteSize(type)));
 }
@@ -1309,6 +1440,14 @@ public void marshalNative(
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) {
     import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.place_value:
+        valueMatchesPlace, writeValue;
+
+    if (valueMatchesPlace(type, value)) {
+        writeValue(Place(address, type), value);
+        return;
+    }
 
     const(char)*[] keepAlive;
     ubyte[][] keepAliveBuffers;
@@ -1328,6 +1467,8 @@ public void marshalNative(
 // collection cannot free it while the C heap still references it.
 private const(char)*[] pinnedNativeStrings;
 private ubyte[][] pinnedNativeBuffers;
+private imported!"quickbite.backends.interpreter.native_block".NativeBlock[]
+    pinnedNativeBlocks;
 
 // Reading raw process memory the interpreter was handed a pointer to is as
 // (un)safe as the compiled D it mirrors; the length comes from the struct
@@ -1345,37 +1486,14 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
     imported!"dmd.mtype".TypeStruct type,
     in ubyte[] buffer,
 ) {
-    import quickbite.backends.interpreter.runtime_value: Value;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: typeByteSize;
-    import quickbite.backends.interpreter.native_struct: NativeStruct;
-    import std.string: fromStringz;
 
-    // Routed through `NativeStruct` rather than a hand-rolled
-    // `sym.fields[i].offset`/`size(fieldType)` walk: layout facts stay
-    // DMD's own, never a second set of D layout rules grown here.
-    // `NativeStruct.fieldDeclaration(index).type` is the DECLARED field
-    // type, not the basetype the old code dispatched on -- `.toBasetype`
-    // below reproduces the exact same recursive dispatch.
-    //
-    // `NativeStruct.borrow` fabricates its extent from `type` rather than
-    // sub-slicing `buffer`, so a too-short `buffer` would silently read
-    // past its end instead of range-erroring the way the old hand-rolled
-    // sub-slice did. Restore that fail-fast.
+    // Preserve the established buffer-size check, then retain the complete
+    // native object representation in one copy. That includes union overlap
+    // and padding which field-by-field reification cannot represent.
     assert(buffer.length >= typeByteSize(type));
-    // `cast(void*)` strips `buffer`'s `const` only to satisfy `borrow`'s
-    // signature; this function only ever READS through `ns` (fields feed
-    // `unmarshalValue(..., in ubyte[])` below), never writes back into
-    // `buffer`.
-    auto ns = NativeStruct.borrow(type, cast(void*) buffer.ptr);
-    Value[] fields;
-    foreach (index; 0 .. ns.fieldCount)
-        fields ~= unmarshalValue(
-            ns.fieldDeclaration(index).type.toBasetype,
-            ns.field(index),
-        );
-
-    return AggregateValue.reconstructStruct(fromStringz(type.sym.toChars).idup, fields);
+    return AggregateValue.copyFromBytes(type, buffer);
 }
 
 // Marshal a backend value into a NUL-terminated C string valid for the
@@ -1388,28 +1506,14 @@ private const(char)* nativeString(in imported!"quickbite.backends.interpreter.ru
     if (value == Value.null_)
         return null;
 
-    if (value.isNativePointer)
-        return cast(const(char)*) value.asNativePointer;
+    if (value.isPointer)
+        return cast(const(char)*) value.pointerAddress;
 
     // A pointer into interpreter-managed array memory (e.g. `buffer.ptr` of
     // a struct's static-array field, as Phobos' tempCString returns): the
     // chars up to the NUL the D code wrote, which is all a native callee may
     // read of a C string.
-    if (value.isPointer)
-        return pointedAtCString(value).toStringz;
-
     return value.asCharArrayString.toStringz;
-}
-
-private string pointedAtCString(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
-    char[] chars;
-    foreach (index; 0 .. value.pointerLength) {
-        const character = value.pointerIndex(index).asChar;
-        if (character == '\0')
-            break;
-        chars ~= character;
-    }
-    return chars.idup;
 }
 
 // Like nativeString, but backs the C string with a stable C-heap buffer that
@@ -1427,8 +1531,8 @@ private const(char)* stableNativeString(
     if (value == Value.null_)
         return null;
 
-    if (value.isNativePointer)
-        return cast(const(char)*) value.asNativePointer;
+    if (value.isPointer)
+        return cast(const(char)*) value.pointerAddress;
 
     const chars = value.asCharArrayString;
     auto buffer = cast(char*) malloc(chars.length + 1);

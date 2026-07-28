@@ -270,6 +270,25 @@ public bool assignNativeRefReturn(
     );
 }
 
+public bool nativeRefReturnAddress(
+    imported!"dmd.func".FuncDeclaration function_,
+    NativeMarshaller marshaller,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    in bool[] addressOfLocalArguments,
+    out void* resultAddress,
+) {
+    return callNativeImpl(
+        function_,
+        NativeThis.init,
+        marshaller,
+        argumentTypes,
+        addressOfLocalArguments,
+        null,
+        RefReturnMode.address,
+        &resultAddress,
+    );
+}
+
 public bool callNativeMember(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
@@ -343,6 +362,7 @@ public bool callNativeClassMember(
 }
 
 private enum RefReturnMode {
+    address,
     read,
     write,
 }
@@ -404,6 +424,7 @@ private bool callNativeImpl(
     in bool[] addressOfLocalArguments,
     InboundTrampolineRegistry* durableInboundRegistry = null,
     in RefReturnMode refReturnMode = RefReturnMode.read,
+    void** refResultAddress = null,
 ) {
     import dmd.astenums: LINK, VarArg;
     import dmd.mangle: mangleExact;
@@ -445,6 +466,7 @@ private bool callNativeImpl(
         addressOfLocalArguments,
         durableInboundRegistry,
         refReturnMode,
+        refResultAddress,
     );
 }
 
@@ -542,6 +564,7 @@ private bool callViaLibffi(
     in bool[] addressOfLocalArguments,
     InboundTrampolineRegistry* durableInboundRegistry,
     in RefReturnMode refReturnMode,
+    void** refResultAddress = null,
 ) {
     import quickbite.ffi.libffi:
         ffi_cif, ffi_type, ffi_type_pointer, ffi_status, ffi_prep_cif,
@@ -559,7 +582,7 @@ private bool callViaLibffi(
     // Mutable Type: ffiTypeFor and dmd.typesem.size both need a non-const Type.
     auto returnType = type.next.toBasetype;
     const returnsRef = type.isRef;
-    if (refReturnMode == RefReturnMode.write && !returnsRef)
+    if (refReturnMode != RefReturnMode.read && !returnsRef)
         return false;
     auto returnFfi = returnsRef ? &ffi_type_pointer : ffiTypeFor(returnType);
     if (returnFfi is null)
@@ -832,7 +855,10 @@ private bool callViaLibffi(
         auto resultAddress = *cast(void**) returnBuffer.ptr;
         if (resultAddress is null)
             throw new Exception("Native ref return has null address.");
-        if (refReturnMode == RefReturnMode.write) {
+        if (refReturnMode == RefReturnMode.address) {
+            assert(refResultAddress !is null);
+            *refResultAddress = resultAddress;
+        } else if (refReturnMode == RefReturnMode.write) {
             marshaller.writeRefResult(
                 returnType,
                 resultAddress,
@@ -912,11 +938,13 @@ private bool canRepresentCall(
     in RefReturnMode refReturnMode,
 ) {
     with (NativeMarshaller.Direction) {
-        const returnDirection = refReturnMode == RefReturnMode.write
-            ? toNative
-            : fromNative;
-        if (!marshaller.canRepresent(returnType, returnDirection))
-            return false;
+        if (refReturnMode != RefReturnMode.address) {
+            const returnDirection = refReturnMode == RefReturnMode.write
+                ? toNative
+                : fromNative;
+            if (!marshaller.canRepresent(returnType, returnDirection))
+                return false;
+        }
 
         foreach (index, parameter; parameterTypes) {
             if (isDelegateParameter(parameter))
