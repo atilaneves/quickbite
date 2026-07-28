@@ -3839,10 +3839,7 @@ static foreach (backend; Matrix!()) {
 // Two ref class parameters bound from the same plain variable denote the same
 // reference slot, so taking either parameter's address must produce equal
 // pointers.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated ref class-argument address identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
