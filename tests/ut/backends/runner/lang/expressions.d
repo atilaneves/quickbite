@@ -2636,6 +2636,9 @@ static foreach (backend; Matrix!()) {
 // initializer aggregate that seeded them: compiled D keeps `p` aliased to
 // the local's one inline array allocation across a whole-array assignment.
 static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "CTFE detaches the pointer when the whole static array is assigned; " ~
+        "see the sibling characterization below"),
     Omit!(Bytecode, Because.unconfirmed,
         "does not yet support whole static-array assignment from a runtime literal"),
 )) {
@@ -2662,6 +2665,37 @@ static foreach (backend; Matrix!(
                 a = [two()];
                 *p = ninetyNine();
                 assert(a[0] == 99);
+            }
+        });
+    }
+}
+
+// CTFE diverges from compiled D by leaving `p` attached to the array value
+// replaced by the whole-array assignment. Pin that engine behavior separately;
+// SystemLinker remains the oracle in the matrix fixture above.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("pointer.staticArrayPointerSurvivesWholeArrayAssignment.ctfeDivergence." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[1] a = [one()];
+                int* p = &a[0];
+                a = [two()];
+                *p = ninetyNine();
+                assert(a[0] == 2);
             }
         });
     }

@@ -613,12 +613,20 @@ public void writeValue(
     import quickbite.backends.interpreter.layout:
         structFields, staticArrayLength, typeByteSize;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     auto type = place.type;
 
     if (value.isNativeAggregate) {
         auto source = AggregateValue.native(value);
+        // DMD uses a pointer-typed slot for a catch variable even though the
+        // caught value is a class reference. Store the referenced object body,
+        // not the address of the native class-reference carrier.
+        if (isClassType(source.type) && type.isTypePointer !is null) {
+            place.storeReference(Place(source.address, source.type).deref.address);
+            return;
+        }
         // Class assignment stores only the reference slot, so a derived
         // native class value may initialise a base-class slot just as a D
         // reference does. Other aggregates still require their exact native

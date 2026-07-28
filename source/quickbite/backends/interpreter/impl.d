@@ -284,6 +284,10 @@ private struct Walker {
     import quickbite.backends.interpreter.runtime_value: Value;
 
     private Throwable[const(void)*] nativeThrowableRoots;
+    // Captured native Throwable chains outlive the call bridge as rooted
+    // interpreter values. Keying by the native body lets Throwable.next use
+    // that captured authority without reinterpreting druntime's tagged link.
+    private Value[void*] nativeThrowableNext;
 
     // Heap allocations made by interpreted `new T` own native guest bytes.
     // A native pointer is intentionally only a host address, so this table is
@@ -1625,15 +1629,22 @@ private struct Walker {
         );
         if (exception.chainedNext !is null) {
             const next = nativeExceptionObject(exception.chainedNext);
-            object = AggregateValue.withClassFieldNamed(
-                object,
-                "_nextInChainPtr",
-                next.isNativeAggregate
-                    ? Value.pointerValue(
-                        AggregateValue.nativeClassBodyAddress(next),
-                    )
-                    : next,
-            );
+            if (object.isNativeAggregate)
+                nativeThrowableNext[AggregateValue.nativeClassBodyAddress(object)] = next;
+            // A borrowed native Throwable already owns its `.next` link.
+            // Rewriting that live druntime object through frontend field
+            // layout can corrupt adjacent payload; recursion above is still
+            // required to register and root each native link.
+            if (!object.isNativeAggregate)
+                object = AggregateValue.withClassFieldNamed(
+                    object,
+                    "_nextInChainPtr",
+                    next.isNativeAggregate
+                        ? Value.pointerValue(
+                            AggregateValue.nativeClassBodyAddress(next),
+                        )
+                        : next,
+                );
         }
 
         return object;
@@ -1647,9 +1658,16 @@ private struct Walker {
         if (auto class_ = dynamicClassDeclarationByName(className)) {
             if (nativeObjectPointer !is null) {
                 nativeClassTypes[cast(void*) nativeObjectPointer] = class_.type;
-                return AggregateValue.borrowClass(
-                    class_.type,
-                    cast(void*) nativeObjectPointer,
+                return AggregateValue.withClassFieldNamed(
+                    AggregateValue.borrowClass(
+                        class_.type,
+                        cast(void*) nativeObjectPointer,
+                    ),
+                    "msg",
+                    // The native message may point into the dependency image's
+                    // read-only data. Keep catch evaluation independent of
+                    // that image's lifetime by rooting an interpreter copy.
+                    Value(message.idup),
                 );
             }
             return withNativeExceptionObjectPointer(
@@ -1673,9 +1691,13 @@ private struct Walker {
         if (auto class_ = classDeclarationByQualifiedName(className)) {
             if (nativeObjectPointer !is null) {
                 nativeClassTypes[cast(void*) nativeObjectPointer] = class_.type;
-                return AggregateValue.borrowClass(
-                    class_.type,
-                    cast(void*) nativeObjectPointer,
+                return AggregateValue.withClassFieldNamed(
+                    AggregateValue.borrowClass(
+                        class_.type,
+                        cast(void*) nativeObjectPointer,
+                    ),
+                    "msg",
+                    Value(message.idup),
                 );
             }
             return withNativeExceptionObjectPointer(
@@ -2922,6 +2944,12 @@ private struct Walker {
         if (auto delegate_ = e1.isDelegateExp)
             return runDelegateExpression(delegate_);
 
+        // Taking the address of a dereference recovers the pointer value;
+        // evaluating the dereference first would incorrectly require a
+        // separate addressable value for the pointee.
+        if (auto pointer = e1.isPtrExp)
+            return runExpression(pointer.e1);
+
         // `&field` (also `field.ptr`) of a struct's static-array member: a
         // pointer to the field's first element, exactly what arrayPointer
         // builds for `&field[0]`.
@@ -2942,6 +2970,16 @@ private struct Walker {
                     const receiverPointer = addressOfExpression(innerDot, op);
                     if (receiverPointer.isPointer) {
                         import quickbite.backends.interpreter.layout: fieldByteOffset;
+                        import quickbite.backends.interpreter.place: Place;
+
+                        // `&parent.child.x` first yields the address of the
+                        // class-reference field `parent.child`; compose `x`
+                        // from the referenced body, not from that slot's bytes.
+                        if (innerDot.type.toBasetype.isTypeClass !is null)
+                            return Value.pointerValue(
+                                Place(receiverPointer.pointerAddress, innerDot.type)
+                                    .deref.field(field).address,
+                            );
 
                         return receiverPointer.pointerOffsetBy(
                             cast(long) fieldByteOffset(field),
@@ -3256,6 +3294,7 @@ private struct Walker {
         // see `moduleTable`'s own field comment.
         child.moduleTable = moduleTable;
         child.nativeThrowableRoots = nativeThrowableRoots.dup;
+        child.nativeThrowableNext = nativeThrowableNext.dup;
         child.nativePointerRoots = nativePointerRoots.dup;
         child.nativeFunctionPointerSlots = nativeFunctionPointerSlots.dup;
         child.nextClassObjectId = nextClassObjectId;
@@ -5566,6 +5605,24 @@ private struct Walker {
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
+
+        auto memberClass = function_.parent is null
+            ? null
+            : function_.parent.isClassDeclaration;
+        if (
+            declarationName(function_) == "next" &&
+            memberClass !is null && className(memberClass) == "Throwable"
+        ) {
+            auto body = memberReceiver.isNativeAggregate
+                ? AggregateValue.nativeClassBodyAddress(memberReceiver)
+                : memberReceiver.isPointer
+                ? memberReceiver.pointerAddress
+                : null;
+            if (auto next = body in nativeThrowableNext)
+                return next.isNativeAggregate
+                    ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(*next))
+                    : *next;
+        }
 
         Walker child;
         child.runningCalledFunction = true;
