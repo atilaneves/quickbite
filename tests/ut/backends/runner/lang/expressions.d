@@ -5934,10 +5934,7 @@ static foreach (backend; Matrix!()) {
 
 // A ref local bound to a direct scalar class field denotes the same storage
 // as an earlier pointer to that field. SystemLinker is the oracle.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve class-field ref-local identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classFieldRefLocalPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

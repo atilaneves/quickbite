@@ -3391,7 +3391,7 @@ private struct Compiler {
                 return true;
             }
 
-        if (auto dot = expression.isDotVarExp)
+        if (auto dot = expression.isDotVarExp) {
             if (auto field = tryStructField(dot)) {
                 if (variable.type.toBasetype.ty == TY.Tstruct) {
                     _structLocals[variable] = StructLocal(
@@ -3403,6 +3403,21 @@ private struct Compiler {
                 _locals[variable] = field.offset;
                 return true;
             }
+
+            // A ref local bound directly to a scalar class field: the field's
+            // storage lives on the native heap rather than inline in this
+            // frame, so (unlike the struct-field case above) the local's slot
+            // cannot alias it by frame offset alone. Instead the slot holds
+            // the field's runtime heap address, and every read/write/address-
+            // of goes through the same `_refLocalPointers` indirection an
+            // array-element ref local already uses.
+            if (variable.type.toBasetype.ty != TY.Tstruct)
+                if (auto field = tryClassPointerField(dot)) {
+                    _locals[variable] = classFieldAddress(*field);
+                    _refLocalPointers[variable] = scalarType(field.type);
+                    return true;
+                }
+        }
 
         auto index = expression.isIndexExp;
         if (index is null)
@@ -6856,12 +6871,32 @@ private struct Compiler {
             auto declaration = variable.var.isVarDeclaration;
             if (declaration is null)
                 return null;
-            isRefParameter = declaration.isReference;
+            // `isReference` alone is too broad: it is also true for a `ref`
+            // *local* (e.g. `ref int r = c.value;`), which never joins a
+            // callee's `refAliasGroups` and has no active call frame when
+            // addressed at top level, so `refParameterAddress` must only
+            // fire for an actual formal parameter.
+            isRefParameter = declaration.isReference && declaration.isParameter;
             if (auto descriptor = declaration in _dynamicArrayLocals) {
                 slot = descriptor.offset;
                 pointedType = declaration.type;
             }
             auto existing = declaration in _locals;
+            // A ref local bound to a scalar class field (or array element)
+            // stores the pointed-at storage's own runtime address in its
+            // slot; that address IS `&variable`, so return it directly
+            // rather than computing the address of the slot itself.
+            if (existing !is null)
+                if (auto element = declaration in _refLocalPointers) {
+                    auto result = new Operand;
+                    *result = Operand(
+                        *existing,
+                        ScalarType.ulong_,
+                        true,
+                        pointerElementScalar(address.type),
+                    );
+                    return result;
+                }
             if (pointedType is null && existing is null) {
                 if (auto struct_ = declaration in _structLocals) {
                     slot = struct_.offset;
