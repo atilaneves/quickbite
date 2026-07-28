@@ -453,6 +453,8 @@ checked fact; do not relearn them.
   address-taking, indexing, and field access compose from that place.
 - Each activation owns a fresh frame block. Captures and calls borrow addresses;
   they do not copy storage authority into a child or reconcile it on return.
+- A field slice borrows bytes composed from its receiver place; an aggregate
+  expression snapshot is never the backing storage for an lvalue-derived view.
 - `RuntimeValue.NativeAggregate` owns or borrows DMD-layout bytes for a
   transient aggregate result. Once stored, the destination place is
   authoritative.
@@ -461,6 +463,10 @@ checked fact; do not relearn them.
   identity, or pointer-kind predicate participates in execution.
 - Class identity is the object-body address. All aliases, fields, casts, member
   calls, and exception paths retain that address and observe the same body.
+- Native class type membership includes implemented and inherited interfaces;
+  the concrete dynamic class still owns object-body layout.
+- Caches keyed by DMD declaration identity are scoped to one root evaluation;
+  AST arena addresses may be reused by a later fixture compilation.
 - Native calls consume argument places or fixed-width scalar scratch cells and
   write returns into typed native storage. There is no recursive aggregate
   marshalling or post-call aggregate reconstruction.

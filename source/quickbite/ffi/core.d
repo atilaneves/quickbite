@@ -450,7 +450,7 @@ private bool callNativeImpl(
     const symbol = resolveSymbol(function_, receiver, marshaller);
     if (symbol is null)
         throw new Exception(
-            "Native symbol `" ~
+            "Unsupported native call: symbol `" ~
             fromStringz(mangleExact(function_)).idup ~
             "` is not loaded",
         );

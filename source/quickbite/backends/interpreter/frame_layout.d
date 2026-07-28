@@ -188,6 +188,14 @@ private size_t alignedUp(in size_t value, in size_t alignment) pure nothrow @nog
 private FrameLayout[imported!"dmd.func".FuncDeclaration] _frameLayoutCache;
 
 
+// DMD fixture compilations replace their AST arenas, so declaration addresses
+// can be reused by a later module in the same test process. Keep memoization
+// within one interpreter root execution, but never across compiler lifetimes.
+public void clearFrameLayoutCache() @safe {
+    _frameLayoutCache.clear;
+}
+
+
 // `computeFrameLayout(function_)`, memoized: the first call for `function_`
 // walks its body and caches the result; every later call for the same
 // `function_` returns the cached layout instead of re-walking it.

@@ -35,6 +35,10 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
 
     public override EvalResult eval(FuncDeclaration function_) {
         try {
+            import quickbite.backends.interpreter.frame_layout:
+                clearFrameLayoutCache;
+
+            clearFrameLayoutCache;
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
             walker.classObjectTable = new ObjectTable;
@@ -57,6 +61,10 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         UnitTestDeclaration unitTest,
     ) {
         try {
+            import quickbite.backends.interpreter.frame_layout:
+                clearFrameLayoutCache;
+
+            clearFrameLayoutCache;
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
             walker.classObjectTable = new ObjectTable;
@@ -77,6 +85,10 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
 
     private EvalResult evalFormattedDisplay(FuncDeclaration function_) {
         try {
+            import quickbite.backends.interpreter.frame_layout:
+                clearFrameLayoutCache;
+
+            clearFrameLayoutCache;
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
             walker.classObjectTable = new ObjectTable;
@@ -9217,7 +9229,7 @@ private struct Walker {
         if (auto dot = slice.e1.isDotVarExp)
             if (auto receiver = dot.e1.isVarExp)
                 if (auto variable = receiver.var.isVarDeclaration)
-                    if (auto owner = variable in locals)
+                    if (auto owner = variable in locals) {
                         if (
                             (*owner).isNativeAggregate &&
                             variable.type.toBasetype.isTypeClass !is null
@@ -9231,6 +9243,22 @@ private struct Walker {
                                     variable.type,
                                 ).field(field).address;
                         }
+                        else if (
+                            (*owner).isNativeAggregate &&
+                            variable.type.toBasetype.isTypeStruct !is null
+                        ) {
+                            import quickbite.backends.interpreter.layout:
+                                declaredType;
+                            import quickbite.backends.interpreter.place: Place;
+
+                            auto field = dot.var.isVarDeclaration;
+                            if (field !is null)
+                                nativeAddress = cast(const(ubyte)*) Place(
+                                    addressableBindingBase(variable),
+                                    declaredType(variable),
+                                ).field(field).address;
+                        }
+                    }
         if (nativeAddress is null)
             if (auto var = slice.e1.isVarExp)
                 if (auto variable = var.var.isVarDeclaration) {

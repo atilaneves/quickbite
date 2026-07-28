@@ -572,11 +572,10 @@ public struct AggregateValue {
     public static string[] classTypeNames(
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     ) @safe {
-        if (value.isNativeAggregate) {
-            import quickbite.backends.interpreter.layout: classHierarchyNames;
-
-            return classHierarchyNames(baseTypeOf(native(value).type).isTypeClass.sym);
-        }
+        if (value.isNativeAggregate)
+            return nativeClassTypeNames(
+                baseTypeOf(native(value).type).isTypeClass.sym,
+            );
         return value.classTypeNames;
     }
 
@@ -591,6 +590,32 @@ public struct AggregateValue {
             return false;
         }
         return value.classHasType(name);
+    }
+
+    // DMD's class/interface links are extern(C++) fields without @safe
+    // annotations; this read-only graph walk copies every identifier.
+    private static string[] nativeClassTypeNames(
+        imported!"dmd.dclass".ClassDeclaration class_,
+    ) @trusted {
+        string[] names;
+        for (auto current = class_; current !is null; current = current.baseClass) {
+            names ~= current.ident is null ? "" : current.ident.toString.idup;
+            foreach (interface_; current.interfaces)
+                appendInterfaceTypeNames(names, interface_.sym);
+        }
+        return names;
+    }
+
+    // Same trusted read-only DMD interface graph boundary as the caller.
+    private static void appendInterfaceTypeNames(
+        ref string[] names,
+        imported!"dmd.dclass".ClassDeclaration interface_,
+    ) @trusted {
+        if (interface_ is null)
+            return;
+        names ~= interface_.ident is null ? "" : interface_.ident.toString.idup;
+        foreach (base; interface_.interfaces)
+            appendInterfaceTypeNames(names, base.sym);
     }
 
     public static imported!"quickbite.backends.interpreter.runtime_value".Value withArrayElement(
