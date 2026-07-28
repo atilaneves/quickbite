@@ -327,10 +327,16 @@ private struct Compiler {
 
                 // A dynamic-array parameter (including `string`) is a 16-byte
                 // slice descriptor, tracked like a dynamic-array local rather
-                // than a scalar slot.
+                // than a scalar slot. `elementIsArray` marks a `T[N][]`/`T[][]`
+                // parameter whose elements are themselves heap-allocated inner
+                // descriptors, matching how a same-typed local is tracked
+                // (`arrayElementIsArray`, below) so a promoted-cell array
+                // passed as an argument keeps its authoritative row storage in
+                // the callee instead of falling back to a flat scalar stride.
                 if (parameter.type.toBasetype.ty == TY.Tarray) {
                     _dynamicArrayLocals[parameter] = DynamicArrayLocal(
                         offset, dynamicArrayElementType(parameter.type),
+                        arrayElementIsArray(parameter.type),
                     );
                     continue;
                 }
@@ -13649,6 +13655,19 @@ private struct Compiler {
     }
 
     private Operand compileArrayLiteralExpression(ArrayLiteralExp array) {
+        import dmd.astenums: TY;
+
+        // A static-array-typed literal (`[value, value]` assigned into an
+        // `int[2]*` dereference, e.g.) is an inline value block, like a
+        // struct literal — not a heap-backed slice, which would materialise
+        // a throwaway {ptr, length} descriptor instead of the array's own
+        // bytes.
+        if (array.type.toBasetype.ty == TY.Tsarray) {
+            const offset = allocateStructBlock(array.type);
+            compileStaticArrayLiteral(offset, array.type, array);
+            return Operand(offset, ScalarType.void_);
+        }
+
         const elementType = dynamicArrayElementType(array.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileDynamicArrayInto(

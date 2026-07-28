@@ -6605,10 +6605,7 @@ static foreach (backend; Matrix!()) {
 // read, not only for an indexed element read. Passing the array onward after
 // a pointer write must therefore reconstruct its static-array elements from
 // the cell instead of copying the stale boxed mirror into the callee.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support storing a whole static array through a pointer"),
-)) {
+static foreach (backend; Matrix!()) {
     @("array.wholeStaticArrayArgumentReadsAuthoritativeCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
