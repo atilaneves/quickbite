@@ -465,20 +465,6 @@ private struct Walker {
     // that declaration until a fresh declaration/parameter binding replaces
     // it.
     private NativeBlock[VarDeclaration] fallbackLocalStorage;
-    // Allocation-base storage carried by an evaluated array allocation
-    // identity, independent of whichever source variable first minted that
-    // identity. Every Value offset for an id is relative to this one base;
-    // never replace it with an interior, view-relative cell from another
-    // frame. A source slot may be rebound (correctly invalidating its
-    // forward/reverse maps) while a derived slice or cast view carrying the
-    // old id remains live.
-    // Allocation-id memo keyed by the storage root and its field path.
-    // Direct and one-level-nested struct and class fields share this
-    // representation; extending a supported receiver shape adds indices to
-    // the path rather than another parallel map family. Every id minted
-    // through this path is also recorded
-    // in `fieldSnapshotAllocationIds` so `writeLocation`'s `PtrExp` path can
-    // refuse writing through it.
     private Value result;
     private bool runningCalledFunction;
     private bool inUnitTest;
