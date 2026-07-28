@@ -3419,6 +3419,20 @@ private struct Compiler {
                 return true;
             }
 
+        // A ref local bound directly to another static-array local (`ref
+        // int[2] alias_ = source;`): unlike a plain `int[2] copy = source;`
+        // declaration (`compileStaticArrayDeclaration`'s block copy into a
+        // fresh frame slot), a ref binding must denote `source`'s own
+        // storage. Alias `variable` to the exact same frame offset in
+        // `_staticArrayLocals`, so every existing static-array local
+        // mechanism (address-of, indexing, whole-array assignment) reads
+        // and writes through `source`'s real storage rather than a copy.
+        if (variable.type.toBasetype.ty == TY.Tsarray)
+            if (auto offset = staticArrayOffsetOf(expression)) {
+                _staticArrayLocals[variable] = *offset;
+                return true;
+            }
+
         if (auto dot = expression.isDotVarExp) {
             // A ref local bound to a field within a class array field's
             // element (`ref int r = c.arr[i].field;`): the class-field
@@ -7141,9 +7155,15 @@ private struct Compiler {
             dynamicArray !is null
                 ? ScalarType.void_
                 : struct_ is null
-                ? scalarType(existing is null
-                    ? symOff.type.toBasetype.nextOf
-                    : declaration.type)
+                // `existing is null` here means `staticArray` (the outer
+                // guard above already ruled out all four being null): a
+                // whole static-array local's address, e.g. `&arr` for
+                // `int[2] arr`, needs `pointerElementScalar` (which unwraps
+                // the array to its element's scalar type) rather than raw
+                // `scalarType`, which throws on the array type itself.
+                ? (existing is null
+                    ? pointerElementScalar(symOff.type)
+                    : scalarType(declaration.type))
                 : ScalarType.void_,
         );
         return result;

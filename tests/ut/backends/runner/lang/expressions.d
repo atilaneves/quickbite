@@ -4352,8 +4352,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses to compare static-array local addresses"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref static-array-local address identity"),
 )) {
     @("pointer.staticArrayRefLocalPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4371,10 +4369,7 @@ static foreach (backend; Matrix!(
 
 // Element assignment through a ref static-array local writes the source's
 // promoted native storage rather than an independent boxed snapshot.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref static-array-local element aliasing"),
-)) {
+static foreach (backend; Matrix!()) {
     @("staticArray.refLocalElementWriteMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4399,7 +4394,9 @@ static foreach (backend; Matrix!(
 // source's storage rather than promoting an independent alias snapshot.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref static-array-local element addresses"),
+        "blocked on static-array-vs-array-literal `==` comparison, " ~
+            "unrelated to ref-local aliasing: reproduces identically for " ~
+            "a plain non-ref static array"),
 )) {
     @("pointer.staticArrayRefLocalElementUsesSourceStorage." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4432,7 +4429,9 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses the nested static-array element pointer cast"),
     Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref static-array-local assignment aliasing"),
+        "blocked on whole-value assignment through a static-array VarExp " ~
+            "target (`arr = literal;`), unrelated to ref-local aliasing: " ~
+            "reproduces identically for a plain non-ref static array"),
 )) {
     @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
