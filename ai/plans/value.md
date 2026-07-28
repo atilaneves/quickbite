@@ -733,6 +733,16 @@ they die with the machinery at the authority switch:
   supported repeated plain-variable and direct-field shapes, with
   non-plain-variable aggregate arguments still boxed copies plus
   end-of-call writeback.
+- A `ref`/`out` reference slot is filled from the caller's frame slot even
+  when a CELL owns that base; filling only suppresses bind-time
+  verification for it. That was harmless while the slot was merely
+  inspected, but it is now read and written through, so the callee's
+  mutation lands in storage the cell's owner never reads — and only for
+  the arguments whose base actually resolves, so two `ref` parameters
+  naming one location can split across two storages (a struct field
+  reached as `s.field` binds the frame slot while the same field reached
+  through a plain `ref S` alias of `s` falls back to the cell). Filling
+  must decline a cell-owned base outright rather than skip verifying it.
 - Class-typed fields and dynamic-array fields whose element is neither
   a native scalar nor a supported non-union struct have no cell support
   on either the read or write side.
@@ -948,7 +958,9 @@ cross-references; document order is execution priority.
      bindings read through their owning frame slot rather than the boxed
      local mirror and `&local` carries that slot's host address. `ref`/`out`
      native-scalar bindings read and write their filled reference slot
-     directly. Captured-variable
+     directly — which makes filling one from a base a cell still owns a
+     live defect, not just an unverified bind (Cell coherence gaps).
+     Captured-variable
      reference slots exist, as do loads and stores through places for scalars,
      enums, pointers, `real`, structs, unions, slices, class object bodies,
      and dataseg storage, each verified against the still-authoritative boxed
